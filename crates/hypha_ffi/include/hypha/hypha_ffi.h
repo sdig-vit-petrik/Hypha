@@ -1230,7 +1230,8 @@ HyphaStatus hypha_input_source_create(struct HyphaWaitSet *waitset,
                                       struct HyphaInputSource **out);
 
 // Release the source handle. A cycle that binds the source keeps its subscriber and
-// history alive until that cycle is destroyed. A running `WaitSet` refuses with
+// history alive until that cycle is destroyed, so the handle of a bound source is
+// released at any time. For a source no cycle binds, a running `WaitSet` refuses with
 // `InvalidState` and keeps the handle valid.
 //
 // # Safety
