@@ -110,6 +110,23 @@ struct StopAfterAStep
     }
 };
 
+/// Calls hypha::requestStop() once the run has delivered a sample to `probe`. The run
+/// that sends a step's output also delivers it to this process's subscribers, in a
+/// later turn: a stop requested during the step would end the run before that turn.
+template <typename S>
+struct StopAfterADelivery
+{
+    const S* probe;
+
+    void operator()() const
+    {
+        while (!this->probe->latestSample().has_value()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        hypha::requestStop();
+    }
+};
+
 void expectApplicationFailure(const hypha::RunResult& result)
 {
     EXPECT_FALSE(result.ok());
@@ -184,11 +201,12 @@ TEST_F(FailRunFixture, RequestStopStillEndsTheRunAsOk)
     app.setRate(hypha::Hz(100.0));
     ASSERT_TRUE(app.start(*this->node).has_value());
 
-    std::thread            stopper(StopAfterAStep{&app, 0});
+    std::thread            stopper(StopAfterADelivery<decltype(beforeSub)>{&beforeSub});
     const hypha::RunResult result = this->node->run();
     stopper.join();
 
     EXPECT_TRUE(result.ok());
     EXPECT_EQ(result.reason(), hypha::StopReason::Requested);
+    EXPECT_GE(app.steps.load(), 1);
     EXPECT_TRUE(beforeSub.latestSample().has_value());
 }
