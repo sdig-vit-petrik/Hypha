@@ -36,7 +36,7 @@ pub enum HyphaStatus {
     InvalidSchema = 12,
     /// An operation was rejected because a fixed resource limit was reached.
     ResourceLimit = 13,
-    /// The frame CRC-32C does not match the sample header and payload.
+    /// The frame CRC-32C does not match the sample header, payload and topic.
     CorruptPayload = 15,
     /// The frame sequence was not newer than the last one from its publisher.
     SequenceGap = 16,

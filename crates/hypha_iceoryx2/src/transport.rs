@@ -234,6 +234,7 @@ impl Iox2Transport {
             publisher,
             service,
             topic: spec.name.clone(),
+            topic_code: hypha_wire::frame::TopicCode::of(&spec.name),
             notifier,
             latched: spec.latch,
             max_payload,

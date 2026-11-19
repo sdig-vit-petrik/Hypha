@@ -44,9 +44,9 @@ fn header_from(bytes: &[u8]) -> FrameHeader {
 }
 
 fn check_frame(header: &FrameHeader, payload: &[u8]) {
-    let sealed = seal(header.metadata, header.flags, payload);
+    let sealed = seal(topic(), header.metadata, header.flags, payload);
     let expected_ok = header.magic == FRAME_MAGIC && header.crc == sealed.crc;
-    match verify(header, payload) {
+    match verify(topic(), header, payload) {
         Ok(frame) => {
             assert!(expected_ok, "verify accepted {header:?}");
             assert_eq!(frame.schema_hash(), header.metadata.schema_hash);
@@ -58,7 +58,7 @@ fn check_frame(header: &FrameHeader, payload: &[u8]) {
         }
         Err(_) => assert!(!expected_ok, "verify refused a sealed frame"),
     }
-    assert!(verify(&sealed, payload).is_ok(), "a sealed header does not verify");
+    assert!(verify(topic(), &sealed, payload).is_ok(), "a sealed header does not verify");
 }
 
 /// What a parsed record must satisfy against the payload length it came from.
@@ -110,3 +110,8 @@ fuzz_target!(|input: &[u8]| {
     let is_clock = input.len() == 8 && u32_at(input, 4) < 1_000_000_000;
     assert_eq!(clock.is_some(), is_clock, "decode_clock of {input:?}");
 });
+
+/// The topic every frame of this file is sealed for.
+fn topic() -> hypha_wire::frame::TopicCode {
+    hypha_wire::frame::TopicCode::of("/test")
+}

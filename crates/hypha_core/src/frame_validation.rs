@@ -3,7 +3,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use hypha_wire::frame::{FrameHeader, ParseError, ParsedFrame, verify};
+use hypha_wire::frame::{FrameHeader, ParseError, ParsedFrame, TopicCode, verify};
 use hypha_wire::integrity::SequenceValidator;
 
 /// Why a subscriber refused one frame.
@@ -78,19 +78,20 @@ impl FrameValidator {
         }
     }
 
-    /// Validate one sample, its header and payload, at `now_nanos`. `Ok` carries the
-    /// transport send time of the accepted frame.
+    /// Validate one sample that arrived on `topic`, its header and payload, at
+    /// `now_nanos`. `Ok` carries the transport send time of the accepted frame.
     ///
     /// # Errors
     /// Returns the first rule that refuses the frame.
     pub fn validate(
         &self,
+        topic: TopicCode,
         header: &FrameHeader,
         payload: &[u8],
         now_nanos: u64,
     ) -> Result<u64, FrameRejection> {
         let mut cached_now = now_nanos;
-        self.validate_with_clock(header, payload, &mut cached_now, || now_nanos)
+        self.validate_with_clock(topic, header, payload, &mut cached_now, || now_nanos)
             .map(|frame| frame.transport_sent_nanos())
     }
 
@@ -103,12 +104,13 @@ impl FrameValidator {
     /// state for a refused timestamp.
     pub fn validate_with_clock<'a>(
         &self,
+        topic: TopicCode,
         header: &FrameHeader,
         payload: &'a [u8],
         now_nanos: &mut u64,
         refresh: impl FnOnce() -> u64,
     ) -> Result<ParsedFrame<'a>, FrameRejection> {
-        let frame = match verify(header, payload) {
+        let frame = match verify(topic, header, payload) {
             Ok(frame) => frame,
             Err(ParseError::CrcMismatch) => {
                 self.counters.corrupt_payload.fetch_add(1, Ordering::Relaxed);

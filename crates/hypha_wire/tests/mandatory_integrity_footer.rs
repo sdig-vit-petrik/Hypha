@@ -5,6 +5,7 @@ use hypha_wire::frame::{FrameHeader, FrameMetadata, ParseError, seal, verify};
 
 fn sealed(payload: &[u8]) -> FrameHeader {
     seal(
+        topic(),
         FrameMetadata {
             schema_hash: 1,
             publisher_id: 2,
@@ -24,14 +25,23 @@ fn every_payload_byte_is_covered() {
     for index in 0..payload.len() {
         let mut changed = payload.to_vec();
         changed[index] ^= 0x80;
-        assert_eq!(verify(&header, &changed), Err(ParseError::CrcMismatch), "byte {index}");
+        assert_eq!(
+            verify(topic(), &header, &changed),
+            Err(ParseError::CrcMismatch),
+            "byte {index}"
+        );
     }
-    assert!(verify(&header, payload).is_ok());
+    assert!(verify(topic(), &header, payload).is_ok());
 }
 
 #[test]
 fn an_unsealed_zero_crc_is_refused() {
     let mut header = sealed(b"x");
     header.crc = 0;
-    assert_eq!(verify(&header, b"x"), Err(ParseError::CrcMismatch));
+    assert_eq!(verify(topic(), &header, b"x"), Err(ParseError::CrcMismatch));
+}
+
+/// The topic every frame of this file is sealed for.
+fn topic() -> hypha_wire::frame::TopicCode {
+    hypha_wire::frame::TopicCode::of("/test")
 }

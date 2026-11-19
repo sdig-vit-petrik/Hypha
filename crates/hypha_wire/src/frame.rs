@@ -1,13 +1,28 @@
 //! Sample integrity: the frame header and its CRC-32C.
 //!
-//! [`seal`] computes the header of a payload, and [`verify`] checks a received header
-//! against its payload.
+//! [`seal`] computes the header of a payload for one topic, and [`verify`] checks a
+//! received header against its payload and the topic it arrived on.
 use core::fmt;
 
 use crc32c::{crc32c, crc32c_append};
 
 /// Version-specific frame magic. It changes when the frame format changes.
-pub const FRAME_MAGIC: u32 = 0x3658_4F49;
+pub const FRAME_MAGIC: u32 = 0x3758_4F49;
+
+/// The topic a frame is sealed for, as the start value of its CRC. The topic name is
+/// not sent: a frame that arrives on another topic fails its CRC.
+///
+/// Two topic names give the same code with a probability of 2^-32.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopicCode(u32);
+
+impl TopicCode {
+    /// The code of the topic `name`: the CRC-32C of its bytes.
+    #[must_use]
+    pub fn of(name: &str) -> Self {
+        Self(crc32c(name.as_bytes()))
+    }
+}
 
 /// Flag set on every sample of a latched publisher. A subscriber that joins
 /// after a sample was sent receives that sample only when this flag is set.
@@ -119,32 +134,38 @@ impl<'a> ParsedFrame<'a> {
     }
 }
 
-/// Build the header of `payload` with `metadata` and `flags`.
+/// Build the header of `payload` with `metadata` and `flags`, for a send on `topic`.
 #[must_use]
-pub fn seal(metadata: FrameMetadata, flags: u32, payload: &[u8]) -> FrameHeader {
+pub fn seal(topic: TopicCode, metadata: FrameMetadata, flags: u32, payload: &[u8]) -> FrameHeader {
     let unsealed = FrameHeader { magic: FRAME_MAGIC, flags, metadata, crc: 0 };
-    FrameHeader { crc: integrity_code(&unsealed, payload), ..unsealed }
+    FrameHeader { crc: integrity_code(topic, &unsealed, payload), ..unsealed }
 }
 
-/// Check that `header` is a supported frame and that it matches `payload`.
+/// Check that `header` is a supported frame, sealed for `topic`, that matches `payload`.
 ///
 /// # Errors
 /// [`ParseError::UnsupportedMagic`] for another magic, and
-/// [`ParseError::CrcMismatch`] when any covered field or payload byte differs.
-pub fn verify<'a>(header: &FrameHeader, payload: &'a [u8]) -> Result<ParsedFrame<'a>, ParseError> {
+/// [`ParseError::CrcMismatch`] when any covered field or payload byte differs, or the
+/// frame was sealed for another topic.
+pub fn verify<'a>(
+    topic: TopicCode,
+    header: &FrameHeader,
+    payload: &'a [u8],
+) -> Result<ParsedFrame<'a>, ParseError> {
     if header.magic != FRAME_MAGIC {
         return Err(ParseError::UnsupportedMagic);
     }
-    if integrity_code(header, payload) != header.crc {
+    if integrity_code(topic, header, payload) != header.crc {
         return Err(ParseError::CrcMismatch);
     }
     Ok(ParsedFrame::accepted(header, payload))
 }
 
-/// CRC-32C over the little-endian magic, flags and metadata fields, then the payload.
-fn integrity_code(header: &FrameHeader, payload: &[u8]) -> u32 {
+/// CRC-32C that starts from the topic code and runs over the little-endian magic,
+/// flags and metadata fields, then the payload.
+fn integrity_code(topic: TopicCode, header: &FrameHeader, payload: &[u8]) -> u32 {
     let m = header.metadata;
-    let mut crc = crc32c(&header.magic.to_le_bytes());
+    let mut crc = crc32c_append(topic.0, &header.magic.to_le_bytes());
     crc = crc32c_append(crc, &header.flags.to_le_bytes());
     for field in
         [m.schema_hash, m.publisher_id, m.sequence, m.transport_sent_nanos, m.framework_sent_nanos]

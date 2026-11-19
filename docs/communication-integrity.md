@@ -33,7 +33,7 @@ its check.
 | `sequence` | library, at each send | Order of the sender's frames. Wraps to zero. |
 | `transport_sent_nanos` | library, host monotonic clock | When the frame was sent. |
 | `framework_sent_nanos` | library | The step's time: simulated time, wall time, or a replayer's stamp. |
-| `crc` | library | CRC-32C over every field above and the payload. |
+| `crc` | library | CRC-32C over every field above and the payload, started from the code of the topic. The topic name is not sent. |
 
 The payload is the ROS 1 serialized message. The library never decodes it.
 
@@ -56,7 +56,8 @@ application and a counter of the subscriber grows. The counters are the
 | Sender stopped | no frame within `silence_ms` | The cycle input turns stale | `stale()`, `~/state` |
 | Send time in the future | `transport_sent_nanos` later than now | Refused | `invalid_timestamp` |
 | Relayed source stopped while its relay sends | a life sign in the payload, `setAlive()` with `stagnation_ms` | The cycle input turns stagnant | `stagnant()`, `~/state` |
-| Insertion, masquerade | none beyond `schema_hash` | Accepted | — |
+| Wrong address: a frame reaches a subscriber of another topic | the CRC starts from the code of the topic | Refused | `corrupt_payload` |
+| Insertion, masquerade by a process of the domain that publishes on the topic | none | Accepted | — |
 
 Notes:
 
@@ -71,9 +72,9 @@ Notes:
   newer.
 - Under simulated time (development only) a sample that a queue drops fails the run:
   a replay that lost data is not faithful.
-- Insertion and masquerade are outside the design: a trusted process that publishes
+- A frame is bound to its topic, not to its sender: a trusted process that publishes
   the right message type on a topic is accepted. The deployment's access control is
-  the measure.
+  the measure against that.
 
 ## 4. What the application must do
 
@@ -97,8 +98,9 @@ The library detects; the application decides what a detected fault means.
 
 ## 5. Limits
 
-- No source authentication, and no seed that binds a frame to its topic or
-  topology (section 3, insertion and masquerade).
+- No source authentication: the CRC binds a frame to its topic, not to a sender or a
+  topology (section 3). Two topic names share a topic code with a probability of
+  2^-32; the schema hash must then match as well for a misdirected frame to pass.
 - No inhibit after repeated corruption. Every refused frame is independent.
 - No acceptance window: a forward jump of any size below half the sequence range is
   a counted loss, not an error.

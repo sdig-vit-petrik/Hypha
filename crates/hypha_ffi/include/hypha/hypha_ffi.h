@@ -152,7 +152,7 @@ enum HyphaStatus
   HYPHA_STATUS_INVALID_SCHEMA = 12,
   // An operation was rejected because a fixed resource limit was reached.
   HYPHA_STATUS_RESOURCE_LIMIT = 13,
-  // The frame CRC-32C does not match the sample header and payload.
+  // The frame CRC-32C does not match the sample header, payload and topic.
   HYPHA_STATUS_CORRUPT_PAYLOAD = 15,
   // The frame sequence was not newer than the last one from its publisher.
   HYPHA_STATUS_SEQUENCE_GAP = 16,
