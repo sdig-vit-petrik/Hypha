@@ -52,7 +52,7 @@ fuzz_target!(|input: &[u8]| {
             transport_sent_nanos: sent,
             framework_sent_nanos: sent,
         };
-        let mut header = seal(metadata, 0, payload);
+        let mut header = seal(topic(), metadata, 0, payload);
         if bad_magic {
             header.magic = header.magic.wrapping_add(1);
         }
@@ -78,7 +78,7 @@ fuzz_target!(|input: &[u8]| {
         } else {
             Ok(sent)
         };
-        let result = validator.validate(&header, &payload, NOW);
+        let result = validator.validate(topic(), &header, &payload, NOW);
         assert_eq!(result, expected, "{header:?}");
         if result.is_ok() {
             last_accepted[publisher] = Some(sequence);
@@ -94,3 +94,8 @@ fuzz_target!(|input: &[u8]| {
         + stats.invalid_timestamp;
     assert_eq!(counted, refused, "{stats:?}");
 });
+
+/// The topic every frame of this file is sealed for.
+fn topic() -> hypha_wire::frame::TopicCode {
+    hypha_wire::frame::TopicCode::of("/test")
+}

@@ -128,6 +128,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 ./scripts/coverage.sh         # Rust coverage with the per-crate 80% gate
 ./scripts/miri.sh             # Miri over the Rust tests without transport (nightly)
 ./scripts/fuzz.sh [seconds]   # every fuzz target of fuzz/ for that long (nightly, cargo-fuzz)
+./scripts/sanitize.sh [address|thread] # the C++ tests under a sanitizer
+./scripts/qualify.sh [seconds] # all of the above, then target/qualification/report.md:
+                              # the result of every requirement (docs/traceability.toml)
 ./install.sh [prefix]         # install the SDK and tools (default /usr/local)
 ```
 

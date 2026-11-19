@@ -10,7 +10,7 @@ use iceoryx2::prelude::CallbackProgression;
 use iceoryx2::service::port_factory::PortFactory;
 
 use hypha_core::port::{PortError, QosRequest, topic_matches_pattern};
-use hypha_wire::frame::{FLAG_LATCHED, FrameHeader, FrameMetadata, seal};
+use hypha_wire::frame::{FLAG_LATCHED, FrameHeader, FrameMetadata, TopicCode, seal};
 use iceoryx2::port::ReceiveError;
 use iceoryx2::port::listener::Listener;
 use iceoryx2::port::notifier::Notifier;
@@ -69,6 +69,8 @@ pub(crate) fn send_port_error(cause: SendError) -> PortError {
 /// message payload alone; its frame header is written when the loan is sent.
 pub struct Iox2Loan {
     sample: SampleMut<Ipc, [u8], Iox2FrameHeader>,
+    /// The code of the publisher's topic, which the frame is sealed for.
+    topic_code: TopicCode,
     notifier: Arc<Notifier<Ipc>>,
     /// True when the publisher latches its samples.
     latched: bool,
@@ -106,7 +108,7 @@ impl Iox2Loan {
     /// The error of the failed send, see [`send_port_error`].
     pub fn send_frame(mut self, metadata: FrameMetadata, flags: u32) -> Result<(), PortError> {
         let flags = if self.latched { flags | FLAG_LATCHED } else { flags };
-        let header = seal(metadata, flags, self.sample.payload());
+        let header = seal(self.topic_code, metadata, flags, self.sample.payload());
         *self.sample.user_header_mut() = Iox2FrameHeader::from(header);
         self.sample.send().map_err(send_port_error)?;
         if self.notifier.notify().is_err() {
@@ -129,8 +131,14 @@ impl Iox2Sample {
         &self.topic
     }
 
+    /// The code of the topic this sample arrived on, which its frame must be sealed for.
+    #[must_use]
+    pub fn topic_code(&self) -> TopicCode {
+        TopicCode::of(&self.topic)
+    }
+
     /// The frame header the publisher sealed. Verify it with
-    /// [`hypha_wire::frame::verify`] against [`Self::payload`].
+    /// [`hypha_wire::frame::verify`] against [`Self::topic_code`] and [`Self::payload`].
     #[must_use]
     pub fn header(&self) -> FrameHeader {
         FrameHeader::from(*self.sample.user_header())
@@ -150,6 +158,8 @@ pub struct Iox2Publisher {
     /// The topic's service. Its dynamic config lists the subscriber ports.
     pub(crate) service: Arc<DataPortFactory>,
     pub(crate) topic: String,
+    /// The code of `topic`, which every frame of this publisher is sealed for.
+    pub(crate) topic_code: TopicCode,
     pub(crate) notifier: Arc<Notifier<Ipc>>,
     /// True when this publisher latches its samples.
     pub(crate) latched: bool,
@@ -200,6 +210,7 @@ impl Iox2Publisher {
         loaned
             .map(|sample| Iox2Loan {
                 sample,
+                topic_code: self.topic_code,
                 notifier: self.notifier.clone(),
                 latched: self.latched,
             })
@@ -278,12 +289,18 @@ enum SubscriberKind {
 /// The next sample of `subscriber` that is not history of an unlatched publisher.
 fn receive_current(
     subscriber: &Subscriber<Ipc, [u8], Iox2FrameHeader>,
+    topic: &str,
     created_nanos: u64,
 ) -> Result<Option<Sample<Ipc, [u8], Iox2FrameHeader>>, ReceiveError> {
     loop {
         match subscriber.receive()? {
             Some(sample)
-                if is_unlatched_history(sample.user_header(), sample.payload(), created_nanos) => {}
+                if is_unlatched_history(
+                    topic,
+                    sample.user_header(),
+                    sample.payload(),
+                    created_nanos,
+                ) => {}
             other => return Ok(other),
         }
     }
@@ -306,8 +323,9 @@ impl Iox2Subscriber {
         use std::sync::atomic::Ordering::Relaxed;
         match &self.inner {
             SubscriberKind::Single(single) => {
-                let received = receive_current(&single.subscriber, single.created_nanos)
-                    .map_err(receive_port_error)?;
+                let received =
+                    receive_current(&single.subscriber, &single.topic, single.created_nanos)
+                        .map_err(receive_port_error)?;
                 Ok(received.map(|sample| Iox2Sample { sample, topic: Arc::clone(&single.topic) }))
             }
             SubscriberKind::Wildcard { subscribers, current_idx, created_nanos, .. } => {
@@ -328,7 +346,7 @@ impl Iox2Subscriber {
                         let Some((sub, topic, _)) = subscribers.get(index) else {
                             break;
                         };
-                        match receive_current(sub, *created_nanos) {
+                        match receive_current(sub, topic, *created_nanos) {
                             Ok(Some(sample)) => found = Some((sample, Arc::clone(topic))),
                             Ok(None) => {}
                             Err(cause) => {

@@ -74,7 +74,7 @@ proptest! {
                 transport_sent_nanos: arrival.sent,
                 framework_sent_nanos: arrival.sent,
             };
-            let mut header = seal(metadata, 0, &arrival.payload);
+            let mut header = seal(topic(), metadata, 0, &arrival.payload);
             if arrival.bad_magic {
                 header.magic = header.magic.wrapping_add(1);
             }
@@ -105,7 +105,7 @@ proptest! {
             } else {
                 Ok(arrival.sent)
             };
-            let result = validator.validate(&header, &payload, NOW);
+            let result = validator.validate(topic(), &header, &payload, NOW);
             prop_assert_eq!(result, expected, "{:?}", arrival);
             if result.is_ok() {
                 *slot = Some(arrival.sequence);
@@ -119,4 +119,9 @@ proptest! {
             .fold(0_u64, u64::saturating_add);
         prop_assert_eq!(counted, refused);
     }
+}
+
+/// The topic every frame of this file is sealed for.
+fn topic() -> hypha_wire::frame::TopicCode {
+    hypha_wire::frame::TopicCode::of("/test")
 }

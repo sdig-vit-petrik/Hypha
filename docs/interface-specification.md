@@ -42,7 +42,7 @@ Every call that can fail returns `HyphaStatus`:
 | 12 | `InvalidSchema` | A schema record failed validation, or a lookup found a record that does not match the requested identity. |
 | 13 | `ResourceLimit` | A fixed internal capacity (schema publishers, resolver subscribers, the command queue) is exhausted. |
 | 14 | — | Retired. No function returns it. |
-| 15 | `CorruptPayload` | The frame CRC-32C does not match the sample's header fields and payload. |
+| 15 | `CorruptPayload` | The frame CRC-32C does not match the sample's header fields, payload and topic. |
 | 16 | `SequenceGap` | The frame sequence was not newer than the last one from its publisher. |
 | 17 | `QosMismatch` | iceoryx2 refused to open the service for this endpoint: its payload or header type or its overflow behaviour does not fit the existing service, its declared `HyphaQos` policy (name, `max_publishers`, `max_subscribers` or `max_depth`) differs from the service's stamp, or its `hypha.qos` attribute is missing or names no policy of this build (another hypha build or a stale segment made it). An endpoint that declares no policy adopts the service's policy and is never refused for it. |
 | 18 | `Timeout` | A wait did not finish within its caller-supplied timeout. |
@@ -327,11 +327,17 @@ alone, as ROS 1 serialized bytes, so a payload has no header in front of it.
 | `sequence` | 64 bits | Per-publisher send sequence. It wraps to zero after the maximum value |
 | `transport_sent_nanos` | 64 bits | Host monotonic send time |
 | `framework_sent_nanos` | 64 bits | Framework send time: simulated on a sim-time node, wall otherwise, or the value set on the loan |
-| `crc` | 32 bits | CRC-32C (Castagnoli) over `magic`, `flags`, the five 64-bit fields above in order, then the payload |
+| `crc` | 32 bits | CRC-32C (Castagnoli) that starts from the topic code and runs over `magic`, `flags`, the five 64-bit fields above in order, then the payload |
 | payload | variable | ROS 1 serialized message bytes, the sample's user payload |
 
-The magic is `0x3658_4F49` (`IOX6`). It changes when an incompatible format
+The magic is `0x3758_4F49` (`IOX7`). It changes when an incompatible format
 ships, and a receiver refuses any other value.
+
+The topic code is the CRC-32C of the bytes of the topic name. It is the start value
+of the frame CRC and is not sent: the publisher takes it from the topic it sends on,
+the receiver from the topic the sample arrived on. A frame that reaches a subscriber
+of another topic therefore fails its CRC. Two topic names give the same code with a
+probability of 2^-32.
 
 The transport sets `FLAG_LATCHED` on every sample of a latched publisher, before
 the CRC is computed, so the flag cannot be sent without its integrity code. A
@@ -350,7 +356,7 @@ frame for these conditions:
 | Condition | Status |
 |---|---|
 | Unsupported magic | `InvalidFrame` |
-| CRC-32C mismatch, in any header field or payload byte | `CorruptPayload` |
+| CRC-32C mismatch: a header field or a payload byte changed, or the frame was sealed for another topic | `CorruptPayload` |
 | Send time later than the host clock | `InvalidFrame` |
 | Sequence that is not newer than the last one from its publisher | `SequenceGap` |
 
@@ -372,9 +378,9 @@ what the code does. It is not a residual-risk argument.
 | Corruption | CRC-32C over the header fields, the latch flag and the payload. | Residual error probability is not assessed. |
 | Loss | Sequence counter. | The receiver checks order modulo 2^64, not continuity. A forward gap is accepted. Its count is read through `hypha_subscriber_missing_sequences`, which misses a loss before the publisher's first accepted frame. |
 | Duplication | Per-publisher sequence. | A repeated or older sequence from a known publisher is refused. A subscription tracks the 4096 publishers that sent most recently, so its memory stays bounded while publishers restart for years. A publisher that stayed silent while 4096 others sent is forgotten, and its next frame is accepted as its first. |
-| Insertion | Publisher id and sequence are inside the CRC. | No publisher allow-list and no authentication. |
+| Insertion, wrong address | Publisher id and sequence are inside the CRC, and the CRC starts from the topic code: a frame of another topic is refused. | No publisher allow-list and no authentication. Two topics share a code with a probability of 2^-32. |
 | Delay | Host monotonic send time and each input binding's maximum age at capture. | Transport age only. Both ends must share one host. |
-| Masquerading | Not addressed. | A CRC is not authentication. |
+| Masquerading | A frame must be sealed for the topic it arrives on. | A CRC is not authentication: a process of the domain that publishes on the topic is accepted. |
 
 ## Logging engine
 

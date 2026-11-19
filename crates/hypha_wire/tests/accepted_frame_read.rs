@@ -15,16 +15,24 @@ fn metadata() -> FrameMetadata {
 
 #[test]
 fn an_accepted_frame_reads_as_verify_reads_it() {
-    let header = seal(metadata(), 0, b"abc");
-    assert_eq!(ParsedFrame::accepted(&header, b"abc"), verify(&header, b"abc").expect("verifies"));
+    let header = seal(topic(), metadata(), 0, b"abc");
+    assert_eq!(
+        ParsedFrame::accepted(&header, b"abc"),
+        verify(topic(), &header, b"abc").expect("verifies")
+    );
 }
 
 #[test]
 fn accepted_does_not_compute_the_integrity_code() {
-    let mut header = seal(metadata(), 0, b"abc");
+    let mut header = seal(topic(), metadata(), 0, b"abc");
     header.crc ^= 1;
-    assert_eq!(verify(&header, b"abc"), Err(ParseError::CrcMismatch));
+    assert_eq!(verify(topic(), &header, b"abc"), Err(ParseError::CrcMismatch));
     let read = ParsedFrame::accepted(&header, b"abc");
     assert_eq!(read.sequence(), 7);
     assert_eq!(read.payload(), b"abc");
+}
+
+/// The topic every frame of this file is sealed for.
+fn topic() -> hypha_wire::frame::TopicCode {
+    hypha_wire::frame::TopicCode::of("/test")
 }

@@ -73,7 +73,9 @@ fn a_latched_sample_carries_the_flag_in_its_verified_header() {
 #[allow(clippy::expect_used)]
 fn verified_latch(sample: &hypha_iceoryx2::Iox2Sample) -> bool {
     let header = sample.header();
-    hypha_wire::frame::verify(&header, sample.payload()).expect("the header verifies").latched()
+    hypha_wire::frame::verify(sample.topic_code(), &header, sample.payload())
+        .expect("the header verifies")
+        .latched()
 }
 
 #[test]

@@ -12,6 +12,9 @@ target/
 target-asan/
 target-miri/
 target-tsan/
+build-asan/
+build-tsan/
+coverage/
 target/doc/
 *.html
 *.o

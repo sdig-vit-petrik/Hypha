@@ -169,6 +169,14 @@ if(HYPHA_BUILD_TESTS)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
   enable_testing()
 
+  # A gtest program writes its results to gtest-xml/<ctest name>.xml in the build
+  # tree; scripts/traceability.py reads them for the qualification report. Call it
+  # after set_tests_properties, which replaces the environment of a test.
+  function(hypha_gtest_report test_name)
+    set_property(TEST ${test_name} APPEND PROPERTY
+      ENVIRONMENT "GTEST_OUTPUT=xml:${CMAKE_BINARY_DIR}/gtest-xml/${test_name}.xml")
+  endfunction()
+
   add_executable(test_hypha_c test/test_c_abi.c)
   target_link_libraries(test_hypha_c PRIVATE hypha::ffi)
   add_test(NAME test_hypha_c COMMAND test_hypha_c)
@@ -182,6 +190,7 @@ if(HYPHA_BUILD_TESTS)
   )
   target_link_libraries(test_hypha_base PRIVATE hypha GTest::gtest)
   add_test(NAME test_hypha_base COMMAND test_hypha_base)
+  hypha_gtest_report(test_hypha_base)
 
   # The C++ peer of the framework-stamp round trip. The Rust test in
   # crates/hypha/tests runs it against the Rust SDK, so it is a plain program.
@@ -218,6 +227,7 @@ if(HYPHA_BUILD_TESTS)
   target_link_libraries(test_hypha_abi_mismatch PRIVATE hypha GTest::gtest)
   target_compile_definitions(test_hypha_abi_mismatch PRIVATE HYPHA_NO_LOGGING)
   add_test(NAME test_hypha_abi_mismatch COMMAND test_hypha_abi_mismatch)
+  hypha_gtest_report(test_hypha_abi_mismatch)
 
   set(HYPHA_CYCLE_CONTRACT_FLAGS)
   if(CMAKE_OSX_SYSROOT)
@@ -252,6 +262,7 @@ if(HYPHA_BUILD_TESTS)
   )
   target_link_libraries(test_hypha_log PRIVATE hypha GTest::gtest)
   add_test(NAME test_hypha_log COMMAND test_hypha_log)
+  hypha_gtest_report(test_hypha_log)
 
   add_executable(test_log_module_overflow_uses_default
     test/test_main.cpp
@@ -259,6 +270,7 @@ if(HYPHA_BUILD_TESTS)
   )
   target_link_libraries(test_log_module_overflow_uses_default PRIVATE hypha GTest::gtest)
   add_test(NAME test_log_module_overflow_uses_default COMMAND test_log_module_overflow_uses_default)
+  hypha_gtest_report(test_log_module_overflow_uses_default)
 
   # An invalid module name must stop the build of its translation unit.
   add_library(log_module_name_invalid OBJECT EXCLUDE_FROM_ALL test/log_module_name_invalid.cpp)
@@ -362,10 +374,16 @@ if(HYPHA_BUILD_TESTS)
   math(EXPR HYPHA_LAST_TEST_SHARD "${HYPHA_TEST_SHARDS} - 1")
   # A test that raises SIGINT or SIGTERM stops its whole process for good, so it is
   # left out of the shards and runs alone: the `*StopSignalProcess` suites.
+  # A test that counts periods in a window of wall time measures the host as well: it
+  # is left out too and runs with no other test beside it (RUN_SERIAL below).
+  set(HYPHA_WALL_TIME_TESTS ClockDriverFixture.PacesToTheRealTimeFactor)
+  string(REPLACE ";" ":" HYPHA_WALL_TIME_FILTER "${HYPHA_WALL_TIME_TESTS}")
+  set(HYPHA_SHARD_FILTER "-*StopSignalProcess.*:${HYPHA_WALL_TIME_FILTER}")
   foreach(shard RANGE ${HYPHA_LAST_TEST_SHARD})
-    add_test(NAME test_hypha_${shard} COMMAND test_hypha --gtest_filter=-*StopSignalProcess.*)
+    add_test(NAME test_hypha_${shard} COMMAND test_hypha --gtest_filter=${HYPHA_SHARD_FILTER})
     set_tests_properties(test_hypha_${shard} PROPERTIES LABELS "needs-iceoryx2"
       ENVIRONMENT "GTEST_TOTAL_SHARDS=${HYPHA_TEST_SHARDS};GTEST_SHARD_INDEX=${shard}")
+    hypha_gtest_report(test_hypha_${shard})
   endforeach()
   # The MCAP replay of the testing component, in its own program: test_hypha links
   # nothing of hypha::testing_mcap, as an application that does not replay links nothing.
@@ -381,6 +399,7 @@ if(HYPHA_BUILD_TESTS)
     )
     add_test(NAME test_hypha_mcap_replay COMMAND test_hypha_mcap_replay)
     set_tests_properties(test_hypha_mcap_replay PROPERTIES LABELS "needs-iceoryx2")
+    hypha_gtest_report(test_hypha_mcap_replay)
   endif()
   foreach(alone
       NodeStopSignalProcess.StopSignalEndsTheRun
@@ -388,5 +407,11 @@ if(HYPHA_BUILD_TESTS)
       CycleShutdownStopSignalProcess.NodeDestructionReleasesCyclesBeforeTheSession)
     add_test(NAME test_hypha_${alone} COMMAND test_hypha --gtest_filter=${alone})
     set_tests_properties(test_hypha_${alone} PROPERTIES LABELS "needs-iceoryx2")
+    hypha_gtest_report(test_hypha_${alone})
+  endforeach()
+  foreach(wall_time ${HYPHA_WALL_TIME_TESTS})
+    add_test(NAME test_hypha_${wall_time} COMMAND test_hypha --gtest_filter=${wall_time})
+    set_tests_properties(test_hypha_${wall_time} PROPERTIES LABELS "needs-iceoryx2" RUN_SERIAL TRUE)
+    hypha_gtest_report(test_hypha_${wall_time})
   endforeach()
 endif()

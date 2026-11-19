@@ -17,7 +17,13 @@ Reference standards (background only; no compliance claim):
 | Document | Content |
 |---|---|
 | [requirements-specification.md](requirements-specification.md) | **Software Requirements Specification (SRS)**: functional and non-functional requirements. |
-| [traceability.md](traceability.md) | Each requirement and the test or analysis that verifies it; the gaps. |
+| [traceability.md](traceability.md) | Each requirement and the test or analysis that verifies it; the gaps. Generated from `traceability.toml`; `scripts/qualify.sh` writes the result of every requirement for a tree. |
+| [failure-analysis.md](failure-analysis.md) | Failure modes of hypha as a software element, what hypha does about each, and the assumptions of use for an integrator. First issue. |
+| [safety-manual.md](safety-manual.md) | What an integrator must know and do to use hypha in a system with a safety function: the item, the faults it detects, the conditions of use. Draft. |
+| [safety-plan.md](safety-plan.md) | Roles, lifecycle, verification, modification, defect handling and tool classes. |
+| [release-policy.md](release-policy.md) | What a release line freezes, the supported platforms, what a release must pass, upgrade and rollback. |
+| [dependency-assessment.md](dependency-assessment.md) | The third-party software in the library: what hypha requires of each part and what shows it. |
+| [sil2-readiness.md](sil2-readiness.md) | Self-assessment against IEC 61508-3 for systematic capability SC 2: what exists, the gaps, the work in order. Claims no compliance. |
 | [architecture.md](architecture.md) | **Software Architecture Specification (SAS)**: layering, the C ABI boundary, freedom from interference. |
 | [interface-specification.md](interface-specification.md) | **Software Interface Specification (SIS)**: the C ABI, return codes, memory ownership, threading rules, resource QoS and the wire frame. |
 | [communication-integrity.md](communication-integrity.md) | Which frame check covers which fault, what the application must still do, and the limits. Not a safety manual: no compliance claim. |
