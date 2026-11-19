@@ -1,0 +1,55 @@
+# transform_manager for uav1: the frames of the inverted MRS tree this flight uses.
+#
+# Keys are exactly those the ported code loads, converted once from mrs_uav_managers
+# config/public/transform_manager/transform_manager.yaml (config/private only holds the
+# scope timer, which is not ported), and the static_transform_publisher fcu_to_rtk_antenna
+# of launch/transform_manager.launch ("0.0 0.0 0.20 0 0 0").
+uav_name = "${UAV_NAME}"
+
+[node]
+name = "${UAV_NAME}_transform_manager"
+
+[mrs_uav_managers.transform_manager.local_origin_tf]
+enabled = true
+parent = "fcu"
+child = "local_origin"
+
+[mrs_uav_managers.transform_manager.fixed_origin_tf]
+enabled = true
+parent = "fcu"
+child = "fixed_origin"
+
+[mrs_uav_managers.transform_manager.world_origin_tf]
+enabled = true
+parent = "fcu"
+child = "world_origin"
+
+[mrs_uav_managers.transform_manager.fcu_untilted_tf]
+enabled = true
+parent = "fcu"
+child = "fcu_untilted"
+
+[mrs_uav_managers.transform_manager.rtk_antenna]
+frame_id = "rtk_antenna"
+
+# hypha port: transform_manager.launch's static_transform_publisher, published here.
+[rtk_antenna_tf]
+z = 0.20
+
+[ports.inputs.orientation]
+topic = "/${UAV_NAME}/hw_api/orientation"
+
+[ports.inputs.odom_main]
+topic = "/${UAV_NAME}/estimation_manager/odom_main"
+silence_ms = 100
+
+[ports.outputs.tf]
+topic = "/tf"
+[ports.outputs.tf_static]
+topic = "/tf_static"
+[ports.outputs.rtk_antenna_tf]
+topic = "/tf_static"
+
+[log]
+level = "info"
+console = true

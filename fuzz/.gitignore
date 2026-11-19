@@ -1,0 +1,7 @@
+# What a fuzz run produces: crashes, the grown corpus, the build. The seed inputs
+# under corpus/<target>/seed-* are committed.
+target/
+artifacts/
+coverage/
+corpus/*/*
+!corpus/*/seed-*

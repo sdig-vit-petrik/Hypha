@@ -1,0 +1,15 @@
+[package]
+name = "hypha_time"
+description = "Time, Duration, loop pacing, the process clock registry, operating-system clocks and blocking."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+rustix = { version = "1.1", features = ["time"] }
+
+[lints]
+workspace = true

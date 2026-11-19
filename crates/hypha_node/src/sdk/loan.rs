@@ -1,0 +1,155 @@
+//! Owning raw receive support.
+
+use std::sync::Arc;
+
+use crate::sdk::ffi;
+use crate::sdk::options::SubscriberOptions;
+use crate::sdk::status::{named_error, numbered_error};
+
+/// A raw receive operation the runtime refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReceiveError {
+    status: i32,
+}
+
+impl ReceiveError {
+    /// The status code (the C ABI number) that refused the receive operation.
+    #[must_use]
+    pub const fn status(self) -> i32 {
+        self.status
+    }
+}
+
+impl std::fmt::Display for ReceiveError {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(out, "receive failed (status {})", self.status)
+    }
+}
+
+impl std::error::Error for ReceiveError {}
+
+/// Identity of a received frame. It borrows the topic from the sample.
+pub type SampleIdentity<'sample> = ffi::FrameIdentity<'sample>;
+
+/// An owned copy of a received raw payload and its identity.
+#[derive(Debug, Clone)]
+pub struct RawSample {
+    /// Bus topic name.
+    pub topic: String,
+    /// Host monotonic send time, in nanoseconds.
+    pub transport_sent_nanos: u64,
+    /// Framework send time, in nanoseconds (see [`SampleIdentity`]).
+    pub framework_sent_nanos: u64,
+    /// 64-bit schema hash derived from the MD5.
+    pub schema_hash: u64,
+    /// The message payload.
+    pub bytes: Vec<u8>,
+}
+
+/// One owning received sample, released when dropped. It may move to another thread.
+pub struct ReceivedSample {
+    sample: ffi::HyphaReceivedSample,
+}
+
+impl ReceivedSample {
+    /// The message payload, or `None` when the sample is unavailable.
+    #[must_use]
+    pub fn bytes(&self) -> Option<&[u8]> {
+        ffi::sample_payload(&self.sample).ok()
+    }
+
+    /// Identity from the frame and subscription, or `None` for a malformed frame.
+    #[must_use]
+    pub fn identity(&self) -> Option<SampleIdentity<'_>> {
+        ffi::sample_identity(&self.sample).ok()
+    }
+
+    /// Copies this sample into an owned raw value.
+    #[must_use]
+    pub fn to_raw_sample(&self) -> Option<RawSample> {
+        let identity = self.identity()?;
+        let bytes = self.bytes()?.to_vec();
+        Some(RawSample {
+            topic: identity.topic.to_owned(),
+            transport_sent_nanos: identity.transport_sent_nanos,
+            framework_sent_nanos: identity.framework_sent_nanos,
+            schema_hash: identity.schema_hash,
+            bytes,
+        })
+    }
+}
+
+/// Raw subscriber that owns each received transport sample until it is dropped.
+pub struct RawSubscriber {
+    pub(crate) subscriber: Arc<ffi::HyphaSubscriber>,
+}
+
+impl RawSubscriber {
+    /// Takes one sample, or `None` when the queue is empty.
+    ///
+    /// # Errors
+    /// Returns an error when the ABI refuses the operation, including a full
+    /// owning-sample budget or a mixed receive mode.
+    pub fn try_receive(&mut self) -> Result<Option<ReceivedSample>, ReceiveError> {
+        match ffi::subscriber_receive(&self.subscriber) {
+            Ok(Some(sample)) => Ok(Some(ReceivedSample { sample })),
+            Ok(None) => Ok(None),
+            Err(error) => Err(ReceiveError { status: ffi::status_code(error) }),
+        }
+    }
+
+    /// The topic this subscriber resolved at creation, such as `/<node>/x` for `~/x`.
+    ///
+    /// # Errors
+    /// Never fails: the topic is fixed at creation.
+    pub fn topic(&self) -> Result<String, String> {
+        Ok(ffi::subscriber_topic(&self.subscriber).to_owned())
+    }
+
+    /// Every metric of this subscriber, in the order the runtime emits them.
+    ///
+    /// # Errors
+    /// Never fails: a subscriber always has its metrics.
+    pub fn metrics(&self) -> Result<Vec<(String, u64)>, String> {
+        let subscriber = &self.subscriber;
+        Ok(crate::sdk::metrics::collect(|emit| ffi::subscriber_metrics(subscriber, emit)))
+    }
+
+    /// Counts the frames this subscriber lost before it read them: the sequence
+    /// values skipped between accepted frames of one publisher. The count only grows.
+    ///
+    /// # Errors
+    /// Never fails: the count is the subscriber's own.
+    pub fn missing_sequences(&self) -> Result<u64, String> {
+        Ok(self.subscriber.missing_sequences())
+    }
+
+    /// Counts the publishers currently connected to this subscriber's topic.
+    ///
+    /// # Errors
+    /// Returns an error when the transport cannot read the count.
+    pub fn publisher_count(&self) -> Result<usize, String> {
+        ffi::subscriber_publisher_count(&self.subscriber)
+            .map_err(|error| named_error("cannot read the publisher count", error))
+    }
+}
+
+/// Open a raw subscriber without registering it with an executor.
+pub(crate) fn subscribe_on(
+    node: &ffi::HyphaNode,
+    topic_pattern: &str,
+    data_type: &str,
+    expected_md5: &str,
+    options: SubscriberOptions,
+) -> Result<RawSubscriber, String> {
+    let expected_md5 = if expected_md5.is_empty() { None } else { Some(expected_md5) };
+    let identity = ffi::SubscriberIdentity { data_type, expected_md5, definition: "" };
+    let settings = ffi::SubscriberSettings {
+        depth: options.depth,
+        no_publisher_warning_after_nanos: ffi::HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS,
+        request: hypha_core::port::QosRequest::Undeclared,
+    };
+    ffi::subscribe_typed(node, topic_pattern, &identity, settings)
+        .map(|subscriber| RawSubscriber { subscriber })
+        .map_err(|error| numbered_error(format!("subscribe failed for '{topic_pattern}'"), error))
+}

@@ -1,0 +1,20 @@
+{
+  "hypha-fence": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "command": "python3 -I scripts/agent-hooks/hypha_hooks.py --agent antigravity --event pre-tool",
+        "timeout": 30
+      }
+    ]
+  },
+  "hypha-rust-check": {
+    "PostToolUse": [
+      {
+        "matcher": "write_.*|replace_.*|edit_.*",
+        "command": "python3 -I scripts/agent-hooks/hypha_hooks.py --agent antigravity --event post-edit",
+        "timeout": 60
+      }
+    ]
+  }
+}

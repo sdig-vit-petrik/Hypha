@@ -1,0 +1,80 @@
+# The fuzz targets of hypha, run by scripts/fuzz.sh with cargo-fuzz on the nightly
+# toolchain of docker/rust-nightly. A workspace of its own, with its own lock file.
+# One target per input surface; each asserts the invariants of the
+# matching property test on arbitrary bytes.
+[package]
+name = "hypha_fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+crc32c = "0.6.8"
+hypha_wire = { path = "../crates/hypha_wire" }
+hypha_msgdef = { path = "../crates/hypha_msgdef" }
+hypha_core = { path = "../crates/hypha_core" }
+hypha_msgs = { path = "../crates/hypha_msgs" }
+# The dynamic message walker is reachable only through the tools crate.
+hypha_tools = { path = "../apps/hypha_tools" }
+
+[workspace]
+members = ["."]
+
+# cargo fuzz builds in release with debug assertions and overflow checks on; line
+# tables give a crash a readable backtrace.
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "wire_reader"
+path = "fuzz_targets/wire_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_frame"
+path = "fuzz_targets/wire_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "msgdef_parse"
+path = "fuzz_targets/msgdef_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_load"
+path = "fuzz_targets/config_load.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "msgs_decode"
+path = "fuzz_targets/msgs_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame_validation"
+path = "fuzz_targets/frame_validation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "msg_reflect"
+path = "fuzz_targets/msg_reflect.rs"
+test = false
+doc = false
+bench = false

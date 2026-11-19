@@ -1,0 +1,32 @@
+gain = 0.5                   # 1/s: commanded acceleration per m/s of speed error
+fallback_setpoint = 10.0     # m/s: the setpoint while the setpoint input is not usable
+command_frame = "base_link"  # frame_id of the command
+
+[cycle]
+rate_hz = 100.0
+
+[node]
+name = "scan_cycle"
+
+[ports.inputs.speed]
+topic = "/odom_speed"
+# Older than this after it was sent, the speed is stale.
+silence_ms = 200
+
+# Optional setpoint. An empty topic switches it off, and the node uses fallback_setpoint.
+# To use it, write the topic: topic = "/speed_setpoint". Without silence_ms it has no
+# age limit.
+[ports.inputs.setpoint]
+topic = ""
+
+[ports.outputs.command]
+topic = "~/command"
+
+[log]
+level = "info"
+console = true
+
+[log.sink.main]
+path = "logs/scan_cycle.log"
+rotation_mb = 1
+rotation_count = 2

@@ -1,0 +1,38 @@
+# Generates crates/hypha_testing_mcap/include/hypha/testing/mcap_reader.h from this
+# crate's public `#[repr(C)]` items and `extern "C"` functions (src/ffi.rs).
+#
+# Run `scripts/gen-mcap-reader-header.sh` to regenerate. `check.sh` fails the build
+# if the committed header drifts from what this config produces.
+
+header = """
+/* The MCAP test reader of hypha's C++ testing component (crate hypha_testing_mcap,
+ * static library libhypha_testing_mcap.a). A private header: not part of the hypha
+ * C ABI, and not in libhypha_ffi.
+ *
+ * Rules for every function: a reader is used by one thread at a time (different
+ * readers may be used on different threads at once). No function keeps a pointer it
+ * was given after it returns. Text is UTF-8, a pointer and a length, not
+ * NUL-terminated. A Rust panic below this API aborts the process. */"""
+include_guard = "HYPHA_TESTING_MCAP_READER_H"
+sys_includes = ["stddef.h", "stdint.h"]
+no_includes = true
+language = "C"
+style = "both"
+cpp_compat = true
+usize_is_size_t = true
+documentation = true
+documentation_style = "c99"
+line_length = 100
+tab_width = 2
+
+[enum]
+rename_variants = "ScreamingSnakeCase"
+prefix_with_name = true
+
+[fn]
+args = "vertical"
+must_use = ""
+
+[export]
+# Rust-only constants; the C API states its bound in prose.
+exclude = ["MAX_FILE_BYTES"]

@@ -1,0 +1,36 @@
+# Root file of hypha_fusion. It reads sensor_count inputs, the ports sensor_0 to
+# sensor_<n-1>; each table gives the topic of one sensor of sensors.toml.
+fusion_hz = 50.0
+sensor_count = 3
+
+# Sensor 0 is stale once its newest sample is older than 1 s: left out of the estimate,
+# and its input faults. Every input that counts for health sets silence_ms (or its port
+# is tagged hypha::unsupervised in code).
+[ports.inputs.sensor_0]
+topic = "/fusion/sensor/0"
+silence_ms = 1000
+
+# Sensor 1 publishes at 30 Hz; 1 s is thirty periods.
+[ports.inputs.sensor_1]
+topic = "/fusion/sensor/1"
+silence_ms = 1000
+
+# Sensor 2 is left out of the estimate, and its fault is hidden. ignored needs a limit.
+[ports.inputs.sensor_2]
+topic = "/fusion/sensor/2"
+silence_ms = 1000
+ignored = true
+
+[ports.outputs.topic_estimate]
+topic = "/fusion/estimate"
+
+# The node's own input health, once a second: 0 all usable, 1 waiting, 2 degraded.
+[ports.outputs.topic_state]
+topic = "/sensor_fusion/input_health"
+
+[log]
+level = "info"
+
+# A relative path resolves against this file's directory: config/log/sensor_fusion.log.
+[log.sink.file]
+path = "log/sensor_fusion.log"

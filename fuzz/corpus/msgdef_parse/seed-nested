@@ -1,0 +1,12 @@
+Header header
+T1[] items
+uint8[4] fixed
+================================================================================
+MSG: p/T1
+string name
+int32 C=-3
+================================================================================
+MSG: std_msgs/Header
+uint32 seq
+time stamp
+string frame_id

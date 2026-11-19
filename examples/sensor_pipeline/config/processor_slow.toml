@@ -1,0 +1,5 @@
+# The processor in slow mode. Keys here replace those of processor.toml.
+include = ["processor.toml"]
+
+[slow]
+enabled = true

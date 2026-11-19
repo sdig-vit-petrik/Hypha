@@ -1,0 +1,33 @@
+{
+  "context": {
+    "fileName": ["AGENTS.md"]
+  },
+  "hooks": {
+    "BeforeTool": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "name": "hypha-fence",
+            "type": "command",
+            "command": "python3 -I \"$GEMINI_PROJECT_DIR/scripts/agent-hooks/hypha_hooks.py\" --agent gemini --event pre-tool",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "matcher": "write_file|replace",
+        "hooks": [
+          {
+            "name": "hypha-rust-check",
+            "type": "command",
+            "command": "python3 -I \"$GEMINI_PROJECT_DIR/scripts/agent-hooks/hypha_hooks.py\" --agent gemini --event post-edit",
+            "timeout": 60000
+          }
+        ]
+      }
+    ]
+  }
+}

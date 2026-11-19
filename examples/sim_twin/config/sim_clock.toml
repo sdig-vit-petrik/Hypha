@@ -1,0 +1,14 @@
+# Simulated clock schedule. One message per timer fire, paced at pace_ns of
+# wall time. Each message adds step_ns of simulated time. The jump applies after
+# the message numbered forward_after, in the same message.
+# The clock stops after `messages` messages.
+
+step_ns = 1000000
+messages = 12000
+pace_ns = 1000000
+
+forward_after = 3000
+forward_ns = 2000000000
+
+[node]
+name = "sim_clock"

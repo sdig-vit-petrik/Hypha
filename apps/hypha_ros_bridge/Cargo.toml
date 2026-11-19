@@ -1,0 +1,33 @@
+[package]
+name = "hypha_ros_bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "ROS 1 to hypha migration bridge."
+
+[dependencies]
+hypha_node = { path = "../../crates/hypha_node" }
+clap = { workspace = true }
+log = "0.4"
+roslibrust = { version = "=0.21.0", features = ["ros1"] }
+reqwest = { version = "0.12.23", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_xmlrpc = "=0.2.3"
+signal-hook = "0.3"
+thiserror = "1.0"
+tokio = { version = "1.0", features = ["io-util", "net", "rt-multi-thread", "sync", "time"] }
+toml = "=0.9.12"
+
+[dev-dependencies]
+hypha_testkit = { path = "../../crates/hypha_testkit" }
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "hypha_ros_bridge"
+path = "src/main.rs"

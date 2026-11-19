@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc dd07203c55291e467aea54d83e98a17d63af0dfde3236c6e026541aecb2d1397 # shrinks to bytes = [0, 0, 0, 0, 0, 0], calls = [Time]
+cc 11c6b36b717bff5560ce40331e3c4d2d6f8973e2221f88ca0e0e3e76bf0a5bf4 # shrinks to values = [Bool(false), Text([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), Bool(false), Time(0, 0), Time(0, 0), Text([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), F64(0), Bool(false), Text([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), U64(0)], cut_permille = 326
+cc 0a086025cb145a1424d3ea5a4e4077dadf6f8bf90fd5ad1a27fff20678bc33ec # shrinks to values = [Bool(false), Bool(false), Time(0, 0), Raw([]), F64(0), U64(0)], cut_permille = 231
+cc 8d5267322e0a282a5e29486ab3c0673a7a1ade8336480840752114a84c9406a7 # shrinks to bytes = [0, 0, 0, 0, 1, 0, 0, 0], calls = [ArrayLen, ArrayLenBounded(1)]

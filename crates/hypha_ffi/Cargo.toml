@@ -1,0 +1,61 @@
+[package]
+name = "hypha_ffi"
+description = "The C ABI. One shared library, callable from C, C++ and Rust."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lib]
+name = "hypha_ffi"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hypha_node = { path = "../hypha_node" }
+hypha_core = { path = "../hypha_core" }
+hypha_log = { path = "../hypha_log" }
+hypha_msgs = { path = "../hypha_msgs" }
+log = { workspace = true }
+
+[dev-dependencies]
+hypha_testkit = { path = "../hypha_testkit" }
+hypha_cycle = { path = "../hypha_cycle" }
+hypha_runtime = { path = "../hypha_runtime" }
+hypha_wire = { path = "../hypha_wire" }
+libc = "0.2"
+hypha_msggen = { path = "../hypha_msggen" }
+criterion = { workspace = true }
+
+[[bench]]
+name = "cycle"
+harness = false
+
+# The workspace forbids `unsafe`. This crate is the boundary where raw pointers
+# from C are turned back into Rust values, so it cannot. Every other lint the
+# workspace sets is repeated here, so relaxing one does not relax the rest.
+[lints.rust]
+dead_code = "deny"
+missing_docs = "deny"
+unreachable_pub = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+exit = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+todo = "deny"
+unimplemented = "deny"
+missing_safety_doc = "deny"
+rc_buffer = "deny"
+rc_mutex = "deny"
+non_send_fields_in_send_ty = "deny"
+needless_pass_by_value = "allow"
+module_name_repetitions = "allow"

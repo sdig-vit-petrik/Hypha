@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "matcher": "*",
+        "bash": "python3 -I scripts/agent-hooks/hypha_hooks.py --agent copilot --event pre-tool",
+        "cwd": ".",
+        "timeoutSec": 30,
+        "comment": "hypha agent fence. Written from docs.github.com/en/copilot/reference/hooks-reference, untested here."
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "matcher": "edit|create",
+        "bash": "python3 -I scripts/agent-hooks/hypha_hooks.py --agent copilot --event post-edit",
+        "cwd": ".",
+        "timeoutSec": 60,
+        "comment": "rustfmt and the hypha Rust checks on the lines just added."
+      }
+    ]
+  }
+}

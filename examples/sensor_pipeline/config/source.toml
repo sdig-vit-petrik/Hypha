@@ -1,0 +1,37 @@
+# hypha_sensor_source: a synthetic IMU, LiDAR and odometry source. One timer at tick_hz
+# publishes every output; the other rates are whole numbers of ticks.
+tick_hz = 400.0          # the IMU rate
+tf_every_ticks = 4       # odom -> base_link on /tf at 100 Hz
+cloud_every_ticks = 40   # one point cloud at 10 Hz; a multiple of tf_every_ticks
+cloud_rings = 16         # 16 x 1024 points of 16 bytes: 262144 bytes of data a cloud
+cloud_columns = 1024
+speed_mps = 1.0
+yaw_rate_radps = 0.2
+# stop_after_s = 4.4     # absent: run until SIGINT or SIGTERM
+
+[node]
+name = "sensor_source"
+
+[frames]
+odom = "odom"
+base = "base_link"
+
+# Static transforms from the base frame, sent once on the latched /tf_static.
+[static.lidar]
+child = "lidar"
+translation = [0.5, 0.0, 1.2]
+rotation = [0.0, 0.0, 0.0, 1.0]   # x, y, z, w
+
+[static.imu]
+child = "imu"
+translation = [0.1, 0.0, 0.3]
+rotation = [0.0, 0.0, 0.0, 1.0]
+
+[ports.outputs.imu]
+topic = "/imu"
+
+[ports.outputs.cloud]
+topic = "/lidar/points"
+
+[log]
+level = "info"

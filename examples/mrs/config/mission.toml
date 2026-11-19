@@ -1,0 +1,33 @@
+# mission: runs the scenario named by MRS_SCENARIO (run.sh sets it) and ends the run.
+scenario = "${MRS_SCENARIO}"
+uav_name = "${UAV_NAME}"
+
+[node]
+name = "${UAV_NAME}_mission"
+
+[ports.inputs.uav_state]
+topic = "/${UAV_NAME}/estimation_manager/uav_state"
+[ports.inputs.control_manager_diagnostics]
+topic = "/${UAV_NAME}/control_manager/diagnostics"
+
+# The request topics of the services the mission calls (mrs::Request).
+[ports.outputs.uav1.hw_api.arming.request]
+topic = "/${UAV_NAME}/hw_api/arming/request"
+[ports.outputs.uav1.hw_api.offboard.request]
+topic = "/${UAV_NAME}/hw_api/offboard/request"
+[ports.outputs.uav1.control_manager.toggle_output.request]
+topic = "/${UAV_NAME}/control_manager/toggle_output/request"
+[ports.outputs.uav1.control_manager.switch_controller.request]
+topic = "/${UAV_NAME}/control_manager/switch_controller/request"
+[ports.outputs.uav1.control_manager.switch_tracker.request]
+topic = "/${UAV_NAME}/control_manager/switch_tracker/request"
+[ports.outputs.uav1.control_manager.landoff_tracker.takeoff.request]
+topic = "/${UAV_NAME}/control_manager/landoff_tracker/takeoff/request"
+[ports.outputs.uav1.control_manager.goto.request]
+topic = "/${UAV_NAME}/control_manager/goto/request"
+[ports.outputs.uav1.uav_manager.takeoff.request]
+topic = "/${UAV_NAME}/uav_manager/takeoff/request"
+
+[log]
+level = "info"
+console = true

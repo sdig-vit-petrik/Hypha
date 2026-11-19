@@ -1,0 +1,128 @@
+//! The simulated-time half of a `WaitSet` run: the `/clock` and `/clock_progress` drains,
+//! and the progress that the cycle's turn offers.
+
+use hypha_runtime::replay_progress::{ProgressTurn, progress_turn};
+
+use super::dispatch::fail_with;
+use super::{BatchStep, BatchTurn, CallbackDispatcher, Progression, ReceiveFailure, Target};
+use crate::node_progress::{self, ClockRead};
+use crate::status::Error;
+use crate::subscriber::HyphaSubscriber;
+
+impl CallbackDispatcher<'_> {
+    /// Advance simulated time from `/clock`, then read the reports on `/clock_progress`,
+    /// before evaluating timers or callbacks.
+    ///
+    /// Each `/clock` sample is recorded on the node still under the input's lock, so the
+    /// recorded newest is never older than the clock.
+    pub(super) fn drain_sim_clock(&mut self) -> Result<(), Progression> {
+        let node = self.node;
+        self.drain_topic(&node.sim_clock_subscriber, |sample| {
+            let read = super::apply_sim_clock_sample(sample)?;
+            node_progress::record_clock_read(node, read);
+            Ok(())
+        })?;
+        self.drain_topic(&node.progress_subscriber, |sample| {
+            node_progress::accept_report(node, sample).map_err(Error::from_status)
+        })?;
+        node_progress::note_progress_gaps(node);
+        Ok(())
+    }
+
+    /// Apply the samples queued on one framework input, in one bounded batch. A sample
+    /// that cannot be applied fails the run.
+    pub(super) fn drain_topic<T>(
+        &mut self,
+        subscriber_mutex: &std::sync::Mutex<Option<Box<HyphaSubscriber>>>,
+        mut apply: impl FnMut(&hypha_iceoryx2::Iox2Sample) -> Result<T, Error>,
+    ) -> Result<Option<T>, Progression> {
+        let Ok(mut guard) = subscriber_mutex.try_lock() else {
+            return Ok(None);
+        };
+        let Some(subscriber) = guard.as_deref_mut() else {
+            return Ok(None);
+        };
+        let mut turn = BatchTurn::new(self.batch_size);
+        let mut last = None;
+        loop {
+            let step = match subscriber.receive_validated() {
+                Ok(Some(sample)) => match apply(&sample) {
+                    Ok(value) => {
+                        last = Some(value);
+                        BatchStep::Accepted
+                    }
+                    Err(status) => return Err(fail_with(&mut self.failure, 0, status)),
+                },
+                Err(ReceiveFailure::Refused(_)) => BatchStep::Refused,
+                Ok(None) | Err(ReceiveFailure::Transport(_)) => BatchStep::Exhausted,
+            };
+            if !turn.record(step) {
+                break;
+            }
+        }
+        Ok(last)
+    }
+
+    /// True when this `WaitSet` runs a replay cycle, whose steps the progress reports.
+    pub(super) fn has_replay_timer(&self) -> bool {
+        self.registrations.iter().any(|registration| {
+            matches!(
+                registration.target,
+                Target::Timer { ref timer, cycle: Some(_), .. } if timer.is_grid()
+            )
+        })
+    }
+
+    /// True when this `WaitSet` has a cycle whose steps the progress reports: a replay
+    /// cycle or a triggered cycle.
+    fn reports_progress(&self) -> bool {
+        self.has_replay_timer()
+            || self
+                .registrations
+                .iter()
+                .any(|registration| matches!(registration.target, Target::Triggered(_)))
+    }
+
+    /// The node's newest `/clock` sample. Another `WaitSet` of the node may have drained it.
+    pub(super) fn newest_read(&self) -> Option<ClockRead> {
+        node_progress::newest_read(self.node)
+    }
+
+    /// Offer the `snapshot` of the newest `/clock` sample, taken before the clock was read
+    /// as `now`, as this `WaitSet`'s progress.
+    pub(super) fn publish_progress(&mut self, snapshot: Option<ClockRead>, now: hypha_time::Time) {
+        match progress_turn(
+            snapshot,
+            now.nanos(),
+            || self.reports_progress(),
+            || self.progress_frontier(),
+        ) {
+            ProgressTurn::Hold => {}
+            ProgressTurn::Withdraw => node_progress::withdraw_progress(self.node, self.waitset),
+            ProgressTurn::Offer(read) => {
+                node_progress::report_progress(self.node, self.waitset, read);
+            }
+        }
+    }
+
+    /// The earliest deadline that the cycles of this `WaitSet` have not run. `None` when
+    /// no cycle holds one.
+    fn progress_frontier(&self) -> Option<i64> {
+        self.registrations
+            .iter()
+            .filter_map(|registration| match registration.target {
+                Target::Timer { ref timer, cycle: Some(ref cycle), .. }
+                    if timer.is_grid() && !timer.awaiting_anchor() =>
+                {
+                    let sliced = cycle.deferred.map(|window| window.first_nanos);
+                    let held = cycle.upstream.hold.backlog_first();
+                    Some(sliced.or(held).unwrap_or(timer.next_due().nanos()))
+                }
+                Target::Triggered(ref state) => {
+                    state.schedule.frontier(&state.pending, &state.limit)
+                }
+                _ => None,
+            })
+            .min()
+    }
+}

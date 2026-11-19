@@ -1,0 +1,10 @@
+# Paths outside this repository that coding agents may use.
+# One path prefix per line; `~` is expanded; `#` starts a comment.
+# Only the owner edits this file: the agent hooks refuse agent edits of it.
+#
+# Built in, not listed here: /tmp, /dev/shm, /dev/null and the std streams,
+# this repository's Claude Code memory directory (read and write); /usr, /bin,
+# /sbin, /lib, /lib64, /proc, /sys, /etc, ~/.cargo, ~/.rustup (read only).
+#
+# For a personal or one-task opening, use .agent-allowed-paths.local
+# (git-ignored) instead of this file.

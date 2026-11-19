@@ -1,0 +1,39 @@
+[package]
+name = "hypha_testkit"
+description = "Helpers shared by the tests of the workspace. A dev-dependency only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+
+# The workspace forbids `unsafe`. This crate denies it instead, and src/env.rs alone
+# allows it: `std::env::set_var` and `remove_var` are unsafe since edition 2024.
+# Every other lint the workspace sets is repeated here, so relaxing one does not
+# relax the rest.
+[lints.rust]
+dead_code = "deny"
+unsafe_code = "deny"
+missing_docs = "deny"
+unreachable_pub = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+exit = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+todo = "deny"
+unimplemented = "deny"
+missing_safety_doc = "deny"
+rc_buffer = "deny"
+rc_mutex = "deny"
+non_send_fields_in_send_ty = "deny"
+needless_pass_by_value = "allow"
+module_name_repetitions = "allow"

@@ -1,0 +1,3 @@
+crates/hypha_ffi/include/hypha/hypha_ffi.h
+# Vendored MRS sources keep their upstream formatting.
+examples/mrs/upstream/**

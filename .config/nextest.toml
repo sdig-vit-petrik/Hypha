@@ -1,0 +1,42 @@
+experimental = ["wrapper-scripts"]
+
+[store]
+dir = "target/nextest"
+
+[scripts.wrapper.private-domain]
+command = { command-line = "scripts/private-domain.sh", relative-to = "workspace-root" }
+
+[profile.default]
+fail-fast = false
+failure-output = "immediate-final"
+# No test may wait forever: a test still running after three minutes is ended and fails.
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+[profile.default.junit]
+path = "junit.xml"
+
+# Every test process gets a bus domain of its own (scripts/private-domain.sh), so no
+# test shares /clock, /clock_progress or a topic with another and all run in parallel.
+[[profile.default.scripts]]
+filter = 'all()'
+run-wrapper = 'private-domain'
+
+# Latency and rate measurements: other tests would load the host they measure.
+[[profile.default.overrides]]
+filter = 'binary(startup_latency)'
+threads-required = "num-cpus"
+retries = 3
+
+[[profile.default.overrides]]
+filter = '(binary(sim_time_environment) & test(/wakes_a_sim_time_cycle_promptly$/)) | test(=cycle::wakeup_tests::an_idle_50_hz_cycle_wakes_its_waitset_about_fifty_times_a_second)'
+threads-required = "num-cpus"
+
+# A replay's step rate: the test asserts steps per second.
+[[profile.default.overrides]]
+filter = 'binary(play_clock_wakeup)'
+threads-required = "num-cpus"
+
+# Wall-clock deadlines across processes: a loaded host (coverage, full suite) misses them.
+[[profile.default.overrides]]
+filter = 'binary(framework_stamp_cross_language)'
+threads-required = "num-cpus"

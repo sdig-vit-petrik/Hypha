@@ -1,0 +1,8 @@
+a = 1
+b.c = "x"
+l = [1, 2]
+t = [{ x = 1 }, { x = 2 }]
+[log]
+level = "info"
+[ports.inputs.speed]
+topic = "/speed"

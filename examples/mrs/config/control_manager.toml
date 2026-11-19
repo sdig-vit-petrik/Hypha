@@ -1,0 +1,304 @@
+# control_manager with NullTracker, LandoffTracker, LineTracker, Se3Controller (also as
+# EmergencyController) and FailsafeController, for uav1. Output mode: attitude_rate.
+#
+# Keys are exactly those the ported code loads, converted once from the upstream YAML
+# layers, the first file with a key winning.
+# EmergencyController is Se3Controller here (upstream:
+# MpcController, whose solver ships as a binary only).
+uav_name = "${UAV_NAME}"
+body_frame = "fcu"
+enable_profiler = false
+g = 9.81
+
+# Platform layer, from the native model (mrs_simulator.toml [model]): mass 2.0 kg,
+# throttle = a * sqrt(thrust per motor) + b with a = 1 / (sqrt(kf) * (rpm_max - rpm_min)),
+# b = -rpm_min / (rpm_max - rpm_min), kf = 2.534e-7, rpm 0..8000.
+uav_mass = 2.0
+body_disturbance_x = 0.0
+body_disturbance_y = 0.0
+
+[motor_params]
+a = 0.248316
+b = 0.0
+n_motors = 4
+
+# The safety area of mrs_uav_testing config/default_world_config.yaml.
+[safety_area]
+enabled = true
+
+[safety_area.horizontal]
+frame_name = "world_origin"
+points = [
+  -50.0, -50.0,
+  50.0, -50.0,
+  50.0, 50.0,
+  -50.0, 50.0,
+]
+
+[safety_area.vertical]
+frame_name = "world_origin"
+max_z = 15.0
+min_z = 0.5
+
+# hypha port: the output mode upstream derives from hw_api/capabilities at run time.
+[hw_api_inputs]
+attitude_rate = true
+
+[node]
+name = "${UAV_NAME}_control_manager"
+
+# ---- converted from the YAML layers ----
+
+[mrs_uav_controllers.failsafe_controller.acceleration_output]
+descend_acceleration = 0.2
+
+[mrs_uav_controllers.failsafe_controller.attitude_controller.gains]
+kp = 3.0
+
+[mrs_uav_controllers.failsafe_controller.rate_controller.gains]
+kp = 3.0
+
+[mrs_uav_controllers.failsafe_controller.throttle_output]
+initial_throttle_percentage = 0.98
+throttle_decrease_rate = 0.015
+
+[mrs_uav_controllers.failsafe_controller.velocity_output]
+descend_speed = 1.0
+
+[mrs_uav_controllers.se3_controller.position_controller.heading_gains]
+d = 0.1
+i = 0.01
+p = 1.0
+
+[mrs_uav_controllers.se3_controller.position_controller.translation_gains]
+d = 0.15
+i = 0.2
+p = 2.0
+
+[mrs_uav_controllers.se3_controller.se3]
+preferred_output = 2
+rotation_matrix = 1
+
+[mrs_uav_controllers.se3_controller.se3.angular_rate_feedforward]
+jerk = true
+parasitic_pitch_roll = true
+
+[mrs_uav_controllers.se3_controller.se3.attitude_rate_gains]
+kw_roll_pitch = 4.0
+kw_yaw = 4.0
+
+[mrs_uav_controllers.se3_controller.se3.constraints]
+throttle_saturation = 0.9
+
+[mrs_uav_controllers.se3_controller.se3.constraints.tilt_angle_failsafe]
+enabled = true
+limit = 90.0
+
+[mrs_uav_controllers.se3_controller.se3.default_gains.attitude]
+kq_roll_pitch = 3.0
+kq_yaw = 2.0
+
+[mrs_uav_controllers.se3_controller.se3.default_gains.horizontal]
+ka = 1.0
+kib = 0.1
+kib_lim = 10.0
+kiw = 0.1
+kiw_lim = 10.0
+kp = 3.0
+kv = 2.0
+
+[mrs_uav_controllers.se3_controller.se3.default_gains.mass_estimator]
+km = 1.0
+km_lim = 3.0
+
+[mrs_uav_controllers.se3_controller.se3.default_gains.vertical]
+ka = 1.0
+kp = 15.0
+kv = 8.0
+
+[mrs_uav_controllers.se3_controller.se3.gain_filtering]
+gain_mute_coefficient = 0.5
+min_change_rate = 0.2
+perc_change_rate = 1.0
+rate = 10.0
+
+[mrs_uav_controllers.se3_controller.se3.mass_estimator]
+fuse_acceleration = false
+
+[mrs_uav_controllers.se3_controller.se3.rampup]
+enabled = true
+speed = 0.75
+
+[mrs_uav_managers.control_manager]
+controllers = []
+landing_takeoff_tracker = "LandoffTracker"
+mrs_controllers = ["Se3Controller", "EmergencyController", "FailsafeController"]
+mrs_trackers = ["NullTracker", "LandoffTracker", "LineTracker"]
+null_tracker = "NullTracker"
+state_input = 0
+trackers = []
+
+[mrs_uav_managers.control_manager.EmergencyController]
+address = "mrs_uav_controllers/Se3Controller"
+eland_threshold = 3.0
+failsafe_threshold = 4.0
+namespace = "emergency_controller"
+odometry_innovation_threshold = 3.0
+
+[mrs_uav_managers.control_manager.EmergencyController.outputs]
+attitude_rate = true
+
+[mrs_uav_managers.control_manager.FailsafeController]
+address = "mrs_uav_controllers/FailsafeController"
+eland_threshold = 0.0
+failsafe_threshold = 0.0
+namespace = "failsafe_controller"
+odometry_innovation_threshold = 0.0
+
+[mrs_uav_managers.control_manager.FailsafeController.outputs]
+attitude_rate = true
+
+[mrs_uav_managers.control_manager.LandoffTracker]
+address = "mrs_uav_trackers/LandoffTracker"
+namespace = "landoff_tracker"
+
+[mrs_uav_managers.control_manager.LineTracker]
+address = "mrs_uav_trackers/LineTracker"
+namespace = "line_tracker"
+
+[mrs_uav_managers.control_manager.NullTracker]
+address = "mrs_uav_managers/NullTracker"
+namespace = "null_tracker"
+
+[mrs_uav_managers.control_manager.Se3Controller]
+address = "mrs_uav_controllers/Se3Controller"
+eland_threshold = 1.5
+failsafe_threshold = 2.5
+human_switchable = true
+namespace = "se3_controller"
+odometry_innovation_threshold = 1.5
+
+[mrs_uav_managers.control_manager.Se3Controller.outputs]
+attitude_rate = true
+
+[mrs_uav_managers.control_manager.default_constraints]
+tilt = 60.0
+
+[mrs_uav_managers.control_manager.default_constraints.angular_speed]
+pitch = 20.0
+roll = 20.0
+yaw = 10.0
+
+[mrs_uav_managers.control_manager.default_constraints.heading]
+acceleration = 1.0
+jerk = 10.0
+snap = 10.0
+speed = 1.0
+
+[mrs_uav_managers.control_manager.default_constraints.horizontal]
+acceleration = 1.0
+jerk = 20.0
+snap = 20.0
+speed = 1.0
+
+[mrs_uav_managers.control_manager.default_constraints.vertical.ascending]
+acceleration = 1.0
+jerk = 20.0
+snap = 20.0
+speed = 1.0
+
+[mrs_uav_managers.control_manager.default_constraints.vertical.descending]
+acceleration = 1.0
+jerk = 20.0
+snap = 20.0
+speed = 1.0
+
+[mrs_uav_managers.control_manager.safety]
+ehover_tracker = "LandoffTracker"
+failsafe_controller = "FailsafeController"
+min_throttle_null_tracker = 0.1
+odometry_max_missing_time = 0.1
+tracker_error_action = "eland"
+
+[mrs_uav_managers.control_manager.safety.eland]
+controller = "EmergencyController"
+
+[mrs_uav_trackers.landoff_tracker]
+landing_reference = -1.0
+main_timer_rate = 100
+max_position_difference = 0.7
+takeoff_disable_lateral_gains = false
+takeoff_disable_lateral_gains_z = 0.3
+
+[mrs_uav_trackers.landoff_tracker.heading_tracker]
+heading_gain = 0.2
+heading_rate = 0.5
+
+[mrs_uav_trackers.landoff_tracker.horizontal_tracker]
+horizontal_acceleration = 2.0
+horizontal_speed = 3.0
+
+[mrs_uav_trackers.landoff_tracker.vertical_tracker]
+elanding_acceleration = 1.0
+elanding_speed = 0.5
+landing_acceleration = 0.3
+landing_speed = 0.5
+takeoff_acceleration = 0.3
+takeoff_speed = 1.0
+vertical_acceleration = 2.0
+vertical_speed = 1.0
+
+[mrs_uav_trackers.line_tracker]
+tracker_loop_rate = 100
+
+[mrs_uav_trackers.line_tracker.heading_tracker]
+heading_gain = 1.0
+heading_rate = 0.5
+
+[mrs_uav_trackers.line_tracker.horizontal_tracker]
+horizontal_acceleration = 1.0
+horizontal_speed = 3.0
+
+[mrs_uav_trackers.line_tracker.vertical_tracker]
+vertical_acceleration = 1.0
+vertical_speed = 1.0
+
+# The trigger: one step per uav_state; a fallback step (failsafe) after
+# safety/odometry_max_missing_time of silence.
+[ports.inputs.uav_state]
+topic = "/${UAV_NAME}/estimation_manager/uav_state"
+silence_ms = 100
+
+[ports.inputs.hw_api_status]
+topic = "/${UAV_NAME}/hw_api/status"
+[ports.inputs.hw_api_capabilities]
+topic = "/${UAV_NAME}/hw_api/capabilities"
+
+[ports.outputs.attitude_rate_cmd]
+topic = "/${UAV_NAME}/hw_api/attitude_rate_cmd"
+[ports.outputs.diagnostics]
+topic = "/${UAV_NAME}/control_manager/diagnostics"
+[ports.outputs.tracker_cmd]
+topic = "/${UAV_NAME}/control_manager/tracker_cmd"
+[ports.outputs.controller_diagnostics]
+topic = "/${UAV_NAME}/control_manager/controller_diagnostics"
+
+# The result topics of the services (mrs::Serve), the manager's and the plugins'.
+[ports.outputs.uav1.control_manager.toggle_output.result]
+topic = "/${UAV_NAME}/control_manager/toggle_output/result"
+[ports.outputs.uav1.control_manager.switch_tracker.result]
+topic = "/${UAV_NAME}/control_manager/switch_tracker/result"
+[ports.outputs.uav1.control_manager.switch_controller.result]
+topic = "/${UAV_NAME}/control_manager/switch_controller/result"
+[ports.outputs.uav1.control_manager.goto.result]
+topic = "/${UAV_NAME}/control_manager/goto/result"
+[ports.outputs.uav1.control_manager.landoff_tracker.takeoff.result]
+topic = "/${UAV_NAME}/control_manager/landoff_tracker/takeoff/result"
+[ports.outputs.uav1.control_manager.landoff_tracker.land.result]
+topic = "/${UAV_NAME}/control_manager/landoff_tracker/land/result"
+[ports.outputs.uav1.control_manager.landoff_tracker.eland.result]
+topic = "/${UAV_NAME}/control_manager/landoff_tracker/eland/result"
+
+[log]
+level = "info"
+console = true

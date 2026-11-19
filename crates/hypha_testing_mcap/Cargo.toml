@@ -1,0 +1,50 @@
+[package]
+name = "hypha_testing_mcap"
+description = "A test-only MCAP reader behind a small C API (`hypha_mcap_*`): the golden-sample replay of the C++ testing component. Not part of libhypha_ffi or any shipped crate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lib]
+name = "hypha_testing_mcap"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# The version and features hypha_tools locks: no new third-party crate.
+mcap = { version = "0.25", features = ["lz4", "zstd"] }
+
+# The workspace forbids `unsafe`. This crate's C boundary (`src/ffi.rs`) turns raw
+# pointers from C back into Rust values, so the crate denies `unsafe` and that one
+# module allows it. Every other lint the workspace sets is repeated here, so relaxing
+# one does not relax the rest.
+[lints.rust]
+unsafe_code = "deny"
+dead_code = "deny"
+missing_docs = "deny"
+unreachable_pub = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+exit = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+todo = "deny"
+unimplemented = "deny"
+missing_safety_doc = "deny"
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+non_send_fields_in_send_ty = "deny"
+rc_buffer = "deny"
+rc_mutex = "deny"
+needless_pass_by_value = "allow"
+module_name_repetitions = "allow"

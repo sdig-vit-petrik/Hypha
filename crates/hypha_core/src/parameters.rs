@@ -1,0 +1,341 @@
+//! Configuration a node reads at start-up.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
+
+use toml::Table;
+
+use crate::parameters_load::load_from_toml_file;
+
+const RESERVED_SCALARS: [&str; 1] = ["node.name"];
+
+#[derive(Default)]
+struct ReadSet(Mutex<BTreeSet<String>>);
+
+impl ReadSet {
+    fn insert(&self, name: &str) {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).contains(name)
+    }
+}
+
+impl Clone for ReadSet {
+    fn clone(&self) -> Self {
+        let cloned = self.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        Self(Mutex::new(cloned))
+    }
+}
+
+impl PartialEq for ReadSet {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ReadSet {}
+
+impl fmt::Debug for ReadSet {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let set = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        fmt::Debug::fmt(&*set, out)
+    }
+}
+
+/// Why a TOML parameter file could not be loaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParameterLoadError {
+    /// The configured file path or source label.
+    pub path: String,
+    /// The parameter key that caused the error, when available.
+    pub key: String,
+    /// The reason the file could not be loaded.
+    pub reason: String,
+}
+
+impl fmt::Display for ParameterLoadError {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(out, "could not load TOML configuration `{}`", self.path)?;
+        if !self.key.is_empty() {
+            write!(out, " at `{}`", self.key)?;
+        }
+        write!(out, ": {}", self.reason)
+    }
+}
+
+impl std::error::Error for ParameterLoadError {}
+
+/// A parameter value, with the type the TOML file gave it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParamValue {
+    /// `true` or `false`.
+    Bool(bool),
+    /// A whole number.
+    Int(i64),
+    /// A number with a fraction.
+    Float(f64),
+    /// Text, with `${NAME}` references already replaced.
+    Text(String),
+}
+
+impl fmt::Display for ParamValue {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bool(value) => write!(out, "{value}"),
+            Self::Int(value) => write!(out, "{value}"),
+            // The Debug form keeps the decimal point and the exponent, as TOML does.
+            Self::Float(value) if value.is_nan() => write!(out, "nan"),
+            Self::Float(value) => write!(out, "{value:?}"),
+            Self::Text(value) => write!(out, "{value:?}"),
+        }
+    }
+}
+
+/// A key of an included file that the root file replaced with its own value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParameterOverride {
+    /// The dotted key; a list replaced whole names the list.
+    pub key: String,
+    /// The root file, whose value is the one read.
+    pub winner: PathBuf,
+    /// The included file whose value was discarded.
+    pub overridden: PathBuf,
+}
+
+/// One element of a TOML array. An array holds one kind of element.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ListElement {
+    /// A scalar element.
+    Scalar(ParamValue),
+    /// A table element. It has its own scalar keys and tables, and no lists.
+    Table(Parameters),
+}
+
+impl ListElement {
+    /// The scalar value, or nothing for a table element.
+    #[must_use]
+    pub fn scalar(&self) -> Option<&ParamValue> {
+        match self {
+            Self::Scalar(value) => Some(value),
+            Self::Table(_) => None,
+        }
+    }
+
+    /// The table, or nothing for a scalar element.
+    #[must_use]
+    pub fn table(&self) -> Option<&Parameters> {
+        match self {
+            Self::Table(params) => Some(params),
+            Self::Scalar(_) => None,
+        }
+    }
+}
+
+/// The validated parameters one node was started with.
+///
+/// Scalars and tables are flat dotted names. A TOML array is a list, held apart from
+/// the scalars; a list has no nested lists. Any duplicate across included files is refused.
+///
+/// `node`, `ports` and `log` are reserved. The `log` table is not a parameter and is
+/// left out of the flat map; read it with `log_table`.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Parameters {
+    values: BTreeMap<String, ParamValue>,
+    lists: BTreeMap<String, Vec<ListElement>>,
+    log: Option<Table>,
+    /// The file that wrote each scalar and each list.
+    origins: BTreeMap<String, PathBuf>,
+    /// The keys of included files that the root file replaced, in file order.
+    overrides: Vec<ParameterOverride>,
+    read_values: ReadSet,
+    read_lists: ReadSet,
+}
+
+impl Parameters {
+    /// An empty set.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn with_sources(
+        log: Option<Table>,
+        origins: BTreeMap<String, PathBuf>,
+        overrides: Vec<ParameterOverride>,
+    ) -> Self {
+        Self { log, origins, overrides, ..Self::default() }
+    }
+
+    /// The keys of included files that the root file replaced.
+    #[must_use]
+    pub fn overrides(&self) -> &[ParameterOverride] {
+        &self.overrides
+    }
+
+    /// The directory of the file that wrote the value `name`, against which a relative
+    /// file name in it resolves. `name` is a scalar, a list, or a list element or field
+    /// (`sensors[0].file`). Nothing when not from a file. Does not mark `name` as read.
+    #[must_use]
+    pub fn origin_of(&self, name: &str) -> Option<&Path> {
+        let owner = match name.find('[') {
+            Some(bracket) => name.get(..bracket)?,
+            None => name,
+        };
+        self.origins.get(owner).and_then(|file| file.parent())
+    }
+
+    pub(crate) fn insert_scalar(&mut self, key: String, value: ParamValue) -> Option<ParamValue> {
+        self.values.insert(key, value)
+    }
+
+    pub(crate) fn insert_list(
+        &mut self,
+        key: String,
+        elements: Vec<ListElement>,
+    ) -> Option<Vec<ListElement>> {
+        self.lists.insert(key, elements)
+    }
+
+    /// Load immutable parameters from a TOML file.
+    ///
+    /// A top-level `include` array lists other TOML files, resolved against the directory
+    /// of the file that holds them. Tables merge key by key; duplicate scalars or lists
+    /// are refused. Every string may contain `${NAME}` environment references.
+    ///
+    /// # Errors
+    /// Returns an error when a file, an include, a value, or an environment
+    /// reference is invalid, and when a referenced variable is unset or empty.
+    pub fn from_toml_file(path: &Path) -> Result<Self, ParameterLoadError> {
+        load_from_toml_file(path)
+    }
+
+    /// The `log` table of the parameter file, unchanged.
+    #[must_use]
+    pub fn log_table(&self) -> Option<&Table> {
+        self.log.as_ref()
+    }
+
+    /// True when `name` is a scalar with a value. Does not mark `name` as read.
+    #[must_use]
+    pub fn has(&self, name: &str) -> bool {
+        self.values.contains_key(name)
+    }
+
+    /// True when `name` is a list. Does not mark `name` as read.
+    #[must_use]
+    pub fn has_list(&self, name: &str) -> bool {
+        self.lists.contains_key(name)
+    }
+
+    /// The value of the scalar `name`, if present. Marks `name` as read when present.
+    #[must_use]
+    pub fn value(&self, name: &str) -> Option<&ParamValue> {
+        let found = self.values.get(name)?;
+        self.read_values.insert(name);
+        Some(found)
+    }
+
+    /// Every scalar parameter, ordered by dotted name. Lists are not included.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &ParamValue)> {
+        self.values.iter().map(|(name, value)| (name.as_str(), value))
+    }
+
+    /// Every scalar name that has a value, in order. Lists are not included.
+    #[must_use]
+    pub fn names(&self) -> Vec<&str> {
+        self.values.keys().map(String::as_str).collect()
+    }
+
+    /// The number of elements in the list `name`. Marks `name` as read when present.
+    #[must_use]
+    pub fn list_len(&self, name: &str) -> Option<usize> {
+        let list = self.lists.get(name)?;
+        self.read_lists.insert(name);
+        Some(list.len())
+    }
+
+    /// Element `index` of the list `name`, in TOML order. Marks the list and
+    /// `name[index]` as read when present.
+    #[must_use]
+    pub fn list_element(&self, name: &str, index: usize) -> Option<&ListElement> {
+        let element = self.lists.get(name)?.get(index)?;
+        self.read_lists.insert(name);
+        self.read_values.insert(&format!("{name}[{index}]"));
+        Some(element)
+    }
+
+    /// Every list name, sorted. Scalar names are not included; see `names`.
+    #[must_use]
+    pub fn list_names(&self) -> Vec<&str> {
+        self.lists.keys().map(String::as_str).collect()
+    }
+
+    /// Every configured key that has not been read yet, sorted.
+    ///
+    /// `node.name` is excluded. Table list elements report each field as `list[index].field`.
+    #[must_use]
+    pub fn unread_keys(&self) -> Vec<String> {
+        self.unread_keys_inner(false)
+    }
+
+    /// Every unread key under `prefix`, sorted.
+    #[must_use]
+    pub fn unread_keys_under(&self, prefix: &str) -> Vec<String> {
+        let all = self.unread_keys();
+        if prefix.is_empty() {
+            return all;
+        }
+        all.into_iter()
+            .filter(|key| {
+                key == prefix
+                    || key
+                        .strip_prefix(prefix)
+                        .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+            })
+            .collect()
+    }
+
+    fn unread_keys_inner(&self, in_list_element: bool) -> Vec<String> {
+        let mut unread = Vec::new();
+        for key in self.values.keys() {
+            if !in_list_element && RESERVED_SCALARS.contains(&key.as_str()) {
+                continue;
+            }
+            if !self.read_values.contains(key) {
+                unread.push(key.clone());
+            }
+        }
+        for (list_name, elements) in &self.lists {
+            let has_tables = elements.iter().any(|item| item.table().is_some());
+            if has_tables {
+                for (index, item) in elements.iter().enumerate() {
+                    if let ListElement::Table(table) = item {
+                        if table.values.is_empty() && !self.read_lists.contains(list_name) {
+                            unread.push(format!("{list_name}[{index}]"));
+                        } else {
+                            for sub_key in table.unread_keys_inner(true) {
+                                unread.push(format!("{list_name}[{index}].{sub_key}"));
+                            }
+                        }
+                    }
+                }
+            } else if !self.read_lists.contains(list_name) {
+                unread.push(list_name.clone());
+            } else {
+                for index in 0..elements.len() {
+                    let indexed = format!("{list_name}[{index}]");
+                    if !self.read_values.contains(&indexed) {
+                        unread.push(indexed);
+                    }
+                }
+            }
+        }
+        unread.sort();
+        unread.dedup();
+        unread
+    }
+}

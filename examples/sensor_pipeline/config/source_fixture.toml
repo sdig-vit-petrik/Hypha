@@ -1,0 +1,10 @@
+# The source as it recorded fixture/sensor_inputs.mcap: lower rates and smaller clouds
+# keep the file small. Keys here replace those of source.toml.
+include = ["source.toml"]
+
+tick_hz = 200.0          # IMU at 200 Hz
+tf_every_ticks = 2       # /tf at 100 Hz
+cloud_every_ticks = 20   # clouds at 10 Hz
+cloud_rings = 8          # 8 x 16 points: 2048 bytes of data a cloud
+cloud_columns = 16
+stop_after_s = 4.4       # 880 ticks, 44 clouds

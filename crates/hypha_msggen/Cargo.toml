@@ -1,0 +1,18 @@
+[package]
+name = "hypha_msggen"
+description = "Reads message definitions and emits types and codecs for each supported language."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+hypha_msgdef = { path = "../hypha_msgdef" }
+
+[dev-dependencies]
+hypha_wire = { path = "../hypha_wire" }
+
+[lints]
+workspace = true

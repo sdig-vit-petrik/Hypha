@@ -1,0 +1,33 @@
+# The gate of hypha, in the builder image of docker/Dockerfile: the style and
+# generated-file checks, then the Rust and C++ suites with the installed SDK flow.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # A local image: HYPHA_IMAGE_TAG names it, and nothing is pushed.
+      - name: Build the builder image
+        run: echo "HYPHA_BUILDER_IMAGE=$(HYPHA_IMAGE_TAG=ci ./docker/build.sh builder)" >> "$GITHUB_ENV"
+
+      - name: check.sh
+        run: docker run --rm -v "$PWD:/work" -w /work "$HYPHA_BUILDER_IMAGE" ./check.sh
+
+      # The transport tests need shared memory: a /dev/shm larger than Docker's 64 MB.
+      - name: test.sh
+        run: docker run --rm --shm-size=2g -v "$PWD:/work" -w /work "$HYPHA_BUILDER_IMAGE" ./test.sh

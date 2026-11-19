@@ -1,0 +1,69 @@
+# mrs_simulator: the native multirotor model, clock driver and hardware API of uav1.
+# Everything but the clock's participants and pace, which depend on the processes a
+# scenario starts: run.sh writes a file per scenario that includes this one, and
+# mrs_simulator_teleop.toml includes it for launch/mrs_teleop.toml.
+
+uav_name = "${UAV_NAME}"
+# The airframe for viewers, published latched on /robot_description (run.sh or the launch file sets MRS_DIR).
+robot_description = "${MRS_DIR}/upstream/mrs_uav_gazebo_simulator/x500.urdf"
+
+[node]
+name = "mrs_simulator"
+
+[clock]
+period_ms = 10
+start_s = 1.0
+timeout_s = 5.0
+
+[simulator]
+input_timeout_s = 1.0     # an older attitude-rate command cuts the motors
+substeps = 10             # 1 ms model steps per 10 ms clock step
+arm_throttle_limit = 0.1  # arming is refused above this throttle (in flight)
+status_every_steps = 10   # hw_api/status at 10 Hz
+
+# A generic 2 kg quadrotor in x configuration. control_manager.toml derives uav_mass and
+# motor_params from these values; change both together.
+[model]
+mass = 2.0
+inertia = [0.0123, 0.0123, 0.0224]
+arm_length = 0.25
+kf = 2.534e-7             # N / rpm^2
+km = 0.016                # m: yaw torque per thrust
+rpm_min = 0.0
+rpm_max = 8000.0
+motor_time_constant = 0.03
+linear_drag = 0.1
+
+[rate_controller]
+kp = [20.0, 20.0, 10.0]
+ki = [2.0, 2.0, 1.0]
+kd = [0.0, 0.0, 0.0]
+integral_limit = 2.0
+
+[ports.inputs.attitude_rate_cmd]
+topic = "/${UAV_NAME}/hw_api/attitude_rate_cmd"
+
+[ports.outputs.ground_truth]
+topic = "/${UAV_NAME}/hw_api/ground_truth"
+[ports.outputs.odometry]
+topic = "/${UAV_NAME}/hw_api/odometry"
+[ports.outputs.imu]
+topic = "/${UAV_NAME}/hw_api/imu"
+[ports.outputs.orientation]
+topic = "/${UAV_NAME}/hw_api/orientation"
+[ports.outputs.status]
+topic = "/${UAV_NAME}/hw_api/status"
+[ports.outputs.capabilities]
+topic = "/${UAV_NAME}/hw_api/capabilities"
+[ports.outputs.robot_description]
+topic = "/robot_description"
+
+# The result topics of the arming and offboard servers (mrs::Serve).
+[ports.outputs.uav1.hw_api.arming.result]
+topic = "/${UAV_NAME}/hw_api/arming/result"
+[ports.outputs.uav1.hw_api.offboard.result]
+topic = "/${UAV_NAME}/hw_api/offboard/result"
+
+[log]
+level = "info"
+console = true

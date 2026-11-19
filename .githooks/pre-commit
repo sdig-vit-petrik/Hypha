@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# The commit-time checks every agent and every human runs. Enable once per
+# checkout: git config core.hooksPath .githooks
+# Kept fast; clippy and the tests stay in the gate and CI.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+
+if grep -qE '^(hypha-audit-|hypha-design-audit-)' <<< "$staged"; then
+    echo "pre-commit: the hypha-audit-* and hypha-design-audit-* files are never committed:" >&2
+    grep -E '^(hypha-audit-|hypha-design-audit-)' <<< "$staged" >&2
+    exit 1
+fi
+
+if grep -qE '\.rs$' <<< "$staged"; then
+    if ! cargo fmt --all -- --check >/dev/null; then
+        echo "pre-commit: cargo fmt --all -- --check fails; run cargo fmt --all" >&2
+        exit 1
+    fi
+fi
+
+if grep -qE '(^|/)Cargo\.toml$' <<< "$staged"; then
+    ./scripts/check-deps.sh
+fi
+
+if grep -qE '^crates/hypha_ffi/' <<< "$staged"; then
+    ./scripts/gen-ffi-header.sh --verify
+fi

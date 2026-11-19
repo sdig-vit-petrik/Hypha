@@ -1,0 +1,35 @@
+# Generates crates/hypha_ffi/include/hypha/hypha_ffi.h from this crate's
+# public `#[repr(C)]` items and `extern "C"` functions.
+#
+# Run `scripts/gen-ffi-header.sh` to regenerate. `check.sh` fails the build
+# if the committed header drifts from what this config produces.
+
+header = "/* The C ABI for hypha. A callback sample lives only for its callback. */"
+include_guard = "HYPHA_FFI_H"
+includes = []
+sys_includes = ["stddef.h", "stdint.h"]
+no_includes = true
+language = "C"
+style = "both"
+cpp_compat = true
+usize_is_size_t = true
+documentation = true
+documentation_style = "c99"
+line_length = 100
+tab_width = 2
+
+[enum]
+rename_variants = "ScreamingSnakeCase"
+prefix_with_name = true
+
+[fn]
+args = "vertical"
+must_use = ""
+
+[parse]
+# The C types live in hypha_node, with the logic; this crate holds the wrappers.
+parse_deps = true
+include = ["hypha_node"]
+
+[export]
+include = ["HyphaCycleInputMode", "HyphaCycleOutputFailure", "HyphaLogLevel", "HyphaNumberConstraint"]

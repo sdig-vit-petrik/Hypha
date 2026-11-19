@@ -1,0 +1,94 @@
+# Build output
+build/
+devel/
+devel_isolated/
+build_isolated/
+install/
+install_isolated/
+logs/
+log/
+!crates/hypha-cxx/log/
+target/
+target-asan/
+target-miri/
+target-tsan/
+target/doc/
+*.html
+*.o
+*.so
+*.a
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Python tools (check.sh, scripts/format.sh)
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+
+
+# Recordings: large, and may carry operational data
+*.bag
+*.mcap
+# The McapReplay test fixtures: small, synthetic, written by
+# crates/hypha_testing_mcap/examples/golden_fixture.
+!crates/hypha-cxx/test/data/*.mcap
+# The recorded inputs of the sensor_pipeline replay recipe: small, synthetic, recorded
+# from hypha_sensor_source (examples/sensor_pipeline/README.md).
+!examples/sensor_pipeline/fixture/sensor_inputs.mcap
+
+
+
+# Cargo build output
+crates/target/
+target/doc-pdf/
+coverage/
+/.cargo/git/
+/.cargo/registry/
+
+/.claude/*
+!/.claude/agents/
+/.claude/agents/*
+!/.claude/agents/hypha-rust.md
+!/.claude/agents/hypha-cxx.md
+!/.claude/settings.json
+.agent-logs/
+.opencode/
+/.gemini/*
+!/.gemini/settings.json
+.continue/
+/.agents/*
+!/.agents/hooks.json
+/.codex/*
+!/.codex/agents/
+/.codex/agents/*
+!/.codex/agents/hypha-rust.toml
+!/.codex/agents/hypha-cxx.toml
+!/.codex/hooks.json
+*.rsa
+*.rsa.pub
+/ca-bundle.crt
+
+
+.codegraphy/*
+
+
+build_*/
+build-*/
+/image-refs.txt
+builder.env
+ctest-junit.xml
+
+# Personal agent path allowlist
+.agent-allowed-paths.local

@@ -1,0 +1,74 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: Latest
+LineEnding: LF
+ColumnLimit: 100
+IndentWidth: 4
+ContinuationIndentWidth: 4
+TabWidth: 4
+UseTab: Never
+IndentCaseLabels: true
+IndentPPDirectives: AfterHash
+NamespaceIndentation: None
+FixNamespaceComments: true
+PointerAlignment: Left
+SpaceBeforeParens: ControlStatements
+SpacesBeforeTrailingComments: 2
+AlignTrailingComments: false
+
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterControlStatement: Never
+  AfterFunction: true
+  AfterClass: true
+  AfterStruct: true
+  AfterEnum: false
+  AfterNamespace: false
+  AfterExternBlock: false
+  BeforeElse: false
+  IndentBraces: false
+
+# Safety: every control statement carries braces, nothing hides on one line.
+InsertBraces: true
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortLambdasOnASingleLine: None
+AllowShortBlocksOnASingleLine: Never
+RemoveSemicolon: true
+InsertNewlineAtEOF: true
+
+# Small diffs: one item per line once a list does not fit, closing bracket alone.
+AlignAfterOpenBracket: BlockIndent
+BinPackArguments: false
+BinPackParameters: OnePerLine
+PackConstructorInitializers: NextLine
+BreakConstructorInitializers: BeforeComma
+BreakInheritanceList: BeforeComma
+BreakTemplateDeclarations: Yes
+BreakBeforeBinaryOperators: NonAssignment
+AlignOperands: AlignAfterOperator
+AlignConsecutiveDeclarations: Consecutive
+
+SeparateDefinitionBlocks: Always
+EmptyLineBeforeAccessModifier: LogicalBlock
+MaxEmptyLinesToKeep: 1
+KeepEmptyLines:
+  AtStartOfBlock: false
+  AtStartOfFile: false
+  AtEndOfFile: false
+
+# Own header, then project, then other libraries, then the standard library.
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^["<]hypha'
+    Priority: 2
+  - Regex: '^"'
+    Priority: 3
+  - Regex: '^<[a-z_0-9]+>$'
+    Priority: 5
+  - Regex: '.*'
+    Priority: 4

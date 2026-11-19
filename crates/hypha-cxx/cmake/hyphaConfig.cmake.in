@@ -1,0 +1,34 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+
+# The C ABI library, beside the SDK headers.
+if(NOT TARGET hypha::ffi)
+  add_library(hypha::ffi SHARED IMPORTED)
+  set_target_properties(hypha::ffi PROPERTIES
+    IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/@HYPHA_FFI_VERSIONED_NAME@"
+    INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@"
+    INTERFACE_LINK_LIBRARIES "Threads::Threads;${CMAKE_DL_LIBS};m"
+  )
+endif()
+
+# The message generator and the .msg definitions it resolves against.
+find_program(HYPHA_MSGGEN_EXECUTABLE
+    NAMES hypha_msggen
+    HINTS "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_BINDIR@")
+set(HYPHA_STANDARD_MSG_DIR
+    "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/hypha/msg")
+
+if(HYPHA_MSGGEN_EXECUTABLE AND NOT TARGET hypha::msggen)
+  add_executable(hypha::msggen IMPORTED GLOBAL)
+  set_target_properties(hypha::msggen PROPERTIES
+      IMPORTED_LOCATION "${HYPHA_MSGGEN_EXECUTABLE}")
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/hyphaMessages.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/hyphaTargets.cmake")
+# hypha::<tool> for each installed command line tool; absent without HYPHA_BUILD_APPS.
+include("${CMAKE_CURRENT_LIST_DIR}/hyphaTools.cmake" OPTIONAL)
+
+check_required_components(hypha)

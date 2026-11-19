@@ -1,0 +1,7 @@
+# mrs_simulator for teleop (launch/mrs_teleop.toml): paced at real time, with the
+# processes that launch file starts as participants.
+include = ["mrs_simulator.toml"]
+
+[clock]
+real_time_factor = 1.0
+participants = ["uav1_estimation_manager", "uav1_transform_manager", "uav1_control_manager", "uav1_uav_manager", "uav1_teleop"]

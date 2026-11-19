@@ -1,0 +1,11 @@
+# The nextest configuration of scripts/miri.sh, in place of nextest.toml: Miri runs
+# no transport, so a test needs no bus domain of its own (no private-domain.sh
+# wrapper), and an interpreted test is slower than a compiled one.
+[store]
+dir = "target-miri/nextest"
+
+[profile.default]
+fail-fast = false
+failure-output = "immediate-final"
+# A test still running after ten minutes under Miri is ended and fails.
+slow-timeout = { period = "120s", terminate-after = 5 }

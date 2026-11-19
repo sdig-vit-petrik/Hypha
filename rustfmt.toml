@@ -1,0 +1,10 @@
+# Stock rustfmt with two settings, both chosen so the Rust tree reads like the
+# C++ tree beside it:
+#
+#   max_width          matches .clang-format's 100 columns.
+#   use_small_heuristics  keeps a short struct literal or call on one line
+#   style_edition      the 2024 formatting style, with the edition.
+max_width = 100
+use_small_heuristics = "Max"
+edition = "2024"
+style_edition = "2024"

@@ -1,0 +1,66 @@
+# The dependency policy of the workspace, checked by `cargo deny check`
+# (check.sh and the CI check job). A finding that cannot be fixed gets an entry
+# here with its reason; no level is lowered to make a finding pass.
+
+[graph]
+all-features = true
+
+[advisories]
+# Every vulnerability is an error (cargo-deny's fixed behaviour); an unmaintained
+# crate anywhere in the graph is one too.
+unmaintained = "all"
+yanked = "deny"
+# Each entry has no semver-compatible fix. All but `paste` come
+# in through hypha_ros_bridge's pinned roslibrust 0.21 and serde_xmlrpc 0.2.3; the
+# bridge's HTTP and XML-RPC peers are the ROS 1 master and nodes of its own robot
+# network.
+ignore = [
+    { id = "RUSTSEC-2026-0258", reason = "h2 0.3.27 via hyper 0.14 / reqwest 0.11 (roslibrust_ros1); fixed only in h2 0.4, which hyper 0.14 cannot use. ROS 1 XML-RPC is plain HTTP/1.x, and the client takes HTTP/2 only through TLS ALPN." },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.31 via serde_xmlrpc =0.2.3, the latest 0.2 release; fixed only in quick-xml 0.41. Input is XML-RPC from the robot's own ROS 1 master and nodes." },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.31 via serde_xmlrpc =0.2.3, as RUSTSEC-2026-0194." },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 1.0.4 (unmaintained, no successor release in its line) via reqwest 0.11 in roslibrust_ros1 0.21." },
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 (unmaintained, no replacement in its dependents) is a compile-time proc macro of getifs, mcap and ratatui; no code of it runs in a shipped binary." },
+]
+
+[licenses]
+# The licences the lock file holds. A new licence is a policy decision: add it
+# here in the change that brings it in.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+unused-allowed-license = "deny"
+# The fuzz workspace (fuzz/Cargo.lock, checked with --manifest-path fuzz/Cargo.toml)
+# only: libfuzzer-sys carries LLVM's libFuzzer under NCSA, a permissive BSD-style
+# licence. It builds only the fuzz targets, nothing that ships.
+exceptions = [
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
+]
+
+[licenses.private]
+# The workspace crates are `publish = false`: cargo-deny skips their own licence.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# The workspace crates name each other by path; that is not a wildcard.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Cargo.lock has no git source.
+allow-git = []

@@ -1,0 +1,83 @@
+{
+  "configById": {
+    "3D!mrs": {
+      "cameraState": {
+        "perspective": true,
+        "distance": 3.5,
+        "phi": 60,
+        "thetaOffset": 45,
+        "targetOffset": [0, 0, 0],
+        "target": [0, 0, 0],
+        "targetOrientation": [0, 0, 0, 1],
+        "fovy": 45,
+        "near": 0.01,
+        "far": 5000
+      },
+      "followTf": "uav1/fcu",
+      "followMode": "follow-position",
+      "scene": {
+        "backgroundColor": "#20242c",
+        "meshUpAxis": "z_up",
+        "transforms": {
+          "showLabel": false,
+          "axisScale": 0.4,
+          "enablePreloading": false
+        }
+      },
+      "transforms": {
+        "frame:uav1/local_origin": { "visible": false },
+        "frame:uav1/fixed_origin": { "visible": false },
+        "frame:uav1/rtk_antenna": { "visible": false }
+      },
+      "topics": {
+        "/robot_description": { "visible": true }
+      },
+      "layers": {
+        "mrs-ground-grid": {
+          "visible": true,
+          "frameLocked": true,
+          "label": "Ground",
+          "instanceId": "mrs-ground-grid",
+          "layerId": "foxglove.Grid",
+          "frameId": "uav1/world_origin",
+          "size": 20,
+          "divisions": 20,
+          "lineWidth": 1,
+          "color": "#5a6578",
+          "position": [0, 0, -0.15],
+          "rotation": [0, 0, 0],
+          "order": 1
+        }
+      },
+      "publish": {
+        "type": "point",
+        "poseTopic": "/move_base_simple/goal",
+        "pointTopic": "/clicked_point",
+        "poseEstimateTopic": "/initialpose",
+        "poseEstimateXDeviation": 0.5,
+        "poseEstimateYDeviation": 0.5,
+        "poseEstimateThetaDeviation": 0.26179939
+      }
+    },
+    "Plot!mrs-position": {
+      "title": "Position (uav_state)",
+      "paths": [
+        { "value": "/uav1/estimation_manager/uav_state.pose.position.x", "enabled": true, "timestampMethod": "receiveTime" },
+        { "value": "/uav1/estimation_manager/uav_state.pose.position.y", "enabled": true, "timestampMethod": "receiveTime" },
+        { "value": "/uav1/estimation_manager/uav_state.pose.position.z", "enabled": true, "timestampMethod": "receiveTime" }
+      ],
+      "showLegend": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 30
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "playbackConfig": { "speed": 1 },
+  "layout": {
+    "first": "3D!mrs",
+    "second": "Plot!mrs-position",
+    "direction": "row",
+    "splitPercentage": 70
+  }
+}

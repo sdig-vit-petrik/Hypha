@@ -1,0 +1,31 @@
+PROJECT_NAME           = hypha C++ SDK
+PROJECT_BRIEF          = C++ API reference for the installed hypha SDK
+OUTPUT_DIRECTORY       = target/cpp-doc
+CREATE_SUBDIRS         = NO
+OUTPUT_LANGUAGE        = English
+MARKDOWN_SUPPORT       = YES
+AUTOLINK_SUPPORT       = YES
+EXTRACT_ALL            = NO
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = NO
+WARN_IF_UNDOCUMENTED   = YES
+WARN_AS_ERROR          = NO
+INPUT                  = crates/hypha-cxx/include \
+                         crates/hypha-cxx/base/include \
+                         crates/hypha-cxx/log/include/hypha_log
+FILE_PATTERNS          = *.h
+RECURSIVE              = YES
+EXCLUDE_PATTERNS       = */detail/*
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_LATEX         = YES
+LATEX_OUTPUT           = latex
+PDF_HYPERLINKS         = YES
+GENERATE_MAN           = NO
+GENERATE_XML           = NO
+GENERATE_TREEVIEW      = YES
+FULL_PATH_NAMES        = NO
+JAVADOC_AUTOBRIEF      = YES
+QT_AUTOBRIEF           = YES
+MACRO_EXPANSION        = NO
+SEARCHENGINE           = YES

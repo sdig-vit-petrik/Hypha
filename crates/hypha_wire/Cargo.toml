@@ -1,0 +1,23 @@
+[package]
+name = "hypha_wire"
+description = "The wire layer: frame framing, ROS 1 primitive codec, and message identity."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+crc32c = "0.6.8"
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+
+[[bench]]
+name = "codec"
+harness = false
+
+[lints]
+workspace = true

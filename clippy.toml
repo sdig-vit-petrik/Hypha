@@ -1,0 +1,7 @@
+# `arithmetic_side_effects` is denied workspace-wide: a raw `+` or `/` on an
+# integer is where an overflow or a division by zero hides, and hypha_wire and the
+# transport crates are full of offsets and lengths.
+#
+# The lint cannot see through an operator implementation, so it also fires on
+# `Time + Duration`. Its allow-list options do not reach that code path, so each
+# place this matters carries a narrow `#[allow]` with the reason written beside it.

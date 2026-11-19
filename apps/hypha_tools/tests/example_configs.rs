@@ -1,0 +1,178 @@
+//! The example configurations follow the rules of the framework.
+
+#![allow(clippy::expect_used, reason = "test setup must succeed")]
+
+use std::path::{Path, PathBuf};
+
+fn examples_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
+}
+
+/// Every file under `dir` with one of `extensions`, `upstream/` and build output left out.
+fn files(dir: &Path, extensions: &[&str], out: &mut Vec<PathBuf>) {
+    let entries = std::fs::read_dir(dir).expect("read an examples directory");
+    for entry in entries {
+        let path = entry.expect("read a directory entry").path();
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        let skipped = name == "upstream" || name == "build" || name.starts_with('.');
+        if skipped {
+            continue;
+        }
+        if path.is_dir() {
+            files(&path, extensions, out);
+            continue;
+        }
+        let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+        if extensions.contains(&extension) {
+            out.push(path);
+        }
+    }
+}
+
+fn read(path: &Path) -> String {
+    std::fs::read_to_string(path).expect("read an example file")
+}
+
+/// The input tables of `config` without `silence_ms`, by port name.
+fn inputs_without_limit(config: &str) -> Vec<String> {
+    let table: toml::Table = config.parse().expect("an example config parses");
+    let mut bare = Vec::new();
+    let inputs =
+        table.get("ports").and_then(|ports| ports.get("inputs")).and_then(toml::Value::as_table);
+    for (name, port) in inputs.into_iter().flatten() {
+        let has_limit = port.as_table().is_some_and(|port| port.contains_key("silence_ms"));
+        if !has_limit {
+            bare.push(name.clone());
+        }
+    }
+    bare
+}
+
+/// True when a source line declares port `name` with a tag that needs no limit.
+fn tagged_without_limit(sources: &[String], name: &str) -> bool {
+    let quoted = format!("\"{name}\"");
+    sources.iter().any(|source| {
+        source.lines().any(|line| {
+            let declares = line.contains(&quoted);
+            let tagged = line.contains("unsupervised") || line.contains("advisory");
+            declares && tagged
+        })
+    })
+}
+
+/// True when a source subscribes to port `name` on a plain node (`node.subscribe<M>("name",
+/// ...)`, also across lines): a callback subscriber has no silence limit to declare.
+fn subscribed_on_a_plain_node(sources: &[String], name: &str) -> bool {
+    let argument = format!("(\"{name}\"");
+    sources.iter().any(|source| {
+        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        compact.match_indices(&argument).any(|(at, _)| {
+            let before = compact.get(..at).unwrap_or("");
+            let call = before.rsplit([';', '{', '}']).next().unwrap_or("");
+            call.contains(".subscribe<") && call.ends_with('>')
+        })
+    })
+}
+
+/// The sources of the node that reads `config`: those whose file name starts with the
+/// config's name (`control_manager.toml` -> `control_manager.cpp`, and `mrs_simulator_teleop`
+/// -> `mrs_simulator.cpp`), else every source of the example's directory.
+fn own_sources(config: &Path, code: &[PathBuf]) -> Vec<String> {
+    let examples = examples_dir();
+    let example = config
+        .ancestors()
+        .find(|dir| dir.parent().is_some_and(|parent| parent == examples.as_path()));
+    let local: Vec<&PathBuf> =
+        code.iter().filter(|path| example.is_some_and(|dir| path.starts_with(dir))).collect();
+    let stem = config.file_stem().and_then(|stem| stem.to_str()).unwrap_or("");
+    let named: Vec<&PathBuf> = local
+        .iter()
+        .copied()
+        .filter(|path| {
+            let source = path.file_stem().and_then(|name| name.to_str()).unwrap_or("");
+            !source.is_empty() && (stem.starts_with(source) || source.starts_with(stem))
+        })
+        .collect();
+    let chosen = if named.is_empty() { local } else { named };
+    chosen.iter().map(|path| read(path)).collect()
+}
+
+#[test]
+fn examples_have_no_use_sim_time_key() {
+    let mut configs = Vec::new();
+    files(&examples_dir(), &["toml"], &mut configs);
+    assert!(!configs.is_empty());
+    for path in configs {
+        let text = read(&path);
+        let keyed = text.lines().any(|line| line.trim_start().starts_with("use_sim_time"));
+        assert!(!keyed, "{} sets use_sim_time", path.display());
+    }
+}
+
+#[test]
+fn example_inputs_declare_silence_or_a_tag() {
+    let mut configs = Vec::new();
+    files(&examples_dir(), &["toml"], &mut configs);
+    let mut code = Vec::new();
+    files(&examples_dir(), &["cpp", "h", "hpp"], &mut code);
+    for path in configs {
+        let sources = own_sources(&path, &code);
+        for name in inputs_without_limit(&read(&path)) {
+            let needs_no_limit = tagged_without_limit(&sources, &name)
+                || subscribed_on_a_plain_node(&sources, &name);
+            assert!(
+                needs_no_limit,
+                "{}: input '{name}' has no silence_ms and no unsupervised/advisory tag",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_bare_input_is_reported() {
+    let bare = inputs_without_limit("[ports.inputs.speed]\ntopic = \"/speed\"\n");
+    assert_eq!(bare, ["speed"]);
+    assert!(!tagged_without_limit(&[String::from("Latest<F> speed{*this, \"speed\"};")], "speed"));
+    assert!(!subscribed_on_a_plain_node(
+        &[String::from("Latest<F> speed{*this, \"speed\"};")],
+        "speed"
+    ));
+}
+
+#[test]
+fn a_plain_node_subscriber_needs_no_limit() {
+    let one_line = String::from("auto imu = node.subscribe<Imu>(\"imu\", onImu);");
+    let wrapped = String::from(
+        "auto cloud =\n    node.subscribe<Cloud>(\n        \"cloud\", onCloud\n    );",
+    );
+    let imu_source = [one_line];
+    assert!(subscribed_on_a_plain_node(&imu_source, "imu"));
+    assert!(subscribed_on_a_plain_node(&[wrapped], "cloud"));
+    assert!(!subscribed_on_a_plain_node(&imu_source, "cloud"));
+    let advertised = String::from("auto out = node.advertise<Imu>(\"imu\");");
+    assert!(!subscribed_on_a_plain_node(&[advertised], "imu"));
+}
+
+#[test]
+fn example_units_restart_on_failure() {
+    let units = read(&examples_dir().join("mrs/launch/mrs_teleop.toml"));
+    let table: toml::Table = units.parse().expect("the units file parses");
+    let list = table.get("units").and_then(toml::Value::as_array).expect("[[units]]");
+    for unit in list {
+        let restart = unit.get("restart").and_then(toml::Value::as_str);
+        assert_eq!(restart, Some("on-failure"), "unit {:?}", unit.get("name"));
+    }
+}
+
+#[test]
+fn launchers_set_no_qos_and_keep_the_default_domain() {
+    let mut scripts = Vec::new();
+    files(&examples_dir(), &["sh", "toml", "cpp", "h"], &mut scripts);
+    for path in scripts {
+        let text = read(&path);
+        assert!(!text.contains("HYPHA_QOS"), "{} sets HYPHA_QOS", path.display());
+    }
+    let run = read(&examples_dir().join("mrs/run.sh"));
+    assert!(!run.contains("HYPHA_DOMAIN"), "the MRS example stays in the default domain");
+}

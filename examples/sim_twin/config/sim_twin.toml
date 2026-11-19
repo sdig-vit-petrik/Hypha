@@ -1,0 +1,7 @@
+# Runs on /clock. The twin stops when simulated time reaches stop_sim_ns, which
+# is the clock's final time: 12 s of steps, plus the 2 s forward jump.
+
+stop_sim_ns = 14000000000
+
+[node]
+name = "sim_twin"

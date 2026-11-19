@@ -1,0 +1,28 @@
+speed_limit = 20.0
+debug_enabled = false
+
+[cycle]
+rate_hz = 5.0
+
+[node]
+name = "speed_monitor"
+
+[ports.inputs.speed]
+topic = "/odom_speed"
+# Older than this after it was sent, the speed is stale and not used.
+silence_ms = 500
+
+[ports.outputs.status]
+topic = "~/status"
+
+[ports.outputs.debug]
+topic = "~/debug"
+
+[log]
+level = "info"
+console = true
+
+[log.sink.main]
+path = "logs/speed_monitor.log"
+rotation_mb = 1
+rotation_count = 2

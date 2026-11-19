@@ -1,0 +1,59 @@
+# uav_manager, takeoff path, for uav1.
+#
+# Keys converted from mrs_uav_managers config/{private,public}/uav_manager.yaml (the
+# first file with a key wins), with the port's custom layer: during and after takeoff
+# Se3Controller (upstream: MpcController), after takeoff LineTracker (upstream:
+# MpcTracker), and no gain or constraint manager.
+uav_name = "${UAV_NAME}"
+
+[node]
+name = "${UAV_NAME}_uav_manager"
+
+[mrs_uav_managers.uav_manager]
+null_tracker = "NullTracker"
+require_gain_manager = false        # custom layer
+require_constraint_manager = false  # custom layer
+
+[mrs_uav_managers.uav_manager.takeoff]
+takeoff_height = 1.5
+
+[mrs_uav_managers.uav_manager.takeoff.during_takeoff]
+controller = "Se3Controller"
+tracker = "LandoffTracker"
+
+[mrs_uav_managers.uav_manager.takeoff.after_takeoff]
+controller = "Se3Controller"
+tracker = "LineTracker"
+
+[mrs_uav_managers.uav_manager.diagnostics]
+rate = 1.0  # Hz
+
+[ports.inputs.odometry]
+topic = "/${UAV_NAME}/estimation_manager/odom_main"
+[ports.inputs.hw_api_status]
+topic = "/${UAV_NAME}/hw_api/status"
+[ports.inputs.control_manager_diagnostics]
+topic = "/${UAV_NAME}/control_manager/diagnostics"
+[ports.inputs.controller_diagnostics]
+topic = "/${UAV_NAME}/control_manager/controller_diagnostics"
+
+[ports.outputs.diagnostics]
+topic = "/${UAV_NAME}/uav_manager/diagnostics"
+
+# The takeoff server (mrs::Serve) and the requests uav_manager sends (mrs::Request).
+[ports.outputs.uav1.uav_manager.takeoff.result]
+topic = "/${UAV_NAME}/uav_manager/takeoff/result"
+[ports.outputs.uav1.control_manager.switch_controller.request]
+topic = "/${UAV_NAME}/control_manager/switch_controller/request"
+[ports.outputs.uav1.control_manager.switch_tracker.request]
+topic = "/${UAV_NAME}/control_manager/switch_tracker/request"
+[ports.outputs.uav1.control_manager.landoff_tracker.takeoff.request]
+topic = "/${UAV_NAME}/control_manager/landoff_tracker/takeoff/request"
+[ports.outputs.uav1.control_manager.toggle_output.request]
+topic = "/${UAV_NAME}/control_manager/toggle_output/request"
+[ports.outputs.uav1.hw_api.arming.request]
+topic = "/${UAV_NAME}/hw_api/arming/request"
+
+[log]
+level = "info"
+console = true

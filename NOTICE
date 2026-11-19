@@ -1,0 +1,24 @@
+Hypha
+Copyright 2026 Vit Petrik
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This repository contains third-party material under its own licence:
+
+- vendor/iceoryx2-cal: the iceoryx2-cal crate of the Eclipse iceoryx2 project
+  (https://github.com/eclipse-iceoryx/iceoryx2), MIT OR Apache-2.0, with the one
+  change described in vendor/README.md.
+
+- crates/hypha_msgs/msg (std_msgs, geometry_msgs, sensor_msgs, nav_msgs,
+  diagnostic_msgs, rosgraph_msgs, tf2_msgs): message definitions of ROS 1
+  (https://github.com/ros), BSD 3-Clause.
+
+- crates/hypha-cxx/include/ros: a serialization interface that is source
+  compatible with roscpp_serialization of ROS 1 (https://github.com/ros/roscpp_core),
+  BSD 3-Clause.
+
+- examples/mrs/upstream: sources of the MRS UAV System of the Multi-robot Systems
+  group at the Czech Technical University in Prague (https://github.com/ctu-mrs),
+  BSD 3-Clause, and tf2 LinearMath of ROS geometry2, which carries the zlib licence
+  of the Bullet Continuous Collision Detection and Physics Library. Each directory
+  holds its LICENSE file.

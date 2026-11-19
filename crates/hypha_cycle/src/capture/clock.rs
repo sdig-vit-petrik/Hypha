@@ -1,0 +1,99 @@
+//! Capture admission and freshness on host or replay time.
+
+use std::sync::Arc;
+
+use super::{CaptureClock, CycleHistory, HistorySample};
+
+impl CaptureClock {
+    /// An admitted prefix can be indexed directly.
+    pub(super) fn admitted_end(self, history: &CycleHistory) -> Option<usize> {
+        match self {
+            Self::Host { .. } => Some(history.samples().len()),
+            Self::Replay { cut_nanos } => history.replay_end(cut_nanos),
+        }
+    }
+
+    /// Whether this capture may select `sample` at all.
+    pub(super) fn admits(self, sample: &HistorySample) -> bool {
+        match self {
+            Self::Host { .. } => true,
+            Self::Replay { cut_nanos } => sample.framework_sent_nanos < cut_nanos,
+        }
+    }
+
+    /// The time of this clock: host monotonic time, or the replay cut.
+    pub(super) const fn nanos(self) -> u64 {
+        match self {
+            Self::Host { steady_nanos } => steady_nanos,
+            Self::Replay { cut_nanos } => cut_nanos,
+        }
+    }
+
+    /// The newest retained sample this clock admits that no reader rejected.
+    pub(super) fn newest_admitted(self, history: &CycleHistory) -> Option<&HistorySample> {
+        self.newest_admitted_arc(history).map(|sample| &**sample)
+    }
+
+    /// The newest retained sample this clock admits that no reader rejected, shared.
+    pub(super) fn newest_admitted_arc(self, history: &CycleHistory) -> Option<&Arc<HistorySample>> {
+        let end = self.admitted_end(history).unwrap_or(history.samples().len());
+        history
+            .samples()
+            .range(..end)
+            .rev()
+            .find(|sample| self.admits(sample) && !history.is_rejected(sample.sequence))
+    }
+
+    /// The send time of `sample` on this clock.
+    pub(super) const fn sent(self, sample: &HistorySample) -> u64 {
+        match self {
+            Self::Host { .. } => sample.transport_sent_nanos,
+            Self::Replay { .. } => sample.framework_sent_nanos,
+        }
+    }
+
+    /// Whether `sample` passes a silence limit of `silence_nanos` on this clock.
+    pub(super) fn usable(self, silence_nanos: u64, sample: &HistorySample) -> bool {
+        match self {
+            Self::Host { steady_nanos } => {
+                value_usable_within(silence_nanos, sample.transport_sent_nanos, steady_nanos)
+            }
+            Self::Replay { cut_nanos } => {
+                value_usable_within(silence_nanos, sample.framework_sent_nanos, cut_nanos)
+            }
+        }
+    }
+}
+
+/// Return whether a value sent at `transport_sent_nanos` is usable at
+/// `now_nanos` under `silence_nanos`. A zero silence limit keeps every earlier value usable.
+pub(super) fn value_usable_within(
+    silence_nanos: u64,
+    transport_sent_nanos: u64,
+    now_nanos: u64,
+) -> bool {
+    let sent_in_the_future = transport_sent_nanos > now_nanos;
+    if sent_in_the_future {
+        return false;
+    }
+    let age = now_nanos.saturating_sub(transport_sent_nanos);
+    let has_limit = silence_nanos != 0;
+    !has_limit || age <= silence_nanos
+}
+
+/// The accepted count that `clock` admits, less the samples a reader rejected. A replay
+/// cut admits the samples stamped before it.
+pub(super) fn accepted_on(history: &CycleHistory, clock: CaptureClock) -> u64 {
+    let stats = history.stats();
+    let accepted = stats.accepted.wrapping_sub(stats.rejected);
+    match clock {
+        CaptureClock::Host { .. } => accepted,
+        CaptureClock::Replay { .. } => {
+            let retained_after_cut = clock.admitted_end(history).map_or_else(
+                || history.samples().iter().filter(|sample| !clock.admits(sample)).count(),
+                |end| history.samples().len().saturating_sub(end),
+            );
+            accepted.wrapping_sub(u64::try_from(retained_after_cut).unwrap_or(u64::MAX))
+        }
+    }
+}

@@ -1,0 +1,20 @@
+peak = 25.0
+step = 1.0
+
+[cycle]
+rate_hz = 20.0
+
+[node]
+name = "speed_source"
+
+[ports.outputs.speed]
+topic = "/odom_speed"
+
+[log]
+level = "info"
+console = true
+
+[log.sink.main]
+path = "logs/speed_source.log"
+rotation_mb = 1
+rotation_count = 2

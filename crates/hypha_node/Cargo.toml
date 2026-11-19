@@ -1,0 +1,66 @@
+[package]
+name = "hypha_node"
+description = "The node runtime of hypha: nodes, ports, the WaitSet and cycles, as safe Rust functions."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+hypha_core = { path = "../hypha_core" }
+hypha_cycle = { path = "../hypha_cycle" }
+hypha_runtime = { path = "../hypha_runtime" }
+hypha_sys = { path = "../hypha_sys" }
+hypha_iceoryx2 = { path = "../hypha_iceoryx2" }
+hypha_log = { path = "../hypha_log" }
+hypha_msgdef = { path = "../hypha_msgdef" }
+hypha_msgs = { path = "../hypha_msgs" }
+hypha_time = { path = "../hypha_time" }
+hypha_wire = { path = "../hypha_wire" }
+log = { workspace = true }
+
+[dev-dependencies]
+hypha_testkit = { path = "../hypha_testkit" }
+hypha_msggen = { path = "../hypha_msggen" }
+criterion = { workspace = true }
+
+[[bench]]
+name = "dispatch"
+harness = false
+
+# The peer process that tests/peer_kill_isolation.rs kills.
+[[bin]]
+name = "hypha_node_kill_peer"
+path = "tests/support/kill_peer.rs"
+test = false
+
+# This crate forbids `unsafe`, as the workspace does: the C boundary is in hypha_ffi
+# and the operating-system calls are in hypha_sys. Every lint the workspace sets is
+# repeated here, so relaxing one does not relax the rest.
+[lints.rust]
+dead_code = "deny"
+unsafe_code = "forbid"
+missing_docs = "deny"
+unreachable_pub = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+exit = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+todo = "deny"
+unimplemented = "deny"
+missing_safety_doc = "deny"
+rc_buffer = "deny"
+rc_mutex = "deny"
+non_send_fields_in_send_ty = "deny"
+needless_pass_by_value = "allow"
+module_name_repetitions = "allow"

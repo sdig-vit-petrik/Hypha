@@ -1,0 +1,24 @@
+[package]
+name = "hypha_runtime"
+description = "Transport-independent node session, schema and run state."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+hypha_core = { path = "../hypha_core" }
+hypha_cycle = { path = "../hypha_cycle" }
+hypha_msgs = { path = "../hypha_msgs" }
+hypha_wire = { path = "../hypha_wire" }
+log = { workspace = true }
+# Coordinate-frame buffer of the TF input (MIT, forbid(unsafe_code)).
+transforms = "=2.3.0"
+
+[dev-dependencies]
+hypha_msgdef = { path = "../hypha_msgdef" }
+
+[lints]
+workspace = true

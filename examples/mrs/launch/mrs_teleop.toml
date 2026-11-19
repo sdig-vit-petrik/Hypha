@@ -1,0 +1,77 @@
+# Fly uav1 from the keyboard: the simulator, the managers, the Foxglove bridge and
+# teleop, one tmux window each. Start it with examples/mrs/launch.sh, which puts the
+# build's executables on PATH, sets MRS_LOGS and runs hypha launch in examples/mrs:
+#
+#   examples/mrs/launch.sh up --attach
+#   examples/mrs/launch.sh down
+#
+# Executables are found on PATH; files are relative to examples/mrs. The units that
+# follow /clock set HYPHA_USE_SIM_TIME in their own env; the simulator and the
+# Foxglove bridge run on host time.
+
+[[units]]
+name = "mrs_simulator"
+exec = "mrs_simulator"
+restart = "on-failure"
+args = ["config/mrs_simulator_teleop.toml"]
+[units.env]
+UAV_NAME = "uav1"
+MRS_DIR = "."
+
+[[units]]
+name = "estimation_manager"
+exec = "mrs_estimation_manager"
+restart = "on-failure"
+args = ["config/estimation_manager.toml"]
+after = ["mrs_simulator"]
+[units.env]
+UAV_NAME = "uav1"
+HYPHA_USE_SIM_TIME = "1"
+
+[[units]]
+name = "transform_manager"
+exec = "mrs_transform_manager"
+restart = "on-failure"
+args = ["config/transform_manager.toml"]
+after = ["mrs_simulator"]
+[units.env]
+UAV_NAME = "uav1"
+HYPHA_USE_SIM_TIME = "1"
+
+[[units]]
+name = "control_manager"
+exec = "mrs_control_manager"
+restart = "on-failure"
+args = ["config/control_manager.toml"]
+after = ["mrs_simulator"]
+[units.env]
+UAV_NAME = "uav1"
+HYPHA_USE_SIM_TIME = "1"
+
+[[units]]
+name = "uav_manager"
+exec = "mrs_uav_manager"
+restart = "on-failure"
+args = ["config/uav_manager.toml"]
+after = ["mrs_simulator"]
+[units.env]
+UAV_NAME = "uav1"
+HYPHA_USE_SIM_TIME = "1"
+
+# Foxglove Studio: connect to ws://localhost:8765.
+[[units]]
+name = "foxglove_bridge"
+exec = "hypha"
+args = ["foxglove"]
+restart = "on-failure"
+
+# The status line owns the window; the log goes to $MRS_LOGS/teleop.log.
+[[units]]
+name = "teleop"
+exec = "/bin/sh"
+restart = "on-failure"
+args = ["-c", 'exec mrs_teleop config/teleop.toml 2> "$MRS_LOGS/teleop.log"']
+after = ["mrs_simulator"]
+[units.env]
+UAV_NAME = "uav1"
+HYPHA_USE_SIM_TIME = "1"

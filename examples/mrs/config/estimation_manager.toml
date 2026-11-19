@@ -1,0 +1,77 @@
+# estimation_manager with the ground_truth state estimator, for uav1.
+#
+# Keys converted from (first file with a key wins): mrs_uav_testing
+# config/default_custom_config.yaml (here with state_estimators = ["ground_truth"]),
+# mrs_uav_managers config/{private,public}/estimation_manager/estimation_manager.yaml,
+# config/private/estimators.yaml, and mrs_uav_state_estimators
+# config/{private,public}/ground_truth/ground_truth.yaml.
+uav_name = "${UAV_NAME}"
+
+[node]
+name = "${UAV_NAME}_estimation_manager"
+
+[mrs_uav_managers.estimation_manager]
+state_estimators = ["ground_truth"]
+initial_state_estimator = "ground_truth"
+
+[mrs_uav_managers.estimation_manager.frame_id]
+fcu = "fcu"
+fcu_untilted = "fcu_untilted"
+rtk_antenna = "rtk_antenna"
+
+[mrs_uav_managers.estimation_manager.rate]
+diagnostics = 10.0  # Hz
+uav_state = 100.0   # Hz; hypha port: upstream reads it from control_manager/diagnostics
+
+[mrs_uav_managers.estimation_manager.debug_topics]
+input = true
+output = true
+state = true
+covariance = false
+innovation = false
+correction = true
+correction_delay = false
+diagnostics = false
+
+[mrs_uav_managers.estimation_manager.ground_truth]
+address = "mrs_uav_state_estimators/GroundTruth"
+max_flight_z = 100.0  # m, in the estimator frame
+
+[mrs_uav_managers.estimation_manager.ground_truth.message]
+topic = "hw_api/ground_truth"
+
+[mrs_uav_managers.estimation_manager.ground_truth.requires]
+gnss = false
+imu = false
+distance_sensor = false
+altitude = false
+magnetometer_heading = false
+position = false
+orientation = false
+velocity = false
+angular_velocity = false
+
+# The trigger: one step per simulator sample; a fallback step after 100 ms of silence.
+[ports.inputs.ground_truth]
+topic = "/${UAV_NAME}/hw_api/ground_truth"
+silence_ms = 100
+
+[ports.inputs.hw_api_capabilities]
+topic = "/${UAV_NAME}/hw_api/capabilities"
+
+[ports.outputs.uav_state]
+topic = "/${UAV_NAME}/estimation_manager/uav_state"
+[ports.outputs.odom_main]
+topic = "/${UAV_NAME}/estimation_manager/odom_main"
+[ports.outputs.diagnostics]
+topic = "/${UAV_NAME}/estimation_manager/diagnostics"
+
+# Outputs of the ground_truth plugin (PublisherHandler).
+[ports.outputs.uav1.estimation_manager.ground_truth.odom]
+topic = "/${UAV_NAME}/estimation_manager/ground_truth/odom"
+[ports.outputs.uav1.estimation_manager.ground_truth.uav_state]
+topic = "/${UAV_NAME}/estimation_manager/ground_truth/uav_state"
+
+[log]
+level = "info"
+console = true

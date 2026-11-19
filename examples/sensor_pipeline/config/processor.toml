@@ -1,0 +1,27 @@
+# hypha_cloud_processor: a plain hypha::Node with one timer and one worker thread.
+report_period_ms = 500     # the timer: one diagnostics report every 500 ms
+handover_depth = 2         # clouds queued between the run() thread and the worker
+target_frame = "odom"      # the frame of the published centroid
+tf_wait_ms = 50            # how long the worker asks again for a transform not yet received
+static_check = ["base_link", "lidar"]   # a static transform each report looks up
+
+[node]
+name = "cloud_processor"
+
+# Slow mode: a deliberate overload, to show a queue overflow and missed timer periods.
+[slow]
+enabled = false
+worker_delay_ms = 300      # per cloud; clouds arrive every 100 ms
+stall_ms = 1500            # the timer callback blocks the run() thread this long
+
+[ports.inputs.imu]
+topic = "/imu"
+
+[ports.inputs.cloud]
+topic = "/lidar/points"
+
+[ports.outputs.centroid]
+topic = "~/centroid"       # /cloud_processor/centroid
+
+[log]
+level = "info"

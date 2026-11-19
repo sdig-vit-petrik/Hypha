@@ -1,0 +1,21 @@
+[package]
+name = "hypha_core"
+description = "Shared message traits, dispatch limits, parameters, timers, and node introspection."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+hypha_time = { path = "../hypha_time" }
+hypha_wire = { path = "../hypha_wire" }
+toml = { workspace = true }
+
+[dev-dependencies]
+hypha_testkit = { path = "../hypha_testkit" }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

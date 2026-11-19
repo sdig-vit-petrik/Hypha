@@ -1,0 +1,315 @@
+#pragma once
+
+/// @file
+/// testing::StepHarness: run the step of a cycle that was not started, with no node and
+/// no bus, setting what its inputs show and reading what its outputs sent.
+///
+///     Controller controller;
+///     hypha::testing::StepHarness harness{controller};
+///     harness.set(controller.speed, std_msgs::Float64{4.0});
+///     harness.step(controller);
+///     ASSERT_EQ(harness.sent(controller.command).size(), 1U);
+///
+/// deliver() reads `silence_ms` of `[ports.inputs.<name>]`, so a Node or a ConfigContext
+/// must hold the parameter file.
+///
+/// step() moves no clock: in a harness step hypha::now() returns the process clock, so a
+/// test of code that calls it sets simulated time itself.
+///
+/// Not part of hypha/hypha.h. The harness keeps pointers to the cycle and its ports, so
+/// declare it after them. A send the step refused and caught still fails step().
+
+#include "hypha/config.h"
+#include "hypha/cycle_arrivals.h"
+#include "hypha/cycle_latest.h"
+#include "hypha/cycle_node.h"
+#include "hypha/cycle_output.h"
+#include "hypha/cycle_runtime.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+namespace hypha::testing {
+
+/// @brief Runs the step of a cycle that was not started: no node, no bus.
+///
+/// Cycle::start() throws while a harness lives. Every send() of a step appends a copy to
+/// sent(port); the next step() clears it.
+class StepHarness final : private detail::CaptureStore
+{
+  public:
+    /// @throws std::logic_error when @p cycle has started or another harness holds it.
+    explicit StepHarness(Cycle& cycle) : cycle_(cycle)
+    {
+        const bool taken = cycle.started_ || cycle.harnessLive_;
+        if (taken) {
+            throw std::logic_error(
+                "hypha: cycle '" + cycle.name()
+                + "': a StepHarness needs a cycle that was not started"
+            );
+        }
+        cycle.harnessLive_ = true;
+    }
+
+    StepHarness(const StepHarness&) = delete;
+    StepHarness& operator=(const StepHarness&) = delete;
+    StepHarness(StepHarness&&) = delete;
+    StepHarness& operator=(StepHarness&&) = delete;
+
+    ~StepHarness()
+    {
+        for (Store& store : this->stores_) {
+            store.destroy(store.sent);
+        }
+        this->cycle_.harnessLive_ = false;
+    }
+
+    /// @brief The port receives @p value, sent at @p sentAt. Each later step() judges it as
+    ///        a capture does: usable while (step time - sentAt) <= silence_ms, stale after.
+    /// @throws std::logic_error when the port reads a table and no configuration is loaded.
+    /// @throws ParameterError when `silence_ms` is not a whole number of milliseconds
+    ///         from 1 to the limitMax() of the port.
+    template <typename M>
+    void deliver(Latest<M>& port, M value, Time sentAt)
+    {
+        const int64_t silenceNanos = StepHarness::silenceOf(port);
+        this->forget(port);
+        port.candidate_ = std::move(value);
+        port.supervision_.silenceNanos_ = silenceNanos;
+        this->deliveries_.push_back(
+            Delivery{&port, sentAt, silenceNanos, true, &StepHarness::judgeDelivery<M>}
+        );
+    }
+
+    /// @brief The port receives @p samples, oldest first, for the next step only; the newest
+    ///        was sent at @p newestSentAt. The refusals are those of deliver(Latest&).
+    template <typename M>
+    void deliver(Arrivals<M>& port, std::vector<M> samples, Time newestSentAt)
+    {
+        const int64_t silenceNanos = StepHarness::silenceOf(port);
+        this->forget(port);
+        port.sampleCount_ = samples.size();
+        port.stamps_.assign(samples.size(), detail::SampleStamp{});
+        port.samples_ = std::move(samples);
+        port.supervision_.silenceNanos_ = silenceNanos;
+        this->deliverOnce(port);
+        this->deliveries_.push_back(
+            Delivery{&port, newestSentAt, silenceNanos, true, &StepHarness::judgeArrivals<M>}
+        );
+    }
+
+    /// @brief The port holds @p value: usable, and fresh in the next step only.
+    template <typename M>
+    void set(Latest<M>& port, M value)
+    {
+        this->forget(port);
+        port.held_ = std::move(value);
+        port.heldStamp_ = detail::SampleStamp{};
+        port.hasHeld_ = true;
+        port.usable_ = true;
+        port.verdict_ = InputVerdict::Usable;
+        port.ageNanos_ = 0;
+        StepHarness::judge(port, HYPHA_CYCLE_VERDICT_USABLE, false);
+        this->freshNext(port);
+    }
+
+    /// @brief The port is stale; lastKnown() keeps the value last set.
+    template <typename M>
+    void setStale(Latest<M>& port)
+    {
+        this->forget(port);
+        port.usable_ = false;
+        port.fresh_ = false;
+        port.verdict_ = InputVerdict::Stale;
+        StepHarness::judge(port, HYPHA_CYCLE_VERDICT_STALE, true);
+    }
+
+    /// @brief The port has no value at all.
+    template <typename M>
+    void setNeverArrived(Latest<M>& port)
+    {
+        this->forget(port);
+        port.hasHeld_ = false;
+        port.usable_ = false;
+        port.fresh_ = false;
+        port.verdict_ = InputVerdict::NeverArrived;
+        StepHarness::judge(port, HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, false);
+    }
+
+    /// @brief The port delivers @p samples, oldest first, to the next step only.
+    template <typename M>
+    void set(Arrivals<M>& port, std::vector<M> samples)
+    {
+        this->forget(port);
+        port.sampleCount_ = samples.size();
+        port.stamps_.assign(samples.size(), detail::SampleStamp{});
+        port.samples_ = std::move(samples);
+        port.verdict_ = InputVerdict::Usable;
+        StepHarness::judge(port, HYPHA_CYCLE_VERDICT_USABLE, false);
+        this->deliverOnce(port);
+    }
+
+    /// @brief The port has no sample and is stale.
+    template <typename M>
+    void setStale(Arrivals<M>& port)
+    {
+        this->forget(port);
+        port.sampleCount_ = 0;
+        port.verdict_ = InputVerdict::Stale;
+        StepHarness::judge(port, HYPHA_CYCLE_VERDICT_STALE, true);
+    }
+
+    /// @brief The port has no sample and never had one.
+    template <typename M>
+    void setNeverArrived(Arrivals<M>& port)
+    {
+        this->forget(port);
+        port.sampleCount_ = 0;
+        port.verdict_ = InputVerdict::NeverArrived;
+        StepHarness::judge(port, HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, false);
+    }
+
+    /// @brief The port's alive value has (or has not) stopped changing.
+    template <typename M>
+    void setStagnant(Input<M>& port, bool stagnant)
+    {
+        HyphaSupervisionReport& report = port.facts_.supervision;
+        const uint8_t           others = report.faults & ~HYPHA_FAULT_STAGNANT;
+        report.faults = static_cast<uint8_t>(others | (stagnant ? HYPHA_FAULT_STAGNANT : 0U));
+        StepHarness::rejudge(port);
+    }
+
+    /// @brief Run the step of @p node once.
+    void step(CycleNode& node, CycleTime time = {})
+    {
+        this->step(NodeStep{&node}, time);
+    }
+
+    /// @brief Run @p step once, as the cycle would: void operator()(const CycleTime&).
+    template <typename Step>
+        requires(!std::is_base_of_v<CycleNode, std::remove_cvref_t<Step>>)
+    void step(Step&& step, CycleTime time = {})
+    {
+        this->beginStep(time.now);
+        const EndStep endStep{this};
+        std::forward<Step>(step)(time);
+        this->rethrowLatched();
+    }
+
+    /// @brief What the last step sent on @p port, in send order.
+    template <typename M>
+    const std::vector<M>& sent(const Output<M>& port) const
+    {
+        for (const Store& store : this->stores_) {
+            if (store.port == &port) {
+                return *static_cast<const std::vector<M>*>(store.sent);
+            }
+        }
+        static const std::vector<M> none;
+        return none;
+    }
+
+  private:
+    struct Store
+    {
+        const Port* port;
+        void*       sent;
+        void (*destroy)(void*);
+    };
+
+    struct Pending
+    {
+        Port* port;
+        void (*begin)(Port*);
+        void (*finish)(Port*);
+    };
+
+    /// A port that deliver() gave a value or samples: judged again in every step.
+    /// `silenceNanos` is zero without a limit.
+    struct Delivery
+    {
+        Port*   port;
+        Time    sentAt;
+        int64_t silenceNanos;
+        bool    unseen;
+        void (*judge)(Delivery&, Time, std::vector<Pending>&);
+    };
+
+    struct NodeStep
+    {
+        CycleNode* node;
+
+        void operator()(const CycleTime& time) const
+        {
+            this->node->step(time);
+        }
+    };
+
+    struct EndStep
+    {
+        explicit EndStep(StepHarness* owner) : harness(owner)
+        {
+        }
+
+        StepHarness* harness;
+
+        EndStep(const EndStep&) = delete;
+        EndStep& operator=(const EndStep&) = delete;
+
+        ~EndStep()
+        {
+            this->harness->endStep();
+        }
+    };
+
+    // Defined in hypha/testing/step_harness_impl.h.
+    void* storeFor(const Port& port, void* (*make)(), void (*destroy)(void*)) override;
+    template <typename M>
+    static int64_t  silenceOf(const Input<M>& port);
+    static bool     withinSilence(int64_t silenceNanos, int64_t sentNanos, int64_t nowNanos);
+    static uint64_t ageOf(int64_t sentNanos, int64_t nowNanos);
+    template <typename M>
+    static void judgeDelivery(Delivery& delivery, Time now, std::vector<Pending>& running);
+    template <typename M>
+    static void judgeArrivals(Delivery& delivery, Time now, std::vector<Pending>& running);
+    template <typename M>
+    static void judge(Input<M>& port, uint32_t verdict, bool stale);
+    template <typename M>
+    static void rejudge(Input<M>& port);
+    template <typename M>
+    static void makeFresh(Port* port);
+    template <typename M>
+    static void keepFresh(Port*);
+    template <typename M>
+    static void endFresh(Port* port);
+    template <typename M>
+    static void keepSamples(Port*);
+    template <typename M>
+    static void dropSamples(Port* port);
+    template <typename M>
+    void forget(Input<M>& port);
+    void dropPending(const Port& port);
+    template <typename M>
+    void freshNext(Latest<M>& port);
+    template <typename M>
+    void deliverOnce(Arrivals<M>& port);
+    void beginStep(Time now);
+    void rethrowLatched();
+    void endStep() noexcept;
+
+    Cycle&                cycle_;
+    std::vector<Store>    stores_;
+    std::vector<Pending>  pending_;
+    std::vector<Pending>  running_;
+    std::vector<Delivery> deliveries_;
+};
+
+}  // namespace hypha::testing
+
+#include "hypha/testing/step_harness_impl.h"

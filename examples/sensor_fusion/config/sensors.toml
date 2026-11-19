@@ -1,0 +1,21 @@
+# The sensor list of hypha_fusion_sensors, its root file. hypha_fusion reads each topic
+# from its own port table in fusion.toml.
+#
+# One [[sensors]] entry per sensor. Only topic and rate_factor are required.
+#   silence_start_s, silence_end_s  both or neither. Absent means never silent.
+
+base_hz = 20.0
+
+[[sensors]]
+topic = "/fusion/sensor/0"
+rate_factor = 1.0
+silence_start_s = 5.0
+silence_end_s = 11.0
+
+[[sensors]]
+topic = "/fusion/sensor/1"
+rate_factor = 1.5
+
+[[sensors]]
+topic = "/fusion/sensor/2"
+rate_factor = 2.0

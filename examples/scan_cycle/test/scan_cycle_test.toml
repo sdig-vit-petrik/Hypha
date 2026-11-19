@@ -1,0 +1,18 @@
+# The parameters of the scan cycle's tests: both inputs wired, short limits.
+gain = 0.5
+fallback_setpoint = 10.0
+command_frame = "base_link"
+
+[cycle]
+rate_hz = 100.0
+
+[ports.inputs.speed]
+topic = "/scan_cycle_test/speed"
+silence_ms = 200
+
+[ports.inputs.setpoint]
+topic = "/scan_cycle_test/setpoint"
+silence_ms = 500
+
+[ports.outputs.command]
+topic = "~/command"

@@ -1,0 +1,6 @@
+# The compiler every build of this tree uses, locally, in CI and inside an
+# application's FetchContent build. docker/Dockerfile installs the same version
+# (HYPHA_RUST_VERSION); check.sh fails when the two differ.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt", "llvm-tools-preview"]

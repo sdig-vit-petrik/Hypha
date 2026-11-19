@@ -1,0 +1,8 @@
+int8 A=-128
+uint64 B=0xffffffffffffffff
+string S=a # not a comment
+bool T=1
+float64 F=1.5
+# comment
+
+duration d

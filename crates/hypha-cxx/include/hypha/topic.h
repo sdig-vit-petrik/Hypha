@@ -1,0 +1,95 @@
+#pragma once
+
+/// @file
+/// How an endpoint names its topic: a bare string names a port table of the parameter
+/// file, `hypha::Topic{"/tf"}` a literal.
+
+#include "hypha/backend/config_readers.h"
+#include "hypha/backend/session.h"
+#include "hypha/raw.h"
+#include "hypha_base/clock.h"
+
+#include <cstdint>
+#include <expected>
+#include <string>
+#include <string_view>
+#include <utility>
+
+namespace hypha {
+
+/// @brief Check that a topic is a canonical public name, such as `/node/example`.
+/// @return Ok, or InvalidTopic for a name the transport would refuse.
+inline Status validateTopicName(std::string_view topic)
+{
+    return backend::validatePublicTopicName(topic) == HYPHA_STATUS_OK ? Status::Ok
+                                                                      : Status::InvalidTopic;
+}
+
+/// @brief A topic that code fixes, such as `hypha::Topic{"/tf"}` or `hypha::Topic{"~/state"}`.
+///        `~/x` is `/<node>/x`, here and in a port table; `~` and `~x` are InvalidTopic.
+struct Topic
+{
+    std::string name;
+};
+
+namespace detail {
+
+/// @brief Where an endpoint takes its topic from: a literal, or a port table.
+struct TopicSource
+{
+    std::string literal;
+    std::string paramName;
+    bool paramOptional{false};
+    bool paramIsOutput{false};
+
+    static TopicSource ofLiteral(Topic topic)
+    {
+        TopicSource source;
+        source.literal = std::move(topic.name);
+        return source;
+    }
+
+    static TopicSource ofPort(std::string name, bool isOutput, bool optional)
+    {
+        TopicSource source;
+        source.paramName = std::move(name);
+        source.paramIsOutput = isOutput;
+        source.paramOptional = optional;
+        return source;
+    }
+
+    bool fromParam() const
+    {
+        return !this->paramName.empty();
+    }
+
+    /// @brief What a failure names: `ports.outputs.<name>` or the literal topic.
+    std::string describe() const
+    {
+        if (this->fromParam()) {
+            return std::string(this->paramIsOutput ? "ports.outputs." : "ports.inputs.")
+                 + this->paramName;
+        }
+        return "topic '" + this->literal + "'";
+    }
+
+    /// @return The topic; empty for a disabled port. InvalidArgument for an empty literal.
+    std::expected<std::string, Status> resolve() const
+    {
+        if (this->fromParam()) {
+            return backend::paramTopic(
+                this->paramName,
+                this->paramOptional ? HYPHA_PORT_TOPIC_OPTIONAL : HYPHA_PORT_TOPIC_REQUIRED,
+                this->paramIsOutput
+            );
+        }
+        if (this->literal.empty()) {
+            return std::unexpected(Status::InvalidArgument);
+        }
+        return this->literal;
+    }
+};
+
+}  // namespace detail
+
+}  // namespace hypha
