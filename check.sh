@@ -8,6 +8,10 @@ cd "$(dirname "$0")"
 
 ./scripts/gen-ffi-header.sh --verify
 ./scripts/gen-mcap-reader-header.sh --verify
+# docs/traceability.md is generated; every requirement has an entry and every test
+# reference names a test in the tree.
+python3 -I scripts/traceability.py render --verify
+python3 -I scripts/test_traceability.py
 ./scripts/check-features.sh
 git ls-files '*.sh' | xargs shellcheck --severity=warning --external-sources
 
