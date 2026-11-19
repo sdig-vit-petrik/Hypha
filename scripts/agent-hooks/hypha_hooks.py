@@ -102,8 +102,19 @@ SUBAGENT_GIT_RULES = {
 }
 # System and package managers: nothing is installed and the system is the owner's.
 SYSTEM_PROGRAMS = {
-    "sudo", "doas", "su", "apt", "apt-get", "dpkg", "dnf", "yum", "pacman", "zypper", "snap",
-    "flatpak", "brew",
+    "sudo",
+    "doas",
+    "su",
+    "apt",
+    "apt-get",
+    "dpkg",
+    "dnf",
+    "yum",
+    "pacman",
+    "zypper",
+    "snap",
+    "flatpak",
+    "brew",
 }
 # `rustup` subcommands that only read.
 RUSTUP_READ_ONLY = {"show", "which", "run", "doc", "help", "--version", "-V"}
@@ -115,7 +126,9 @@ SHELLS = {"bash", "sh", "zsh", "dash"}
 WRITERS = {"tee", "rm", "mv", "cp", "chmod", "truncate", "ln", "install", "dd", "touch"}
 SEPARATORS = {";", "&&", "||", "|", "&", "(", ")", "\n", "|&"}
 REDIRECTS = {">", ">>", "&>", ">|"}
-HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n(.*?\n)?\s*\2[ \t]*(\n|$)", re.S)
+HEREDOC = re.compile(
+    r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n(.*?\n)?\s*\2[ \t]*(\n|$)", re.S
+)
 SUBAGENT_ONLY_FILES = re.compile(r"^(hypha-audit-|hypha-design-audit-)")
 # A shell word that is plainly a path: no quotes, braces, spaces or regex syntax.
 PATH_WORD = re.compile(r"^[~/.][A-Za-z0-9._+@%,:=/-]*$")
@@ -407,8 +420,10 @@ def check_protected(call: Call) -> None:
     elif call.kind == "bash":
         targets = [resolve(t, call.cwd) for t in redirect_targets(call.command)]
         for words in simple_commands(call.command):
-            writes = Path(words[0]).name in WRITERS or words[:2] == ["sed", "-i"] or (
-                words[0] == "sed" and any(w.startswith("-i") for w in words[1:])
+            writes = (
+                Path(words[0]).name in WRITERS
+                or words[:2] == ["sed", "-i"]
+                or (words[0] == "sed" and any(w.startswith("-i") for w in words[1:]))
             )
             if writes:
                 targets.extend(resolve(w, call.cwd) for w in words[1:] if not w.startswith("-"))
@@ -460,7 +475,9 @@ def command_rule(words: list[str], is_subagent: bool) -> str | None:
     if program == "cargo":
         sub = next((a for a in args if not a.startswith(("-", "+"))), "")
         if sub == "clean" and is_subagent:
-            return "subagents never delete target/: the orchestrator decides when the build trees go"
+            return (
+                "subagents never delete target/: the orchestrator decides when the build trees go"
+            )
         if sub == "install":
             return "install nothing"
         if sub in ("publish", "login", "yank", "owner"):
@@ -500,22 +517,34 @@ def command_rule(words: list[str], is_subagent: bool) -> str | None:
         )
         if discards:
             return "agents never discard uncommitted work: it may be the owner's. Ask the owner"
-        forced_delete = sub == "branch" and ("-D" in rest or ("--delete" in rest and "--force" in rest))
+        forced_delete = sub == "branch" and (
+            "-D" in rest or ("--delete" in rest and "--force" in rest)
+        )
         if forced_delete:
-            return "agents never force-delete a branch: its commits may be nowhere else. Ask the owner"
+            return (
+                "agents never force-delete a branch: its commits may be nowhere else. Ask the owner"
+            )
         listing = sub == "branch" and (not rest or all(a.startswith("-") for a in rest))
         if is_subagent and sub in SUBAGENT_GIT_RULES and not listing:
             return SUBAGENT_GIT_RULES[sub]
         if sub == "commit" and any(a in ("--no-verify", "-n", "--amend") for a in rest):
-            return "agents commit new commits through the pre-commit hook: no --no-verify, no --amend"
+            return (
+                "agents commit new commits through the pre-commit hook: no --no-verify, no --amend"
+            )
         if sub == "config" and any(a.lower() == "core.hookspath" for a in rest):
             return "the git hooks path is the owner's setting"
     pip_install = (program.startswith("pip") and args[:1] == ["install"]) or (
-        program.startswith("python") and "-m" in args and args[args.index("-m") + 1 :][:2] == ["pip", "install"]
+        program.startswith("python")
+        and "-m" in args
+        and args[args.index("-m") + 1 :][:2] == ["pip", "install"]
     )
     if pip_install:
         return "install nothing"
-    npm_global = program == "npm" and args[:1] in (["i"], ["install"]) and ("-g" in args or "--global" in args)
+    npm_global = (
+        program == "npm"
+        and args[:1] in (["i"], ["install"])
+        and ("-g" in args or "--global" in args)
+    )
     if npm_global:
         return "install nothing"
     if program == "clean-shm.sh" and "--force" in args and live_stack():
@@ -554,7 +583,9 @@ def downloads_into_interpreter(command: str) -> bool:
 
 def check_command(call: Call) -> None:
     if downloads_into_interpreter(call.command):
-        raise Blocked("blocked: never pipe a download into an interpreter; download nothing to run.")
+        raise Blocked(
+            "blocked: never pipe a download into an interpreter; download nothing to run."
+        )
     for words in simple_commands(call.command):
         reason = command_rule(words, call.is_subagent)
         if reason:
@@ -626,7 +657,9 @@ def rust_findings(path: Path, inserted: str | None) -> list[str]:
             continue
         code = text.split("//", 1)[0]
         if ALLOW_WITHOUT_REASON.search(code):
-            findings.append(f"{number}: #[allow] without `reason = \"...\"`; use #[expect(.., reason)]")
+            findings.append(
+                f'{number}: #[allow] without `reason = "..."`; use #[expect(.., reason)]'
+            )
         if UNSAFE_BLOCK.search(code):
             window = "\n".join(lines[max(0, number - 7) : number])
             if "SAFETY:" not in window:
@@ -637,7 +670,9 @@ def rust_findings(path: Path, inserted: str | None) -> list[str]:
     return findings
 
 
-LOWERED_LINT = re.compile(r"""^\s*[A-Za-z_][\w:-]*\s*=\s*(?:"(allow|warn)"|\{[^}]*level\s*=\s*"(allow|warn)")""")
+LOWERED_LINT = re.compile(
+    r"""^\s*[A-Za-z_][\w:-]*\s*=\s*(?:"(allow|warn)"|\{[^}]*level\s*=\s*"(allow|warn)")"""
+)
 
 
 def lint_findings(path: Path) -> list[str]:
@@ -664,8 +699,12 @@ def post_edit(call: Call) -> list[str]:
         is_repo_rust = path.suffix == ".rs" and REPO in path.parents and path.is_file()
         if not is_repo_rust:
             continue
-        subprocess.run(["rustfmt", "--quiet", str(path)], cwd=REPO, capture_output=True, check=False)
-        findings.extend(f"{path.relative_to(REPO)}:{f}" for f in rust_findings(path, call.added_text))
+        subprocess.run(
+            ["rustfmt", "--quiet", str(path)], cwd=REPO, capture_output=True, check=False
+        )
+        findings.extend(
+            f"{path.relative_to(REPO)}:{f}" for f in rust_findings(path, call.added_text)
+        )
     return findings
 
 
@@ -674,7 +713,10 @@ def post_edit(call: Call) -> list[str]:
 
 def changed_packages() -> list[str]:
     status = subprocess.run(
-        ["git", "-C", str(REPO), "status", "--porcelain"], capture_output=True, text=True, check=False
+        ["git", "-C", str(REPO), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=False,
     ).stdout
     packages = set()
     for line in status.splitlines():
@@ -700,8 +742,10 @@ def stop(payload: dict, call: Call) -> str | None:
     counter = Path("/tmp") / f"hypha-hooks-stop-{key}"
     refusals = int(counter.read_text()) if counter.is_file() else 0
     if refusals >= 3:
-        print("hypha hooks: clippy still red after 3 refusals; letting the hand-back through",
-              file=sys.stderr)
+        print(
+            "hypha hooks: clippy still red after 3 refusals; letting the hand-back through",
+            file=sys.stderr,
+        )
         return None
     packages = changed_packages()
     if not packages:
@@ -710,15 +754,23 @@ def stop(payload: dict, call: Call) -> str | None:
     for package in packages:
         command += ["-p", package]
     command += ["--", "-D", "warnings"]
-    env = {**os.environ, "CARGO_INCREMENTAL": "0", "CARGO_PROFILE_DEV_DEBUG": "0",
-           "CARGO_PROFILE_TEST_DEBUG": "0"}
+    env = {
+        **os.environ,
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
+    }
     result = subprocess.run(command, cwd=REPO, capture_output=True, text=True, env=env, check=False)
     if result.returncode == 0:
         counter.unlink(missing_ok=True)
         return None
     counter.write_text(str(refusals + 1))
-    return "cargo clippy is red on " + ", ".join(packages) + "; fix it before handing back:\n" + \
-        result.stderr[-4000:]
+    return (
+        "cargo clippy is red on "
+        + ", ".join(packages)
+        + "; fix it before handing back:\n"
+        + result.stderr[-4000:]
+    )
 
 
 # --- answering in each agent's format -------------------------------------------------
@@ -730,7 +782,9 @@ def deny(agent: str, event: str, reason: str) -> int:
         print(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": reason}))
         return 0
     if agent in ("gemini", "antigravity"):
-        print(json.dumps({"decision": "deny" if event == "pre-tool" else "block", "reason": reason}))
+        print(
+            json.dumps({"decision": "deny" if event == "pre-tool" else "block", "reason": reason})
+        )
         return 0
     # Claude Code and Codex: exit 2 blocks a tool call or a stop and shows stderr.
     print(reason, file=sys.stderr)
@@ -746,7 +800,9 @@ def run(agent: str, event: str, raw: str) -> int:
         elif event == "post-edit":
             findings = post_edit(call)
             if findings:
-                return deny(agent, event, "Fix these in the lines you just added:\n" + "\n".join(findings))
+                return deny(
+                    agent, event, "Fix these in the lines you just added:\n" + "\n".join(findings)
+                )
         elif event == "stop":
             reason = stop(payload, call)
             if reason:

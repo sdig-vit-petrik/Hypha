@@ -49,9 +49,7 @@ class TransformBuffer
     /// @throws ConfigError when a topic exists with another policy (QosMismatch).
     ///         std::runtime_error for any other refusal.
     explicit TransformBuffer(
-        Node& /*node*/,
-        TransformTopics topics = {},
-        Duration        cache = defaultCache()
+        Node& /*node*/, TransformTopics topics = {}, Duration cache = defaultCache()
     )
     {
         const int64_t cacheNanos = cache.nanos();
@@ -63,7 +61,7 @@ class TransformBuffer
         if (node == nullptr) {
             detail::throwFailure("transform buffer", Status::InvalidState);
         }
-        const ::HyphaQos qos = detail::declaredQos(QosOf<tf2_msgs::TFMessage>::value, 0);
+        const ::HyphaQos    qos = detail::declaredQos(QosOf<tf2_msgs::TFMessage>::value, 0);
         const ::HyphaStatus status = backend::createTransformBuffer(
             node,
             topics.tf,
@@ -120,9 +118,7 @@ class TransformBuffer
                 "hypha: TransformBuffer::lookup() refused with status " + std::to_string(status)
             );
         }
-        return detail::transformAnswer(
-            result, raw, target, source, "TransformBuffer::lookup()"
-        );
+        return detail::transformAnswer(result, raw, target, source, "TransformBuffer::lookup()");
     }
 
     backend::UniqueTransformBuffer buffer_;

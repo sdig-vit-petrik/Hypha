@@ -130,9 +130,8 @@ TEST(TransformBuffer, LookupLatestGivesTheNewestTimeOfTheChain)
 TEST(TransformBuffer, AStaticTransformSentBeforeTheBufferExistedIsFoundAfterTheNodeRan)
 {
     hypha::Node node("tfb_static_late");
-    auto        statics = node.advertise<tf2_msgs::TFMessage>(
-        hypha::Topic{topics().tfStatic}, hypha::latched
-    );
+    auto        statics =
+        node.advertise<tf2_msgs::TFMessage>(hypha::Topic{topics().tfStatic}, hypha::latched);
     ASSERT_TRUE(statics.publish(message(transform("base", "lidar", 5, 0.25))));
 
     hypha::TransformBuffer buffer{node, topics()};
@@ -190,7 +189,7 @@ TEST(TransformBuffer, AnotherThreadLooksUpWhileTheNodeRuns)
 {
     hypha::Node            node("tfb_thread");
     hypha::TransformBuffer buffer{node, topics()};
-    auto                   publisher = node.advertise<tf2_msgs::TFMessage>(hypha::Topic{topics().tf});
+    auto publisher = node.advertise<tf2_msgs::TFMessage>(hypha::Topic{topics().tf});
     ASSERT_TRUE(publisher.publish(message(transform("map", "base", 1, 0.0))));
     ASSERT_TRUE(publisher.publish(message(transform("map", "base", 3, 2.0))));
 
@@ -210,15 +209,13 @@ TEST(TransformBuffer, AnotherThreadLooksUpWhileTheNodeRuns)
 TEST(TransformBuffer, ABufferOfAnotherPolicyOnAnExistingTopicIsRefused)
 {
     hypha::Node node("tfb_policy");
-    auto        first = node.advertise<tf2_msgs::TFMessage>(
-        hypha::Topic{topics().tf}, hypha::defaultQos
-    );
+    auto first = node.advertise<tf2_msgs::TFMessage>(hypha::Topic{topics().tf}, hypha::defaultQos);
     EXPECT_THROW(hypha::TransformBuffer(node, topics()), hypha::ConfigError);
 }
 
 TEST(TransformBuffer, ACacheThatIsNotPositiveIsRefusedBeforeTheCall)
 {
-    hypha::Node node("tfb_cache");
+    hypha::Node       node("tfb_cache");
     const std::string text = hypha_test::refusalOf([&node] {
         hypha::TransformBuffer buffer{node, topics(), 0_s};
     });

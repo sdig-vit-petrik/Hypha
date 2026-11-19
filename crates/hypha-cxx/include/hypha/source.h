@@ -50,7 +50,7 @@ struct SourceSlot
 {
     TopicSource topic;
     InputSource source;
-    Qos policy{};
+    Qos         policy{};
     /// The deepest queue a port of this topic asks for.
     uint32_t depth{0};
     /// The queue depth the source was opened with. Zero before it is open.

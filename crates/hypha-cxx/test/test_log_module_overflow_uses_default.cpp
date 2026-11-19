@@ -14,7 +14,7 @@ TEST(LogModuleOverflow, aModulePast256DoesNotAbortAndUsesTheDefaultModule)
     HyphaLogModule last = 1;
     for (int index = 0; index < 300; ++index) {
         const std::string name = "overflow_" + std::to_string(index);
-        last                   = hypha::log::detail::registerModule(name);
+        last = hypha::log::detail::registerModule(name);
     }
     EXPECT_EQ(last, 0U) << "a name past the limit gets the identifier of \"default\"";
     const std::optional<uint64_t> before = hypha::metric("log.lines_written");

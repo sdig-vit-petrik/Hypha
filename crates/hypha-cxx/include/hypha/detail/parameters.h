@@ -273,8 +273,8 @@ std::string arrayElementRefusal(const std::string& list, size_t index)
 {
     const std::pair<HyphaParamResult, HyphaConfigValue> read =
         backend::readListConfigValue(list, index, std::string{});
-    return "hypha: parameter '" + list + "[" + std::to_string(index)
-         + "]': expected " + expectedKindText<T>() + ", found " + storedValueText(read);
+    return "hypha: parameter '" + list + "[" + std::to_string(index) + "]': expected "
+         + expectedKindText<T>() + ", found " + storedValueText(read);
 }
 
 /// The first N of @p values as an std::array; the caller checked the length.

@@ -93,7 +93,7 @@ class PreTool(unittest.TestCase):
     def test_rule_words_inside_quotes_or_heredocs_pass(self) -> None:
         for command in (
             "git commit -m 'never git push or cargo clean here'",
-            "echo \"run git config core.hooksPath .githooks yourself\"",
+            'echo "run git config core.hooksPath .githooks yourself"',
             "grep -n 'git stash' AGENTS.md",
             "python3 -I - <<'EOF'\ns = 'git config core.hooksPath .githooks'\nprint(s)\nEOF\necho done",
             "cat <<EOF > /tmp/note.txt\ncargo clean\nrm -rf target\nEOF",
@@ -208,7 +208,9 @@ class PreTool(unittest.TestCase):
             ('# unwrap_used = "allow"', False),
         ):
             with self.subTest(line=line):
-                self.assertEqual(hypha_hooks.LOWERED_LINT.search(line.split("#", 1)[0]) is not None, lowered)
+                self.assertEqual(
+                    hypha_hooks.LOWERED_LINT.search(line.split("#", 1)[0]) is not None, lowered
+                )
 
     def test_clean_shm_force_follows_the_live_stack(self) -> None:
         call = hypha_hooks.Call(kind="bash", command="./clean-shm.sh --force")
@@ -245,12 +247,21 @@ class PreTool(unittest.TestCase):
                 hypha_hooks.check_command(call)
         finally:
             hypha_hooks.live_stack = original
-        for command in ("./check.sh", "./scripts/format.sh --check", "./scripts/test-installed-sdk.sh /tmp/prefix"):
+        for command in (
+            "./check.sh",
+            "./scripts/format.sh --check",
+            "./scripts/test-installed-sdk.sh /tmp/prefix",
+        ):
             with self.subTest(command=command):
                 self.assert_allowed(claude("Bash", command=command))
 
     def test_only_the_main_session_deletes_the_build_trees(self) -> None:
-        for command in ("cargo clean", "rm -rf target", "rm -rf ./build/", "env FOO=1 cargo +1.98.0 clean"):
+        for command in (
+            "cargo clean",
+            "rm -rf target",
+            "rm -rf ./build/",
+            "env FOO=1 cargo +1.98.0 clean",
+        ):
             with self.subTest(command=command):
                 self.assert_allowed(claude("Bash", command=command))
                 self.assert_blocked(claude("Bash", subagent=True, command=command), "subagents")
@@ -260,8 +271,12 @@ class PreTool(unittest.TestCase):
         self.assert_blocked(claude("Read", file_path=str(sibling)), "outside the repository")
         self.assert_blocked(claude("Grep", pattern="x", path=str(Path.home())), "outside")
         self.assert_blocked(claude("Glob", pattern=str(Path.home() / "git/**/*.rs")), "outside")
-        self.assert_blocked(claude("Write", file_path=str(Path.home() / "x.txt"), content=""), "outside")
-        self.assert_blocked(claude("Bash", command="cat ~/git/another-project/README.md"), "outside")
+        self.assert_blocked(
+            claude("Write", file_path=str(Path.home() / "x.txt"), content=""), "outside"
+        )
+        self.assert_blocked(
+            claude("Bash", command="cat ~/git/another-project/README.md"), "outside"
+        )
         self.assert_blocked(claude("Bash", command="cd ../sibling-repository && ls"), "outside")
         self.assert_blocked(claude("Bash", command="ls /home"), "outside")
         self.assert_blocked(claude("Bash", command="cp x --target-directory=/opt/y"), "outside")
@@ -280,7 +295,8 @@ class PreTool(unittest.TestCase):
     def test_read_only_paths_cannot_be_written(self) -> None:
         self.assert_blocked(claude("Write", file_path="/etc/hosts", content=""), "outside")
         self.assert_blocked(
-            claude("Write", file_path=str(Path.home() / ".cargo/config.toml"), content=""), "outside"
+            claude("Write", file_path=str(Path.home() / ".cargo/config.toml"), content=""),
+            "outside",
         )
 
     def test_the_allowlist_opens_a_path(self) -> None:
@@ -321,17 +337,25 @@ class PreTool(unittest.TestCase):
 
     def test_the_fence_files_of_a_worktree_are_protected(self) -> None:
         worktree = ".claude/worktrees/feature"
-        for path in ("scripts/agent-hooks/hypha_hooks.py", ".claude/settings.json", ".agent-allowed-paths"):
+        for path in (
+            "scripts/agent-hooks/hypha_hooks.py",
+            ".claude/settings.json",
+            ".agent-allowed-paths",
+        ):
             with self.subTest(path=path):
                 copy = f"{worktree}/{path}"
                 self.assert_blocked(claude("Write", file_path=copy, content=""), "fence")
-        self.assert_blocked(claude("Bash", command=f"echo x >> {worktree}/.agent-allowed-paths"), "fence")
+        self.assert_blocked(
+            claude("Bash", command=f"echo x >> {worktree}/.agent-allowed-paths"), "fence"
+        )
         self.assert_allowed(claude("Write", file_path=f"{worktree}/README.md", content=""))
 
     def test_subagents_do_not_commit_or_edit_the_board(self) -> None:
         self.assert_blocked(claude("Bash", True, command="git commit -m x"), "subagents")
         self.assert_allowed(claude("Bash", False, command="git commit -m x"))
-        board = claude("Edit", True, file_path="hypha-audit-board.md", old_string="a", new_string="b")
+        board = claude(
+            "Edit", True, file_path="hypha-audit-board.md", old_string="a", new_string="b"
+        )
         self.assert_blocked(board, "orchestrator")
         brief = claude("Write", True, file_path="hypha-audit-tasks/RS.md", content="")
         self.assert_blocked(brief, "orchestrator")
@@ -355,7 +379,9 @@ class Robustness(unittest.TestCase):
 
 
 class PostEdit(unittest.TestCase):
-    def findings(self, text: str, relative: str = "target/hooks-probe/src/hooks_probe.rs") -> list[str]:
+    def findings(
+        self, text: str, relative: str = "target/hooks-probe/src/hooks_probe.rs"
+    ) -> list[str]:
         path = REPO / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -383,7 +409,9 @@ class PostEdit(unittest.TestCase):
         self.assertEqual(found, [])
 
     def test_unwrap_in_a_test_tree_passes(self) -> None:
-        found = self.findings("fn g() { Some(1).unwrap(); }\n", "target/hooks-probe/tests/hooks_probe.rs")
+        found = self.findings(
+            "fn g() { Some(1).unwrap(); }\n", "target/hooks-probe/tests/hooks_probe.rs"
+        )
         self.assertEqual(found, [])
 
     def test_a_finding_reaches_claude_with_exit_2(self) -> None:
@@ -408,7 +436,9 @@ class DocumentedOnlyAdapters(unittest.TestCase):
             "codex": {"tool_name": "Bash", "tool_input": {"command": ["git", "push"]}},
             "copilot": {"toolName": "bash", "toolArgs": json.dumps({"command": "git push"})},
             "gemini": {"tool_name": "run_shell_command", "tool_input": {"command": "git push"}},
-            "antigravity": {"toolCall": {"name": "run_command", "args": {"CommandLine": "git push"}}},
+            "antigravity": {
+                "toolCall": {"name": "run_command", "args": {"CommandLine": "git push"}}
+            },
         }
         for agent, payload in payloads.items():
             with self.subTest(agent=agent):

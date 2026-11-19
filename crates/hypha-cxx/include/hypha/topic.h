@@ -39,8 +39,8 @@ struct TopicSource
 {
     std::string literal;
     std::string paramName;
-    bool paramOptional{false};
-    bool paramIsOutput{false};
+    bool        paramOptional{false};
+    bool        paramIsOutput{false};
 
     static TopicSource ofLiteral(Topic topic)
     {

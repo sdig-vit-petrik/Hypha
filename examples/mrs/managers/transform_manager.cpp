@@ -72,8 +72,8 @@ class TransformManager final : public hypha::CycleNode
     hypha::Arrivals<geometry_msgs::QuaternionStamped> orientation{
         *this, "orientation", unsupervised
     };
-    hypha::Output<tf2_msgs::TFMessage>                tf{*this, "tf"};
-    hypha::Output<tf2_msgs::TFMessage>                tf_static{*this, "tf_static", latched};
+    hypha::Output<tf2_msgs::TFMessage> tf{*this, "tf"};
+    hypha::Output<tf2_msgs::TFMessage> tf_static{*this, "tf_static", latched};
     /// transform_manager.launch's static_transform_publisher fcu_to_rtk_antenna.
     hypha::Output<tf2_msgs::TFMessage> rtk_antenna_tf{*this, "rtk_antenna_tf", latched};
 

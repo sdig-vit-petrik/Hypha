@@ -1,3 +1,3 @@
 # Python tools of this repository: check.sh and scripts/format.sh.
 # Install with: python3 -m pip install -r requirements-dev.txt
-ruff>=0.6.0
+ruff==0.17.6

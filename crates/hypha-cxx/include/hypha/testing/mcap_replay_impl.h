@@ -22,9 +22,7 @@ inline int64_t McapReplay::periodOf(const std::string& path, Hz rate)
 
 /// @return True when the port is fed.
 template <typename M>
-bool McapReplay::addFeed(
-    Input<M>& port, void* window, Take take, Flush flush, bool mustBePresent
-)
+bool McapReplay::addFeed(Input<M>& port, void* window, Take take, Flush flush, bool mustBePresent)
 {
     this->refuseFeed(port);
     std::string topic = this->topicOf(port);
@@ -39,10 +37,7 @@ bool McapReplay::addFeed(
         this->file_.select(topic);
     }
     this->feeds_.push_back(
-        Feed{
-            &port, topic, window, take, flush, &McapReplay::destroyWindow<M>,
-            codec::dataType<M>()
-        }
+        Feed{&port, topic, window, take, flush, &McapReplay::destroyWindow<M>, codec::dataType<M>()}
     );
     return fed;
 }
@@ -176,8 +171,10 @@ inline void McapReplay::start()
             }
         }
         throw std::runtime_error(
-            "hypha: McapReplay '" + this->path_ + "': the file holds no message on any fed "
-            "topic (" + (topics.empty() ? std::string("none fed") : topics) + ")"
+            "hypha: McapReplay '" + this->path_
+            + "': the file holds no message on any fed "
+              "topic ("
+            + (topics.empty() ? std::string("none fed") : topics) + ")"
         );
     }
     // The first whole multiple of the period strictly after the earliest fed sample.
@@ -234,9 +231,8 @@ inline void McapReplay::throwUndecodable(
 ) const
 {
     throw std::runtime_error(
-        "hypha: McapReplay '" + this->path_ + "': topic '" + topic
-        + "': the message logged at " + std::to_string(message.log_time_ns)
-        + " ns does not decode as " + typeName
+        "hypha: McapReplay '" + this->path_ + "': topic '" + topic + "': the message logged at "
+        + std::to_string(message.log_time_ns) + " ns does not decode as " + typeName
     );
 }
 
@@ -255,9 +251,7 @@ bool McapReplay::takeLatest(
 }
 
 template <typename M>
-bool McapReplay::takeArrival(
-    Feed& feed, StepHarness&, const HyphaMcapMessage& message, Time sentAt
-)
+bool McapReplay::takeArrival(Feed& feed, StepHarness&, const HyphaMcapMessage& message, Time sentAt)
 {
     M          value{};
     const bool decoded = codec::decode(message.payload.data, message.payload.len, value);

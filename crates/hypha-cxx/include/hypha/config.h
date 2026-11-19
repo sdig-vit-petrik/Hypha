@@ -173,9 +173,8 @@ class ConfigView
 
   private:
     template <typename T>
-    std::optional<std::vector<T>> readArray(
-        const std::string& key, std::optional<size_t> expected
-    ) const
+    std::optional<std::vector<T>>
+    readArray(const std::string& key, std::optional<size_t> expected) const
     {
         if (this->index_) {
             throw ParameterError("hypha: nested lists are not supported: " + this->name(key));

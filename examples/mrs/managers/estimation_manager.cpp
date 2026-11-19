@@ -52,8 +52,8 @@ class EstimationManager final : public hypha::CycleNode
     hypha::Latest<mrs_msgs::HwApiCapabilities> hw_api_capabilities{
         *this, "hw_api_capabilities", unsupervised
     };
-    hypha::Output<mrs_msgs::UavState>          uav_state{*this, "uav_state"};
-    hypha::Output<nav_msgs::Odometry>          odom_main{*this, "odom_main"};
+    hypha::Output<mrs_msgs::UavState>              uav_state{*this, "uav_state"};
+    hypha::Output<nav_msgs::Odometry>              odom_main{*this, "odom_main"};
     hypha::Output<mrs_msgs::EstimationDiagnostics> diagnostics{*this, "diagnostics"};
 
     void setup(hypha::Node&) override

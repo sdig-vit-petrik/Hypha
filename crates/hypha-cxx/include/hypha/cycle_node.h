@@ -45,12 +45,12 @@ class CycleNode
     template <typename M>
     using Output = hypha::Output<M>;
 
-    static constexpr OptionalTopic       optionalTopic{};
-    static constexpr Advisory            advisory{};
-    static constexpr Unsupervised        unsupervised{};
-    static constexpr HostClock           hostClock{};
-    static constexpr Latched             latched{};
-    static constexpr Diagnostic          diagnostic{};
+    static constexpr OptionalTopic optionalTopic{};
+    static constexpr Advisory      advisory{};
+    static constexpr Unsupervised  unsupervised{};
+    static constexpr HostClock     hostClock{};
+    static constexpr Latched       latched{};
+    static constexpr Diagnostic    diagnostic{};
 
     static constexpr PerStep perStep(uint32_t count)
     {

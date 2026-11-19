@@ -49,17 +49,17 @@ const hypha::Hz   kRate{20.0};
 
 struct Seen
 {
-    int64_t               now{0};
-    uint32_t              stampSecs{0};
-    uint32_t              stampNsecs{0};
+    int64_t                now{0};
+    uint32_t               stampSecs{0};
+    uint32_t               stampNsecs{0};
     std::optional<int64_t> dt;
-    uint64_t              missed{0};
-    InputVerdict          verdict{InputVerdict::NeverArrived};
-    bool                  usable{false};
-    bool                  fresh{false};
-    std::optional<double> lastKnown;
-    std::vector<uint32_t> marks;
-    InputVerdict          marksVerdict{InputVerdict::NeverArrived};
+    uint64_t               missed{0};
+    InputVerdict           verdict{InputVerdict::NeverArrived};
+    bool                   usable{false};
+    bool                   fresh{false};
+    std::optional<double>  lastKnown;
+    std::vector<uint32_t>  marks;
+    InputVerdict           marksVerdict{InputVerdict::NeverArrived};
 
     bool operator==(const Seen&) const = default;
 };
@@ -115,11 +115,7 @@ class Single final : public hypha::CycleNode
 /// A step as the fixture makes it: the deadline at B + @p deadlineMs, the position input
 /// with @p verdict, @p fresh and the last value @p value, and the marks of the step.
 Seen expected(
-    int64_t               deadlineMs,
-    InputVerdict          verdict,
-    bool                  fresh,
-    double                value,
-    std::vector<uint32_t> marks
+    int64_t deadlineMs, InputVerdict verdict, bool fresh, double value, std::vector<uint32_t> marks
 )
 {
     Seen seen;
@@ -292,7 +288,7 @@ class McapReplayTest : public ::testing::Test
 TEST_F(McapReplayTest, EveryStepShowsTheValuesAndVerdictsTheFixtureTimesGive)
 {
     this->useParameters(kTrackerParameters);
-    const Replayed replayed = replayTracker(kFixture);
+    const Replayed          replayed = replayTracker(kFixture);
     const std::vector<Seen> wanted = expectedSteps();
     ASSERT_EQ(replayed.steps.size(), wanted.size());
     for (size_t index = 0; index < wanted.size(); ++index) {
@@ -324,7 +320,7 @@ TEST_F(McapReplayTest, AGoldenTestComparesWhatEachStepSentWithTheGoldenTopic)
     const std::vector<Recorded<Float64>> golden = replay.read<Float64>("/golden");
     size_t                               next = 0;
     for (size_t index = 0; index < replayed.steps.size(); ++index) {
-        const int64_t                now = replayed.steps[index].now;
+        const int64_t               now = replayed.steps[index].now;
         const std::vector<Float64>& sent = replayed.sent[index];
         const bool goldenAtThisStep = next < golden.size() && golden[next].logTime.nanos() == now;
         if (!goldenAtThisStep) {
@@ -369,8 +365,8 @@ TEST_F(McapReplayTest, TheCompressedCopyReplaysTheSame)
     for (size_t index = 0; index < plain.steps.size(); ++index) {
         EXPECT_EQ(zstd.steps[index], plain.steps[index]) << "step " << index;
     }
-    const McapReplay plainFile{kFixture, kRate};
-    const McapReplay zstdFile{kZstdFixture, kRate};
+    const McapReplay                     plainFile{kFixture, kRate};
+    const McapReplay                     zstdFile{kZstdFixture, kRate};
     const std::vector<Recorded<Float64>> plainGolden = plainFile.read<Float64>("/golden");
     const std::vector<Recorded<Float64>> zstdGolden = zstdFile.read<Float64>("/golden");
     ASSERT_EQ(zstdGolden.size(), plainGolden.size());
@@ -408,7 +404,7 @@ TEST_F(McapReplayTest, ALiteralTopicNeedsOnlyAConfigContextForItsLimit)
     class Literal final : public hypha::CycleNode
     {
       public:
-        Latest<Float64> position{*this, "position", hypha::Topic{"/position"}};
+        Latest<Float64>           position{*this, "position", hypha::Topic{"/position"}};
         std::vector<InputVerdict> verdicts;
 
         void step(const hypha::CycleTime&) override
@@ -425,8 +421,12 @@ TEST_F(McapReplayTest, ALiteralTopicNeedsOnlyAConfigContextForItsLimit)
         harness.step(literal, replay.next(harness));
     }
     const std::vector<InputVerdict> wanted{
-        InputVerdict::Usable, InputVerdict::Usable, InputVerdict::Usable,
-        InputVerdict::Usable, InputVerdict::Stale,  InputVerdict::Usable
+        InputVerdict::Usable,
+        InputVerdict::Usable,
+        InputVerdict::Usable,
+        InputVerdict::Usable,
+        InputVerdict::Stale,
+        InputVerdict::Usable
     };
     EXPECT_EQ(literal.verdicts, wanted);
 }
@@ -451,12 +451,13 @@ TEST(McapReplayRefusal, ARateWithoutAPeriodIsRefused)
 
 TEST(McapReplayRefusal, ATablePortWithoutANodeIsRefused)
 {
-    const ParameterFile        file("hypha_mcap_replay_no_node.toml", singleParameters("/position"));
+    const ParameterFile file("hypha_mcap_replay_no_node.toml", singleParameters("/position"));
     const hypha::ConfigContext context(file.path());
     Single                     single;
     McapReplay                 replay{kFixture, kRate};
-    const std::string          text =
-        thrownText<std::logic_error>([&replay, &single]() { replay.feed(single.input); });
+    const std::string          text = thrownText<std::logic_error>([&replay, &single]() {
+        replay.feed(single.input);
+    });
     EXPECT_NE(text.find("ports.inputs.input"), std::string::npos) << text;
     EXPECT_NE(text.find("needs a Node"), std::string::npos) << text;
 }
@@ -466,8 +467,9 @@ TEST_F(McapReplayTest, ATopicTheFileDoesNotHoldIsRefused)
     this->useParameters(singleParameters("/absent"));
     Single            single;
     McapReplay        replay{kFixture, kRate};
-    const std::string text =
-        thrownText<std::runtime_error>([&replay, &single]() { replay.feed(single.input); });
+    const std::string text = thrownText<std::runtime_error>([&replay, &single]() {
+        replay.feed(single.input);
+    });
     EXPECT_NE(text.find("no topic '/absent'"), std::string::npos) << text;
     EXPECT_NE(text.find(kFixture), std::string::npos) << text;
 }
@@ -477,8 +479,9 @@ TEST_F(McapReplayTest, AChannelThatIsNotRos1IsRefused)
     this->useParameters(singleParameters("/json"));
     Single            single;
     McapReplay        replay{kFixture, kRate};
-    const std::string text =
-        thrownText<std::runtime_error>([&replay, &single]() { replay.feed(single.input); });
+    const std::string text = thrownText<std::runtime_error>([&replay, &single]() {
+        replay.feed(single.input);
+    });
     EXPECT_NE(text.find("'/json'"), std::string::npos) << text;
     EXPECT_NE(text.find("schema encoding is 'jsonschema'"), std::string::npos) << text;
     EXPECT_NE(text.find(kFixture), std::string::npos) << text;
@@ -489,13 +492,15 @@ TEST_F(McapReplayTest, ATopicRecordedAsAnotherTypeIsRefusedNamingBoth)
     this->useParameters(singleParameters("/marks"));
     Single            single;
     McapReplay        replay{kFixture, kRate};
-    const std::string text =
-        thrownText<std::runtime_error>([&replay, &single]() { replay.feed(single.input); });
+    const std::string text = thrownText<std::runtime_error>([&replay, &single]() {
+        replay.feed(single.input);
+    });
     EXPECT_NE(text.find("'/marks'"), std::string::npos) << text;
     EXPECT_NE(text.find("recorded as std_msgs/UInt32"), std::string::npos) << text;
     EXPECT_NE(text.find("reads std_msgs/Float64"), std::string::npos) << text;
-    const std::string read =
-        thrownText<std::runtime_error>([&replay]() { static_cast<void>(replay.read<Float64>("/marks")); });
+    const std::string read = thrownText<std::runtime_error>([&replay]() {
+        static_cast<void>(replay.read<Float64>("/marks"));
+    });
     EXPECT_NE(read.find("recorded as std_msgs/UInt32"), std::string::npos) << read;
 }
 
@@ -504,8 +509,9 @@ TEST_F(McapReplayTest, ATopicRecordedWithAnotherMd5IsRefusedNamingBoth)
     this->useParameters(singleParameters("/bad_md5"));
     Single            single;
     McapReplay        replay{kFixture, kRate};
-    const std::string text =
-        thrownText<std::runtime_error>([&replay, &single]() { replay.feed(single.input); });
+    const std::string text = thrownText<std::runtime_error>([&replay, &single]() {
+        replay.feed(single.input);
+    });
     EXPECT_NE(text.find("'/bad_md5'"), std::string::npos) << text;
     EXPECT_NE(text.find("MD5 00000000000000000000000000000000"), std::string::npos) << text;
     EXPECT_NE(text.find("MD5 fdb28210bfa9d7c91146260178d9a584"), std::string::npos) << text;
@@ -519,8 +525,9 @@ TEST_F(McapReplayTest, APayloadThatDoesNotDecodeIsRefusedWithItsTopicAndLogTime)
     McapReplay  replay{kFixture, kRate};
     replay.feed(single.input);
     ASSERT_TRUE(replay.stepDue());
-    const std::string text =
-        thrownText<std::runtime_error>([&replay, &harness]() { replay.next(harness); });
+    const std::string text = thrownText<std::runtime_error>([&replay, &harness]() {
+        replay.next(harness);
+    });
     EXPECT_NE(text.find("'/truncated'"), std::string::npos) << text;
     EXPECT_NE(text.find("logged at 100030000000 ns"), std::string::npos) << text;
     EXPECT_NE(text.find(kFixture), std::string::npos) << text;
@@ -533,8 +540,8 @@ TEST_F(McapReplayTest, APayloadThatDoesNotDecodeIsRefusedWithItsTopicAndLogTime)
 TEST_F(McapReplayTest, AFileWithNoMessageOnAnyFedTopicIsRefused)
 {
     this->useParameters(singleParameters("/silent"));
-    Single            single;
-    McapReplay        replay{kFixture, kRate};
+    Single     single;
+    McapReplay replay{kFixture, kRate};
     replay.feed(single.input);
     const std::string text = thrownText<std::runtime_error>([&replay]() {
         static_cast<void>(replay.stepDue());
@@ -564,8 +571,9 @@ TEST_F(McapReplayTest, FeedingAfterTheReplayStartedIsRefused)
     replay.feed(tracker.position);
     ASSERT_TRUE(replay.stepDue());
     harness.step(tracker, replay.next(harness));
-    const std::string text =
-        thrownText<std::logic_error>([&replay, &tracker]() { replay.feed(tracker.marks); });
+    const std::string text = thrownText<std::logic_error>([&replay, &tracker]() {
+        replay.feed(tracker.marks);
+    });
     EXPECT_NE(text.find("after the replay started"), std::string::npos) << text;
 }
 
@@ -582,8 +590,9 @@ TEST_F(McapReplayTest, NextWithNoStepDueIsRefused)
         ++steps;
     }
     EXPECT_EQ(steps, 6U);
-    const std::string text =
-        thrownText<std::logic_error>([&replay, &harness]() { replay.next(harness); });
+    const std::string text = thrownText<std::logic_error>([&replay, &harness]() {
+        replay.next(harness);
+    });
     EXPECT_NE(text.find("no step due"), std::string::npos) << text;
 }
 
@@ -690,7 +699,7 @@ struct Sample
 TEST_F(McapReplayTest, TheStepReplayMatchesTheStartedCycleOnTheBusUnderSimulatedTime)
 {
     this->useParameters(kTrackerParameters);
-    const McapReplay files{kFixture, kRate};
+    const McapReplay    files{kFixture, kRate};
     std::vector<Sample> samples;
     for (const Recorded<Float64>& item : files.read<Float64>("/position")) {
         samples.push_back(Sample{item.logTime.nanos(), true, item.message.data, 0});
@@ -711,7 +720,7 @@ TEST_F(McapReplayTest, TheStepReplayMatchesTheStartedCycleOnTheBusUnderSimulated
     ASSERT_TRUE(hypha::enableSimTime(Time::fromNanos(samples.front().sentAt)));
     std::vector<Seen> real;
     {
-        hypha::Node busNode("mcap_replay_bus", this->file->path());
+        hypha::Node               busNode("mcap_replay_bus", this->file->path());
         hypha::Publisher<Float64> positions =
             hypha::Node().advertise<Float64>(hypha::Topic{"/position"});
         hypha::Publisher<UInt32> marks = hypha::Node().advertise<UInt32>(hypha::Topic{"/marks"});

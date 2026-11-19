@@ -341,11 +341,11 @@ class Input : public Port
 
     std::shared_ptr<detail::SourceSlot<M>> slot_;
     detail::InputSettings                  settings_;
-    uint32_t                          depth_{0};
-    InputVerdict                      verdict_{InputVerdict::NeverArrived};
-    bool                              tableRefused_{false};
-    HyphaCycleBindingView             facts_{
-                    .health = {}, .held = {}, .supervision = {}, .ok = 1, .age_nanos = 0
+    uint32_t                               depth_{0};
+    InputVerdict                           verdict_{InputVerdict::NeverArrived};
+    bool                                   tableRefused_{false};
+    HyphaCycleBindingView                  facts_{
+        .health = {}, .held = {}, .supervision = {}, .ok = 1, .age_nanos = 0
     };
     uint32_t                          index_{0};
     detail::InputSupervision          supervision_;

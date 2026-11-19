@@ -208,9 +208,8 @@ class Arrivals final : public Input<M>
         size_t kept = 0;
         for (size_t sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
             HyphaCycleSampleView sample{};
-            const ::HyphaStatus  read = detail::readSample(
-                image, this->index_, sampleIndex, this->decoded_[kept], sample
-            );
+            const ::HyphaStatus  read =
+                detail::readSample(image, this->index_, sampleIndex, this->decoded_[kept], sample);
             if (read == HYPHA_STATUS_INVALID_FRAME) {
                 const ::HyphaStatus rejected =
                     backend::cycleImageRejectSample(image, this->index_, sample.sequence, &view);
@@ -257,13 +256,13 @@ class Arrivals final : public Input<M>
         return this->stamps_[index];
     }
 
-    std::vector<M>          samples_;
-    std::vector<M>          decoded_;
+    std::vector<M>                   samples_;
+    std::vector<M>                   decoded_;
     std::vector<detail::SampleStamp> stamps_;
     std::vector<detail::SampleStamp> decodedStamps_;
-    size_t                  sampleCount_{0};
-    uint64_t                lost_{0};
-    std::optional<uint64_t> lastAlive_;
+    size_t                           sampleCount_{0};
+    uint64_t                         lost_{0};
+    std::optional<uint64_t>          lastAlive_;
 };
 
 }  // namespace hypha

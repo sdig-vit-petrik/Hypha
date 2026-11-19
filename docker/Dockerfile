@@ -23,6 +23,8 @@ ARG HYPHA_CHISEL_VERSION=v1.5.0
 # scripts/format.sh accepts exactly this clang-format major. The PyPI wheel
 # tracks the LLVM release on every host, the apt package does not.
 ARG HYPHA_CLANG_FORMAT_MAJOR=23
+# The exact release: another minor of one major has formatted the tree differently.
+ARG HYPHA_CLANG_FORMAT_VERSION=23.1.5
 
 COPY --from=ca ca-bundle.crt /usr/local/share/ca-certificates/hypha-ca.crt
 
@@ -62,8 +64,8 @@ ENV GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
 ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
 RUN pip install --no-cache-dir --break-system-packages \
-        "clang-format>=${HYPHA_CLANG_FORMAT_MAJOR},<$((HYPHA_CLANG_FORMAT_MAJOR + 1))" \
-        "mypy>=1.8.0,<1.15" "ruff>=0.6.0" \
+        "clang-format==${HYPHA_CLANG_FORMAT_VERSION}" \
+        "mypy==1.14.1" "ruff==0.17.6" \
     && clang-format --version | grep -q "version ${HYPHA_CLANG_FORMAT_MAJOR}\."
 
 # rust-nightly names the dated nightly of scripts/miri.sh and scripts/fuzz.sh, the
@@ -75,7 +77,8 @@ RUN mkdir -p "$CARGO_HOME" "$RUSTUP_HOME" \
     && rustup component add llvm-tools-preview \
     && rustup toolchain install "$(cat /usr/local/share/hypha/rust-nightly)" --profile minimal \
          -c miri -c rust-src \
-    && cargo install --locked cbindgen cargo-nextest cargo-llvm-cov cargo-deny cargo-fuzz \
+    && cargo install --locked cbindgen@0.29.4 cargo-nextest@0.9.152 cargo-llvm-cov@0.9.1 \
+         cargo-deny@0.22.0 cargo-fuzz@0.13.2 \
     && rm -rf "$CARGO_HOME/registry" "$CARGO_HOME/git" \
     && chmod -R a+rwX "$CARGO_HOME" "$RUSTUP_HOME"
 

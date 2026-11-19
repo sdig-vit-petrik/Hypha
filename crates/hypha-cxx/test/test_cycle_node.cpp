@@ -1280,7 +1280,7 @@ class RunWatchdog
         this->finish();
     }
 
-/// Call it after the run returns.
+    /// Call it after the run returns.
     void finish()
     {
         {
@@ -1371,7 +1371,5 @@ TEST_F(RunNodeTest, RunNodeReturnsTheConfigurationCodeWhenAPortTableIsMissing)
     char        first[] = "prog";
     std::string file = this->path.string();
     char*       argv[] = {first, file.data(), nullptr};
-    EXPECT_EQ(
-        (hypha::runNode<CommitFails>(2, argv, "run_node_commit")), hypha::kExitConfiguration
-    );
+    EXPECT_EQ((hypha::runNode<CommitFails>(2, argv, "run_node_commit")), hypha::kExitConfiguration);
 }
