@@ -6,8 +6,9 @@ use core::fmt;
 
 use crc32c::{crc32c, crc32c_append};
 
-/// Version-specific frame magic. It changes when the frame format changes.
-pub const FRAME_MAGIC: u32 = 0x3758_4F49;
+/// Frame magic. It changes when the header layout changes. The topic-bound CRC
+/// kept the 0.1.0 layout and this value: a 0.1.0 frame fails its CRC instead.
+pub const FRAME_MAGIC: u32 = 0x3658_4F49;
 
 /// The topic a frame is sealed for, as the start value of its CRC. The topic name is
 /// not sent: a frame that arrives on another topic fails its CRC.
