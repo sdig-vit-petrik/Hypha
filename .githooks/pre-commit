@@ -5,6 +5,11 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+if [[ "$(git branch --show-current)" == main ]]; then
+    echo "pre-commit: main takes merges from develop only; commit on a branch from develop (docs/release-policy.md section 7)" >&2
+    exit 1
+fi
+
 staged="$(git diff --cached --name-only --diff-filter=ACMR)"
 
 if grep -qE '^(hypha-audit-|hypha-design-audit-)' <<< "$staged"; then
