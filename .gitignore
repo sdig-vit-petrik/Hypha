@@ -92,3 +92,4 @@ ctest-junit.xml
 
 # Personal agent path allowlist
 .agent-allowed-paths.local
+.notes
