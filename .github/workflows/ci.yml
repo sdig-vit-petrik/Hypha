@@ -1,10 +1,11 @@
 # The gate of hypha, in the builder image of docker/Dockerfile: the style and
 # generated-file checks, then the Rust and C++ suites with the installed SDK flow.
+# main takes pull requests from this repository's develop only (docs/release-policy.md).
 name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
 
 permissions:
@@ -15,6 +16,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  source-branch:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The pull request comes from develop
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [[ "$HEAD_REF" != develop || "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]]; then
+            echo "::error::main takes pull requests from develop only, not from $HEAD_REPO:$HEAD_REF"
+            exit 1
+          fi
+
   gate:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
