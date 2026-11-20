@@ -72,3 +72,17 @@ and applications until the new release has run in the system.
 A release line receives fixes until the next line has been released and for a period
 the release notes state. No support period is promised today: the project has one
 maintainer and no release line yet beyond `0.1`.
+
+## 7. Branches
+
+| Branch | What it holds | How it changes |
+|---|---|---|
+| `main` | Released states only; each merge is tagged `vX.Y.Z` | A pull request from `develop`, nothing else |
+| `develop` | The next release; CI is green | Pull requests from topic branches; while a release candidate is qualified, fixes only |
+| `feat/*`, `fix/*`, `docs/*`, `chore/*` | One change | Branched from `develop`, merged back by pull request, then deleted |
+| `support/X.Y` | Fixes for an older release line | Created from that line's last tag when it needs a fix; each fix lands on `develop` first and is cherry-picked; tagged there, never merged into `main` |
+
+The rule is enforced in three places: a ruleset on `main` (pull requests only, the CI
+checks required, no force push, no deletion), the CI job `source-branch` (a pull
+request into `main` must come from this repository's `develop`), and
+`.githooks/pre-commit` (no commit on `main`).
