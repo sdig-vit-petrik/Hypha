@@ -386,9 +386,12 @@ Gaps:
   declares the channel unsafe above a threshold, which bounds the rate of corrupted
   frames that the code ever has to catch. hypha has none of the three: its payloads
   reach tens of megabytes, CRC-32C was chosen for speed, and every refused frame is
-  independent (`communication-integrity.md` §5). The choice for step 13 is between
+  independent (`communication-integrity.md` §5). The choice for step 13 was between
   that design (bounded safety topics and a channel monitor, 32 bits kept) and a
-  64-bit checksum for every frame.
+  64-bit checksum for every frame. The owner took neither (2026-11-19): no payload
+  limit, no 64-bit checksum, no channel monitor. G-36 stays open: the calculation
+  is to be written, and a frame-size or rate bound that it needs becomes an
+  assumption of use for the integrator, not a change of the frame.
 - G-37. Closed for addressing on 2026-11-20: the CRC starts from a code of the
   topic, so a frame is bound to its topic. Still open: nothing binds a frame to its
   sender (`communication-integrity.md` §5).
@@ -485,7 +488,7 @@ Still open:
 
 | ID | Open point |
 |---|---|
-| all | The class of each requirement is the author's first assignment. The owner must confirm it; an integrator may need another split. |
+| all | The owner confirmed the class of each requirement on 2026-11-21. An integrator may still need another split. |
 | NFR-02 | Asks that the `unsafe` part is independently audited. No audit exists (G-18). |
 | NFR-10 | 80 % line coverage; below a SIL 2 expectation and not applied to `hypha_node` or the C++ SDK (G-23, G-24). |
 | NFR-03, NFR-04, NFR-06 | Need a reference platform and a reference workload. The rated load of NFR-04 is still the figures of one application. |
@@ -509,7 +512,7 @@ The order puts first what decides whether the rest is worth doing.
 | 10 | CI jobs for coverage, Miri, fuzzing and the sanitizers; the report attached to a release; tool versions pinned in the builder image. | G-25, G-31, G-43 | Open; engineering |
 | 11 | Audit of the `unsafe` code by a second person; a C++ subset and a checker for the SDK. | G-18, G-19 | Open; engineering, external |
 | 12 | The remaining kill tests; a fault-injection test that corrupts shared memory. | G-42, TR-04, TR-11 | Open; engineering |
-| 13 | The missing parts of the safety communication layer: a connection identifier in the checksum, the residual error calculation, a payload size limit for safety topics, a rule for the first frame of a publisher. | G-36 to G-38 | Open; engineering. A wire frame change, so a new release line |
+| 13 | The missing parts of the safety communication layer. The owner chose the topic-bound checksum only (2026-11-19): no payload size limit, no 64-bit checksum, no channel monitor. Left: the residual error calculation, a binding of the frame to its sender, a rule for the first frame of a publisher. | G-36 to G-38 | Topic-bound checksum done (G-37 for addressing); the rest open; engineering |
 | 14 | Qualified compiler, or the argument from tests. | G-15, G-17 | Open; external |
 | 15 | Review records for every document and for the code. | G-30 | Open; needs a verifier |
 

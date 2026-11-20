@@ -200,3 +200,4 @@ An ID is not used again.
 | 2026-11-19 | NFR-13: the sentence "operate continuously for years" was removed; the counter rules stay. |
 | 2026-11-19 | NFR-03, NFR-04, NFR-06 are marked as targets. Withdrawn IDs are listed. |
 | 2026-11-20 | FSR-10: a frame sealed for another topic is rejected. |
+| 2026-11-21 | The owner confirmed the classes. |
