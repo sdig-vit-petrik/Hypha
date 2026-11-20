@@ -15,7 +15,8 @@
 #                        definition reuses its image)
 #   HYPHA_IMAGE_TAG      whole tag of builder and runtime, in place of <version>-<arch>
 #                        (CI sets develop on the develop branch; local images only)
-#   HYPHA_CA_BUNDLE      trust bundle for the builds (default: SSL_CERT_FILE, then the system one)
+#   HYPHA_CA_BUNDLE      trust bundle for the builds (default: SSL_CERT_FILE, then the system one,
+#                        /etc/ssl/certs/ca-certificates.crt or on macOS /etc/ssl/cert.pem)
 #
 # --push also appends repository@sha256 references to image-refs.txt.
 set -euo pipefail
@@ -54,7 +55,9 @@ esac
 
 ca="$(mktemp -d)"
 trap 'rm -rf "$ca"' EXIT
-cp "${HYPHA_CA_BUNDLE:-${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}}" "$ca/ca-bundle.crt"
+system_ca=/etc/ssl/certs/ca-certificates.crt
+[[ -f "$system_ca" ]] || system_ca=/etc/ssl/cert.pem # macOS
+cp "${HYPHA_CA_BUNDLE:-${SSL_CERT_FILE:-$system_ca}}" "$ca/ca-bundle.crt"
 
 for image in "$@"; do
   case "$image" in
