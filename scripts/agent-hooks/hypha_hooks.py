@@ -311,10 +311,11 @@ def under(path: Path, roots) -> bool:
 
 
 def outside_fence(path: Path, writes: bool) -> bool:
+    # Resolved like the path: on macOS /tmp and /etc are links into /private.
     allowed = [REPO, *BUILTIN_READ_WRITE, *allowlist()]
     if not writes:
         allowed.extend(BUILTIN_READ_ONLY)
-    return not under(path, allowed)
+    return not under(path, [root.resolve() for root in allowed])
 
 
 def strip_heredocs(command: str) -> str:

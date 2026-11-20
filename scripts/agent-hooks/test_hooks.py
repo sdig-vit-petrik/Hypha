@@ -286,6 +286,7 @@ class PreTool(unittest.TestCase):
         self.assert_allowed(claude("Read", file_path="crates/hypha_node/src/lib.rs"))
         self.assert_allowed(claude("Grep", pattern="unsafe"))
         self.assert_allowed(claude("Write", file_path="/tmp/hypha-scratch.txt", content=""))
+        self.assert_allowed(claude("Read", file_path="/etc/hosts"))
         self.assert_allowed(claude("Read", file_path=str(Path.home() / ".cargo/registry/x.rs")))
         self.assert_allowed(claude("Bash", command="ls /dev/shm /tmp/iceoryx2 2>/dev/null"))
         self.assert_allowed(claude("Bash", command="/usr/bin/python3 -I -c 1"))
