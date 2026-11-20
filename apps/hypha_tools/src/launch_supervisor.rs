@@ -281,6 +281,10 @@ fn run_node_once(
         .map_err(|error| format!("pid of '{}' is out of range: {error}", config.name))?;
     let group = Pid::from_raw(raw_pid);
     say!("[hypha launch] started '{}' (pid {group})", config.name);
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(unused_mut, reason = "only the Linux main thread waits on the child")
+    )]
     let mut node = watch_node(config, child, group, sender)?;
 
     let mut stopping = false;

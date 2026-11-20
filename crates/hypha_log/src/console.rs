@@ -5,6 +5,7 @@
 //! Each line is one write call; a line not written whole is dropped and counted, and
 //! the next whole line is preceded by one notice with the count.
 
+#[cfg(target_os = "linux")]
 use std::fs::File;
 use std::io::{self, Write};
 use std::sync::Mutex;
@@ -25,7 +26,8 @@ pub(crate) enum ConsoleOutcome {
 /// How standard error is written.
 #[derive(Debug)]
 enum Target {
-    /// A non-blocking file description of the same pipe or terminal.
+    /// A non-blocking file description of the same pipe or terminal (Linux only).
+    #[cfg(target_os = "linux")]
     Reopened(File),
     /// A socket, sent to with `MSG_DONTWAIT`.
     Socket,
@@ -106,6 +108,7 @@ fn current_target(slot: &mut Option<(Identity, Target)>) -> &Target {
 /// One write call. True when every byte of `bytes` was written.
 fn write_whole(target: &Target, bytes: &[u8]) -> bool {
     let written = match target {
+        #[cfg(target_os = "linux")]
         Target::Reopened(file) => {
             let mut writer: &File = file;
             writer.write(bytes)

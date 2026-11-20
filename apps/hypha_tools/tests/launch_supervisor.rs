@@ -13,7 +13,9 @@ use hypha_tools::launch_units::RestartPolicy;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use std::io::{BufRead, BufReader};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -299,12 +301,14 @@ fn stop_during_restart_delay_ends_without_restart() {
 }
 
 /// A started `hypha launch unit` and the lines it prints.
+#[cfg(target_os = "linux")]
 struct Running {
     child: Child,
     lines: mpsc::Receiver<String>,
     printed: String,
 }
 
+#[cfg(target_os = "linux")]
 impl Running {
     /// Start the supervisor in its own process group, so a test can signal the
     /// whole group as a terminal would without touching the test runner.
@@ -364,6 +368,7 @@ impl Running {
 }
 
 /// The number after `prefix` on a line such as `child 1234`.
+#[cfg(target_os = "linux")]
 fn number_after(line: &str, prefix: &str) -> i32 {
     let start = line.find(prefix).expect("the prefix is on the line") + prefix.len();
     let digits: String = line[start..].chars().take_while(char::is_ascii_digit).collect();
@@ -371,6 +376,7 @@ fn number_after(line: &str, prefix: &str) -> i32 {
 }
 
 /// True while `pid` names a live process; a zombie counts as gone.
+#[cfg(target_os = "linux")]
 fn alive(pid: i32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
@@ -379,6 +385,7 @@ fn alive(pid: i32) -> bool {
     state != "Z"
 }
 
+#[cfg(target_os = "linux")]
 fn gone_within(pid: i32, limit: Duration) -> bool {
     let started = std::time::Instant::now();
     while started.elapsed() < limit {
