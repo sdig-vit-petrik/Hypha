@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! field                  type    encoding
-//! magic                  u32     FRAME_MAGIC, 0x3758_4F49 (bytes 0x49 0x4F 0x58 0x37, "IOX7")
+//! magic                  u32     FRAME_MAGIC, 0x3658_4F49 (bytes 0x49 0x4F 0x58 0x36, "IOX6")
 //! flags                  u32     bit 0 = FLAG_LATCHED
 //! schema_hash            u64
 //! publisher_id           u64

@@ -95,10 +95,19 @@ fn the_topic_code_follows_every_byte_of_the_name() {
 }
 
 #[test]
-fn a_frame_of_the_previous_format_is_refused_by_its_magic() {
+fn a_frame_of_0_1_0_is_refused_by_its_crc() {
+    // 0.1.0 sealed the same layout with a CRC that starts from 0, not the topic code.
     let mut header = seal(topic(), METADATA, 0, b"hello");
-    header.magic = 0x3658_4F49;
-    assert_eq!(verify(topic(), &header, b"hello").unwrap_err(), ParseError::UnsupportedMagic);
+    let m = METADATA;
+    let mut crc = crc32c::crc32c(&header.magic.to_le_bytes());
+    crc = crc32c::crc32c_append(crc, &header.flags.to_le_bytes());
+    for field in
+        [m.schema_hash, m.publisher_id, m.sequence, m.transport_sent_nanos, m.framework_sent_nanos]
+    {
+        crc = crc32c::crc32c_append(crc, &field.to_le_bytes());
+    }
+    header.crc = crc32c::crc32c_append(crc, b"hello");
+    assert_eq!(verify(topic(), &header, b"hello").unwrap_err(), ParseError::CrcMismatch);
 }
 
 /// The topic every frame of this file is sealed for.
