@@ -6,6 +6,15 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   stamped far past every replay deadline, so no step admits them, and the cycle
   reports `NeverArrived` with no error. The node logs `replay time base mismatch`.
   Run the publisher on the same time base as the replay.
+- **A test that asserts how fast the host is fails on a loaded host.** Every test is
+  deterministic: it asserts what the code computes or counts, never how soon the
+  operating system answers. Assert the wait or deadline the code asks for (a cycle
+  step's `scheduled_nanos`, its `missed_periods`), drive time with a simulated clock
+  that the test moves (`common::replay::SimulatedClock`), count turns or wakes per
+  event, or let a callback end the run and assert the stop reason. A time limit may only
+  guard against a hang, in whole seconds; nextest ends a test after 180 s. A latency
+  figure is a measurement (`examples/bench`), not a pass/fail test, and a flaky timing
+  test is rewritten, never given a wider window or a per-platform one (#64).
 - **Every limit has one source: the domain `Config`, a service policy or `EventLimits`. Any other builder that calls a limit setter is a bug.**
   Publish-subscribe, event and RPC limits, safe overflow with `DiscardData`, the one-sample
   history and the expired-connection buffer live in `crates/hypha_iceoryx2/src/domain.rs` and follow
