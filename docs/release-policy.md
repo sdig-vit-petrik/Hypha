@@ -82,6 +82,12 @@ maintainer and no release line yet beyond `0.1`.
 | `feat/*`, `fix/*`, `docs/*`, `chore/*` | One change | Branched from `develop`, merged back by pull request, then deleted |
 | `support/X.Y` | Fixes for an older release line | Created from that line's last tag when it needs a fix; each fix lands on `develop` first and is cherry-picked; tagged there, never merged into `main` |
 
+Every change has a GitHub issue, except a typo-sized fix. Its branch is
+`<type>/<issue>-<slug>` (`fix/26-macos-tests`). Each commit names the issue in a trailer
+line: `Refs #N` while the work goes on, `Fixes #N` in the commit or pull request that
+finishes it. `develop` is the default branch, so the issue closes when that commit
+reaches `develop`.
+
 The rule is enforced in three places: a ruleset on `main` (pull requests only, the CI
 checks required, no force push, no deletion), the CI job `source-branch` (a pull
 request into `main` must come from this repository's `develop`), and
