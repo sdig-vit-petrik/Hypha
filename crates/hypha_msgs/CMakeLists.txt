@@ -2,7 +2,7 @@
 # canonical .msg files in msg/. No ROS installation is used.
 
 cmake_minimum_required(VERSION 3.16)
-project(hypha_msgs VERSION 0.1.0 LANGUAGES CXX)
+project(hypha_msgs VERSION 0.2.0 LANGUAGES CXX)
 
 if(NOT COMMAND hypha_generate_messages)
   message(STATUS "hypha_msgs: hypha_generate_messages unavailable; skipping C++ header generation")
