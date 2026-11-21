@@ -12,7 +12,7 @@
 # failed or a test run left no result file.
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 2
 
 fuzz_seconds="${1:-60}"
 out=target/qualification
