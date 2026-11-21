@@ -26,7 +26,7 @@ esac
 
 cmake -S . -B "$dir" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DHYPHA_BUILD_TESTS=ON \
   -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
-cmake --build "$dir" --parallel
+cmake --build "$dir" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 
 export ASAN_OPTIONS="halt_on_error=1:abort_on_error=0"
 export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"

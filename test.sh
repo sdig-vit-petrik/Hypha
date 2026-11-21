@@ -43,6 +43,6 @@ if [[ "$suite" == all || "$suite" == cpp ]]; then
   # How an application builds hypha: from source, in its own tree.
   cmake -S test/package_consumer -B build/subproject-consumer -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DHYPHA_SOURCE_DIR="$PWD"
-  cmake --build build/subproject-consumer --parallel
+  cmake --build build/subproject-consumer --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
   build/subproject-consumer/hypha_package_consumer
 fi
