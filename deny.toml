@@ -6,9 +6,11 @@
 all-features = true
 
 [advisories]
-# Every vulnerability is an error (cargo-deny's fixed behaviour); an unmaintained
-# crate anywhere in the graph is one too.
+# Every vulnerability is an error (cargo-deny's fixed behaviour); an unmaintained or an
+# unsound crate anywhere in the graph is one too (lru 0.12 via ratatui 0.29, #78, was
+# unsound two levels down and the default reported it nowhere).
 unmaintained = "all"
+unsound = "all"
 yanked = "deny"
 # Each entry has no semver-compatible fix. All but `paste` come
 # in through hypha_ros_bridge's pinned roslibrust 0.21 and serde_xmlrpc 0.2.3; the
