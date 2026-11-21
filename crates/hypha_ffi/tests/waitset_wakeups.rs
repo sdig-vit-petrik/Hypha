@@ -1,5 +1,5 @@
-//! An event-driven subscription wakes its `WaitSet` for its data, not on a clock.
-//! The 50 ms audit also reads the queue, so a publisher that does not notify is still served.
+//! An event-driven subscription wakes its `WaitSet` for its data, not on a clock: nothing
+//! polls its queue.
 #![allow(clippy::expect_used, reason = "a failed test setup should stop the test with its message")]
 
 mod common;
@@ -143,26 +143,26 @@ unsafe fn publish(publisher: *mut HyphaPublisher, payload: &[u8]) {
 }
 
 #[test]
-fn an_idle_event_driven_subscription_wakes_only_for_the_audit() {
+fn an_idle_event_driven_subscription_does_not_wake_the_run() {
     let deliveries = AtomicU64::new(0);
     let fixture = fixture("idle_event", &deliveries);
     let before = sweeps(fixture.node);
     run_for(fixture.waitset, 1_000_000_000);
     let turns = sweeps(fixture.node) - before;
-    // The 50 ms audit alone: about 20 turns. A 1 ms poll would take about 1000.
-    assert!((10..=60).contains(&turns), "an idle notified subscription took {turns} turns in 1 s");
+    // The first turn and at most one 1 s backstop; a 50 ms poll would take about 20.
+    assert!(turns <= 3, "an idle notified subscription took {turns} turns in 1 s");
     assert_eq!(deliveries.load(Ordering::SeqCst), 0);
 }
 
 #[test]
-fn a_sample_wakes_its_subscription_well_before_the_audit() {
+fn a_sample_wakes_its_subscription_at_once() {
     let deliveries = AtomicU64::new(0);
     let fixture = fixture("prompt_event", &deliveries);
     let publisher = fixture.publisher as usize;
     let start = epoch();
     let sent = std::thread::scope(|scope| {
         let sender = scope.spawn(|| {
-            // Between two 50 ms audits, so only the notification can deliver it at once.
+            // Well after the first turn, so only the notification can deliver it.
             std::thread::sleep(std::time::Duration::from_millis(120));
             let sent = start.elapsed();
             unsafe { publish(publisher as *mut HyphaPublisher, &[7]) };
@@ -177,7 +177,7 @@ fn a_sample_wakes_its_subscription_well_before_the_audit() {
     let latency = std::time::Duration::from_nanos(delivered).saturating_sub(sent);
     assert!(
         latency < std::time::Duration::from_millis(15),
-        "the sample waited {latency:?}, as long as a poll or an audit"
+        "the sample waited {latency:?}, as long as a poll"
     );
 }
 

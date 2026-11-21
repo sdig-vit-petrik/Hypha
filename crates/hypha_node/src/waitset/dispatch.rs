@@ -340,12 +340,6 @@ fn timed<F: FnOnce() -> HyphaCallbackResult>(
 }
 
 impl Dispatcher for CallbackDispatcher<'_> {
-    fn on_audit_turn(&mut self, attachment: AttachmentId) {
-        if let Some(registration) = self.find(attachment) {
-            registration.audit_turn = true;
-        }
-    }
-
     fn on_event(&mut self, attachment: AttachmentId) -> EventOutcome {
         let batch_size = self.batch_size;
         let warn_nanos = self.warn_nanos;
@@ -360,22 +354,13 @@ impl Dispatcher for CallbackDispatcher<'_> {
         let mut outcome = EventOutcome::Drained;
         let mut answer: Option<HyphaCallbackResult> = None;
         let mut slow = 0_u64;
-        // Whether the turn was started by the audit alone, and whether it took a sample.
-        let audit_turn: bool;
-        let mut sample_taken = false;
 
         {
             let Some(registration) = self.find(attachment) else {
                 return EventOutcome::Drained;
             };
-            let Registration {
-                id,
-                ref mut target,
-                ref mut warnings,
-                ref mut transport_failing,
-                audit_turn: ref mut audit_flag,
-            } = *registration;
-            audit_turn = std::mem::take(audit_flag);
+            let Registration { id, ref mut target, ref mut warnings, ref mut transport_failing } =
+                *registration;
             let (subscriber, callback) = match *target {
                 Target::Subscription { ref subscriber, ref mut callback } => (subscriber, callback),
                 Target::LatchReplay => {
@@ -407,9 +392,6 @@ impl Dispatcher for CallbackDispatcher<'_> {
                                  its samples are not delivered until the transport recovers");
                 }
                 *transport_failing = failed;
-                let frame_taken =
-                    matches!(&received, Ok(Some(_)) | Err(ReceiveFailure::Refused(_)));
-                sample_taken |= frame_taken;
                 let (step, stop_early) = match received {
                     Ok(Some(sample)) => {
                         let (result, was_slow) =
@@ -444,9 +426,6 @@ impl Dispatcher for CallbackDispatcher<'_> {
         }
 
         self.count_slow(slow);
-        if audit_turn && sample_taken {
-            health.record_lost_wake();
-        }
         let Some(result) = answer else {
             return outcome;
         };

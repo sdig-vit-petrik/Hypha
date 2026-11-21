@@ -208,7 +208,7 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
             let attached =
                 subscriber.port.open_listener().map_err(Error::from).and_then(|listener| {
                     let trigger = if listener.is_some() {
-                        Trigger::EventDriven
+                        Trigger::Event
                     } else {
                         Trigger::Periodic(WILDCARD_POLL_PERIOD)
                     };
@@ -269,11 +269,7 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
             Ok((id, Target::Driver(driver)))
         }
         Request::TriggerWake { listener } => {
-            // On host time the listener is audited, so a lost notification is read within
-            // one audit period. Under simulated time it stays event-only.
-            let trigger =
-                if set.node().on_sim_time() { Trigger::EventOnly } else { Trigger::EventDriven };
-            let id = set.native_attach(Some(*listener), trigger)?;
+            let id = set.native_attach(Some(*listener), Trigger::Event)?;
             Ok((id, Target::TriggerWake))
         }
     }
@@ -281,15 +277,11 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
 
 /// The wake of a framework timer.
 ///
-/// Host time has no wake period of its own. Under simulated time a node on its own clock
-/// is woken by its listeners and the audit; a clock driven from outside is polled at 1 ms.
+/// Host time has no wake period of its own, and a node on its own simulated clock is
+/// woken by its `/clock` listener; a clock driven from outside is polled at 1 ms.
 fn timer_wake(period: Duration, node_clock: bool, sim_time: bool) -> Trigger {
-    if !sim_time {
+    if !sim_time || node_clock {
         return Trigger::Timed;
-    }
-    // The node's own `/clock` listener and the audit wake this `WaitSet`.
-    if node_clock {
-        return Trigger::Periodic(super::configuration::SIM_CLOCK_AUDIT);
     }
     Trigger::Periodic(period.min(Duration::from_millis(1)))
 }
@@ -297,9 +289,9 @@ fn timer_wake(period: Duration, node_clock: bool, sim_time: bool) -> Trigger {
 /// The wake of a triggered cycle. An unnotified cycle has no listener and polls its
 /// triggers at a tenth of its limit.
 fn triggered_wake(set: &HyphaWaitSet, silence_nanos: i64, notified: bool) -> Trigger {
-    let node_clock = set.node().uses_sim_time;
-    if node_clock {
-        return Trigger::Periodic(super::configuration::SIM_CLOCK_AUDIT);
+    // A node on its own simulated clock is woken by its `/clock` listener.
+    if set.node().uses_sim_time {
+        return Trigger::Timed;
     }
     if hypha_time::is_sim_time() {
         return Trigger::Periodic(Duration::from_millis(1));

@@ -77,6 +77,7 @@ Classes:
 | FM-21 | Change after the check | A write into the publisher's segment while the reader uses the sample (delivery is zero-copy) | Not detected. A cycle input copies the payload right after the check. | `architecture.md` §3.4 | U | AoU-12, AoU-10 |
 | FM-22 | Loss or error before the first frame of a publisher | Start-up, restart of a publisher | The first frame of a publisher is accepted as it is. A restarted publisher is a new publisher with a new sequence. | `communication-integrity.md` §3 | U | AoU-14 |
 | FM-23 | Damage to the transport's own shared state | A stray write into a connection segment, which every participant can write | *Not analysed.* The frame checks cover the data, not the queue and discovery structures of iceoryx2. | — | U | Open item O-1 |
+| FM-24 | A sample's wake notification is lost or fails | `notify()` fails after the send; a transport fault | The sample is in the reader's queue, but nothing polls the queue: it is read at the next notification of its topic. A failed `notify()` is logged and counted (`transport.failed_notifications`); a notification lost silently is not. A cycle input reports the silent topic as `Stale` after its `silence_ms`. | FSR-13; `hypha_iceoryx2/waitset_wake_cadence`, `hypha_iceoryx2` (`notification` unit test) | R (cycle input, failed `notify()`), U (callback subscription, silent loss) | AoU-21 |
 
 ### 3.3 Receiving and execution
 
@@ -149,6 +150,7 @@ together they are the core of a safety manual.
 | AoU-18 | All processes of a domain run on one host and one kernel. |
 | AoU-19 | One domain runs one hypha version. A version change stops every process and resets the shared memory. |
 | AoU-20 | A thread of a safety function does not log to a sink that can block, or its log level keeps the hot path silent. |
+| AoU-21 | A callback subscription whose data a safety function needs has a check of its own that the data keeps arriving (a cycle input with `silence_ms`, or a watchdog): hypha does not detect a sample left unread by a lost notification. |
 
 ## 5. Open items
 

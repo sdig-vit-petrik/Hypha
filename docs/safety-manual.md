@@ -85,6 +85,7 @@ modes it covers.
 | AoU-14 | A restart of a producer is a defined event for its consumers. `Usable` means a fresh sample arrived, not that the producer has converged. |
 | AoU-15 | The work of a safety function runs on its own `WaitSet` and thread, or in its own process, with no callback of lower integrity beside it. |
 | AoU-20 | A thread of a safety function does not log to a sink that can block, or its log level keeps the hot path silent. |
+| AoU-21 | A callback subscription whose data a safety function needs has a check of its own that the data keeps arriving (a cycle input with `silence_ms`, or a watchdog): hypha does not detect a sample left unread by a lost notification. |
 
 ### 4.4 End-to-end protection
 

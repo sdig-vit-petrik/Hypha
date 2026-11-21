@@ -26,7 +26,7 @@ of every row from a test run.
 | FSR-10 | `hypha_core/frame_validation`, `hypha_wire/sequence_validator`, `hypha_node/subscriber_integrity_stats`, `hypha_ffi/delivery_transport_age`; R4 harness, by hand (corrupt, future, reordered frames from a peer process) | The zero-copy window after the check is accepted (architecture §3.4). |
 | FSR-11 | `hypha_cycle/input_judgement`, `hypha_cycle/input_supervision`, `cxx:test_input_supervision` |  |
 | FSR-12 | `hypha_ffi/subscriber_delivery_mode`, `cxx:test_subscriber` |  |
-| FSR-13 | `hypha_iceoryx2/notification`, `hypha_ffi/waitset_wakeups`, `hypha_iceoryx2/waitset_wakeup_recovery` |  |
+| FSR-13 | `hypha_iceoryx2/notification`, `hypha_ffi/waitset_wakeups`, `hypha_iceoryx2/waitset_wake_cadence` |  |
 | FSR-14 | `hypha_iceoryx2/housekeeping_creates_no_thread`, `hypha_ffi/waitset_cross_thread_stop` |  |
 | FSR-15 | `hypha_core/timer_missed_count`, `hypha_core/timer_reset`, `hypha_time/cadence_policies` |  |
 | FSR-16 | `hypha_time/clock`, `hypha_time/cross_process_monotonic`, `cxx:test_clock` |  |

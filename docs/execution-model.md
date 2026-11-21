@@ -325,8 +325,7 @@ calling thread.
   binding, a forward per-publisher sequence gap contributes to its `overrun_total`
   after the next surviving sample arrives. A latest binding does not count it.
 - On simulated time the framework `/clock` subscriber is notification-driven:
-  every `/clock` publisher notifies, so the node wakes when time moves. A 50 ms
-  audit also samples `/clock`, for a lost wake.
+  every `/clock` publisher notifies, so the node wakes when time moves.
 - **Data time.** Every frame carries a framework send time. A publisher stamps
   it with the framework clock, which is simulated time on a sim-time node. A
   replayer stamps it with the recorded time instead. `hypha play` does this for
@@ -501,9 +500,8 @@ neither, or whose trigger has no positive silence limit is refused at start with
    the limit, so replays repeat them. A fallback at F waits until every upstream
    has reported at least F, so no trigger stamped F can still come.
 4. **Wake-up.** The trigger wakes the `WaitSet` when its publisher notifies, which
-   every publisher does. In host time the listener is also audited, so a lost
-   notification is read within one audit period, and the `WaitSet` wakes at the
-   cycle's next fallback deadline, so a fallback runs on its deadline. A wildcard
+   every publisher does, and the `WaitSet` wakes at the cycle's next fallback
+   deadline, so a fallback runs on its deadline. A wildcard
    trigger has no listener and is polled every millisecond, as a wildcard subscription
    is. Under simulated time the wake follows the rule of a cycle timer (section 11.1).
 5. **Simulated time.** A step at T runs when the node's clock is at least T and
@@ -613,8 +611,9 @@ itself owns no listener, so a subscriber read on a schedule costs none.
 When the listener fires, the run loop marks that subscription ready, consumes
 the pending notifications so an unread event cannot spin the loop, and takes a
 bounded batch from it. A notification is a wake hint, not a message count: the
-data queue stays authoritative. The 50 ms audit also reads every event-driven
-queue, so a sample whose wake was lost still arrives within one audit.
+data queue stays authoritative. Nothing polls the queue: a sample whose
+notification is lost or fails waits for the next notification of its topic, and
+the failure is counted (`transport.failed_notifications`).
 
 There is no relay thread and no forwarding step. The thread that called
 `run()` is the thread that waits on the listener.
@@ -626,14 +625,12 @@ There is no relay thread and no forwarding step. The thread that called
 A wildcard pattern follows several topics and has no single event service, so
 its callback subscription is read on a 1 ms cadence: about 1000 wake-ups a
 second whether or not a sample arrived, and up to 1 ms of latency. An idle
-callback subscription on a literal topic wakes the run about 20 times a second,
-for the audit. Subscribe to literal topics in nodes that must stay idle.
+callback subscription on a literal topic does not wake the run. Subscribe to literal
+topics in nodes that must stay idle.
 
-A `WaitSet` with no event-driven registration (no callback subscription, no
-triggered cycle) has no audit wake of its own: a node whose work is rate cycles
-wakes at its cycle rates and timers only, and its framework listeners are audited
-on those wakes. Cycle inputs open no listener, so a published sample never wakes a
-rate cycle. Without any timer due, the wait lasts at most 1 s.
+A node whose work is rate cycles wakes at its cycle rates and timers only. Cycle
+inputs open no listener, so a published sample never wakes a rate cycle. Without any
+timer due, the wait lasts at most 1 s.
 
 ---
 
@@ -785,9 +782,8 @@ host:
   (silence and stagnation) is measured against `Di`. A sample 600 ms old at the
   deadline is stale under a 500 ms limit, whatever the host speed.
 - **Wake-ups follow the clock.** A node on simulated time wakes its `WaitSet` on
-  each `/clock` event, and on a 50 ms audit for a publisher that sends no
-  notification. Its timers do not poll at 1 kHz. A run at 50 Hz with idle inputs
-  takes about 50 turns a second, plus the audit.
+  each `/clock` event. Its timers do not poll. A run at 50 Hz with idle inputs takes
+  about two turns per clock event.
 - **Progress is reported per `/clock` sample.** After each turn of a `WaitSet`
   that holds a replay cycle or a triggered cycle (section 6.6), it publishes `hypha_msgs/ReplayProgress` on
   `/clock_progress`: the node's name, a clock value and the host send time of the

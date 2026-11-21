@@ -102,7 +102,8 @@ impl Iox2Loan {
 
     /// Seal the payload with `metadata` and `flags`, then send it, consuming the
     /// loan. Dropping the loan without sending returns the slot to the publisher.
-    /// A failed wake notification is logged, not returned.
+    /// A failed wake notification is logged and counted ([`crate::failed_notifications`]),
+    /// not returned: the sample is visible, so a retry would send it twice.
     ///
     /// # Errors
     /// The error of the failed send, see [`send_port_error`].
@@ -111,7 +112,7 @@ impl Iox2Loan {
         let header = seal(self.topic_code, metadata, flags, self.sample.payload());
         *self.sample.user_header_mut() = Iox2FrameHeader::from(header);
         self.sample.send().map_err(send_port_error)?;
-        if self.notifier.notify().is_err() {
+        if !crate::notification::notified(&self.notifier.notify()) {
             log::warn!(target: "hypha/transport", "hypha_iceoryx2: data was sent but its wake notification failed");
         }
         Ok(())

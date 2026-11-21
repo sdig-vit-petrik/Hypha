@@ -106,7 +106,7 @@ id = "FSR-13"
 tests = [
   "hypha_iceoryx2/notification",
   "hypha_ffi/waitset_wakeups",
-  "hypha_iceoryx2/waitset_wakeup_recovery",
+  "hypha_iceoryx2/waitset_wake_cadence",
 ]
 
 [[requirement]]

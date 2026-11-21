@@ -2,7 +2,7 @@
 
 use super::{
     Dispatcher, EventOutcome, IDLE_BACKSTOP, Iox2WaitSet, Ipc, Progression, Registration, Trigger,
-    TurnState, WAIT_SLICE,
+    TurnState,
 };
 use core::sync::atomic::Ordering;
 use core::time::Duration;
@@ -67,9 +67,7 @@ impl Iox2WaitSet {
         let count = registrations.len();
         let mut state = TurnState::new(count);
         let mut cursor = 0_usize;
-        let mut last_audit = std::time::Instant::now();
         let mut first_turn = true;
-        let cap = longest_wait(registrations);
 
         loop {
             if self.stop.load(Ordering::SeqCst) {
@@ -77,10 +75,13 @@ impl Iox2WaitSet {
             }
             let has_pending_work = state.has_pending_work();
             let first = std::mem::take(&mut first_turn);
-            let Some(wait_slice) = next_wait_slice(deadline, has_pending_work, first, cap) else {
+            let Some(wait_slice) = next_wait_slice(deadline, has_pending_work, first) else {
                 return RunReport::deadline();
             };
-            let wait_slice = capped_wait(wait_slice, last_audit, cap, dispatcher.next_timed_wait());
+            let wait_slice = match dispatcher.next_timed_wait() {
+                Some(timed_wait) => wait_slice.min(timed_wait),
+                None => wait_slice,
+            };
 
             let mut stop_requested = false;
             let wait = waitset.wait_and_process_once_with_timeout(
@@ -119,18 +120,9 @@ impl Iox2WaitSet {
                 return RunReport::runtime_failed(cause, None);
             }
 
-            let audit = last_audit.elapsed() >= WAIT_SLICE;
-            if audit {
-                last_audit = std::time::Instant::now();
-            }
-            if let Some(report) = mark_ready(
-                listeners,
-                registrations,
-                &event_guards,
-                &interval_guards,
-                &mut state,
-                audit,
-            ) {
+            if let Some(report) =
+                mark_ready(listeners, registrations, &event_guards, &interval_guards, &mut state)
+            {
                 return report;
             }
 
@@ -157,27 +149,6 @@ impl Iox2WaitSet {
     }
 }
 
-/// The longest native wait of a run. Only an event-driven registration needs a wake
-/// every audit period.
-fn longest_wait(registrations: &[Registration]) -> Duration {
-    let audited_cadence = registrations.iter().any(|r| r.trigger == Trigger::EventDriven);
-    if audited_cadence { WAIT_SLICE } else { IDLE_BACKSTOP }
-}
-
-/// The native wait of one turn, capped by the audit cadence and the next deadline.
-fn capped_wait(
-    slice: Duration,
-    last_audit: std::time::Instant,
-    longest_wait: Duration,
-    timed_wait: Option<Duration>,
-) -> Duration {
-    let audited = slice.min(longest_wait.saturating_sub(last_audit.elapsed()));
-    match timed_wait {
-        Some(timed_wait) => audited.min(timed_wait),
-        None => audited,
-    }
-}
-
 /// How long the next native wait blocks, or `None` when the deadline elapsed.
 ///
 /// The first turn always happens without blocking: setup on a loaded host can
@@ -186,9 +157,8 @@ fn next_wait_slice(
     deadline: Option<std::time::Instant>,
     has_pending_work: bool,
     first_turn: bool,
-    longest_wait: Duration,
 ) -> Option<Duration> {
-    let slice = if has_pending_work { Duration::ZERO } else { longest_wait };
+    let slice = if has_pending_work { Duration::ZERO } else { IDLE_BACKSTOP };
     let Some(deadline) = deadline else {
         return Some(slice);
     };
@@ -218,7 +188,7 @@ fn build_guards<'w, 'l>(
         }
         let listener = listeners.get(index).and_then(Option::as_ref);
         let attached = match (registration.trigger, listener) {
-            (Trigger::EventDriven | Trigger::EventOnly, Some(listener)) => {
+            (Trigger::Event, Some(listener)) => {
                 waitset.attach_notification(listener).map(|guard| event_guards.push((index, guard)))
             }
             (Trigger::Periodic(period), _) => {
@@ -240,10 +210,9 @@ fn mark_ready(
     event_guards: &EventGuards<'_, '_>,
     interval_guards: &IntervalGuards<'_>,
     state: &mut TurnState,
-    audit: bool,
 ) -> Option<RunReport> {
     for (index, _) in event_guards {
-        if let Some(report) = mark_event_ready(listeners, registrations, state, *index, audit) {
+        if let Some(report) = mark_event_ready(listeners, registrations, state, *index) {
             return Some(report);
         }
     }
@@ -253,41 +222,22 @@ fn mark_ready(
     None
 }
 
-/// Consume a registration's notifications before the dispatcher reads, so an
-/// unread event cannot spin the run loop. Silent listeners are audited too: a lost
-/// wake leaves activations behind a silent socket, as the race iceoryx2 0.10.1 fixed did.
+/// Consume a notified registration's notifications before the dispatcher reads, so an
+/// unread event cannot spin the run loop.
 fn mark_event_ready(
     listeners: &[Option<Listener<Ipc>>],
-    registrations: &mut [Registration],
-    state: &mut TurnState,
+    registrations: &[Registration],
+    state: &TurnState,
     index: usize,
-    audit: bool,
 ) -> Option<RunReport> {
-    let ready = state.ready.get(index).copied().unwrap_or(false);
-    if !ready && !audit {
+    if !state.ready.get(index).copied().unwrap_or(false) {
         return None;
     }
     let Some(Some(listener)) = listeners.get(index) else {
         return None;
     };
-    let registration = registrations.get_mut(index)?;
-    let pending = match drain(listener) {
-        Ok(count) => count > 0,
-        Err(cause) => return Some(RunReport::runtime_failed(cause, Some(registration.id))),
-    };
-    let audited = audit && registration.trigger == Trigger::EventDriven;
-    // Not ready means the WaitSet saw no notification; an audit turn that takes a
-    // sample recovered a lost wake.
-    let missed_by_waitset = !ready && (pending || audited);
-    if (pending || audited)
-        && let Some(slot) = state.ready.get_mut(index)
-    {
-        *slot = true;
-    }
-    if missed_by_waitset && let Some(slot) = state.audit_only.get_mut(index) {
-        *slot = true;
-    }
-    None
+    let registration = registrations.get(index)?;
+    drain(listener).err().map(|cause| RunReport::runtime_failed(cause, Some(registration.id)))
 }
 
 /// A periodic registration is ready for exactly one turn per tick.
@@ -329,11 +279,6 @@ fn dispatch_turn(
         }
         examined = 0;
         spent = spent.saturating_add(1);
-
-        let audit_only = state.audit_only.get_mut(index).is_some_and(std::mem::take);
-        if audit_only {
-            dispatcher.on_audit_turn(registration.id);
-        }
 
         let missed = state.due.get(index).copied().unwrap_or(0);
         if missed > 0 {

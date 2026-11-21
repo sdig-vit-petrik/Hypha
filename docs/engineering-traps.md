@@ -199,26 +199,17 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   application created on another thread would then be undefined behaviour.
   `crates/hypha_iceoryx2/src/lib.rs` asserts `Send` on the transport and its
   endpoints at compile time; do not switch the alias back to `ipc`.
-- **An empty notification socket can still have pending activations.** iceoryx2
-  0.10.0 could leave its event state `NOTIFIED` after the consumer emptied the socket,
-  so later notifiers kept counts but suppressed the socket wake-up; 0.10.1 empties the
-  socket before it resets the state (iceoryx2 #2214). The backend
-  audits event-driven listeners on its existing 50 ms wait cadence, before
-  timers read data, and the audit also marks every `Trigger::EventDriven`
-  registration ready, so a subscription whose wake was lost is read within one
-  audit. Only a `WaitSet` that holds a `Trigger::EventDriven` registration wakes
-  every 50 ms for it; any other (rate cycles only) audits on the wakes of its
-  timers, at most 1 s apart (`IDLE_BACKSTOP`), so a lost graph event delays a
-  latched replay by up to one cycle period (`tests/waitset_wake_cadence.rs`).
-  A registration whose turn is a side effect an audit must not repeat, above all
-  the latched replay, which notifies every listener of its topic, attaches as
-  `Trigger::EventOnly`. Ordinary activations restore readiness; application event ids
-  and counts stay queued until their callbacks run, including across a stop.
-  Do not make recovery depend on descriptor readiness or discard application
-  activations in an audit. The audit stays with 0.10.1: it bounds the recovery of any
-  lost wake, and the transport is a black channel. `waitset_wakeup_recovery.rs`
-  injects the silent-listener state after run entry and checks data and application
-  event delivery.
+- **Nothing polls a listener: a sample wakes its reader only by its notification.**
+  A `Trigger::Event` registration runs when its listener is notified, and the run
+  loop otherwise waits for its timers, at most `IDLE_BACKSTOP` (1 s) for a signal
+  (`tests/waitset_wake_cadence.rs`). A sample whose notification is lost or fails waits
+  for the next notification of its topic. iceoryx2 0.10.0 lost notifications (its
+  event state stayed `NOTIFIED` with an empty socket); 0.10.1 fixes it (iceoryx2
+  #2214), so do not pin an older iceoryx2. A failed `notify()` after a send is logged
+  and counted (`transport.failed_notifications`), never retried: the sample is already
+  visible. Do not add a periodic read to recover a lost wake: a cycle input reports a
+  silent topic as `Stale` after `silence_ms`. Application event ids and counts stay
+  queued until their callbacks run, including across a stop.
 - **A `WaitSet` is built once per run loop.** Re-creating it per
   cycle measured 1.5 % of a core idle. Attach listeners again only when the set
   of subscriptions changes, and let a build failure refuse the subscription

@@ -17,7 +17,7 @@ const NODE_NAMES: [&str; 7] = [
     "node.last_callback_status",
     "node.is_sim_time",
 ];
-const TRANSPORT_NAMES: [&str; 1] = ["transport.lost_wakes"];
+const TRANSPORT_NAMES: [&str; 1] = ["transport.failed_notifications"];
 const SCHEMA_NAMES: [&str; 3] =
     ["schema.invalid_records", "schema.unavailable_lookups", "schema.resource_limit_failures"];
 const LOG_NAMES: [&str; 3] = ["log.lines_written", "log.write_failures", "log.rejected_lines"];

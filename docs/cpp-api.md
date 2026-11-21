@@ -237,7 +237,7 @@ Reference: `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h`,
 `hypha/cycle.h` (`CycleTime`, `Hz`); simulated time is execution-model.md §11.
 
 - The framework `/clock` subscriber wakes on the notification every `/clock` publisher
-  sends; a 50 ms audit samples it for a lost wake. `/clock` going back ends a cycle's or
+  sends. `/clock` going back ends a cycle's or
   timer's run with `ClockRewound`, and `runNode` restarts the process.
 - There is no implicit `Time` to `RosTime` conversion; never stamp with `steadyNow()`,
   and check a time computed from an input once where it enters:
@@ -954,8 +954,9 @@ A worker thread that publishes, and `Timer::missedCount()`:
 - One subscription's surviving samples arrive in FIFO order; order across topics or
   processes is not defined, so correlated data carries its acquisition stamp.
 - A failed notification after a sent sample is a diagnostic degradation, not a failed
-  publish: a retry would duplicate a visible sample. The 50 ms audit reads every
-  event-driven queue, so a lost wake costs one audit.
+  publish: a retry would duplicate a visible sample. It is logged and counted
+  (`transport.failed_notifications`); the sample waits for the next notification of
+  its topic.
 - An undecodable cycle input sample ([features.md](features.md)) logs `hypha: cycle '<cycle>' input '<port>' (<topic>): a sample did not decode as <type>; dropped (<n> so far)`; a `Latest` keeps its earlier value, an `Arrivals` delivers the others.
 - A shutdown or an endpoint change is reported before queued data, so a busy topic
   cannot starve a stop. Each subscriber has its own bounded queue: a stalled consumer
