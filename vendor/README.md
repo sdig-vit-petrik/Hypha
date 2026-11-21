@@ -4,7 +4,7 @@ Third-party crates hypha patches. Each is the published crate unchanged except f
 lines marked `hypha patch`. `Cargo.toml` points `[patch.crates-io]` at them. Update a
 vendored crate together with its upstream version in `Cargo.lock`, and re-apply the patch.
 
-## iceoryx2-cal 0.10.0
+## iceoryx2-cal 0.10.1
 
 `src/resizable_shared_memory/dynamic.rs`: `MAX_NUMBER_OF_REALLOCATIONS` is 32 instead of
 `SegmentId::max_segment_id()` (255).

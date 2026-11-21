@@ -71,10 +71,10 @@ node starts in any order.
 ### 4.2 Node side (Hypha runtime, no application code)
 
 The transport audits silent event listeners on its existing 50 ms wait cadence.
-This recovers pending progress notifications from the iceoryx2 0.10.0 lost-wakeup
-race and restores event-driven turns without restarting a node. Recovery can take
-an audit interval plus scheduling and callback delays; the upstream race can recur.
-A dependency-only reproducer confirmed the race with the published 0.10.0 crates; it was not submitted upstream.
+This recovers pending progress notifications after a lost wake, such as the iceoryx2
+0.10.0 lost-wakeup race that 0.10.1 fixes (iceoryx2 #2214), and restores event-driven
+turns without restarting a node. Recovery can take an audit interval plus scheduling
+and callback delays.
 
 A node on simulated time wakes on each `/clock` event and runs one step per expired deadline
 (execution model, section 11.1). After each turn of a `WaitSet` that holds a replay cycle, the

@@ -200,8 +200,9 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   `crates/hypha_iceoryx2/src/lib.rs` asserts `Send` on the transport and its
   endpoints at compile time; do not switch the alias back to `ipc`.
 - **An empty notification socket can still have pending activations.** iceoryx2
-  0.10.0 can leave its event state `NOTIFIED` after the consumer empties the socket,
-  so later notifiers keep counts but suppress the socket wake-up. The backend
+  0.10.0 could leave its event state `NOTIFIED` after the consumer emptied the socket,
+  so later notifiers kept counts but suppressed the socket wake-up; 0.10.1 empties the
+  socket before it resets the state (iceoryx2 #2214). The backend
   audits event-driven listeners on its existing 50 ms wait cadence, before
   timers read data, and the audit also marks every `Trigger::EventDriven`
   registration ready, so a subscription whose wake was lost is read within one
@@ -214,10 +215,10 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   `Trigger::EventOnly`. Ordinary activations restore readiness; application event ids
   and counts stay queued until their callbacks run, including across a stop.
   Do not make recovery depend on descriptor readiness or discard application
-  activations in an audit. This bounds recovery, not recurrence of the upstream
-  race (confirmed with a dependency-only reproducer on macOS, 0.10.0 crates;
-  never reported upstream). `waitset_wakeup_recovery.rs` injects the
-  resulting state after run entry and checks data and application event delivery.
+  activations in an audit. The audit stays with 0.10.1: it bounds the recovery of any
+  lost wake, and the transport is a black channel. `waitset_wakeup_recovery.rs`
+  injects the silent-listener state after run entry and checks data and application
+  event delivery.
 - **A `WaitSet` is built once per run loop.** Re-creating it per
   cycle measured 1.5 % of a core idle. Attach listeners again only when the set
   of subscriptions changes, and let a build failure refuse the subscription
