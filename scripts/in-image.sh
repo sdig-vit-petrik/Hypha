@@ -6,41 +6,60 @@
 # mounted at its own path, the main one too when this is a worktree: the cargo
 # cache and git's worktree links hold absolute paths. The process runs as you,
 # with a 2 GB /dev/shm for the transport tests and without seccomp for TSan.
-# The cargo registry is kept in target/linux-cargo-registry of the main checkout.
 # CMAKE_BUILD_PARALLEL_LEVEL defaults to one C++ compile per 2 GB of Docker's memory:
 # GCC needs more than 1 GB a C++23 unit, and a job per core runs out of memory.
 # CTEST_PARALLEL_LEVEL defaults to the same number: a sanitized test takes several times
 # its memory.
 #
-# build/ and target/ belong to one platform: on a host that is not Linux, run
-# this in a checkout or worktree the host itself does not build in.
+# On a host that is not Linux, build/, target/ and coverage/ of this checkout and the
+# cargo registry live in Docker volumes (hypha-<dir>-<checkout hash>), not on the host:
+# they hold Linux artifacts, and Docker Desktop's file sharing serves stale entries for a
+# file deleted and written again, so a rebuild in place fails (missing rlibs, failed
+# links). Read their files through this script, e.g. in-image.sh cat target/x.
+# On Linux they are the host's directories; the registry is target/linux-cargo-registry.
 #
 # Environment: HYPHA_BUILDER_IMAGE uses that image instead of building one.
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
-  sed -n '2,15p' "$0" >&2
+  sed -n '2,21p' "$0" >&2
   exit 2
 fi
 
-common="$(git rev-parse --path-format=absolute --git-common-dir)"
-main="$(dirname "$common")"
+top="$(git rev-parse --show-toplevel)"
+main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 image="${HYPHA_BUILDER_IMAGE:-}"
 if [[ -z "$image" ]]; then
   log="$(mktemp)"
   trap 'rm -f "$log"' EXIT
-  image="$("$(git rev-parse --show-toplevel)/docker/build.sh" builder 2>"$log")" || { cat "$log" >&2; exit 1; }
+  image="$("$top/docker/build.sh" builder 2>"$log")" || { cat "$log" >&2; exit 1; }
 fi
-registry="$main/target/linux-cargo-registry"
-mkdir -p "$registry"
+
+mounts=(-v "$main:$main")
+if [[ "$(uname)" == Linux ]]; then
+  mkdir -p "$main/target/linux-cargo-registry"
+  mounts+=(-v "$main/target/linux-cargo-registry:/usr/local/cargo/registry")
+else
+  key="$(printf '%s' "$top" | shasum | cut -c1-12)"
+  volumes=("hypha-registry-$key:/usr/local/cargo/registry")
+  for dir in build target coverage; do
+    volumes+=("hypha-$dir-$key:$top/$dir")
+  done
+  owner=()
+  for volume in "${volumes[@]}"; do
+    mounts+=(-v "$volume")
+    owner+=(-v "${volume%%:*}:/own/${volume%%:*}")
+  done
+  # A new volume belongs to root; the build runs as you.
+  docker run --rm --user 0 "${owner[@]}" "$image" chown "$(id -u):$(id -g)" /own/* >/dev/null
+fi
+
 memory_gb=$(($(docker info --format '{{.MemTotal}}') / 1024 / 1024 / 1024))
 jobs="${CMAKE_BUILD_PARALLEL_LEVEL:-$((memory_gb / 2 > 0 ? memory_gb / 2 : 1))}"
 tty=()
 [[ -t 0 && -t 1 ]] && tty=(-it)
 
-docker run --rm "${tty[@]}" \
-  -v "$main:$main" -w "$PWD" \
-  -v "$registry:/usr/local/cargo/registry" \
+docker run --rm "${tty[@]}" "${mounts[@]}" -w "$PWD" \
   --user "$(id -u):$(id -g)" -e HOME=/tmp -e CMAKE_BUILD_PARALLEL_LEVEL="$jobs" \
   -e CTEST_PARALLEL_LEVEL="${CTEST_PARALLEL_LEVEL:-$jobs}" \
   --shm-size=2g --security-opt seccomp=unconfined \
