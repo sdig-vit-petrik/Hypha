@@ -11,8 +11,9 @@
 # CTEST_PARALLEL_LEVEL defaults to the same number: a sanitized test takes several times
 # its memory.
 #
-# On a host that is not Linux, build/, target/ and coverage/ of this checkout and the
-# cargo registry live in Docker volumes (hypha-<dir>-<checkout hash>), not on the host:
+# On a host that is not Linux, the build outputs of this checkout (build/, build-asan/,
+# build-tsan/, target/, coverage/, fuzz/target/) and the cargo registry live in Docker
+# volumes (hypha-<dir>-<checkout hash>), not on the host:
 # they hold Linux artifacts, and Docker Desktop's file sharing serves stale entries for a
 # file deleted and written again, so a rebuild in place fails (missing rlibs, failed
 # links). Read their files through this script, e.g. in-image.sh cat target/x.
@@ -42,8 +43,8 @@ if [[ "$(uname)" == Linux ]]; then
 else
   key="$(printf '%s' "$top" | shasum | cut -c1-12)"
   volumes=("hypha-registry-$key:/usr/local/cargo/registry")
-  for dir in build target coverage; do
-    volumes+=("hypha-$dir-$key:$top/$dir")
+  for dir in build build-asan build-tsan target coverage fuzz/target; do
+    volumes+=("hypha-${dir//\//-}-$key:$top/$dir")
   done
   owner=()
   owned=()
