@@ -8,7 +8,7 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use hypha_ffi::waitset::{HYPHA_ACTION_CONTINUE, HyphaCallbackResult};
+use hypha_ffi::waitset::{HYPHA_ACTION_CONTINUE, HYPHA_ACTION_STOP, HyphaCallbackResult};
 use hypha_ffi::*;
 
 use crate::common::{attach, unique};
@@ -32,6 +32,13 @@ extern "C" fn detach_on_first_call(_missed: u64, context: *mut c_void) -> HyphaC
         state.detach_status.store(status as u32, Ordering::SeqCst);
     }
     HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
+}
+
+/// Detaches on the first call like [`detach_on_first_call`], then ends the run, so a
+/// test waits for the call and not for a fixed span.
+extern "C" fn detach_and_stop(missed: u64, context: *mut c_void) -> HyphaCallbackResult {
+    detach_on_first_call(missed, context);
+    HyphaCallbackResult { action: HYPHA_ACTION_STOP, status: 0 }
 }
 
 extern "C" fn count_release(context: *mut c_void) {
@@ -95,8 +102,7 @@ fn a_hundred_and_fifty_runs_of_attach_and_self_detach_never_reach_the_limit() {
             calls_at_release: AtomicU32::new(0),
         };
         let context = ptr::from_ref(&state).cast_mut().cast::<c_void>();
-        let record =
-            attach::timer(1_000_000, Some(detach_on_first_call), context, Some(count_release));
+        let record = attach::timer(1_000_000, Some(detach_and_stop), context, Some(count_release));
         let mut attachment = 0;
         assert_eq!(
             unsafe { hypha_waitset_attach(waitset, &raw const record, &raw mut attachment) },
@@ -104,7 +110,9 @@ fn a_hundred_and_fifty_runs_of_attach_and_self_detach_never_reach_the_limit() {
             "the registration limit counts live registrations only"
         );
         state.attachment.store(attachment, Ordering::SeqCst);
-        run(waitset, 5_000_000);
+        // The callback ends the run; the limit only bounds a timer that never fires.
+        run(waitset, 1_000_000_000);
+        assert_eq!(state.calls.load(Ordering::SeqCst), 1, "the timer ran once");
         assert_eq!(state.releases.load(Ordering::SeqCst), 1);
     }
     unsafe { hypha_node_destroy(node) };

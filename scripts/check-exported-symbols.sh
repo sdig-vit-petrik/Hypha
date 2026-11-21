@@ -13,6 +13,13 @@ cd "$(dirname "$0")/.."
 readonly SYMBOL_FILE="crates/hypha_ffi/exported-symbols.txt"
 readonly LIBRARY="target/debug/libhypha_ffi.so"
 
+# The record is the ELF export table of the Linux library; a Mach-O build has none to
+# compare. Linux runs the check (CI, scripts/in-image.sh).
+if [[ "$(uname -s)" != Linux ]]; then
+  echo "SKIP: ${SYMBOL_FILE} records the Linux ELF exports; run this check on Linux."
+  exit 0
+fi
+
 if ! command -v nm >/dev/null 2>&1; then
   echo "ERROR: 'nm' (binutils) is required." >&2
   exit 1
