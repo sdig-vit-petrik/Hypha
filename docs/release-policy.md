@@ -8,7 +8,9 @@ Readers: an integrator who pins a hypha version, and the engineer who cuts a rel
 ## 1. Versions
 
 A version is `MAJOR.MINOR.PATCH`. A **release line** is one `MAJOR.MINOR`. A release
-is a git tag of that name on the repository; nothing else is a release.
+is a git tag `vX.Y.Z` on `main` together with a GitHub release of the same name that
+carries its notes and its qualification report (§4). A tag without the GitHub release
+is not a release, and neither is anything else.
 
 ## 2. What a release line freezes
 
@@ -58,9 +60,10 @@ so an arm64 release runs them by hand in the builder image and the release notes
    changes, with their issues; the defects fixed and the known open ones, each with
    its class ([safety-plan.md](safety-plan.md) §7); whether an assumption of use
    changed; the qualification, with every requirement not verified and its reason;
-   the platforms tested by hand. The GitHub
-   release takes this file as its text and the qualification report as an attachment:
-   `gh release create vX.Y.Z --notes-file docs/releases/X.Y.Z.md report.md`.
+   the platforms tested by hand. The tag and the GitHub release are made in the same
+   step, never a bare tag: the GitHub release takes this file as its text and the
+   qualification report as an attachment:
+   `gh release create vX.Y.Z --target main --notes-file docs/releases/X.Y.Z.md report.md`.
 
 ## 5. Upgrade and rollback
 
