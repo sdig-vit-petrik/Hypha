@@ -89,6 +89,9 @@ fn a_replay_against_a_participant_that_answers_at_once_is_not_held_by_a_poll() {
     assert!(status.success(), "the replay failed: {stderr}");
     let steps_per_second = f64::from(u32::try_from(STEPS).expect("steps")) / elapsed.as_secs_f64();
     println!("lockstep: {STEPS} steps in {elapsed:?}: {steps_per_second:.0} steps/s");
-    // A 1 ms poll caps the replay at 1000 steps per second; a woken wait does not.
-    assert!(steps_per_second > 1_200.0, "{steps_per_second:.0} steps/s");
+    // A 1 ms poll caps the replay at 1000 steps per second; a woken wait does not. macOS
+    // timer slack holds a woken run near 1150 steps/s, and stretches a 1 ms sleep to
+    // about 1.26 ms, so a poll there stays below 800: the poll ceiling itself is the bound.
+    let floor = if cfg!(target_os = "macos") { 1_000.0 } else { 1_200.0 };
+    assert!(steps_per_second > floor, "{steps_per_second:.0} steps/s, not above {floor}");
 }

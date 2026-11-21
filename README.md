@@ -172,10 +172,10 @@ The build trusts `HYPHA_CA_BUNDLE` (default `SSL_CERT_FILE`, then the system
 bundle); `builder` adds it to its trust store so cargo and git work behind the
 TLS-intercepting proxy. `runtime` does not take it.
 
-To run a gate in the builder image:
+To run a gate in the builder image, as you (git refuses a checkout of another owner):
 
 ```bash
-docker run --rm -v "$PWD:/work" -w /work "$(./docker/build.sh builder)" ./check.sh
+scripts/in-image.sh ./check.sh
 ```
 
 ---

@@ -214,10 +214,14 @@ fn a_host_cycle_steps_at_its_period_over_one_second() {
     assert!((45..=55).contains(&steps), "a 50 Hz cycle ran {steps} steps in one second");
     let elapsed = log.elapsed.lock().unwrap_or_else(PoisonError::into_inner).clone();
     assert!(!elapsed.is_empty(), "no step reported an elapsed time");
-    // Every gap is the period, within a wide window for a loaded host.
+    // Every gap is the period, within a wide window for a loaded host. macOS timer slack
+    // wakes a step 10 ms late now and then, on an idle host too (1 in 15 runs alone,
+    // 2026-11-21), and the step after it comes that much early.
+    let window =
+        if cfg!(target_os = "macos") { 5_000_000..=35_000_000 } else { 10_000_000..=30_000_000 };
     for gap in elapsed {
         assert!(
-            (10_000_000..=30_000_000).contains(&gap),
+            window.contains(&gap),
             "a 50 Hz host step came {} ms after the previous one",
             gap / 1_000_000
         );
