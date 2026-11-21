@@ -90,6 +90,7 @@ Classes:
 | FM-34 | More input than a step takes | A publisher faster than the cycle | The oldest pending samples are discarded and counted; the newest are examined. | NFR-05; `hypha_cycle/cycle_history` | R | AoU-07 |
 | FM-35 | Internal fault of the library | A defect in hypha or a dependency | The process aborts. No status is returned; destructors and log flushes do not run. Other nodes see FM-17. | NFR-09; `architecture.md` §3.3 | F | AoU-01 |
 | FM-36 | A stale or absent value is used as current | Application reads the value without the verdict | A read of a stale or absent cycle input reports "unavailable"; the last value is reachable only through `lastKnown()`. A plain subscriber gives no verdict. | FSR-11; `hypha_cycle/input_judgement` | C (cycle input), U (plain subscriber) | AoU-02, AoU-03 |
+| FM-37 | Two threads use one `WaitSet` at once | The application starts a run while another of its threads is inside a call on that `WaitSet` | A call that finds a run in progress on another thread is refused with `InvalidState` and changes nothing. A run that starts while another thread is already inside a call is not detected: both threads use the `WaitSet` unsynchronised, which is undefined behaviour. | `interface-specification.md`, `HyphaWaitSet` (C header); `hypha_ffi/waitset_cross_thread_refusals` | R (call during a run), U (run started during a call) | AoU-22 |
 
 ### 3.4 Processes and resources
 
@@ -151,6 +152,7 @@ together they are the core of a safety manual.
 | AoU-19 | One domain runs one hypha version. A version change stops every process and resets the shared memory. |
 | AoU-20 | A thread of a safety function does not log to a sink that can block, or its log level keeps the hot path silent. |
 | AoU-21 | A callback subscription whose data a safety function needs has a check of its own that the data keeps arriving (a cycle input with `silence_ms`, or a watchdog): hypha does not detect a sample left unread by a lost notification. |
+| AoU-22 | A `WaitSet` is used by one thread at a time: between runs by any thread, during a run by the thread that runs it and, from other threads, only by the calls the C header allows during a run. A run never starts while another thread is inside a call on that `WaitSet` (FM-37). |
 
 ## 5. Open items
 
