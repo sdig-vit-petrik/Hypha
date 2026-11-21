@@ -4,12 +4,15 @@
 ///
 ///   sensor_pipeline_compare compare <expected.mcap> <actual.mcap> <topic> <tolerance_m>
 ///                                   [<expected topic>]
+///   sensor_pipeline_compare common <a.mcap> <b.mcap> <topic> <tolerance_m>
 ///   sensor_pipeline_compare clouds <recording.mcap> <topic>
 ///
 /// compare passes (exit 0) when both lists have the same length, each pair has the same
 /// stamp and frame, and each coordinate differs by at most <tolerance_m>; otherwise it
-/// prints the first divergent stamp and exits 1. A file that does not open or a topic
-/// it does not hold exits 2.
+/// prints the first divergent stamp and exits 1. common pairs the messages of the two
+/// files by stamp instead: it passes when at least one stamp is in both and every such
+/// pair matches, and it counts the stamps that only one file holds. A file that does not
+/// open or a topic it does not hold exits 2.
 
 #include <hypha/hypha.h>
 #include <hypha/testing/mcap_replay.h>
@@ -22,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -167,6 +171,56 @@ int compare(
     return kExitMatch;
 }
 
+int compareCommon(
+    const std::string& firstPath,
+    const std::string& secondPath,
+    const std::string& topic,
+    double             tolerance
+)
+{
+    const std::vector<StampedPoint> first = readPoints(firstPath, topic);
+    std::map<int64_t, StampedPoint> second;
+    for (const StampedPoint& point : readPoints(secondPath, topic)) {
+        second.emplace(point.stampNanos, point);
+    }
+    size_t paired = 0;
+    size_t onlyFirst = 0;
+    double largest = 0.0;
+    for (const StampedPoint& want : first) {
+        const auto found = second.find(want.stampNanos);
+        if (found == second.end()) {
+            ++onlyFirst;
+            continue;
+        }
+        const StampedPoint& got = found->second;
+        const double        difference = largestDifference(want, got);
+        const bool          outside = !(difference <= tolerance);
+        if (want.frame != got.frame || outside) {
+            std::printf(
+                "common: the messages differ (frame '%s' and '%s', difference %.3g m)\n",
+                want.frame.c_str(),
+                got.frame.c_str(),
+                difference
+            );
+            printStamp("common: stamp", want.stampNanos);
+            return kExitDiffer;
+        }
+        largest = std::max(largest, difference);
+        second.erase(found);
+        ++paired;
+    }
+    std::printf(
+        "common: %zu messages of %s match by stamp, %zu only in the first file, %zu only in "
+        "the second; largest difference %.3g m\n",
+        paired,
+        topic.c_str(),
+        onlyFirst,
+        second.size(),
+        largest
+    );
+    return paired > 0 ? kExitMatch : kExitDiffer;
+}
+
 int countClouds(const std::string& path, const std::string& topic)
 {
     const hypha::testing::McapReplay file(path, hypha::Hz(1.0));
@@ -182,6 +236,7 @@ int usage()
         "usage: sensor_pipeline_compare compare <expected.mcap> <actual.mcap> <topic> "
         "<tolerance_m>\n"
         "                                       [<expected topic>]\n"
+        "       sensor_pipeline_compare common <a.mcap> <b.mcap> <topic> <tolerance_m>\n"
         "       sensor_pipeline_compare clouds <recording.mcap> <topic>\n"
     );
     return kExitUsage;
@@ -198,7 +253,8 @@ int main(int argc, char** argv)
     try {
         const bool compareArguments = argc == 6 || argc == 7;
         const bool compareCommand = command == "compare" && compareArguments;
-        if (compareCommand) {
+        const bool commonCommand = command == "common" && argc == 6;
+        if (compareCommand || commonCommand) {
             char*        end = nullptr;
             const double tolerance = std::strtod(argv[5], &end);
             const bool   parsed = end != argv[5] && *end == '\0';
@@ -208,6 +264,9 @@ int main(int argc, char** argv)
                 return kExitUsage;
             }
             const std::string topic = argv[4];
+            if (commonCommand) {
+                return compareCommon(argv[2], argv[3], topic, tolerance);
+            }
             const std::string expectedTopic = argc == 7 ? std::string(argv[6]) : topic;
             return compare(argv[2], argv[3], topic, tolerance, expectedTopic);
         }

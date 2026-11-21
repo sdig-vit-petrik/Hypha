@@ -267,13 +267,11 @@ pub(crate) fn a_bounded_run_ends_after_one_slice_of_a_long_jump() {
         Duration::from_millis(2),
     );
     set_clock(4 * SECOND);
-    let started = std::time::Instant::now();
     rig.settle();
-    let took = started.elapsed();
     let ran = rig.steps().len();
     assert!(ran >= 1, "a turn runs at least one step");
+    // 200 steps of 2 ms each outlast the 5 ms slice: fewer ran, so the slice ended the turn.
     assert!(ran < 200, "the 5 ms run ended after its slice, not after all 200 steps: {ran}");
-    assert!(took < Duration::from_millis(400), "the bounded run took {took:?}");
     let mut runs = 1;
     while rig.steps().len() < 200 && runs < 100 {
         rig.settle();

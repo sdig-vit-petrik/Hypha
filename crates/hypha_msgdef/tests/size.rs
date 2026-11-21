@@ -154,15 +154,14 @@ fn diamond_ladder(levels: usize) -> String {
     text
 }
 
+/// A sizing that walked every path of the 64-level ladder would visit 2^64 of them and
+/// never finish (the nextest timeout); a linear one refuses it at once.
 #[test]
-#[cfg_attr(miri, ignore = "a wall-clock bound (100 ms) that an interpreter cannot meet")]
+#[cfg_attr(miri, ignore = "the 64-level ladder is slow under an interpreter")]
 fn a_64_level_diamond_ladder_sizes_in_linear_time() {
     let definition = diamond_ladder(64);
-    let started = std::time::Instant::now();
     let result = verified_encoded_size("p/T0", "00000000000000000000000000000000", &definition);
-    let took = started.elapsed();
     assert_eq!(result, Err(SizeError::TooLarge));
-    assert!(took < std::time::Duration::from_millis(100), "sizing took {took:?}");
 }
 
 #[test]

@@ -95,16 +95,30 @@ fn an_unresolvable_hash_is_not_retried_on_every_sample() {
 
     let first = cache.resolve(&node, &topic, 0x1234_5678_9abc_def0, now).expect("first lookup");
     assert!(first.is_none(), "an unknown hash has no identity");
+    let after_first = transport_lookups(&node);
+    assert!(after_first >= 1, "the first resolve asks the transport");
 
-    let started = Instant::now();
+    // The same instant is inside the retry interval: no sample may query again.
     for _ in 0..20 {
         let repeat = cache.resolve(&node, &topic, 0x1234_5678_9abc_def0, now).expect("repeat");
         assert!(repeat.is_none());
     }
-    assert!(
-        started.elapsed() < RETRY_INTERVAL,
-        "a paced retry must not query the transport for every sample"
-    );
+    assert_eq!(transport_lookups(&node), after_first, "a paced retry queried the transport");
+
+    // Past the interval it asks once more.
+    let later = now + RETRY_INTERVAL;
+    assert!(cache.resolve(&node, &topic, 0x1234_5678_9abc_def0, later).expect("retry").is_none());
+    assert!(transport_lookups(&node) > after_first, "the retry after the interval asks again");
+}
+
+/// The schema lookups this node made that found no record.
+fn transport_lookups(node: &BusNode) -> u64 {
+    let metrics = node.metrics().expect("metrics");
+    metrics
+        .iter()
+        .find(|(name, _)| name == "schema.unavailable_lookups")
+        .map(|(_, value)| *value)
+        .expect("schema.unavailable_lookups")
 }
 
 #[test]
@@ -112,11 +126,10 @@ fn a_zero_hash_never_reaches_the_transport() {
     let node = BusNode::new(&unique_name("zero_node")).expect("node");
     let cache = SchemaIdentityCache::new();
 
-    let started = Instant::now();
     let resolved = cache.resolve(&node, "/anything", 0, Instant::now()).expect("zero hash");
 
     assert!(resolved.is_none());
-    assert!(started.elapsed() < Duration::from_millis(20), "a zero hash must short-circuit");
+    assert_eq!(transport_lookups(&node), 0, "a zero hash must short-circuit");
 }
 
 #[test]
