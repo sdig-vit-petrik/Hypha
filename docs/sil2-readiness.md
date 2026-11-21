@@ -75,6 +75,16 @@ apply: hypha has no fielded hours.
 
 "Mostly there" means an assessor would ask for a record, not for new engineering.
 
+Last complete qualification run, 2026-11-21, `scripts/qualify.sh` on the merge of every
+open branch, in the builder image (Ubuntu 26.04, arm64, tools at their pinned versions),
+from an empty build: `test.sh --clean`, `check.sh`, the Rust suite (1789 tests), the C++
+suite, coverage, Miri, fuzzing (60 s a target), ASan with UBSan and TSan all passed. 47 of
+51 requirements are verified; FSR-02, NFR-03, NFR-04 and NFR-06 have no test yet. The
+TSan suppression (`called_from_lib:libhypha_ffi`) hid four reports in that run; in each,
+both accesses are inside the uninstrumented library (`malloc` against
+`pthread_mutex_lock`, and two reads in the transport's logger), none in the C++ SDK or
+the tests. One author ran it; there is no review record (G-30).
+
 ## 4. Assessment by clause
 
 ### 4.1 Management of functional safety (IEC 61508-1 clause 6, IEC 61508-3 clause 6)
