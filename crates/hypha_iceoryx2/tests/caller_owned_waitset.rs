@@ -95,7 +95,7 @@ fn an_event_driven_subscription_delivers_queued_data_on_the_calling_thread() {
     let mut waitset = receiver.waitset(&unique_name("waitset_event_ctl")).expect("waitset");
     let subscriber = subscriber;
     let listener = subscriber.open_listener().expect("open a listener");
-    let attachment = waitset.attach(listener, Trigger::EventDriven).expect("attach");
+    let attachment = waitset.attach(listener, Trigger::Event).expect("attach");
 
     let mut loan = publisher.loan(4).expect("loan");
     loan.as_mut_bytes().copy_from_slice(b"scan");
@@ -226,7 +226,7 @@ fn the_caller_owned_path_adds_no_thread() {
     let mut waitset = receiver.waitset(&unique_name("waitset_nothread_ctl")).expect("waitset");
     let subscriber = subscriber;
     let listener = subscriber.open_listener().expect("open a listener");
-    waitset.attach(listener, Trigger::EventDriven).expect("attach");
+    waitset.attach(listener, Trigger::Event).expect("attach");
     let after = thread_count();
 
     println!("M1 threads: before={before} after={after}");
@@ -246,7 +246,7 @@ fn a_bounded_run_takes_one_turn_even_when_its_limit_passed_during_setup() {
 
     let mut waitset = receiver.waitset(&unique_name("waitset_one_turn_ctl")).expect("waitset");
     let listener = subscriber.open_listener().expect("open a listener");
-    let attachment = waitset.attach(listener, Trigger::EventDriven).expect("attach");
+    let attachment = waitset.attach(listener, Trigger::Event).expect("attach");
 
     let mut loan = publisher.loan(4).expect("loan");
     loan.as_mut_bytes().copy_from_slice(b"scan");

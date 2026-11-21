@@ -324,9 +324,10 @@ fn an_idle_50_hz_sim_time_cycle_wakes_per_clock_event_not_per_millisecond() {
         (45..=52).contains(&ticks),
         "a 50 Hz sim-time cycle ran {ticks} steps for one clock second"
     );
-    // Each clock event wakes the WaitSet once, and the audit adds about 40 a second.
+    // About two turns per clock event (its wake, then its step); nothing polls. A 50 ms
+    // poll would add 20 a second.
     assert!(
-        turns <= 4 * (CLOCK_EVENTS + 1),
+        turns <= 3 * (CLOCK_EVENTS + 1),
         "an idle sim-time cycle woke its WaitSet {turns} times for {} clock events",
         CLOCK_EVENTS + 1
     );

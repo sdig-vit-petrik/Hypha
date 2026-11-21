@@ -1,27 +1,18 @@
 //! Execution counters of one node, counted by every `WaitSet` on it.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use hypha_runtime::ExecutionCounters;
 
 use crate::waitset::{HYPHA_ACTION_FAIL, HyphaCallbackResult, status_from_code};
 
-/// The counters behind the `node.*` and `transport.*` metrics.
+/// The counters behind the `node.*` metrics; `transport.*` is process-wide.
 ///
 /// The node owns them; each `WaitSet` holds a shared reference from its creation.
 #[derive(Debug, Default)]
 pub(crate) struct ExecutionHealth {
     counters: ExecutionCounters,
-    /// Sample wakes the audit recovered: a sample was taken on a turn no notification started.
-    lost_wakes: AtomicU64,
 }
 
 impl ExecutionHealth {
-    /// Count one sample that arrived without its wake notification.
-    pub(crate) fn record_lost_wake(&self) {
-        self.lost_wakes.fetch_add(1, Ordering::Relaxed);
-    }
-
     /// Count one callback answer and return it unchanged.
     ///
     /// A nonzero status is a failure whatever the action. The fail action without a
@@ -62,6 +53,6 @@ impl ExecutionHealth {
             u64::try_from(snapshot.last_callback_status).unwrap_or(0),
         );
         emit("node.is_sim_time", u64::from(hypha_time::is_sim_time()));
-        emit("transport.lost_wakes", self.lost_wakes.load(Ordering::Relaxed));
+        emit("transport.failed_notifications", hypha_iceoryx2::failed_notifications());
     }
 }

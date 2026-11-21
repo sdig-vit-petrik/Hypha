@@ -1,4 +1,4 @@
-//! A `WaitSet` wakes for its timers alone unless it holds an event-driven registration.
+//! A `WaitSet` wakes for its timers and its notifications alone: nothing polls.
 #![allow(clippy::expect_used, clippy::arithmetic_side_effects)]
 
 use core::time::Duration;
@@ -63,7 +63,7 @@ fn a_waitset_with_only_a_timer_wakes_at_the_timer_rate() {
     let mut dispatcher = TimerDispatcher::new();
     let _report = waitset.run_for(BUDGET, RUN_LENGTH, &mut dispatcher);
 
-    // 1000 ms of a 200 ms timer: 5 wakes; a 50 ms audit would add about 15 turns.
+    // 1000 ms of a 200 ms timer: 5 wakes; a 50 ms poll would add about 15 turns.
     assert!(dispatcher.timer_runs >= 4, "the timer ran {} times", dispatcher.timer_runs);
     assert!(
         dispatcher.turns <= 9,
@@ -73,7 +73,7 @@ fn a_waitset_with_only_a_timer_wakes_at_the_timer_rate() {
 }
 
 #[test]
-fn a_waitset_with_an_event_driven_registration_keeps_the_audit_wake() {
+fn an_idle_subscription_adds_no_wake() {
     let transport = Iox2Transport::with_name(&unique_name("cadence_event")).expect("transport");
     let spec = TopicSpec::new(&format!("/{}", unique_name("cadence_event_topic")))
         .with_type("hypha_test/Data")
@@ -81,12 +81,13 @@ fn a_waitset_with_an_event_driven_registration_keeps_the_audit_wake() {
     let subscriber = transport.subscribe(&spec).expect("subscribe");
     let mut waitset = transport.waitset(&unique_name("cadence_event_ctl")).expect("waitset");
     let listener = subscriber.open_listener().expect("open a listener");
-    waitset.attach(listener, Trigger::EventDriven).expect("attach the subscription");
+    waitset.attach(listener, Trigger::Event).expect("attach the subscription");
     waitset.attach(None, Trigger::Timed).expect("attach the timer");
 
     let mut dispatcher = TimerDispatcher::new();
     let _report = waitset.run_for(BUDGET, RUN_LENGTH, &mut dispatcher);
 
-    // A silent subscription is still audited every 50 ms: about 20 turns in 1000 ms.
-    assert!(dispatcher.turns >= 15, "{} turns: the audit wake is missing", dispatcher.turns);
+    // Nothing is published, so the run wakes for the timer alone, as without the listener.
+    assert!(dispatcher.timer_runs >= 4, "the timer ran {} times", dispatcher.timer_runs);
+    assert!(dispatcher.turns <= 9, "{} turns: an idle subscription woke the run", dispatcher.turns);
 }

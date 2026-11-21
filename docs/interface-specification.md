@@ -240,7 +240,7 @@ counted by `hypha_subscriber_missing_sequences`.
 | Source | Metrics, in order | Emitted by |
 |---|---|---|
 | Node execution | `node.callbacks_invoked`, `node.callback_failures`, `node.slow_callbacks`, `node.sweeps`, `node.last_sweep_end_nanos`, `node.last_callback_status`, `node.is_sim_time` | `hypha_node_metrics` with a node |
-| Transport | `transport.lost_wakes` | `hypha_node_metrics` with a node: samples the audit took on a turn no notification started, so their wake was lost and recovered |
+| Transport (process-wide) | `transport.failed_notifications` | `hypha_node_metrics` with a node: sends of this process whose wake notification failed; their samples wait for the next notification of the topic |
 | Schema | `schema.invalid_records`, `schema.unavailable_lookups`, `schema.resource_limit_failures` | `hypha_node_metrics` with a node |
 | Log (process-wide) | `log.lines_written`, `log.write_failures`, `log.rejected_lines` | `hypha_node_metrics`, with or without a node |
 | Subscriber | `integrity.invalid_frame`, `integrity.corrupt_payload`, `integrity.schema_mismatch`, `integrity.sequence_gap`, `integrity.invalid_timestamp`, `loan.budget`, `loan.held`, `loan.refused` | `RawSubscriber::metrics` (Rust SDK); `hypha_subscriber_counters` (C ABI, as a struct) |

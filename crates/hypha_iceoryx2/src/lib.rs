@@ -99,6 +99,7 @@ pub mod waitset;
 pub use discovery::{DiscoveredNode, DiscoveredService, list_nodes, list_service_ports};
 pub use domain::MAX_BORROWED_SAMPLES;
 pub use endpoint::{Iox2Loan, Iox2Publisher, Iox2Sample, Iox2Subscriber};
+pub use notification::failed_notifications;
 pub use publisher_nodes::node_names;
 pub use schema::{invalid_record_count, lookup_schema, schema_file_path};
 pub use transport::{GRAPH_EVENT, Iox2Transport, service_name_for};

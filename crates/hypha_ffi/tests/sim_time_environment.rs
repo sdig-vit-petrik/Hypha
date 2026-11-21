@@ -156,7 +156,6 @@ unsafe fn publish_clock_sample(publisher: *mut HyphaPublisher, secs: u32, nsecs:
 }
 
 /// Publish the first clock value and run once, so the cycle takes its phase from it.
-/// The run is longer than the 50 ms audit.
 unsafe fn take_the_phase(clock_pub: *mut HyphaPublisher, waitset: *mut HyphaWaitSet) {
     unsafe { publish_clock_sample(clock_pub, 1, 0) };
     let mut report =

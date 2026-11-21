@@ -51,7 +51,7 @@ does not cover.
 | TR-06 | establishes the same connections whatever the start order | `hypha_iceoryx2/start_order_matrix` | |
 | TR-07 | keeps two domains apart | `hypha_iceoryx2/domain_isolation` | |
 | TR-08 | creates no thread | `hypha_iceoryx2/housekeeping_creates_no_thread` | |
-| TR-09 | wakes a waiting reader on every send, and recovers a lost wake-up | `hypha_iceoryx2/notification`, `hypha_iceoryx2/waitset_wakeup_recovery` | |
+| TR-09 | wakes a waiting reader on every send | `hypha_iceoryx2/notification`, `hypha_iceoryx2/waitset_wake_cadence` | A failed notification is counted (`transport.failed_notifications`); nothing polls |
 | TR-10 | maps a publisher's data segment read-only in its readers | Inspection of iceoryx2 (`AccessMode::Read`), [architecture.md](architecture.md) §3.4 | No test |
 | TR-11 | does not corrupt the memory of the process that hosts it, whatever its shared state holds | — | **Nothing.** A stray write into a connection segment, which every participant can write, has not been injected ([failure-analysis.md](failure-analysis.md) O-1) |
 | TR-12 | returns from every call in bounded time | — | **Nothing.** No worst-case analysis |

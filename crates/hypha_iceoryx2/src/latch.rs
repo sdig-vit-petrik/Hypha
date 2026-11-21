@@ -49,7 +49,7 @@ impl LatchedPort {
                     self.topic);
             return true;
         }
-        if self.notifier.notify().is_err() {
+        if !crate::notification::notified(&self.notifier.notify()) {
             log::warn!(target: "hypha/transport", "hypha_iceoryx2: latched replay on {} was sent but its wake failed",
                     self.topic);
         }

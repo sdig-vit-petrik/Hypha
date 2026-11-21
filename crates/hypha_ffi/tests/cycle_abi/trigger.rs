@@ -455,11 +455,11 @@ fn a_burst_of_triggers_runs_one_step_each_in_order() {
 }
 
 #[test]
-fn an_idle_notified_trigger_wakes_its_waitset_on_the_audit_cadence_not_at_silence_over_ten() {
+fn an_idle_notified_trigger_wakes_its_waitset_for_its_silence_limit_alone() {
     let fixture = Fixture::new();
     let recorder = Recorder::default();
-    // A 50 ms silence limit: the periodic wake serves silence detection every 25 ms, with
-    // the 50 ms audit about 60 turns a second.
+    // A 50 ms silence limit: the wake serves silence detection, about 40 turns a second;
+    // nothing else wakes the run.
     let (cycle, publisher) = triggered(&fixture, &recorder, 50 * MILLIS, 8, 1);
     let before = crate::common::node_metric(fixture.node, "node.sweeps").expect("node.sweeps");
     run_waitset_for(fixture.waitset, 1_000_000_000);
@@ -467,7 +467,7 @@ fn an_idle_notified_trigger_wakes_its_waitset_on_the_audit_cadence_not_at_silenc
     let turns = after - before;
     let steps = recorder.steps();
     assert!((15..=22).contains(&steps.len()), "fallbacks every 50 ms: {}", steps.len());
-    assert!(turns <= 100, "an idle triggered cycle woke its WaitSet {turns} times in 1 s");
+    assert!(turns <= 50, "an idle triggered cycle woke its WaitSet {turns} times in 1 s");
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
     unsafe { hypha_publisher_destroy(publisher) };
 }
