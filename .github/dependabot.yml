@@ -1,0 +1,11 @@
+# Dependabot keeps the GitHub Actions of the workflows on their current major (#80).
+# Security updates for the Rust crates are a repository setting (#76), not version
+# updates: a crate moves when an advisory needs it, or by a change of its own.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    target-branch: develop
+    labels: [ci]
