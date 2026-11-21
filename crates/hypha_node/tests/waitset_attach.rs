@@ -4,7 +4,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use hypha_node::sdk::{BusNode, PublisherOptions, RawPublisher, SubscriberOptions, WaitSet};
+use hypha_node::sdk::{
+    BusNode, PublisherOptions, RawPublisher, StopReason, SubscriberOptions, WaitSet,
+};
 use hypha_testkit::unique_name;
 
 const DATA_TYPE: &str = "std_msgs/Counter";
@@ -114,14 +116,15 @@ fn a_waking_subscription_delivers_every_queued_sample_and_ends_the_run_early() {
     // Two samples queued before the run: one wake must deliver both.
     assert!(publisher.publish(&[1, 0, 0, 0]));
     assert!(publisher.publish(&[2, 0, 0, 0]));
-    let began = std::time::Instant::now();
-    assert!(waitset.run_for(Duration::from_millis(500)).ok());
-    assert!(began.elapsed() < Duration::from_millis(250), "the samples end the run early");
+    // The limit only guards against a hang: the samples end the run, as a requested stop.
+    let woken = waitset.run_for(Duration::from_secs(60));
+    assert!(woken.ok());
+    assert_eq!(woken.reason, StopReason::Requested, "the samples end the run early");
     assert_eq!(seen.lock().unwrap().len(), 2, "every queued sample is delivered");
-    // The stop does not carry into the next run: it waits for its whole slice.
-    let began = std::time::Instant::now();
-    assert!(waitset.run_for(Duration::from_millis(60)).ok());
-    assert!(began.elapsed() >= Duration::from_millis(50));
+    // The stop does not carry into the next run: with nothing queued it runs to its limit.
+    let idle = waitset.run_for(Duration::from_millis(20));
+    assert!(idle.ok());
+    assert_eq!(idle.reason, StopReason::Deadline, "the stop of the last run carried over");
 }
 
 #[test]
