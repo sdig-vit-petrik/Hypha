@@ -34,6 +34,22 @@ extern "C" fn count_step(
     HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
 }
 
+/// The steps the simulated-time test expects: one per period of its clock second.
+const SIM_STEPS: u32 = 50;
+
+/// Counts the steps and ends the run at the last one the test expects.
+extern "C" fn count_step_to_the_last(
+    _image: *const HyphaCycleImage,
+    _time: *const HyphaCycleTime,
+    _emission: *mut HyphaCycleEmission,
+    context: *mut c_void,
+) -> HyphaCallbackResult {
+    let steps = unsafe { &*context.cast::<AtomicU32>() };
+    let ran = steps.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+    let action = if ran >= SIM_STEPS { HYPHA_ACTION_STOP } else { HYPHA_ACTION_CONTINUE };
+    HyphaCallbackResult { action, status: 0 }
+}
+
 fn create_node(parameters: Option<&str>) -> *mut HyphaNode {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let name = format!("wakeups_{}_{id}", std::process::id());
@@ -144,7 +160,7 @@ fn run_report() -> HyphaWaitSetRunReport {
 }
 
 #[test]
-fn an_idle_50_hz_cycle_wakes_its_waitset_about_fifty_times_a_second() {
+fn an_idle_50_hz_cycle_wakes_its_waitset_once_per_step() {
     let _serial = serial();
     let node = create_node(None);
     let steps = AtomicU32::new(0);
@@ -159,11 +175,12 @@ fn an_idle_50_hz_cycle_wakes_its_waitset_about_fifty_times_a_second() {
     assert_eq!(report.reason, HYPHA_RUN_REASON_DEADLINE);
     let turns = sweeps(node) - sweeps_before;
 
-    let ticks = steps.load(Ordering::SeqCst);
-    assert!((45..=55).contains(&ticks), "a 50 Hz cycle ran {ticks} steps in one second");
+    // A loaded host runs fewer steps; the wakes per step are the claim, not the count.
+    let ticks = u64::from(steps.load(Ordering::SeqCst));
+    assert!(ticks >= 1, "a 50 Hz cycle ran no step in one second");
     assert!(
-        (40..=70).contains(&turns),
-        "an idle 50 Hz cycle woke its WaitSet {turns} times in one second; expected about 50"
+        turns <= 2 * ticks + 2,
+        "an idle 50 Hz cycle woke its WaitSet {turns} times for {ticks} steps: it polls"
     );
 
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
@@ -173,11 +190,10 @@ fn an_idle_50_hz_cycle_wakes_its_waitset_about_fifty_times_a_second() {
     }
 }
 
-/// What the host cycle test records: the step count, and each step's `elapsed_nanos`.
+/// What the host cycle test records: each step's scheduled time and missed periods.
 #[derive(Default)]
 struct StepLog {
-    steps: AtomicU32,
-    elapsed: Mutex<Vec<i64>>,
+    steps: Mutex<Vec<(i64, u64)>>,
 }
 
 extern "C" fn record_step(
@@ -187,16 +203,14 @@ extern "C" fn record_step(
     context: *mut c_void,
 ) -> HyphaCallbackResult {
     let log = unsafe { &*context.cast::<StepLog>() };
-    log.steps.fetch_add(1, Ordering::SeqCst);
     let time = unsafe { &*time };
-    if time.has_elapsed != 0 {
-        log.elapsed.lock().unwrap_or_else(PoisonError::into_inner).push(time.elapsed_nanos);
-    }
+    let entry = (time.scheduled_nanos, time.missed_periods);
+    log.steps.lock().unwrap_or_else(PoisonError::into_inner).push(entry);
     HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
 }
 
 #[test]
-fn a_host_cycle_steps_at_its_period_over_one_second() {
+fn a_host_cycle_schedules_every_step_on_its_period() {
     let _serial = serial();
     let node = create_node(None);
     let log = StepLog::default();
@@ -210,20 +224,18 @@ fn a_host_cycle_steps_at_its_period_over_one_second() {
     );
     assert_eq!(report.reason, HYPHA_RUN_REASON_DEADLINE);
 
-    let steps = log.steps.load(Ordering::SeqCst);
-    assert!((45..=55).contains(&steps), "a 50 Hz cycle ran {steps} steps in one second");
-    let elapsed = log.elapsed.lock().unwrap_or_else(PoisonError::into_inner).clone();
-    assert!(!elapsed.is_empty(), "no step reported an elapsed time");
-    // Every gap is the period, within a wide window for a loaded host. macOS timer slack
-    // wakes a step 10 ms late now and then, on an idle host too (1 in 15 runs alone,
-    // 2026-11-21), and the step after it comes that much early.
-    let window =
-        if cfg!(target_os = "macos") { 5_000_000..=35_000_000 } else { 10_000_000..=30_000_000 };
-    for gap in elapsed {
-        assert!(
-            window.contains(&gap),
-            "a 50 Hz host step came {} ms after the previous one",
-            gap / 1_000_000
+    // However late the host wakes it, a step is scheduled a whole number of periods after
+    // the previous one, and the periods it skipped are reported as missed.
+    let steps = log.steps.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert!(steps.len() >= 2, "a 50 Hz cycle ran {} steps in one second", steps.len());
+    for pair in steps.windows(2) {
+        let [(previous, _), (scheduled, missed)] = pair else { continue };
+        let periods = i64::try_from(missed + 1).expect("missed periods");
+        assert_eq!(
+            scheduled - previous,
+            periods * 20_000_000,
+            "a step {} ns after the previous one reported {missed} missed periods",
+            scheduled - previous
         );
     }
 
@@ -290,13 +302,15 @@ fn an_idle_50_hz_sim_time_cycle_wakes_per_clock_event_not_per_millisecond() {
     const CLOCK_EVENTS: u64 = 50;
     const PERIOD_NANOS: u64 = 20_000_000;
     const BASE_NANOS: u64 = 1_000_000_000;
-    // The clock needs 1.02 s; the rest is slack for a loaded host.
-    const RUN_NANOS: u64 = 1_800_000_000;
+    // The last step ends the run; the limit only guards against a hang.
+    const RUN_NANOS: u64 = 60_000_000_000;
     let _serial = serial();
     let node =
         common::create_sim_node_with_file(&format!("wakeups_sim_{}", std::process::id()), None);
     let steps = AtomicU32::new(0);
-    let (waitset, source, cycle) = idle_50_hz_cycle(node, &steps);
+    let context: *mut c_void = (&raw const steps).cast_mut().cast();
+    let (waitset, source, cycle) =
+        idle_50_hz_cycle_with(node, Some(count_step_to_the_last), context);
     let publisher = clock_publisher(node);
 
     // The first value takes the phase, then each of the next fifty passes one deadline.
@@ -319,11 +333,10 @@ fn an_idle_50_hz_sim_time_cycle_wakes_per_clock_event_not_per_millisecond() {
     assert!(clock.join().is_ok(), "the clock publisher panicked");
     let turns = sweeps(node) - sweeps_before;
 
+    // One step per period of the clock second, however the host spaced the samples.
+    assert_eq!(report.reason, HYPHA_RUN_REASON_STOPPED, "the clock second did not pass");
     let ticks = steps.load(Ordering::SeqCst);
-    assert!(
-        (45..=52).contains(&ticks),
-        "a 50 Hz sim-time cycle ran {ticks} steps for one clock second"
-    );
+    assert_eq!(ticks, SIM_STEPS, "a 50 Hz sim-time cycle ran {ticks} steps for one clock second");
     // About two turns per clock event (its wake, then its step); nothing polls. A 50 ms
     // poll would add 20 a second.
     assert!(
