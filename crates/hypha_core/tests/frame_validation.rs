@@ -13,14 +13,14 @@ fn frame(schema_hash: u64, sequence: u64, sent: u64) -> FrameHeader {
         transport_sent_nanos: sent,
         framework_sent_nanos: sent,
     };
-    seal(metadata, 0, PAYLOAD)
+    seal(topic(), metadata, 0, PAYLOAD)
 }
 
 #[test]
 fn accepts_matching_schema_and_increasing_sequence_and_returns_the_send_time() {
     let validator = FrameValidator::new(Some(11));
-    assert_eq!(validator.validate(&frame(11, 1, 900), PAYLOAD, 1_000), Ok(900));
-    assert_eq!(validator.validate(&frame(11, 2, 950), PAYLOAD, 1_000), Ok(950));
+    assert_eq!(validator.validate(topic(), &frame(11, 1, 900), PAYLOAD, 1_000), Ok(900));
+    assert_eq!(validator.validate(topic(), &frame(11, 2, 950), PAYLOAD, 1_000), Ok(950));
     assert_eq!(validator.stats().schema_mismatch, 0);
 }
 
@@ -28,7 +28,7 @@ fn accepts_matching_schema_and_increasing_sequence_and_returns_the_send_time() {
 fn rejects_schema_mismatch_and_counts_it() {
     let validator = FrameValidator::new(Some(11));
     assert_eq!(
-        validator.validate(&frame(12, 1, 900), PAYLOAD, 1_000),
+        validator.validate(topic(), &frame(12, 1, 900), PAYLOAD, 1_000),
         Err(FrameRejection::SchemaMismatch)
     );
     assert_eq!(validator.stats().schema_mismatch, 1);
@@ -37,20 +37,20 @@ fn rejects_schema_mismatch_and_counts_it() {
 #[test]
 fn zero_expectation_accepts_any_schema() {
     let validator = FrameValidator::new(None);
-    assert_eq!(validator.validate(&frame(12, 1, 900), PAYLOAD, 1_000), Ok(900));
+    assert_eq!(validator.validate(topic(), &frame(12, 1, 900), PAYLOAD, 1_000), Ok(900));
 }
 
 #[test]
 fn rejects_future_and_reordered_but_does_not_reject_old_transport_age() {
     let validator = FrameValidator::new(Some(11));
     assert_eq!(
-        validator.validate(&frame(11, 1, 1_001), PAYLOAD, 1_000),
+        validator.validate(topic(), &frame(11, 1, 1_001), PAYLOAD, 1_000),
         Err(FrameRejection::Future)
     );
-    assert_eq!(validator.validate(&frame(11, 1, 1), PAYLOAD, 1_000), Ok(1));
-    assert_eq!(validator.validate(&frame(11, 2, 950), PAYLOAD, 1_000), Ok(950));
+    assert_eq!(validator.validate(topic(), &frame(11, 1, 1), PAYLOAD, 1_000), Ok(1));
+    assert_eq!(validator.validate(topic(), &frame(11, 2, 950), PAYLOAD, 1_000), Ok(950));
     assert_eq!(
-        validator.validate(&frame(11, 2, 951), PAYLOAD, 1_000),
+        validator.validate(topic(), &frame(11, 2, 951), PAYLOAD, 1_000),
         Err(FrameRejection::Sequence)
     );
     let stats = validator.stats();
@@ -63,7 +63,10 @@ fn rejects_a_foreign_magic_as_an_invalid_frame() {
     let validator = FrameValidator::new(None);
     let mut foreign = frame(11, 1, 900);
     foreign.magic ^= 1;
-    assert_eq!(validator.validate(&foreign, PAYLOAD, 1_000), Err(FrameRejection::InvalidFrame));
+    assert_eq!(
+        validator.validate(topic(), &foreign, PAYLOAD, 1_000),
+        Err(FrameRejection::InvalidFrame)
+    );
     assert_eq!(validator.stats().invalid_frame, 1);
 }
 
@@ -71,7 +74,7 @@ fn rejects_a_foreign_magic_as_an_invalid_frame() {
 fn a_corrupt_payload_byte_is_refused_as_corrupt() {
     let validator = FrameValidator::new(None);
     assert_eq!(
-        validator.validate(&frame(11, 1, 900), b"y", 1_000),
+        validator.validate(topic(), &frame(11, 1, 900), b"y", 1_000),
         Err(FrameRejection::CorruptPayload)
     );
     assert_eq!(validator.stats().corrupt_payload, 1);
@@ -82,10 +85,16 @@ fn a_corrupt_header_field_is_refused_as_corrupt() {
     let validator = FrameValidator::new(None);
     let mut corrupt = frame(11, 1, 900);
     corrupt.metadata.sequence ^= 1;
-    assert_eq!(validator.validate(&corrupt, PAYLOAD, 1_000), Err(FrameRejection::CorruptPayload));
+    assert_eq!(
+        validator.validate(topic(), &corrupt, PAYLOAD, 1_000),
+        Err(FrameRejection::CorruptPayload)
+    );
     let mut flipped = frame(11, 1, 900);
     flipped.flags ^= 1;
-    assert_eq!(validator.validate(&flipped, PAYLOAD, 1_000), Err(FrameRejection::CorruptPayload));
+    assert_eq!(
+        validator.validate(topic(), &flipped, PAYLOAD, 1_000),
+        Err(FrameRejection::CorruptPayload)
+    );
     let stats = validator.stats();
     assert_eq!(stats.invalid_frame, 0);
     assert_eq!(stats.corrupt_payload, 2);
@@ -94,8 +103,8 @@ fn a_corrupt_header_field_is_refused_as_corrupt() {
 #[test]
 fn a_sequence_that_wraps_past_its_maximum_is_accepted_as_the_next_one() {
     let validator = FrameValidator::new(Some(11));
-    assert_eq!(validator.validate(&frame(11, u64::MAX, 900), PAYLOAD, 1_000), Ok(900));
-    assert_eq!(validator.validate(&frame(11, 0, 950), PAYLOAD, 1_000), Ok(950));
+    assert_eq!(validator.validate(topic(), &frame(11, u64::MAX, 900), PAYLOAD, 1_000), Ok(900));
+    assert_eq!(validator.validate(topic(), &frame(11, 0, 950), PAYLOAD, 1_000), Ok(950));
     assert_eq!(validator.stats().sequence_gap, 0);
 }
 
@@ -111,22 +120,26 @@ fn a_batch_reuses_its_clock_and_refreshes_only_for_newer_send_times() {
         0
     };
     let accepted = validator
-        .validate_with_clock(&header, PAYLOAD, &mut now, cached_only)
+        .validate_with_clock(topic(), &header, PAYLOAD, &mut now, cached_only)
         .expect("valid frame");
     assert_eq!(accepted.payload(), PAYLOAD);
     assert_eq!(accepted.framework_sent_nanos(), 900);
     assert!(
-        validator.validate_with_clock(&frame(11, 2, 1_050), PAYLOAD, &mut now, || 1_100).is_ok()
+        validator
+            .validate_with_clock(topic(), &frame(11, 2, 1_050), PAYLOAD, &mut now, || 1_100)
+            .is_ok()
     );
     assert_eq!(now, 1_100);
     assert_eq!(
-        validator.validate_with_clock(&frame(11, 3, 1_200), PAYLOAD, &mut now, || 1_150),
+        validator.validate_with_clock(topic(), &frame(11, 3, 1_200), PAYLOAD, &mut now, || 1_150),
         Err(FrameRejection::Future)
     );
     assert_eq!(validator.stats().invalid_timestamp, 1);
     // A refused future timestamp never advances the sequence validator.
     assert!(
-        validator.validate_with_clock(&frame(11, 3, 1_140), PAYLOAD, &mut now, cached_only).is_ok()
+        validator
+            .validate_with_clock(topic(), &frame(11, 3, 1_140), PAYLOAD, &mut now, cached_only)
+            .is_ok()
     );
     assert_eq!(unexpected_refreshes.get(), 0);
     assert_eq!(validator.missing_sequences(), 0);
@@ -137,9 +150,30 @@ fn the_missing_sequence_snapshot_tracks_accepted_gaps_and_wraps() {
     let validator = FrameValidator::new(None);
     assert_eq!(validator.missing_sequences(), 0);
     for (sequence, missing) in [(u64::MAX - 2, 0), (1, 3), (5, 6)] {
-        assert!(validator.validate(&frame(11, sequence, 0), PAYLOAD, 0).is_ok());
+        assert!(validator.validate(topic(), &frame(11, sequence, 0), PAYLOAD, 0).is_ok());
         assert_eq!(validator.missing_sequences(), missing);
     }
-    assert_eq!(validator.validate(&frame(11, 5, 0), PAYLOAD, 0), Err(FrameRejection::Sequence));
+    assert_eq!(
+        validator.validate(topic(), &frame(11, 5, 0), PAYLOAD, 0),
+        Err(FrameRejection::Sequence)
+    );
     assert_eq!(validator.missing_sequences(), 6);
+}
+
+#[test]
+fn a_frame_sealed_for_another_topic_is_refused_as_corrupt_and_counted() {
+    let validator = FrameValidator::new(Some(11));
+    let elsewhere = hypha_wire::frame::TopicCode::of("/another/topic");
+    assert_eq!(
+        validator.validate(elsewhere, &frame(11, 1, 900), PAYLOAD, 1_000),
+        Err(FrameRejection::CorruptPayload)
+    );
+    assert_eq!(validator.stats().corrupt_payload, 1);
+    // The refused frame took no sequence: the same frame is accepted on its own topic.
+    assert_eq!(validator.validate(topic(), &frame(11, 1, 900), PAYLOAD, 1_000), Ok(900));
+}
+
+/// The topic every frame of this file is sealed for.
+fn topic() -> hypha_wire::frame::TopicCode {
+    hypha_wire::frame::TopicCode::of("/test")
 }

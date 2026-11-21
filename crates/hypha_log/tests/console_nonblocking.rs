@@ -1,4 +1,6 @@
 //! The console never blocks the thread that logs.
+//! Linux only: off Linux a pipe on fd 2 is written as it is (`console.rs`).
+#![cfg(target_os = "linux")]
 #![allow(clippy::expect_used, clippy::arithmetic_side_effects)]
 
 mod support;
@@ -89,7 +91,6 @@ fn wait_with_deadline(child: &mut Child, deadline: Duration) -> TestResult {
     }
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 #[cfg_attr(miri, ignore = "spawns a child process on a pipe, which Miri cannot")]
 fn a_full_stderr_pipe_never_blocks_and_the_dropped_count_is_written_once() -> TestResult {

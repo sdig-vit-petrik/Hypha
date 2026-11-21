@@ -15,11 +15,12 @@
 //! sequence               u64
 //! transport_sent_nanos   u64
 //! framework_sent_nanos   u64
-//! crc                    u32     CRC-32C over the fields above and the payload
+//! crc                    u32     CRC-32C over the fields above and the payload, started
+//!                                from the code of the topic (frame::TopicCode)
 //! ```
 //!
 //! Every field is little-endian. [`frame::seal`] computes the CRC and [`frame::verify`]
-//! checks it. A receiver refuses any other magic. `transport_sent_nanos` is host
+//! checks it. A receiver refuses any other magic, and a frame sealed for another topic. `transport_sent_nanos` is host
 //! monotonic time; `framework_sent_nanos` is framework time (simulated on a sim-time
 //! node, the logged time on replay). `FLAG_LATCHED` is set by the transport on every
 //! sample of a latched publisher.
@@ -49,7 +50,7 @@
 //! ```
 //! use hypha_wire::codec::Reader;
 //! use hypha_wire::slice_writer::SliceWriter;
-//! use hypha_wire::frame::{seal, verify, FrameMetadata};
+//! use hypha_wire::frame::{seal, verify, FrameMetadata, TopicCode};
 //! use hypha_wire::schema_hash_from_md5;
 //!
 //! const MD5: &str = "2176decaecbce78abc3b96ef049fabed";
@@ -67,13 +68,15 @@
 //!     };
 //!     let payload = &payload[..payload_len];
 //!
+//!     let topic = TopicCode::of("/pose");
 //!     let header = seal(
+//!         topic,
 //!         FrameMetadata { schema_hash, publisher_id: 1, sequence: 1, transport_sent_nanos: 1, framework_sent_nanos: 1 },
 //!         0,
 //!         payload,
 //!     );
 //!
-//!     let Ok(parsed) = verify(&header, payload) else {
+//!     let Ok(parsed) = verify(topic, &header, payload) else {
 //!         return Err("a frame we just sealed must verify");
 //!     };
 //!     assert_eq!(parsed.transport_sent_nanos(), 1);

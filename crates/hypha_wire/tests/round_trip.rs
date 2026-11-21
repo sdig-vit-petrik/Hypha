@@ -34,8 +34,8 @@ fn metadata() -> FrameMetadata {
 #[test]
 fn a_framed_message_survives_codec_round_trip() {
     let payload = payload();
-    let header = seal(metadata(), 0, &payload);
-    let parsed = verify(&header, &payload).expect("frame verifies");
+    let header = seal(topic(), metadata(), 0, &payload);
+    let parsed = verify(topic(), &header, &payload).expect("frame verifies");
     let mut reader = Reader::new(parsed.payload());
     assert_eq!(reader.read_u32(), Ok(7));
     assert_eq!(reader.read_string(), Ok(&b"hello"[..]));
@@ -45,6 +45,14 @@ fn a_framed_message_survives_codec_round_trip() {
 #[test]
 fn a_truncated_payload_is_refused() {
     let payload = payload();
-    let header = seal(metadata(), 0, &payload);
-    assert_eq!(verify(&header, &payload[..payload.len() - 1]), Err(ParseError::CrcMismatch));
+    let header = seal(topic(), metadata(), 0, &payload);
+    assert_eq!(
+        verify(topic(), &header, &payload[..payload.len() - 1]),
+        Err(ParseError::CrcMismatch)
+    );
+}
+
+/// The topic every frame of this file is sealed for.
+fn topic() -> hypha_wire::frame::TopicCode {
+    hypha_wire::frame::TopicCode::of("/test")
 }

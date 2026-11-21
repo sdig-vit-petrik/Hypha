@@ -481,19 +481,11 @@ struct Registration {
     warnings: CallbackWarnings,
     /// Whether the last turn of this subscription failed in its transport.
     transport_failing: bool,
-    /// The next turn was started by the audit alone (`Dispatcher::on_audit_turn`).
-    audit_turn: bool,
 }
 
 impl Registration {
     fn new(id: AttachmentId, target: Target) -> Self {
-        Self {
-            id,
-            target,
-            warnings: CallbackWarnings::default(),
-            transport_failing: false,
-            audit_turn: false,
-        }
+        Self { id, target, warnings: CallbackWarnings::default(), transport_failing: false }
     }
 
     /// Tell a dispatched subscriber that this registration no longer drains it. Runs

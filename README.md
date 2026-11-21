@@ -128,6 +128,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 ./scripts/coverage.sh         # Rust coverage with the per-crate 80% gate
 ./scripts/miri.sh             # Miri over the Rust tests without transport (nightly)
 ./scripts/fuzz.sh [seconds]   # every fuzz target of fuzz/ for that long (nightly, cargo-fuzz)
+./scripts/sanitize.sh [address|thread] # the C++ tests under a sanitizer
+./scripts/qualify.sh [seconds] # all of the above, then target/qualification/report.md:
+                              # the result of every requirement (docs/traceability.toml)
 ./install.sh [prefix]         # install the SDK and tools (default /usr/local)
 ```
 
@@ -141,6 +144,7 @@ the reference:
 ./docker/build.sh builder                      # Rust, CMake, GCC, chisel, gate tools
 ./docker/build.sh runtime                      # chiselled Ubuntu (glibc, libstdc++, busybox)
 ./docker/build.sh --push <image>               # also push, digest to image-refs.txt
+./docker/build.sh --pull <image>               # use the published image of this docker/ version
 ./docker/build.sh manifest                     # join pushed -amd64 and -arm64 into one tag
 ```
 
@@ -169,10 +173,10 @@ The build trusts `HYPHA_CA_BUNDLE` (default `SSL_CERT_FILE`, then the system
 bundle); `builder` adds it to its trust store so cargo and git work behind the
 TLS-intercepting proxy. `runtime` does not take it.
 
-To run a gate in the builder image:
+To run a gate in the builder image, as you (git refuses a checkout of another owner):
 
 ```bash
-docker run --rm -v "$PWD:/work" -w /work "$(./docker/build.sh builder)" ./check.sh
+scripts/in-image.sh ./check.sh
 ```
 
 ---

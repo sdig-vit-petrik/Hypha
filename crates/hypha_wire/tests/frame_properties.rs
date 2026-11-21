@@ -97,8 +97,8 @@ proptest! {
         flags in any::<u32>(),
         payload in vec(any::<u8>(), 0..64),
     ) {
-        let header = seal(metadata, flags, &payload);
-        let parsed = verify(&header, &payload)
+        let header = seal(topic(), metadata, flags, &payload);
+        let parsed = verify(topic(), &header, &payload)
             .map_err(|error| TestCaseError::fail(format!("sealed frame refused: {error}")))?;
         prop_assert_eq!(parsed.schema_hash(), metadata.schema_hash);
         prop_assert_eq!(parsed.publisher_id(), metadata.publisher_id);
@@ -118,17 +118,17 @@ proptest! {
         at in 0..64_usize,
         delta in 1..=255_u8,
     ) {
-        let header = seal(metadata, flags, &payload);
+        let header = seal(topic(), metadata, flags, &payload);
         if in_header {
             // 52 bytes: magic, flags, five metadata fields and the crc.
             let corrupted = corrupt_header(&header, at % 52, delta);
-            prop_assert!(verify(&corrupted, &payload).is_err());
+            prop_assert!(verify(topic(), &corrupted, &payload).is_err());
         } else {
             let mut changed = payload.clone();
             if let Some(byte) = changed.get_mut(at.checked_rem(payload.len()).unwrap_or(0)) {
                 *byte = byte.wrapping_add(delta);
             }
-            prop_assert!(verify(&header, &changed).is_err());
+            prop_assert!(verify(topic(), &header, &changed).is_err());
         }
     }
 
@@ -262,4 +262,9 @@ fn a_schema_record_past_the_size_limit_is_refused_when_writing() {
     let mut buffer = vec![0_u8; MAX_SCHEMA_RECORD_LEN.saturating_mul(2)];
     let result = write_schema_record(&mut buffer, "pkg/Type", &"0".repeat(32), &definition);
     assert!(result.is_err(), "a record past the limit is written: {result:?}");
+}
+
+/// The topic every frame of this file is sealed for.
+fn topic() -> hypha_wire::frame::TopicCode {
+    hypha_wire::frame::TopicCode::of("/test")
 }

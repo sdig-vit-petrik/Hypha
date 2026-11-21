@@ -116,17 +116,17 @@ class Cycle
     void addPort(Port* port);
     void removePort(Port* port) noexcept;
 
-    std::string                       name_;
-    bool                              classBased_{false};
-    bool                              rateSet_{false};
-    Duration                          period_{};
-    std::vector<Port*>                ports_;
-    const Port*                       trigger_{nullptr};
-    std::optional<ClockDriverOptions> clockDriver_{};
-    bool                              started_{false};
-    bool                              startRefusedByConfiguration_{false};
-    bool                              harnessLive_{false};
-    HyphaCycle*                       cycle_{nullptr};
+    std::string                        name_;
+    bool                               classBased_{false};
+    bool                               rateSet_{false};
+    Duration                           period_{};
+    std::vector<Port*>                 ports_;
+    const Port*                        trigger_{nullptr};
+    std::optional<ClockDriverOptions>  clockDriver_{};
+    bool                               started_{false};
+    bool                               startRefusedByConfiguration_{false};
+    bool                               harnessLive_{false};
+    HyphaCycle*                        cycle_{nullptr};
     uint64_t                           generation_{0};
     std::shared_ptr<detail::CycleLink> link_;
 };

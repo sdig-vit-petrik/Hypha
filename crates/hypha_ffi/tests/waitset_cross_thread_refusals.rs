@@ -354,6 +354,10 @@ fn another_thread_reads_cycle_snapshots_and_is_refused_every_other_call_during_a
     // SAFETY: every handle is live and the `WaitSet` runs on the other thread.
     unsafe { refused.check() };
     assert_eq!(RELEASES.load(Ordering::SeqCst), 0, "a refused call releases no context");
+    // The handle of a source a cycle binds is not its last owner: it goes during the run,
+    // and the cycle keeps the receiver and the history.
+    // SAFETY: `source` is live and not used again.
+    assert_eq!(unsafe { hypha_input_source_destroy(source) }, HyphaStatus::Ok);
 
     // SAFETY: `waitset` is live.
     assert_eq!(unsafe { hypha_waitset_request_stop(waitset) }, HyphaStatus::Ok);
@@ -369,7 +373,6 @@ fn another_thread_reads_cycle_snapshots_and_is_refused_every_other_call_during_a
         assert_eq!(hypha_cycle_destroy(running), HyphaStatus::Ok);
         assert_eq!(RELEASES.load(Ordering::SeqCst), 2, "each cycle released its context once");
         assert_eq!(hypha_input_source_destroy(unwired), HyphaStatus::Ok);
-        assert_eq!(hypha_input_source_destroy(source), HyphaStatus::Ok);
         hypha_publisher_destroy(output_publisher);
         hypha_publisher_destroy(publisher);
         hypha_node_destroy(node);

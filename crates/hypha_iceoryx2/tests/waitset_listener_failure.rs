@@ -27,7 +27,7 @@ fn a_waitset_attach_reports_a_full_event_service_as_a_backend_error() {
     }
 
     let attached = match first.open_listener() {
-        Ok(listener) => waitset.attach(listener, Trigger::EventDriven),
+        Ok(listener) => waitset.attach(listener, Trigger::Event),
         Err(cause) => Err(cause),
     };
     assert_eq!(attached.err(), Some(PortError::Backend(7)));

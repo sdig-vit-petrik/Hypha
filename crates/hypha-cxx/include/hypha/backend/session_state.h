@@ -25,10 +25,10 @@ struct Subscription
 {
     std::string                                  pattern;
     std::function<void(const hypha::RawSample&)> callback;
-    hypha::detail::RecurringFault notAFrame;
-    hypha::detail::RecurringFault callbackFailures;
-    std::atomic<bool>             active{true};
-    uint64_t                      executorId{0};
+    hypha::detail::RecurringFault                notAFrame;
+    hypha::detail::RecurringFault                callbackFailures;
+    std::atomic<bool>                            active{true};
+    uint64_t                                     executorId{0};
     /// Declared last, so it is released before the callback it outlives.
     UniqueSubscriber subscriber;
 };

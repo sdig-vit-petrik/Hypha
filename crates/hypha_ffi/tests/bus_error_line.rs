@@ -1,6 +1,7 @@
 //! A process that takes SIGBUS because `/dev/shm` is full says why, then ends on SIGBUS.
 //! The test raises SIGBUS in a child process: this test binary, run again.
-
+//! Linux only: elsewhere hypha installs no SIGBUS handler (`hypha_sys::signal`).
+#![cfg(target_os = "linux")]
 #![allow(clippy::expect_used)]
 
 mod common;

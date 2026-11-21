@@ -271,11 +271,16 @@ fn add_input_source(
 /// Drops the caller's handle of an input source; a cycle that binds it keeps it.
 ///
 /// # Errors
-/// `InvalidState` while its `WaitSet` runs; the handle comes back with the error.
+/// `InvalidState` while its `WaitSet` runs and no cycle binds the source; the handle
+/// comes back with the error.
 pub fn input_source_destroy(
     source: Box<HyphaInputSource>,
 ) -> Result<(), (Error, Box<HyphaInputSource>)> {
-    if source.inner.waitset_is_running() {
+    // A handle that is the last owner frees the receiver and the history, which a run
+    // may be using. A bound cycle is another owner, and no cycle is destroyed during a
+    // run, so the handle of a bound source only gives up its share.
+    let last_owner = Arc::strong_count(&source.inner) == 1;
+    if last_owner && source.inner.waitset_is_running() {
         return Err((Error::InvalidState, source));
     }
     drop(source);

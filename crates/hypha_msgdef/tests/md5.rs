@@ -333,14 +333,13 @@ fn nested_definition(depth: usize, fields: &[&str]) -> String {
 }
 
 /// Each shared type is hashed once: a diamond of 14 levels is hashed, and one of 40
-/// levels is refused at once because it expands past `MAX_EXPANDED_MESSAGES`.
+/// levels is refused because it expands past `MAX_EXPANDED_MESSAGES`. A hash that walked
+/// every path would visit 2^40 of them and never finish (the nextest timeout).
 #[test]
-#[cfg_attr(miri, ignore = "a wall-clock bound (100 ms) that an interpreter cannot meet")]
+#[cfg_attr(miri, ignore = "the 40-level diamond is slow under an interpreter")]
 fn a_type_shared_by_many_paths_is_hashed_once() {
     assert!(md5_from_definition("pkg/Root", &nested_definition(13, &["a", "b"])).is_some());
-    let started = std::time::Instant::now();
     assert!(md5_from_definition("pkg/Root", &nested_definition(40, &["a", "b"])).is_none());
-    assert!(started.elapsed() < std::time::Duration::from_millis(100));
 }
 
 /// The identity of `definition_text` as `type_name`, computed by the resolver so the refusal

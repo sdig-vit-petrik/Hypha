@@ -56,8 +56,8 @@ TEST(SubscriberDiagnostics, AQueueOverflowRaisesTheMissingSequenceCount)
     hypha::Node node("diag_overflow");
     const auto  topic = hypha::Topic{testTopic("/readings")};
     uint64_t    delivered = 0;
-    auto publisher = node.advertise<Reading>(topic, SHALLOW);
-    auto subscriber = node.subscribe<Reading>(topic, CountSamples{&delivered}, SHALLOW);
+    auto        publisher = node.advertise<Reading>(topic, SHALLOW);
+    auto        subscriber = node.subscribe<Reading>(topic, CountSamples{&delivered}, SHALLOW);
 
     // The first accepted frame starts the count: a loss before it is not counted.
     ASSERT_TRUE(publisher.publish(reading(0)));
@@ -104,7 +104,7 @@ TEST(SubscriberDiagnostics, ADisabledSubscriberReadsZeroEverywhere)
 
 TEST(SubscriberDiagnostics, ARawSubscriberCountsAQueueOverflowToo)
 {
-    hypha::Node node("diag_raw_overflow");
+    hypha::Node       node("diag_raw_overflow");
     const std::string topic = testTopic("/readings");
     uint64_t          delivered = 0;
     auto              publisher = node.advertise<Reading>(hypha::Topic{topic}, SHALLOW);

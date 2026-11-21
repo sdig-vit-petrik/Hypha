@@ -225,9 +225,9 @@ class Judged final : public hypha::CycleNode
         this->sawVerdict = this->limited.verdict();
     }
 
-    int         steps{0};
-    bool        sawFresh{false};
-    bool        sawUsable{false};
+    int          steps{0};
+    bool         sawFresh{false};
+    bool         sawUsable{false};
     InputVerdict sawVerdict{InputVerdict::NeverArrived};
 };
 
@@ -302,9 +302,10 @@ TEST_F(DeliverFixture, AStaleVerdictReportsTheAgeAndTheLimitOfTheTable)
         FAIL() << "a stale port must throw";
     } catch (const hypha::InputNotUsable& error) {
         const std::string text = error.what();
-        EXPECT_NE(text.find("is stale: its newest sample is 250 ms old, silence_ms = 100"),
-                  std::string::npos)
-            << text;
+        EXPECT_NE(
+            text.find("is stale: its newest sample is 250 ms old, silence_ms = 100"),
+            std::string::npos
+        ) << text;
     }
 }
 

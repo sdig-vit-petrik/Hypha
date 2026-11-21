@@ -121,8 +121,8 @@ TEST_F(QosFixture, DefaultQosEqualsTheDefaultPolicyOfTheLibrary)
     auto              undeclared = hypha::rawPublisher(
         topic,
         {.dataType = hypha::codec::dataType<Float64>(),
-                      .md5 = hypha::codec::md5Sum<Float64>(),
-                      .definition = hypha::codec::definition<Float64>()}
+         .md5 = hypha::codec::md5Sum<Float64>(),
+         .definition = hypha::codec::definition<Float64>()}
     );
     ASSERT_TRUE(undeclared.has_value());
 

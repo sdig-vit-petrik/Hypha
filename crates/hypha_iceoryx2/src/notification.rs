@@ -7,6 +7,27 @@ use iceoryx2::prelude::*;
 
 use crate::transport::{DataPortFactory, Ipc, SharedNode};
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
+/// Sends of this process whose wake notification failed. Nothing polls a listener, so
+/// such a sample waits for the next notification of its topic.
+static FAILED_NOTIFICATIONS: AtomicU64 = AtomicU64::new(0);
+
+/// How many sends of this process were sent but not notified. Wraps.
+#[must_use]
+pub fn failed_notifications() -> u64 {
+    FAILED_NOTIFICATIONS.load(Ordering::Relaxed)
+}
+
+/// True when the wake notification of a send went out; counts it when it did not.
+pub(crate) fn notified<T, E>(result: &Result<T, E>) -> bool {
+    if result.is_ok() {
+        return true;
+    }
+    FAILED_NOTIFICATIONS.fetch_add(1, Ordering::Relaxed);
+    false
+}
+
 /// Largest application event identifier supported by a notification service.
 pub(crate) const MAX_EVENT_ID: usize = 255;
 
@@ -103,4 +124,18 @@ pub(crate) fn create_listener(
         log::error!(target: "hypha/transport", "hypha_iceoryx2: notification listener creation failed: {cause:?}");
         PortError::Backend(7)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{failed_notifications, notified};
+
+    #[test]
+    fn a_failed_notification_is_counted_and_a_sent_one_is_not() {
+        let before = failed_notifications();
+        assert!(notified::<(), ()>(&Ok(())));
+        assert_eq!(failed_notifications(), before, "a sent notification counts nothing");
+        assert!(!notified::<(), ()>(&Err(())));
+        assert_eq!(failed_notifications(), before.wrapping_add(1));
+    }
 }

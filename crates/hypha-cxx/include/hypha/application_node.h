@@ -241,9 +241,11 @@ class ApplicationNode
         // A stop requested during start-up is kept: the run then returns at once.
         phase = detail::kPhaseRun;
         const RunResult result = node.run();
-        const bool rewound = result.status() == Status::ClockRewound;
+        const bool      rewound = result.status() == Status::ClockRewound;
         if (rewound) {
-            detail::error("simulated time went back; exiting 75 so hypha_launch restarts this unit");
+            detail::error(
+                "simulated time went back; exiting 75 so hypha_launch restarts this unit"
+            );
             return kExitRewind;
         }
         if (!result.ok()) {

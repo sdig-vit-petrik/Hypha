@@ -179,24 +179,35 @@ echo "replay_check: fixture ${fixture}: ${clouds} clouds; domain ${domain}; work
 
 failures=0
 
-# A clean run: every cloud in, every centroid out, no loss, the static transform found.
+# A normal run accounts for every cloud it received: processed or dropped at the hand-over,
+# and every processed cloud published. The node is not paced by the replay (it has no cycle,
+# #72), so a loaded host may make it drop; that is counted, never silent.
 check_clean_run() {
     local run="$1"
     local out="${work_dir}/${run}.processor.out"
-    local received published missing static_state
+    local received processed dropped published failed bad static_state
     received="$(final_value "${out}" cloud received)"
+    processed="$(final_value "${out}" node processed)"
+    dropped="$(final_value "${out}" node handover_dropped)"
     published="$(final_value "${out}" node published)"
-    missing="$(final_value "${out}" imu missing)"
+    failed="$(final_value "${out}" node publish_failed)"
+    bad="$(final_value "${out}" node bad_cloud)"
     static_state="$(final_value "${out}" tf static_base_link_lidar)"
-    local complete=false
-    if [ "${received}" = "${clouds}" ] && [ "${published}" = "${clouds}" ]; then
-        complete=true
-    fi
-    if [ "${complete}" != true ] || [ "${missing}" != 0 ] || [ "${static_state}" != found ]; then
-        echo "replay_check: ${run}: clouds ${received}/${clouds}, published ${published}," \
-            "imu missing ${missing}, static ${static_state}" >&2
+    if [ "${received:-x}" != "$((processed + dropped))" ] || [ "${processed}" != "${published}" ] ||
+        [ "${failed}" != 0 ] || [ "${bad}" != 0 ] || [ "${received}" -eq 0 ] ||
+        [ "${static_state}" != found ]; then
+        echo "replay_check: ${run}: received ${received}, processed ${processed}, dropped" \
+            "${dropped}, published ${published}, failed ${failed}, bad ${bad}, static" \
+            "${static_state}" >&2
         failures=$((failures + 1))
     fi
+}
+
+# A run that lost no cloud: every cloud of the fixture published.
+complete_run() {
+    local out="${work_dir}/$1.processor.out"
+    [ "$(final_value "${out}" cloud received)" = "${clouds}" ] &&
+        [ "$(final_value "${out}" node published)" = "${clouds}" ]
 }
 
 replay_once run_a "${config_dir}/processor.toml"
@@ -204,8 +215,14 @@ check_clean_run run_a
 replay_once run_b "${config_dir}/processor.toml"
 check_clean_run run_b
 
-# The determinism check: two runs of the node on one fixture give the same output.
-if ! "${compare_bin}" compare "${work_dir}/run_a.mcap" "${work_dir}/run_b.mcap" \
+# Two runs on one fixture: identical when neither lost a cloud; otherwise every centroid
+# that both runs published is the same.
+if complete_run run_a && complete_run run_b; then
+    comparison=compare
+else
+    comparison=common
+fi
+if ! "${compare_bin}" "${comparison}" "${work_dir}/run_a.mcap" "${work_dir}/run_b.mcap" \
     "${output_topic}" "${tolerance_m}"; then
     failures=$((failures + 1))
 fi

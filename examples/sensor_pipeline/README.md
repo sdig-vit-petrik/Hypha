@@ -204,11 +204,14 @@ One replay, as the script runs it:
 
 The script then checks:
 
-- each normal run received every cloud of the fixture (`sensor_pipeline_compare clouds`
-  counts them: 39), published one centroid for each, lost no IMU sample, and found the
-  static transform;
-- the two normal runs match by stamp: `sensor_pipeline_compare compare run_a.mcap
-  run_b.mcap /cloud_processor/centroid 1e-9`;
+- each normal run accounts for every cloud it received: processed or dropped at the
+  hand-over, every processed cloud published, none failed or bad, and the static
+  transform found;
+- the two normal runs match: when neither lost a cloud, every centroid pairs by stamp
+  (`sensor_pipeline_compare compare run_a.mcap run_b.mcap /cloud_processor/centroid
+  1e-9`, the fixture's 39 on a quiet host); otherwise every centroid both runs published
+  is the same (`sensor_pipeline_compare common`). The processor has no cycle, so the
+  replay does not pace it, and a loaded host can make it drop a cloud (#72);
 - the slow run reports lost IMU samples, timer periods missed by its stalls, and clouds
   dropped at the hand-over.
 

@@ -1,33 +1,139 @@
 # The gate of hypha, in the builder image of docker/Dockerfile: the style and
-# generated-file checks, then the Rust and C++ suites with the installed SDK flow.
+# generated-file checks, then the Rust and C++ suites with the installed SDK flow. With
+# it, on every push and pull request: a macOS build with clippy. Nightly on develop and
+# on demand: the C++ suite on arm64 and the qualification run, its report an artifact.
+# main takes pull requests from this repository's develop only (docs/release-policy.md).
 name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
+  packages: write
 
+# The event is part of the group, so a push does not cancel the nightly run.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
+env:
+  # A pull request from a fork has no token that can push the builder image.
+  OWN_REPOSITORY: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
 jobs:
+  source-branch:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The pull request comes from develop
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [[ "$HEAD_REF" != develop || "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]]; then
+            echo "::error::main takes pull requests from develop only, not from $HEAD_REPO:$HEAD_REF"
+            exit 1
+          fi
+
   gate:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # The image of this docker/ definition from the registry; built and pushed once
+      # when docker/ changed.
+      - name: The builder image
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          push=()
+          if [[ "$OWN_REPOSITORY" == true ]]; then
+            echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            push=(--push)
+          fi
+          echo "HYPHA_BUILDER_IMAGE=$(./docker/build.sh --pull "${push[@]}" builder)" >> "$GITHUB_ENV"
+
+      # in-image.sh runs the image as the runner user, who owns the checkout (git refuses
+      # a repository of another owner), with a 2 GB /dev/shm for the transport tests.
+      - name: check.sh
+        run: scripts/in-image.sh ./check.sh
+
+      - name: test.sh
+        run: scripts/in-image.sh ./test.sh
+
+  # macOS is a development platform without a guarantee (docs/release-policy.md section 3):
+  # the workspace builds and lints there, so Linux-only code stays gated.
+  macos:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # rustup installs the toolchain rust-toolchain.toml selects on first use.
+      - name: clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+  # The C++ SDK on the other architecture of the builder image.
+  cxx-arm64:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The builder image
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          echo "HYPHA_BUILDER_IMAGE=$(./docker/build.sh --pull --push builder)" >> "$GITHUB_ENV"
+
+      - name: test.sh cpp
+        run: scripts/in-image.sh ./test.sh cpp
+
+  # Coverage, Miri, fuzzing, ASan and TSan. A release attaches the report of its commit.
+  qualification:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      # A local image: HYPHA_IMAGE_TAG names it, and nothing is pushed.
-      - name: Build the builder image
-        run: echo "HYPHA_BUILDER_IMAGE=$(HYPHA_IMAGE_TAG=ci ./docker/build.sh builder)" >> "$GITHUB_ENV"
+      - name: The builder image
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          echo "HYPHA_BUILDER_IMAGE=$(./docker/build.sh --pull --push builder)" >> "$GITHUB_ENV"
 
-      - name: check.sh
-        run: docker run --rm -v "$PWD:/work" -w /work "$HYPHA_BUILDER_IMAGE" ./check.sh
+      # A cold run needs about 31 GB of disk with incremental builds off, more than the
+      # runner has free; the job uses none of the preinstalled SDKs.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h "$GITHUB_WORKSPACE"
 
-      # The transport tests need shared memory: a /dev/shm larger than Docker's 64 MB.
-      - name: test.sh
-        run: docker run --rm --shm-size=2g -v "$PWD:/work" -w /work "$HYPHA_BUILDER_IMAGE" ./test.sh
+      # 3: verified but the requirements with no test yet, each with its recorded gap.
+      - name: qualify.sh
+        run: |
+          status=0
+          scripts/in-image.sh env CARGO_INCREMENTAL=0 scripts/qualify.sh || status=$?
+          echo "qualify.sh exit status: $status"
+          [[ "$status" -eq 0 || "$status" -eq 3 ]]
+
+      - name: The qualification report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qualification-${{ github.sha }}
+          path: target/qualification/
+          if-no-files-found: error

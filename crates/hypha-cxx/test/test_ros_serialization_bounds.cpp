@@ -165,16 +165,20 @@ struct CountedElement
     {
         track(1);
     }
+
     CountedElement(const CountedElement& other) : value(other.value)
     {
         track(1);
     }
+
     CountedElement(CountedElement&& other) noexcept : value(other.value)
     {
         track(1);
     }
+
     CountedElement& operator=(const CountedElement&) = default;
     CountedElement& operator=(CountedElement&&) = default;
+
     ~CountedElement()
     {
         track(-1);
@@ -222,8 +226,8 @@ TEST(RosSerializationBounds, AnElementOfNoFixedWidthIsNotMadeForAnUnverifiedCoun
 {
     // The count is inside the element budget, but the buffer holds none of the elements.
     CountedElement::peak = 0;
-    std::vector<uint8_t>         bytes = lengthPrefix(1U << 20);
-    std::vector<CountedElement>  value;
+    std::vector<uint8_t>        bytes = lengthPrefix(1U << 20);
+    std::vector<CountedElement> value;
 
     EXPECT_THROW(readFrom(bytes, value), StreamException);
     EXPECT_LE(CountedElement::peak, 1) << "the decoder made elements the bytes cannot hold";

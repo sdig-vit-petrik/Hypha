@@ -24,12 +24,8 @@ pub type Iox2Listener = Listener<Ipc>;
 /// When a registration runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
-    /// Run when a publisher notifies, and once per audit period (50 ms), so a sample
-    /// whose wake was lost is still read within one audit.
-    EventDriven,
-    /// Run only when notified. For a registration whose turn is a side effect an
-    /// audit must not repeat, such as the latched replay, or that reads no queue.
-    EventOnly,
+    /// Run when the listener is notified.
+    Event,
     /// Run on a fixed period, whatever the publisher does.
     Periodic(Duration),
     /// Run when the dispatcher's own deadline is due, with no native guard (see
@@ -71,10 +67,6 @@ pub trait Dispatcher {
         Progression::Continue
     }
 
-    /// The next [`Self::on_event`] for `attachment` was started by the audit alone: no
-    /// notification was observed.
-    fn on_audit_turn(&mut self, _attachment: AttachmentId) {}
-
     /// Runs before every bounded dispatch turn, so work it publishes goes out the same turn.
     fn on_timers(&mut self) -> Progression {
         Progression::Continue
@@ -95,12 +87,7 @@ pub trait Dispatcher {
 /// How many registrations one `WaitSet` accepts, including internal ones.
 pub const MAX_REGISTRATIONS: usize = 128;
 
-/// The audit period and longest native wait with a [`Trigger::EventDriven`]
-/// registration: a sample whose wake iceoryx2 lost is read within it.
-const WAIT_SLICE: Duration = Duration::from_millis(50);
-
-/// The longest native wait without a [`Trigger::EventDriven`] registration. A signal
-/// delivered to another thread is seen within this backstop.
+/// The longest native wait. A signal delivered to another thread is seen within it.
 const IDLE_BACKSTOP: Duration = Duration::from_secs(1);
 
 /// One registration. The `WaitSet` holds the listener; the dispatcher the endpoint.
@@ -116,14 +103,12 @@ struct TurnState {
     ready: Vec<bool>,
     /// Periodic ticks observed but not yet reported.
     due: Vec<u64>,
-    /// The next turn was started by the audit alone.
-    audit_only: Vec<bool>,
 }
 
 impl TurnState {
     /// Every attachment starts ready, so data queued at run entry is delivered.
     fn new(count: usize) -> Self {
-        Self { ready: vec![true; count], due: vec![0; count], audit_only: vec![false; count] }
+        Self { ready: vec![true; count], due: vec![0; count] }
     }
 
     fn has_pending_work(&self) -> bool {
@@ -201,8 +186,7 @@ impl Iox2WaitSet {
         if self.registrations.len() >= MAX_REGISTRATIONS {
             return Err(PortError::ResourceLimit);
         }
-        let needs_listener = matches!(trigger, Trigger::EventDriven | Trigger::EventOnly);
-        if needs_listener && listener.is_none() {
+        if trigger == Trigger::Event && listener.is_none() {
             return Err(PortError::InvalidTopic);
         }
         let id = self.claim_id()?;

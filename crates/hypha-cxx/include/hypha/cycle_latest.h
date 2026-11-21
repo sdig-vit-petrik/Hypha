@@ -282,14 +282,14 @@ class Latest final : public Input<M>
         return HYPHA_STATUS_OK;
     }
 
-    bool     usable_{false};
-    uint64_t ageNanos_{0};
-    M        held_{};
-    M        candidate_{};
-    bool     hasHeld_{false};
-    bool     decodedHeld_{false};
-    uint64_t heldSequence_{0};
-    bool     fresh_{false};
+    bool                usable_{false};
+    uint64_t            ageNanos_{0};
+    M                   held_{};
+    M                   candidate_{};
+    bool                hasHeld_{false};
+    bool                decodedHeld_{false};
+    uint64_t            heldSequence_{0};
+    bool                fresh_{false};
     detail::SampleStamp heldStamp_{};
 };
 

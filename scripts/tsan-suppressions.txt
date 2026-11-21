@@ -1,0 +1,9 @@
+# ThreadSanitizer suppressions of scripts/sanitize.sh thread.
+#
+# libhypha_ffi is Rust and is not instrumented, so ThreadSanitizer sees its allocations
+# and the C library calls it makes, but not its locks and atomics. It then reports a
+# race between an allocation on one thread and a locked read on another. The calls made
+# from inside the library are ignored; the C++ SDK and the tests stay checked. Data
+# races inside the library are excluded by the compiler for its safe Rust and searched
+# by Miri (scripts/miri.sh).
+called_from_lib:libhypha_ffi

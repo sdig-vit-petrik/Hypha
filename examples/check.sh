@@ -59,7 +59,7 @@ fi
 
 echo "-> Building the examples against the installed SDK"
 cmake -S examples -B "$BUILD_DIR" $CMAKE_ARGS
-cmake --build "$BUILD_DIR" --parallel
+cmake --build "$BUILD_DIR" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 
 echo -e "\n-> The MRS flights: unit checks, then every scenario"
 ./clean-shm.sh --force

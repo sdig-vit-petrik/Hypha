@@ -33,7 +33,6 @@
 #include "hypha/testing.h"
 #include "hypha/testing/mcap_file.h"
 #include "hypha_base/time.h"
-
 #include <hypha/testing/mcap_reader.h>
 
 #include <cstddef>
@@ -255,7 +254,7 @@ class McapReplay final
     bool        addFeed(Input<M>& port, void* window, Take take, Flush flush, bool mustBePresent);
     static bool holdsTopic(const detail::McapFile& file, const std::string& topic);
     bool        due() const;
-    void refuseFeed(const Port& port) const;
+    void        refuseFeed(const Port& port) const;
     template <typename M>
     std::string topicOf(const Input<M>& port) const;
     template <typename M>

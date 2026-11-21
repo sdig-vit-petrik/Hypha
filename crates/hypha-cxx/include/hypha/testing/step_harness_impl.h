@@ -83,17 +83,15 @@ void StepHarness::judgeDelivery(Delivery& delivery, Time now, std::vector<Pendin
 {
     Latest<M>&    port = *static_cast<Latest<M>*>(delivery.port);
     const int64_t sent = delivery.sentAt.nanos();
-    const bool usable = StepHarness::withinSilence(delivery.silenceNanos, sent, now.nanos());
-    const bool takesTheValue = usable && delivery.unseen;
+    const bool    usable = StepHarness::withinSilence(delivery.silenceNanos, sent, now.nanos());
+    const bool    takesTheValue = usable && delivery.unseen;
     if (takesTheValue) {
         std::swap(port.held_, port.candidate_);
         port.heldStamp_ = detail::SampleStamp{static_cast<uint64_t>(sent), 0, 0};
         port.hasHeld_ = true;
         port.fresh_ = true;
         delivery.unseen = false;
-        running.push_back(
-            Pending{&port, &StepHarness::keepFresh<M>, &StepHarness::endFresh<M>}
-        );
+        running.push_back(Pending{&port, &StepHarness::keepFresh<M>, &StepHarness::endFresh<M>});
     }
     port.usable_ = usable;
     port.verdict_ = usable ? InputVerdict::Usable : InputVerdict::Stale;
@@ -108,8 +106,8 @@ void StepHarness::judgeArrivals(Delivery& delivery, Time now, std::vector<Pendin
 {
     Arrivals<M>&  port = *static_cast<Arrivals<M>*>(delivery.port);
     const int64_t sent = delivery.sentAt.nanos();
-    const bool usable = StepHarness::withinSilence(delivery.silenceNanos, sent, now.nanos());
-    const bool refusesTheSamples = delivery.unseen && !usable;
+    const bool    usable = StepHarness::withinSilence(delivery.silenceNanos, sent, now.nanos());
+    const bool    refusesTheSamples = delivery.unseen && !usable;
     if (refusesTheSamples) {
         port.sampleCount_ = 0;
     }
@@ -197,9 +195,7 @@ inline void StepHarness::dropPending(const Port& port)
 template <typename M>
 void StepHarness::freshNext(Latest<M>& port)
 {
-    this->pending_.push_back(
-        Pending{&port, &StepHarness::makeFresh<M>, &StepHarness::endFresh<M>}
-    );
+    this->pending_.push_back(Pending{&port, &StepHarness::makeFresh<M>, &StepHarness::endFresh<M>});
 }
 
 template <typename M>

@@ -1,7 +1,7 @@
 //! `WaitSet` construction and the C ABI call that hands out a node's `WaitSet`.
 
 use super::{
-    Arc, DispatchLimits, Duration, Error, HyphaNode, HyphaWaitSet, Registration, Target, Trigger,
+    Arc, DispatchLimits, Error, HyphaNode, HyphaWaitSet, Registration, Target, Trigger,
     WaitSetShared,
 };
 use std::cell::RefCell;
@@ -11,10 +11,6 @@ const CALLBACK_WARN_NANOS: u64 = 10_000_000;
 
 /// The shortest interval between two warnings for one attachment, 1 s.
 const WARNING_INTERVAL_NANOS: u64 = 1_000_000_000;
-
-/// The low-rate audit of `/clock` on a node on simulated time, for a publisher that does
-/// not enable notifications. Timers on that node wake at this rate too.
-pub(super) const SIM_CLOCK_AUDIT: Duration = Duration::from_millis(50);
 
 /// A new `WaitSet` on `node`, which co-owns the node.
 fn build(node: Arc<HyphaNode>) -> Result<Box<HyphaWaitSet>, Error> {
@@ -157,8 +153,7 @@ fn attach_housekeeping(waitset: &HyphaWaitSet) -> Result<(), Error> {
     // with no listener to hear it. One replay now covers those joins.
     let transport = &waitset.node().transport;
     let graph = transport.graph_listener().map_err(Error::from)?;
-    // Its turn replays and notifies, so the audit must not repeat it.
-    attach_framework(waitset, Some(graph), Trigger::EventOnly, Target::LatchReplay)?;
+    attach_framework(waitset, Some(graph), Trigger::Event, Target::LatchReplay)?;
     transport.replay_latched();
 
     attach_sim_clock(waitset)?;
@@ -172,10 +167,7 @@ fn attach_sim_clock(waitset: &HyphaWaitSet) -> Result<(), Error> {
     }
     // A sample of either input wakes this WaitSet, which then drains both.
     attach_input_listener(waitset, &node.sim_clock_subscriber)?;
-    attach_input_listener(waitset, &node.progress_subscriber)?;
-
-    // A low-rate audit, so a /clock without a notification still advances sim time.
-    attach_framework(waitset, None, Trigger::Periodic(SIM_CLOCK_AUDIT), Target::SimClock)
+    attach_input_listener(waitset, &node.progress_subscriber)
 }
 
 /// Attach the listener of one framework input, so that its samples wake this `WaitSet`.
@@ -188,7 +180,7 @@ fn attach_input_listener(
     let Some(listener) = subscriber.port.open_listener().map_err(Error::from)? else {
         return Err(Error::InvalidState);
     };
-    attach_framework(waitset, Some(listener), Trigger::EventOnly, Target::SimClock)
+    attach_framework(waitset, Some(listener), Trigger::Event, Target::SimClock)
 }
 
 /// Attach one framework registration with no caller context.

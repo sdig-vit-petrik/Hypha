@@ -116,12 +116,12 @@ struct LimitMax
     Duration max;
 };
 
-inline constexpr OptionalTopic       optionalTopic{};
-inline constexpr Advisory            advisory{};
-inline constexpr Unsupervised        unsupervised{};
-inline constexpr HostClock           hostClock{};
-inline constexpr Latched             latched{};
-inline constexpr Diagnostic          diagnostic{};
+inline constexpr OptionalTopic optionalTopic{};
+inline constexpr Advisory      advisory{};
+inline constexpr Unsupervised  unsupervised{};
+inline constexpr HostClock     hostClock{};
+inline constexpr Latched       latched{};
+inline constexpr Diagnostic    diagnostic{};
 
 constexpr PerStep perStep(uint32_t count)
 {
@@ -200,7 +200,7 @@ struct InputSettings
     bool                    hostClock{false};
     std::optional<uint32_t> perStep{};
     Duration                limitMax{Duration::fromSeconds(3600)};
-    std::optional<Qos> qos{};
+    std::optional<Qos>      qos{};
 
     void apply(Qos tag)
     {
@@ -247,11 +247,11 @@ struct InputSettings
 /// @brief The settings of an output, a publisher or a subscriber that its tags give.
 struct EndpointSettings
 {
-    bool     optionalTopic{false};
-    bool     latch{false};
-    bool     diagnostic{false};
-    uint32_t perStep{1};
-    std::optional<Qos> qos{};
+    bool                    optionalTopic{false};
+    bool                    latch{false};
+    bool                    diagnostic{false};
+    uint32_t                perStep{1};
+    std::optional<Qos>      qos{};
     std::optional<uint64_t> maxPayloadDynamic{};
 
     void apply(Qos tag)

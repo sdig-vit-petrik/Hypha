@@ -12,6 +12,9 @@ target/
 target-asan/
 target-miri/
 target-tsan/
+build-asan/
+build-tsan/
+coverage/
 target/doc/
 *.html
 *.o
@@ -92,3 +95,4 @@ ctest-junit.xml
 
 # Personal agent path allowlist
 .agent-allowed-paths.local
+.notes

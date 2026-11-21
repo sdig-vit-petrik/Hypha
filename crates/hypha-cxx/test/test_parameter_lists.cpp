@@ -182,29 +182,32 @@ TEST_F(ParameterListFixture, AFixedSizeArrayOfTheRightLengthIsAStdArray)
 
 TEST_F(ParameterListFixture, AFixedSizeArrayOfAnotherLengthIsRefusedWithBothLengths)
 {
-    const std::string text =
-        refusal([]() { static_cast<void>(hypha::config().requiredArray<double, 3>("four")); });
+    const std::string text = refusal([]() {
+        static_cast<void>(hypha::config().requiredArray<double, 3>("four"));
+    });
     EXPECT_EQ(text, "hypha: parameter 'four': expected 3 elements, found 4");
-    const std::string optionalText =
-        refusal([]() { static_cast<void>(hypha::config().optionalArray<double, 5>("four")); });
+    const std::string optionalText = refusal([]() {
+        static_cast<void>(hypha::config().optionalArray<double, 5>("four"));
+    });
     EXPECT_EQ(optionalText, "hypha: parameter 'four': expected 5 elements, found 4");
 }
 
 TEST_F(ParameterListFixture, AWrongElementNamesItsIndexAndShowsWhatItFound)
 {
-    const std::string text =
-        refusal([]() { static_cast<void>(hypha::config().requiredArray<double>("bad_element")); });
+    const std::string text = refusal([]() {
+        static_cast<void>(hypha::config().requiredArray<double>("bad_element"));
+    });
     EXPECT_EQ(text, "hypha: parameter 'bad_element[2]': expected a number, found \"x\"");
-    const std::string flag =
-        refusal([]() { static_cast<void>(hypha::config().requiredArray<bool>("bad_flag")); });
+    const std::string flag = refusal([]() {
+        static_cast<void>(hypha::config().requiredArray<bool>("bad_flag"));
+    });
     EXPECT_EQ(flag, "hypha: parameter 'bad_flag[1]': expected a boolean, found 1");
 }
 
 TEST_F(ParameterListFixture, AnElementOutOfTheRangeOfTheIntegerTypeIsRefused)
 {
     EXPECT_EQ(
-        (hypha::config().requiredArray<uint16_t>("narrow_array")),
-        (std::vector<uint16_t>{1, 300})
+        (hypha::config().requiredArray<uint16_t>("narrow_array")), (std::vector<uint16_t>{1, 300})
     );
     const std::string text = refusal([]() {
         static_cast<void>(hypha::config().requiredArray<uint8_t>("narrow_array"));
@@ -216,8 +219,9 @@ TEST_F(ParameterListFixture, AnElementOutOfTheRangeOfTheIntegerTypeIsRefused)
 
 TEST_F(ParameterListFixture, AnArrayOfTablesIsRefusedAsNotAScalarList)
 {
-    const std::string text =
-        refusal([]() { static_cast<void>(hypha::config().requiredArray<double>("goals")); });
+    const std::string text = refusal([]() {
+        static_cast<void>(hypha::config().requiredArray<double>("goals"));
+    });
     EXPECT_EQ(text, "hypha: parameter 'goals[0]': expected a number, found a table");
     EXPECT_THROW(
         static_cast<void>(hypha::config().optionalArray<std::string>("goals")),
@@ -227,8 +231,9 @@ TEST_F(ParameterListFixture, AnArrayOfTablesIsRefusedAsNotAScalarList)
 
 TEST_F(ParameterListFixture, AnAbsentArrayIsRequiredOrEmptyButNeverMalformed)
 {
-    const std::string text =
-        refusal([]() { static_cast<void>(hypha::config().requiredArray<double>("nothing")); });
+    const std::string text = refusal([]() {
+        static_cast<void>(hypha::config().requiredArray<double>("nothing"));
+    });
     EXPECT_EQ(text, "hypha: required parameter not set: nothing");
     EXPECT_THROW(
         static_cast<void>(hypha::config().requiredArray<double, 3>("nothing")),
@@ -270,8 +275,9 @@ TEST_F(ParameterListFixture, AnEmptyArrayIsAnEmptyVectorAndALengthErrorForAFixed
         hypha::config().optionalArray<double>("empty");
     ASSERT_TRUE(optionalNone.has_value());
     EXPECT_TRUE(optionalNone->empty());
-    const std::string text =
-        refusal([]() { static_cast<void>(hypha::config().requiredArray<double, 3>("empty")); });
+    const std::string text = refusal([]() {
+        static_cast<void>(hypha::config().requiredArray<double, 3>("empty"));
+    });
     EXPECT_EQ(text, "hypha: parameter 'empty': expected 3 elements, found 0");
     const std::array<double, 0> zero = hypha::config().requiredArray<double, 0>("empty");
     EXPECT_TRUE(zero.empty());

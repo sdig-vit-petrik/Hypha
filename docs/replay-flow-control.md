@@ -70,12 +70,6 @@ node starts in any order.
 
 ### 4.2 Node side (Hypha runtime, no application code)
 
-The transport audits silent event listeners on its existing 50 ms wait cadence.
-This recovers pending progress notifications from the iceoryx2 0.10.0 lost-wakeup
-race and restores event-driven turns without restarting a node. Recovery can take
-an audit interval plus scheduling and callback delays; the upstream race can recur.
-A dependency-only reproducer confirmed the race with the published 0.10.0 crates; it was not submitted upstream.
-
 A node on simulated time wakes on each `/clock` event and runs one step per expired deadline
 (execution model, section 11.1). After each turn of a `WaitSet` that holds a replay cycle, the
 runtime publishes one `ReplayProgress` for the newest `/clock` sample it has read:
@@ -341,9 +335,6 @@ wait out.
 
 - **Progress covers cycle steps only.** A node with no cycle on simulated time reports nothing, so
   the player does not wait for it. With `--nodes` the start fails after 30 s.
-- **A cycle on a `WaitSet` other than the node's default one wakes on the 50 ms audit.** Each chunk
-  then waits up to 50 ms: about 20 chunks a second at most, which is 2 s of data per second at the
-  default chunk.
 - **A callback that waits on simulated time stalls the replay.** For example, a sleep that follows
   `/clock`. The player waits for the node's acknowledgement, so the run stops only at `--timeout`.
 - **Inputs are drained at step time.** A chunk is split so that a topic's samples fit the smallest

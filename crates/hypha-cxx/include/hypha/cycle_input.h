@@ -125,8 +125,9 @@ class Input : public Port
         return this->slot_->source.enabled();
     }
 
-    /// @brief The cumulative health of this binding. InvalidState before start() and
-    ///        after the cycle stops.
+    /// @brief The cumulative health of this binding with its supervision report: of this
+    ///        step in step(), else of the last finished step. InvalidState before start()
+    ///        and after the cycle stops.
     std::expected<BindingHealth, Status> bindingHealth() const
     {
         HyphaCycleBindingView view{};
@@ -134,7 +135,13 @@ class Input : public Port
         if (status != HYPHA_STATUS_OK) {
             return std::unexpected(Status(status));
         }
-        return view.health;
+        const uint32_t faults = view.supervision.faults;
+        return BindingHealth{
+            view.health,
+            (faults & HYPHA_FAULT_STALE) != 0,
+            (faults & HYPHA_FAULT_STAGNANT) != 0,
+            view.supervision.ignored != 0,
+        };
     }
 
   protected:
@@ -341,11 +348,11 @@ class Input : public Port
 
     std::shared_ptr<detail::SourceSlot<M>> slot_;
     detail::InputSettings                  settings_;
-    uint32_t                          depth_{0};
-    InputVerdict                      verdict_{InputVerdict::NeverArrived};
-    bool                              tableRefused_{false};
-    HyphaCycleBindingView             facts_{
-                    .health = {}, .held = {}, .supervision = {}, .ok = 1, .age_nanos = 0
+    uint32_t                               depth_{0};
+    InputVerdict                           verdict_{InputVerdict::NeverArrived};
+    bool                                   tableRefused_{false};
+    HyphaCycleBindingView                  facts_{
+        .health = {}, .held = {}, .supervision = {}, .ok = 1, .age_nanos = 0
     };
     uint32_t                          index_{0};
     detail::InputSupervision          supervision_;

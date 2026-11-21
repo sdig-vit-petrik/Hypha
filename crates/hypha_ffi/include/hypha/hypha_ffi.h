@@ -152,7 +152,7 @@ enum HyphaStatus
   HYPHA_STATUS_INVALID_SCHEMA = 12,
   // An operation was rejected because a fixed resource limit was reached.
   HYPHA_STATUS_RESOURCE_LIMIT = 13,
-  // The frame CRC-32C does not match the sample header and payload.
+  // The frame CRC-32C does not match the sample header, payload and topic.
   HYPHA_STATUS_CORRUPT_PAYLOAD = 15,
   // The frame sequence was not newer than the last one from its publisher.
   HYPHA_STATUS_SEQUENCE_GAP = 16,
@@ -1230,7 +1230,8 @@ HyphaStatus hypha_input_source_create(struct HyphaWaitSet *waitset,
                                       struct HyphaInputSource **out);
 
 // Release the source handle. A cycle that binds the source keeps its subscriber and
-// history alive until that cycle is destroyed. A running `WaitSet` refuses with
+// history alive until that cycle is destroyed, so the handle of a bound source is
+// released at any time. For a source no cycle binds, a running `WaitSet` refuses with
 // `InvalidState` and keeps the handle valid.
 //
 // # Safety

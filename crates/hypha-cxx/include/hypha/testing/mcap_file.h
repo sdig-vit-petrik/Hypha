@@ -29,17 +29,17 @@ class McapFile final
     /// @throws std::runtime_error when the file does not open.
     explicit McapFile(const std::string& path)
     {
-        const uint8_t* const pathBytes = reinterpret_cast<const uint8_t*>(path.data());
-        size_t               errorLength = 0;
+        const uint8_t* const  pathBytes = reinterpret_cast<const uint8_t*>(path.data());
+        size_t                errorLength = 0;
         const HyphaMcapStatus opened =
             hypha_mcap_open(pathBytes, path.size(), &this->reader_, nullptr, 0, &errorLength);
         if (opened == HYPHA_MCAP_STATUS_OK) {
             return;
         }
         // The first call gave the length of the error text.
-        std::string     error(errorLength, '\0');
-        size_t          textLength = 0;
-        HyphaMcapReader* retried = nullptr;
+        std::string           error(errorLength, '\0');
+        size_t                textLength = 0;
+        HyphaMcapReader*      retried = nullptr;
         const HyphaMcapStatus again = hypha_mcap_open(
             pathBytes,
             path.size(),
@@ -90,8 +90,7 @@ class McapFile final
     void select(const std::string& topic)
     {
         const uint8_t* const  topicBytes = reinterpret_cast<const uint8_t*>(topic.data());
-        const HyphaMcapStatus status =
-            hypha_mcap_select(this->reader_, topicBytes, topic.size());
+        const HyphaMcapStatus status = hypha_mcap_select(this->reader_, topicBytes, topic.size());
         if (status != HYPHA_MCAP_STATUS_OK) {
             this->fail();
         }

@@ -87,7 +87,7 @@ class Publisher
     }
 
     std::shared_ptr<backend::PublisherHandle<M>> handle;
-    Status lastStatus_{HYPHA_STATUS_OK};
+    Status                                       lastStatus_{HYPHA_STATUS_OK};
 };
 
 }  // namespace hypha
