@@ -2,22 +2,17 @@
 resolver = "2"
 members = ["crates/hypha_time", "crates/hypha_wire", "crates/hypha_msgdef", "crates/hypha_msggen", "crates/hypha_core", "crates/hypha_cycle", "crates/hypha_runtime","crates/hypha_node", "crates/hypha_ffi", "crates/hypha_testkit", "crates/hypha_iceoryx2", "crates/hypha_msgs", "crates/hypha_log", "crates/hypha_sys", "crates/hypha_testing_mcap",
     "apps/hypha_tools", "apps/hypha_ros_bridge"]
-# The fuzz targets are a workspace of their own (fuzz/Cargo.toml, scripts/fuzz.sh).
-# vendor/ holds patched third-party crates (vendor/README.md), not workspace members.
 exclude = ["fuzz", "vendor"]
 
 # iceoryx2-cal with a smaller reallocation limit: vendor/README.md.
 [patch.crates-io]
 iceoryx2-cal = { path = "vendor/iceoryx2-cal" }
 
-
 [workspace.dependencies]
 log = "0.4"
 clap = { version = "4.5", features = ["derive"] }
 toml = "=0.9.12"
-# Benchmarks only (dev-dependency): no plots, no thread pool.
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
-# Property tests only (dev-dependency): no fork or timeout runner.
 proptest = { version = "1.9", default-features = false, features = ["std"] }
 
 [workspace.package]
@@ -28,17 +23,14 @@ license = "Apache-2.0"
 publish = false
 repository = "https://github.com/sdig-vit-petrik/Hypha"
 
-
-# The delivered library: one optimisation unit across all crates and no symbol
-# table. A panic aborts the process (SIGABRT): no entry point catches it, so the
-# ABI never reports one as a status. `panic = "abort"` in the dev profile would build
-# `hypha_ffi` twice per test build, aborting and unwinding, into the same
-# unhashed `cdylib`/`rlib` file names, and the two builds overwrite each other.
 [profile.release]
 panic = "abort"
 lto = "fat"
 codegen-units = 1
 strip = true
+
+[profile.test]
+debug = false
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
