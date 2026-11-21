@@ -41,10 +41,10 @@ codegen-units = 1
 strip = true
 
 # Every integration test is a binary that links the whole dependency tree: with full
-# debug info a cold test build wrote 24.8 GB. Line tables keep file and line in panics,
-# backtraces and sanitizer reports; a debugger shows no local variables.
+# debug info a cold test build wrote 24.8 GB. Without debug info a panic still names its
+# file and line; backtraces and sanitizer reports name functions only.
 [profile.dev]
-debug = "line-tables-only"
+debug = false
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
