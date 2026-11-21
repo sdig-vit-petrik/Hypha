@@ -7,6 +7,8 @@
 # cache and git's worktree links hold absolute paths. The process runs as you,
 # with a 2 GB /dev/shm for the transport tests and without seccomp for TSan.
 # The cargo registry is kept in target/linux-cargo-registry of the main checkout.
+# CMAKE_BUILD_PARALLEL_LEVEL defaults to one C++ compile per 2 GB of Docker's memory:
+# GCC needs more than 1 GB a C++23 unit, and a job per core runs out of memory.
 #
 # build/ and target/ belong to one platform: on a host that is not Linux, run
 # this in a checkout or worktree the host itself does not build in.
@@ -29,12 +31,14 @@ if [[ -z "$image" ]]; then
 fi
 registry="$main/target/linux-cargo-registry"
 mkdir -p "$registry"
+memory_gb=$(($(docker info --format '{{.MemTotal}}') / 1024 / 1024 / 1024))
+jobs="${CMAKE_BUILD_PARALLEL_LEVEL:-$((memory_gb / 2 > 0 ? memory_gb / 2 : 1))}"
 tty=()
 [[ -t 0 && -t 1 ]] && tty=(-it)
 
 docker run --rm "${tty[@]}" \
   -v "$main:$main" -w "$PWD" \
   -v "$registry:/usr/local/cargo/registry" \
-  --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  --user "$(id -u):$(id -g)" -e HOME=/tmp -e CMAKE_BUILD_PARALLEL_LEVEL="$jobs" \
   --shm-size=2g --security-opt seccomp=unconfined \
   "$image" "$@"
