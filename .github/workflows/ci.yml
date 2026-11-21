@@ -1,5 +1,7 @@
 # The gate of hypha, in the builder image of docker/Dockerfile: the style and
 # generated-file checks, then the Rust and C++ suites with the installed SDK flow.
+# Beside it: the C++ suite on arm64, a macOS build with clippy, and, on pushes to
+# develop only, the qualification run with its report as an artifact.
 # main takes pull requests from this repository's develop only (docs/release-policy.md).
 name: ci
 
@@ -47,3 +49,55 @@ jobs:
 
       - name: test.sh
         run: scripts/in-image.sh ./test.sh
+
+  # The C++ SDK on the other architecture of the builder image.
+  cxx-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the builder image
+        run: echo "HYPHA_BUILDER_IMAGE=$(HYPHA_IMAGE_TAG=ci ./docker/build.sh builder)" >> "$GITHUB_ENV"
+
+      - name: test.sh cpp
+        run: scripts/in-image.sh ./test.sh cpp
+
+  # macOS is a development platform without a guarantee (docs/release-policy.md section 3):
+  # the workspace builds and lints there, so Linux-only code stays gated.
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # rustup installs the toolchain rust-toolchain.toml selects on first use.
+      - name: clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+  # Coverage, Miri, fuzzing, ASan and TSan: too long for every pull request.
+  qualification:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the builder image
+        run: echo "HYPHA_BUILDER_IMAGE=$(HYPHA_IMAGE_TAG=ci ./docker/build.sh builder)" >> "$GITHUB_ENV"
+
+      # 3: verified but the requirements with no test yet, each with its recorded gap.
+      - name: qualify.sh
+        run: |
+          status=0
+          scripts/in-image.sh scripts/qualify.sh || status=$?
+          echo "qualify.sh exit status: $status"
+          [[ "$status" -eq 0 || "$status" -eq 3 ]]
+
+      - name: The qualification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qualification-${{ github.sha }}
+          path: target/qualification/
+          if-no-files-found: error
