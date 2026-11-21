@@ -127,8 +127,11 @@ limit that you compute from framework time can be negative after playback
 jumps, and a rewind makes it longer, so compute a limit from `steadyNow()`.
 
 `requestStop()` is the one operation another thread may call on a running
-`WaitSet`. It is idempotent while running. It is refused with `InvalidState`
-while stopped, so a stop cannot accidentally end the next run.
+`WaitSet`. It is idempotent while running. A stop requested while no run is in
+progress is kept: the next run returns at once and consumes it, so a stop from
+another thread is not lost to the start of a run. The C ABI
+(`hypha_waitset_request_stop`) reports `InvalidState` in that case, to say no
+run was in progress; the C++ `requestStop()` returns nothing.
 
 `RunResult` is `[[nodiscard]]`. Ignoring it is a compiler diagnostic, because
 a run that failed and a run that stopped normally are different outcomes.
@@ -922,8 +925,9 @@ Check these in order.
    the topic and the domain. A subscriber that once had a publisher never warns.
 5. **Is the input a callback or a cycle input?** A cycle input is read at its
    cycle's tick, never on arrival. See section 7.
-6. **Is the message type the same on both sides?** A frame that does not
-   match is delivered with a null payload.
+6. **Is the message type the same on both sides?** A frame of another
+   schema is refused before any callback and counted in
+   `sub.metrics().schemaMismatch` (`integrity.schema_mismatch`).
 7. **Did the run report a failure?** Check `RunResult::reason()` and
    `RunResult::status()`. A setup failure runs no callback at all, and names
    the attachment that refused.
