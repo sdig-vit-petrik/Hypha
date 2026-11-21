@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# usage: docker/build.sh [--push] <builder|runtime>...
+# usage: docker/build.sh [--pull] [--push] <builder|runtime>...
 #        docker/build.sh manifest
 #
 # Builds builder or runtime from docker/Dockerfile for the architecture of this
@@ -18,20 +18,24 @@
 #   HYPHA_CA_BUNDLE      trust bundle for the builds (default: SSL_CERT_FILE, then the system one,
 #                        /etc/ssl/certs/ca-certificates.crt or on macOS /etc/ssl/cert.pem)
 #
+# --pull uses the image of this version when the registry has it, and builds it only
+# when not (CI: a new docker/ definition is built and pushed once).
 # --push also appends repository@sha256 references to image-refs.txt.
 set -euo pipefail
 
-cd "$(dirname "$0")"
-
+pull=false
 push=false
-if [[ "${1:-}" == "--push" ]]; then
-  push=true
+while [[ "${1:-}" == --pull || "${1:-}" == --push ]]; do
+  [[ "$1" == --pull ]] && pull=true
+  [[ "$1" == --push ]] && push=true
   shift
-fi
+done
 if [[ $# -eq 0 ]]; then
-  sed -n '2,20p' "$0" >&2
+  sed -n '2,23p' "$0" >&2
   exit 2
 fi
+
+cd "$(dirname "$0")"
 
 registry="${HYPHA_REGISTRY:-ghcr.io/sdig-vit-petrik}"
 version="${HYPHA_IMAGE_VERSION:-$(git rev-parse --short=12 HEAD:docker)}"
@@ -64,6 +68,11 @@ for image in "$@"; do
     builder|runtime) reference="$registry/hypha-$image:${HYPHA_IMAGE_TAG:-$version-$arch}" ;;
     *) echo "Error: unknown image $image" >&2; exit 2 ;;
   esac
+
+  if [[ "$pull" == true ]] && docker pull -q "$reference" >&2; then
+    echo "$reference"
+    continue
+  fi
 
   docker build . --target "$image" --platform "linux/$arch" \
     --build-context ca="$ca" -t "$reference" \

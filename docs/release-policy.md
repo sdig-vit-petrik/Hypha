@@ -37,15 +37,17 @@ mix two lines in one domain.
 | Builder image | `docker/Dockerfile`, which installs exactly these |
 
 macOS is a development platform with no guarantee: CI builds the workspace there and
-runs clippy, no test. CI (`.github/workflows/ci.yml`) runs the whole gate on amd64 and
-the C++ suite on arm64; the Rust suite and the qualification run on amd64 only, so an
-arm64 release runs them by hand in the builder image and the release notes say so.
+runs clippy, no test. CI (`.github/workflows/ci.yml`) runs the gate on amd64 for every
+push and pull request, and nightly on `develop` (or on demand) the C++ suite on arm64
+and the qualification on amd64. The Rust suite and the qualification run on amd64 only,
+so an arm64 release runs them by hand in the builder image and the release notes say so.
 
 ## 4. What a release must pass
 
 1. `./check.sh` and `./test.sh --clean` in the builder image.
-2. `scripts/qualify.sh`: the report `target/qualification/report.md` is attached to
-   the release. Every requirement of class S is verified, or the release notes name
+2. `scripts/qualify.sh` on the release commit: the report of CI's `qualification` job
+   (nightly or started by hand), or of a run in the builder image, is attached to the
+   release. Every requirement of class S is verified, or the release notes name
    the exception and its reason.
 3. For the first release of a line, and after a change to the transport or the run
    loop: the endurance run of NFR-06. For every release: a 24 hour run. Neither run

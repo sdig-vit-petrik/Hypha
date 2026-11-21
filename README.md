@@ -144,6 +144,7 @@ the reference:
 ./docker/build.sh builder                      # Rust, CMake, GCC, chisel, gate tools
 ./docker/build.sh runtime                      # chiselled Ubuntu (glibc, libstdc++, busybox)
 ./docker/build.sh --push <image>               # also push, digest to image-refs.txt
+./docker/build.sh --pull <image>               # use the published image of this docker/ version
 ./docker/build.sh manifest                     # join pushed -amd64 and -arm64 into one tag
 ```
 
