@@ -86,11 +86,20 @@ jobs:
       - name: Build the builder image
         run: echo "HYPHA_BUILDER_IMAGE=$(HYPHA_IMAGE_TAG=ci ./docker/build.sh builder)" >> "$GITHUB_ENV"
 
+      # A cold run outgrows the runner's free disk: before its coverage step ended, target/
+      # held 31 GB (16 GB debug test binaries, 11 GB the coverage build). The job uses none
+      # of the preinstalled SDKs.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h "$GITHUB_WORKSPACE"
+
       # 3: verified but the requirements with no test yet, each with its recorded gap.
+      # Incremental caches only cost disk in a run that builds once.
       - name: qualify.sh
         run: |
           status=0
-          scripts/in-image.sh scripts/qualify.sh || status=$?
+          scripts/in-image.sh env CARGO_INCREMENTAL=0 scripts/qualify.sh || status=$?
           echo "qualify.sh exit status: $status"
           [[ "$status" -eq 0 || "$status" -eq 3 ]]
 
