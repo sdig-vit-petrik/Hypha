@@ -35,7 +35,7 @@ cmake --build "$dir" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCE
 
 export ASAN_OPTIONS="halt_on_error=1:abort_on_error=0"
 export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"
-export TSAN_OPTIONS="halt_on_error=1:suppressions=$PWD/scripts/tsan-suppressions.txt"
+export TSAN_OPTIONS="halt_on_error=1:print_suppressions=1:suppressions=$PWD/scripts/tsan-suppressions.txt"
 # macOS has no LeakSanitizer.
 if [[ "$(uname)" == Darwin ]]; then
   ASAN_OPTIONS="${ASAN_OPTIONS}:detect_leaks=0"
