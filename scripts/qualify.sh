@@ -8,8 +8,10 @@
 # fuzz targets (default 60 s each), AddressSanitizer with UndefinedBehaviorSanitizer,
 # and ThreadSanitizer. A failed run does not stop the next one; the report states it.
 #
-# Exit status: 0 every requirement is verified, 1 at least one is not, 2 the build
-# failed or a test run left no result file.
+# Exit status: 0 every requirement is verified (a release needs it), 3 every one is
+# verified but those with no test yet and a recorded gap (CI accepts it), 1 a test or a
+# run failed or did not run, or an open requirement has no gap, 2 the build failed or a
+# test run left no result file.
 set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 2

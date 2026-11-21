@@ -17,7 +17,9 @@ when every one of its references ran and none failed, or when its method is not 
 and its evidence is stated.
 
 Exit status: 0 done (report: every requirement verified), 1 the generated file differs
-or a requirement is not verified, 2 an input is invalid.
+or a requirement is not verified for another reason than a test not yet written, 2 an
+input is invalid, 3 (report) the only requirements not verified have no test yet and a
+recorded gap.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import fnmatch
+import os
 import platform
 import re
 import subprocess
@@ -54,6 +57,8 @@ STATUS_NO_TEST = "no test"
 STATUS_STATED = "stated"
 STATUS_NO_EVIDENCE = "no evidence"
 VERIFIED_STATUSES = (STATUS_OK, STATUS_STATED)
+# The report's exit status when every open requirement has no test yet and a recorded gap.
+EXIT_ONLY_KNOWN_GAPS = 3
 
 
 class InputError(Exception):
@@ -403,11 +408,25 @@ def environment_rows() -> list[tuple[str, str]]:
         ("Host", platform.platform()),
         ("Rust", tool_line(["rustc", "--version"])),
         ("C++", tool_line(["c++", "--version"])),
+        ("Builder image", builder_image()),
     ]
 
 
-def build_report(repo: Path, requirements: list[Requirement], results: Results) -> tuple[str, int]:
-    """The report text and the number of requirements that are not verified."""
+def builder_image() -> str:
+    """The image scripts/in-image.sh ran this in, by its reference and content digest."""
+    reference = os.environ.get("HYPHA_BUILDER_IMAGE", "")
+    digest = os.environ.get("HYPHA_BUILDER_IMAGE_ID", "")
+    if not reference or not digest:
+        return "none: not run through scripts/in-image.sh"
+    return f"{reference} ({digest})"
+
+
+def build_report(
+    repo: Path, requirements: list[Requirement], results: Results
+) -> tuple[str, int, int]:
+    """The report text, the number of requirements that are not verified, and how many of
+    those are regressions: every open one but a requirement with no test yet and its gap
+    recorded."""
     statuses: dict[str, str] = {}
     counts_of: dict[str, list[Count]] = {}
     for requirement in requirements:
@@ -418,6 +437,7 @@ def build_report(repo: Path, requirements: list[Requirement], results: Results) 
     by_test = sum(1 for status in statuses.values() if status == STATUS_OK)
     stated = sum(1 for status in statuses.values() if status == STATUS_STATED)
     open_ids = [rid for rid, status in statuses.items() if status not in VERIFIED_STATUSES]
+    known_gaps = [r.id for r in requirements if statuses[r.id] == STATUS_NO_TEST and r.gap]
     with_gap = [r.id for r in requirements if statuses[r.id] in VERIFIED_STATUSES and r.gap]
 
     lines = ["# Qualification report", "", "| | |", "|---|---|"]
@@ -475,7 +495,7 @@ def build_report(repo: Path, requirements: list[Requirement], results: Results) 
             lines.append(f"| {requirement.id} | `{reference}` | {count.run} | {count.failed} |")
         if requirement.evidence:
             lines.append(f"| {requirement.id} | {requirement.evidence} | | |")
-    return "\n".join(lines) + "\n", len(open_ids)
+    return "\n".join(lines) + "\n", len(open_ids), len(open_ids) - len(known_gaps)
 
 
 # --- commands -------------------------------------------------------------------
@@ -514,12 +534,14 @@ def command_report(arguments: argparse.Namespace) -> int:
     for argument in arguments.run:
         read_run(argument, results)
 
-    text, open_count = build_report(REPO, requirements, results)
+    text, open_count, regressions = build_report(REPO, requirements, results)
     Path(arguments.output).write_text(text, encoding="utf-8")
     verified = len(requirements) - open_count
     print(f"{arguments.output}: {verified} of {len(requirements)} requirements verified")
-    if open_count > 0:
+    if regressions > 0:
         return 1
+    if open_count > 0:
+        return EXIT_ONLY_KNOWN_GAPS
     return 0
 
 

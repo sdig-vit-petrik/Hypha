@@ -268,8 +268,10 @@ Gaps:
   uncovered code, and no justification.
 - G-24. `hypha_node` (about 11 000 lines, the node runtime) is not in the coverage
   gate. The C++ SDK has no coverage measure at all.
-- G-25. Coverage, Miri, the fuzz targets and the sanitizers do not run in CI. They
-  run by hand (`scripts/qualify.sh`).
+- G-25. Coverage, Miri, the fuzz targets and the sanitizers run in CI on each push to
+  `develop` (the `qualification` job, its report an artifact), not on a pull request:
+  they judge a change after it is merged. A release still runs `scripts/qualify.sh`
+  itself.
 - G-26. No test specification document: the tests are the specification. An assessor
   accepts this when each test states its requirement; the trace is by test binary,
   not by test case.
@@ -519,7 +521,7 @@ The order puts first what decides whether the rest is worth doing.
 | 7 | Dependency assessment: requirements on the transport and the tests that show them. | G-32, G-34 | Drafted: [dependency-assessment.md](dependency-assessment.md). TR-11 and TR-12 have no evidence. |
 | 8 | Reference platform and workload; load harness; latency, overload and endurance runs. | G-10, G-11, G-28 | Open; engineering |
 | 9 | Coverage: add `hypha_node` and the C++ SDK, measure branches, justify the rest. | G-23, G-24 | Open; engineering |
-| 10 | CI jobs for coverage, Miri, fuzzing and the sanitizers; the report attached to a release; tool versions pinned in the builder image. | G-25, G-31, G-43 | Open; engineering |
+| 10 | CI jobs for coverage, Miri, fuzzing and the sanitizers; the report attached to a release; tool versions pinned in the builder image. | G-25, G-31, G-43 | CI job on pushes to `develop` (#14); the rest open; engineering |
 | 11 | Audit of the `unsafe` code by a second person; a C++ subset and a checker for the SDK. | G-18, G-19 | Open; engineering, external |
 | 12 | The remaining kill tests; a fault-injection test that corrupts shared memory. | G-42, TR-04, TR-11 | Open; engineering |
 | 13 | The missing parts of the safety communication layer. The owner chose the topic-bound checksum only (2026-11-19): no payload size limit, no 64-bit checksum, no channel monitor. Left: the residual error calculation, a binding of the frame to its sender, a rule for the first frame of a publisher. | G-36 to G-38 | Topic-bound checksum done (G-37 for addressing); the rest open; engineering |

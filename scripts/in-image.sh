@@ -57,6 +57,9 @@ else
   docker run --rm --user 0 "${owner[@]}" "$image" chown "$(id -u):$(id -g)" "${owned[@]}" >/dev/null
 fi
 
+# The qualification report names the image by its content digest.
+image_id="$(docker image inspect --format '{{.Id}}' "$image")"
+
 memory_gb=$(($(docker info --format '{{.MemTotal}}') / 1024 / 1024 / 1024))
 jobs="${CMAKE_BUILD_PARALLEL_LEVEL:-$((memory_gb / 2 > 0 ? memory_gb / 2 : 1))}"
 tty=()
@@ -65,5 +68,6 @@ tty=()
 docker run --rm "${tty[@]}" "${mounts[@]}" -w "$PWD" \
   --user "$(id -u):$(id -g)" -e HOME=/tmp -e CMAKE_BUILD_PARALLEL_LEVEL="$jobs" \
   -e CTEST_PARALLEL_LEVEL="${CTEST_PARALLEL_LEVEL:-$jobs}" \
+  -e HYPHA_BUILDER_IMAGE="$image" -e HYPHA_BUILDER_IMAGE_ID="$image_id" \
   --shm-size=2g --security-opt seccomp=unconfined \
   "$image" "$@"

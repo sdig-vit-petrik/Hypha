@@ -36,9 +36,10 @@ mix two lines in one domain.
 | Rust | The version `rust-toolchain.toml` names |
 | Builder image | `docker/Dockerfile`, which installs exactly these |
 
-macOS is a development platform with no guarantee. CI (`.github/workflows/ci.yml`)
-runs on amd64 only; until an arm64 job exists, an arm64 release is tested by hand in
-the builder image and the release notes say so.
+macOS is a development platform with no guarantee: CI builds the workspace there and
+runs clippy, no test. CI (`.github/workflows/ci.yml`) runs the whole gate on amd64 and
+the C++ suite on arm64; the Rust suite and the qualification run on amd64 only, so an
+arm64 release runs them by hand in the builder image and the release notes say so.
 
 ## 4. What a release must pass
 

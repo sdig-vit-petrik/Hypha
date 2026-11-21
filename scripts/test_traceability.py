@@ -7,9 +7,11 @@ a traceability source, one Rust crate with a test binary and one gtest source fi
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -255,15 +257,44 @@ class Report(unittest.TestCase):
         tree = Tree(self)
         requirements = traceability.load_checked(tree.root)
         passed = tree.results()
-        text, open_count = traceability.build_report(tree.root, requirements, passed)
-        self.assertEqual(open_count, 0)
+        text, open_count, regressions = traceability.build_report(tree.root, requirements, passed)
+        self.assertEqual((open_count, regressions), (0, 0))
         self.assertIn("| FSR-01 | test | pass | 4 | 0 |  |", text)
 
         failed = tree.results(rust_failure="<failure/>")
-        text, open_count = traceability.build_report(tree.root, requirements, failed)
-        self.assertEqual(open_count, 1)
+        text, open_count, regressions = traceability.build_report(tree.root, requirements, failed)
+        self.assertEqual((open_count, regressions), (1, 1), "a failed test is a regression")
         self.assertIn("1 not verified: FSR-01.", text)
         self.assertIn("| FSR-01 | `alpha/sends` | 2 | 1 |", text)
+
+    def test_a_requirement_with_no_test_yet_and_a_recorded_gap_is_open_but_no_regression(
+        self,
+    ) -> None:
+        no_test = SOURCE.replace('tests = ["alpha/sends", "cxx:test_send"]', 'gap = "No test yet."')
+        tree = Tree(self, no_test)
+        requirements = traceability.load_checked(tree.root)
+        _, open_count, regressions = traceability.build_report(
+            tree.root, requirements, tree.results()
+        )
+        self.assertEqual((open_count, regressions), (1, 0))
+
+        unexplained = SOURCE.replace('tests = ["alpha/sends", "cxx:test_send"]', "")
+        tree = Tree(self, unexplained)
+        requirements = traceability.load_checked(tree.root)
+        _, open_count, regressions = traceability.build_report(
+            tree.root, requirements, tree.results()
+        )
+        self.assertEqual((open_count, regressions), (1, 1), "an open requirement without a gap")
+
+    def test_the_report_names_the_builder_image_by_its_content_digest(self) -> None:
+        image = {"HYPHA_BUILDER_IMAGE": "hypha-builder:ci", "HYPHA_BUILDER_IMAGE_ID": "sha256:ab12"}
+        with mock.patch.dict(os.environ, image):
+            rows = dict(traceability.environment_rows())
+        self.assertEqual(rows["Builder image"], "hypha-builder:ci (sha256:ab12)")
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            rows = dict(traceability.environment_rows())
+        self.assertEqual(rows["Builder image"], "none: not run through scripts/in-image.sh")
 
 
 if __name__ == "__main__":
