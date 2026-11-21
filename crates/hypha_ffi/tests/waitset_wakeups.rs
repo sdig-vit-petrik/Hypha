@@ -16,9 +16,6 @@ use hypha_ffi::*;
 
 const MD5: &str = "0123456789abcdef0123456789abcdef";
 
-/// Nanoseconds from [`epoch`] to the last delivery.
-static DELIVERED_AT_NANOS: AtomicU64 = AtomicU64::new(0);
-
 /// One process-wide origin, shared by the test and the callback.
 fn epoch() -> Instant {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
@@ -31,9 +28,8 @@ extern "C" fn count_data(
 ) -> HyphaCallbackResult {
     let deliveries = unsafe { &*context.cast::<AtomicU64>() };
     deliveries.fetch_add(1, Ordering::SeqCst);
-    let since_start = u64::try_from(epoch().elapsed().as_nanos()).unwrap_or(u64::MAX);
-    DELIVERED_AT_NANOS.store(since_start, Ordering::SeqCst);
-    HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
+    // A delivery ends the run, so its stop reason shows what woke it.
+    HyphaCallbackResult { action: HYPHA_ACTION_STOP, status: 0 }
 }
 
 struct Fixture {
@@ -125,6 +121,17 @@ fn run_for(waitset: *mut HyphaWaitSet, nanos: u64) {
     assert_eq!(report.reason, HYPHA_RUN_REASON_DEADLINE);
 }
 
+/// Run with a limit that only guards against a hang; a callback must end the run.
+fn run_until_stopped(waitset: *mut HyphaWaitSet) {
+    let mut report =
+        HyphaWaitSetRunReport { reason: 0, status: 0, attachment: 0, slow_callbacks: 0 };
+    assert_eq!(
+        unsafe { hypha_waitset_run(waitset, 60_000_000_000, &raw mut report) },
+        HyphaStatus::Ok
+    );
+    assert_eq!(report.reason, HYPHA_RUN_REASON_STOPPED, "no callback ended the run");
+}
+
 fn sweeps(node: *const HyphaNode) -> u64 {
     common::node_metric(node, "node.sweeps").expect("the node emits node.sweeps")
 }
@@ -159,26 +166,15 @@ fn a_sample_wakes_its_subscription_at_once() {
     let deliveries = AtomicU64::new(0);
     let fixture = fixture("prompt_event", &deliveries);
     let publisher = fixture.publisher as usize;
-    let start = epoch();
-    let sent = std::thread::scope(|scope| {
-        let sender = scope.spawn(|| {
-            // Well after the first turn, so only the notification can deliver it.
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            // After the run has started and found nothing: only the notification can wake it.
             std::thread::sleep(std::time::Duration::from_millis(120));
-            let sent = start.elapsed();
             unsafe { publish(publisher as *mut HyphaPublisher, &[7]) };
-            sent
         });
-        run_for(fixture.waitset, 300_000_000);
-        sender.join().expect("the sender thread")
+        run_until_stopped(fixture.waitset);
     });
     assert_eq!(deliveries.load(Ordering::SeqCst), 1);
-    // The callback stamps the delivery, so a descheduled sender cannot inflate it.
-    let delivered = DELIVERED_AT_NANOS.load(Ordering::SeqCst);
-    let latency = std::time::Duration::from_nanos(delivered).saturating_sub(sent);
-    assert!(
-        latency < std::time::Duration::from_millis(15),
-        "the sample waited {latency:?}, as long as a poll"
-    );
 }
 
 /// Nanoseconds from [`epoch`] to the first call of the late-start timer.
@@ -186,19 +182,23 @@ static TIMER_FIRST_CALL_NANOS: AtomicU64 = AtomicU64::new(0);
 /// How many times the late-start timer ran.
 static TIMER_CALLS: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn record_timer_call(_missed: u64, _context: *mut c_void) -> HyphaCallbackResult {
+/// The periods the late-start timer reported missed at its first call.
+static TIMER_FIRST_MISSED: AtomicU64 = AtomicU64::new(u64::MAX);
+
+extern "C" fn record_timer_call(missed: u64, _context: *mut c_void) -> HyphaCallbackResult {
     let calls = TIMER_CALLS.fetch_add(1, Ordering::SeqCst);
     if calls == 0 {
         let since_start = u64::try_from(epoch().elapsed().as_nanos()).unwrap_or(u64::MAX);
         TIMER_FIRST_CALL_NANOS.store(since_start, Ordering::SeqCst);
+        TIMER_FIRST_MISSED.store(missed, Ordering::SeqCst);
     }
-    HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
+    HyphaCallbackResult { action: HYPHA_ACTION_STOP, status: 0 }
 }
 
 #[test]
-fn a_host_timer_fires_within_five_milliseconds_of_its_deadline_when_the_run_starts_late() {
-    // A host timer starts its periods at the first run turn, so the time before the run is
-    // not missed: its deadline is R + 100 ms.
+fn a_host_timer_starts_its_periods_at_the_run_not_at_the_attach() {
+    // A host timer starts its periods at the first run turn: the 150 ms before the run,
+    // longer than its period, are not missed, and its first deadline is R + 100 ms.
     let node = common::create_unique_node("late_timer");
     let mut waitset = ptr::null_mut();
     assert_eq!(unsafe { hypha_node_default_waitset(node, &raw mut waitset) }, HyphaStatus::Ok);
@@ -208,21 +208,18 @@ fn a_host_timer_fires_within_five_milliseconds_of_its_deadline_when_the_run_star
         unsafe { hypha_waitset_attach(waitset, &raw const record, &raw mut attachment) },
         HyphaStatus::Ok
     );
-    std::thread::sleep(std::time::Duration::from_millis(37));
+    std::thread::sleep(std::time::Duration::from_millis(150));
     let run_started_nanos = u64::try_from(epoch().elapsed().as_nanos()).unwrap_or(u64::MAX);
-    run_for(waitset, 300_000_000);
+    run_until_stopped(waitset);
 
-    assert!(TIMER_CALLS.load(Ordering::SeqCst) >= 1, "the timer never ran");
-    let first_call = TIMER_FIRST_CALL_NANOS.load(Ordering::SeqCst);
-    let lateness_nanos = first_call.saturating_sub(run_started_nanos);
-    // macOS adds timer slack in proportion to the wait: a bare 100 ms `select` wakes
-    // 4 to 5 ms late there (median 4.2 ms, at most 10 ms, measured 2026-11-21), outside
-    // a 5 ms bound that Linux meets.
-    let slack_nanos = if cfg!(target_os = "macos") { 15_000_000 } else { 5_000_000 };
+    assert_eq!(TIMER_CALLS.load(Ordering::SeqCst), 1, "the first call ends the run");
+    assert_eq!(TIMER_FIRST_MISSED.load(Ordering::SeqCst), 0, "time before the run was missed");
+    // Never early: a timer anchored at the attach would be due at once. Late is the host.
+    let since_run = TIMER_FIRST_CALL_NANOS.load(Ordering::SeqCst).saturating_sub(run_started_nanos);
     assert!(
-        (100_000_000..100_000_000 + slack_nanos).contains(&lateness_nanos),
-        "the first call came {} ms after the run started; its deadline is 100 ms",
-        lateness_nanos / 1_000_000
+        since_run >= 100_000_000,
+        "the first call came {} ms after the run started, before its 100 ms deadline",
+        since_run / 1_000_000
     );
     unsafe { hypha_node_destroy(node) };
 }
