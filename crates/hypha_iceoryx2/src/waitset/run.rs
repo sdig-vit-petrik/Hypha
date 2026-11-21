@@ -254,8 +254,8 @@ fn mark_ready(
 }
 
 /// Consume a registration's notifications before the dispatcher reads, so an
-/// unread event cannot spin the run loop. Silent listeners are audited too:
-/// iceoryx2 0.10.0 can retain activations while its socket stays silent.
+/// unread event cannot spin the run loop. Silent listeners are audited too: a lost
+/// wake leaves activations behind a silent socket, as the race iceoryx2 0.10.1 fixed did.
 fn mark_event_ready(
     listeners: &[Option<Listener<Ipc>>],
     registrations: &mut [Registration],

@@ -1,4 +1,5 @@
-//! Recover the silent-listener state of the iceoryx2 0.10.0 race on a data listener.
+//! Recover the silent-listener state of a lost wake (the iceoryx2 0.10.0 race, fixed in
+//! 0.10.1) on a data listener.
 #![allow(clippy::expect_used)]
 
 mod support;

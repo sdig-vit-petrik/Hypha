@@ -322,7 +322,7 @@ functions it has that are not needed.
 
 | Element | Role | State |
 |---|---|---|
-| iceoryx2 0.10.0 (28 crates), with one vendored patch | The whole transport: shared memory, lock-free queues, discovery, events | Treated as a black channel for data (4.14). Not assessed for the properties hypha relies on: no blocking, bounded memory, crash cleanup, read-only mapping. |
+| iceoryx2 0.10.1 (28 crates), with one vendored patch | The whole transport: shared memory, lock-free queues, discovery, events | Treated as a black channel for data (4.14). Not assessed for the properties hypha relies on: no blocking, bounded memory, crash cleanup, read-only mapping. |
 | `crc32c` | The frame checksum | Not assessed. |
 | `toml`, `serde`, `winnow` | Configuration parsing at start-up | Fuzzed through `config_load`. Not assessed. |
 | `libc`, `rustix`, `nix`, `memmap2` | Operating-system calls | Not assessed. |
@@ -340,7 +340,7 @@ Gaps:
   lock-free algorithms in the address space of every node.
 - G-33. Whether a safety-certified variant of iceoryx2 exists or is planned, for
   which standard and SIL, and for which version, must be asked of its vendor; hypha
-  pins a patched 0.10.0.
+  pins a patched 0.10.1.
 - G-34. No list of unused functions of the dependencies and no argument that they
   cannot be reached.
 
