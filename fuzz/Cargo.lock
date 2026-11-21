@@ -650,7 +650,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "hypha_core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hypha_time",
  "hypha_wire",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_cycle"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "log",
 ]
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_iceoryx2"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hypha_core",
  "hypha_msgdef",
@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_log"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hypha_time",
  "log",
@@ -702,18 +702,18 @@ dependencies = [
 
 [[package]]
 name = "hypha_msgdef"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "hypha_msggen"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hypha_msgdef",
 ]
 
 [[package]]
 name = "hypha_msgs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hypha_core",
  "hypha_msgdef",
@@ -723,7 +723,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_node"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hypha_core",
  "hypha_cycle",
@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hypha_core",
  "hypha_cycle",
@@ -752,7 +752,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_sys"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "memmap2",
@@ -761,14 +761,14 @@ dependencies = [
 
 [[package]]
 name = "hypha_time"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rustix 1.1.6",
 ]
 
 [[package]]
 name = "hypha_tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_wire"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crc32c",
 ]

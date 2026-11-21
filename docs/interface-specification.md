@@ -331,9 +331,9 @@ alone, as ROS 1 serialized bytes, so a payload has no header in front of it.
 | payload | variable | ROS 1 serialized message bytes, the sample's user payload |
 
 The magic is `0x3658_4F49` (`IOX6`). It changes when the header layout changes,
-and a receiver refuses any other value. The topic-bound CRC kept the 0.1.0 layout
-and its magic, so a frame from 0.1.0 fails its CRC and is refused as
-`corrupt_payload`.
+and a receiver refuses any other value. Release 0.2.0 introduced the topic-bound CRC.
+It kept the 0.1.0 layout and its magic, so a frame from 0.1.0 fails its CRC and is
+refused as `corrupt_payload`: the two release lines do not share a domain.
 
 The topic code is the CRC-32C of the bytes of the topic name. It is the start value
 of the frame CRC and is not sent: the publisher takes it from the topic it sends on,

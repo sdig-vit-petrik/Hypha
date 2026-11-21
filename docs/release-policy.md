@@ -50,9 +50,14 @@ the builder image and the release notes say so.
    loop: the endurance run of NFR-06. For every release: a 24 hour run. Neither run
    exists yet ([sil2-readiness.md](sil2-readiness.md), G-28); until they do, the
    release notes say so.
-4. The release notes: the changes, the defects fixed with their class
-   ([safety-plan.md](safety-plan.md) §7), the known defects, and whether an
-   assumption of use changed.
+4. The release notes, `docs/releases/X.Y.Z.md`, written by hand and reviewed in the
+   pull request of the release: a summary; the breaking changes and the upgrade; the
+   changes, with their issues; the defects fixed and the known open ones, each with
+   its class ([safety-plan.md](safety-plan.md) §7); whether an assumption of use
+   changed; the qualification, with every requirement not verified and its reason;
+   the platforms tested by hand; the support of the previous line (§6). The GitHub
+   release takes this file as its text and the qualification report as an attachment:
+   `gh release create vX.Y.Z --notes-file docs/releases/X.Y.Z.md report.md`.
 
 ## 5. Upgrade and rollback
 
