@@ -23,7 +23,7 @@
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
-  sed -n '2,21p' "$0" >&2
+  sed -n '2,22p' "$0" >&2
   exit 2
 fi
 
