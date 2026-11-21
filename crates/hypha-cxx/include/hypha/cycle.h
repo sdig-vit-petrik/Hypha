@@ -23,8 +23,17 @@
 
 namespace hypha {
 
-/// @brief The cumulative health of one input binding, and of one cycle.
-using BindingHealth = ::HyphaCycleBindingHealth;
+/// @brief The cumulative health of one input binding: its counts and its supervision
+///        report. The faults are those supervision found, also while setIgnored(true)
+///        hides them from the port's stale() and stagnant(), as `~/state` reports them.
+struct BindingHealth : ::HyphaCycleBindingHealth
+{
+    bool stale = false;  ///< The input is silent for longer than `silence_ms`.
+    bool stagnant = false;  ///< The life sign has not changed for `stagnation_ms`.
+    bool ignored = false;  ///< setIgnored(true) overrides the fault.
+};
+
+/// @brief The cumulative health of one cycle.
 using CycleHealth = ::HyphaCycleHealth;
 
 /// @brief A positive periodic frequency, converted to a framework duration. A rate must be

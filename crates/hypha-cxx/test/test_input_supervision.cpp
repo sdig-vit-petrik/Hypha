@@ -352,6 +352,12 @@ TEST_F(SupervisionFixture, ARepeatedPayloadIsStagnantAndAChangedCounterClearsIt)
         std::chrono::seconds(10)
     ));
     EXPECT_FALSE(port.input.stale());
+    // bindingHealth() carries the supervision report of the last finished step.
+    const std::expected<hypha::BindingHealth, hypha::Status> health = port.input.bindingHealth();
+    ASSERT_TRUE(health.has_value());
+    EXPECT_TRUE(health->stagnant);
+    EXPECT_FALSE(health->stale);
+    EXPECT_FALSE(health->ignored);
 
     ASSERT_TRUE(publishUntil(
         nodeRef,
@@ -609,6 +615,12 @@ TEST_F(SupervisionFixture, NodeStateAndInputsOkAgreeForAnIgnoredStaleInput)
     EXPECT_EQ(state->inputs[0].verdict, hypha_msgs::RequiredInput::STALE) << "the row keeps it";
     EXPECT_TRUE(state->inputs[0].ignored);
     EXPECT_GT(state->inputs[0].age_nanos, 100'000'000U) << "a stale input reports its age";
+    // bindingHealth() reports the fault as ~/state does: present, and ignored.
+    const std::expected<hypha::BindingHealth, hypha::Status> health = port.input.bindingHealth();
+    ASSERT_TRUE(health.has_value());
+    EXPECT_TRUE(health->stale) << "an ignored fault stays in the report";
+    EXPECT_FALSE(health->stagnant);
+    EXPECT_TRUE(health->ignored);
 }
 
 TEST_F(SupervisionFixture, ANodeWithItsOwnMainLogsTheChangeAndReadingTheStateLogsNothing)
