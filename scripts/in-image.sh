@@ -9,6 +9,8 @@
 # The cargo registry is kept in target/linux-cargo-registry of the main checkout.
 # CMAKE_BUILD_PARALLEL_LEVEL defaults to one C++ compile per 2 GB of Docker's memory:
 # GCC needs more than 1 GB a C++23 unit, and a job per core runs out of memory.
+# CTEST_PARALLEL_LEVEL defaults to the same number: a sanitized test takes several times
+# its memory.
 #
 # build/ and target/ belong to one platform: on a host that is not Linux, run
 # this in a checkout or worktree the host itself does not build in.
@@ -40,5 +42,6 @@ docker run --rm "${tty[@]}" \
   -v "$main:$main" -w "$PWD" \
   -v "$registry:/usr/local/cargo/registry" \
   --user "$(id -u):$(id -g)" -e HOME=/tmp -e CMAKE_BUILD_PARALLEL_LEVEL="$jobs" \
+  -e CTEST_PARALLEL_LEVEL="${CTEST_PARALLEL_LEVEL:-$jobs}" \
   --shm-size=2g --security-opt seccomp=unconfined \
   "$image" "$@"
