@@ -40,5 +40,8 @@ export TSAN_OPTIONS="halt_on_error=1:suppressions=$PWD/scripts/tsan-suppressions
 if [[ "$(uname)" == Darwin ]]; then
   ASAN_OPTIONS="${ASAN_OPTIONS}:detect_leaks=0"
 fi
-# The gtest shards run in parallel, each in a bus domain of its own.
-ctest --test-dir "$dir" -j "$(getconf _NPROCESSORS_ONLN)" --output-on-failure
+# The gtest shards run in parallel, each in a bus domain of its own; CTEST_PARALLEL_LEVEL
+# bounds them, as each sanitized process takes several times its memory. The wall-time
+# tests are left out: a sanitizer slows the host they measure (the plain run has them).
+ctest --test-dir "$dir" -j "${CTEST_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}" -LE wall-time \
+  --output-on-failure

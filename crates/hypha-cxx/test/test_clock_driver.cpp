@@ -119,7 +119,11 @@ TEST_F(ClockDriverFixture, StepsAtStartPlusMultiplesOfThePeriod)
     Simulator  simulator;
     const auto started = simulator.start(*this->node);
     ASSERT_TRUE(started.has_value()) << started.error();
-    ASSERT_TRUE(this->node->runFor(50_ms).ok());
+    // The steps, not their speed: a lockstep driver steps as fast as the peer answers,
+    // which a sanitizer or a loaded host slows several times. At most 2 s.
+    for (int run = 0; run < 40 && simulator.deadlines.size() < 3U; ++run) {
+        ASSERT_TRUE(this->node->runFor(50_ms).ok());
+    }
     ASSERT_GE(simulator.deadlines.size(), 3U);
     for (size_t index = 0; index < simulator.deadlines.size(); ++index) {
         EXPECT_EQ(simulator.deadlines[index], kStart + static_cast<int64_t>(index) * kPeriod);
