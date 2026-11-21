@@ -46,12 +46,14 @@ else
     volumes+=("hypha-$dir-$key:$top/$dir")
   done
   owner=()
+  owned=()
   for volume in "${volumes[@]}"; do
     mounts+=(-v "$volume")
     owner+=(-v "${volume%%:*}:/own/${volume%%:*}")
+    owned+=("/own/${volume%%:*}")
   done
   # A new volume belongs to root; the build runs as you.
-  docker run --rm --user 0 "${owner[@]}" "$image" chown "$(id -u):$(id -g)" /own/* >/dev/null
+  docker run --rm --user 0 "${owner[@]}" "$image" chown "$(id -u):$(id -g)" "${owned[@]}" >/dev/null
 fi
 
 memory_gb=$(($(docker info --format '{{.MemTotal}}') / 1024 / 1024 / 1024))
