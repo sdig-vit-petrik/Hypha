@@ -605,6 +605,9 @@ The parameter file cannot switch supervision off, and code sets no limit value:
 
 There is no state enum: `!enabled()`, `received() > 0`, `usable()`, `stale()`,
 `stagnant()`, `ignored()` and the cycle's `inputsOk()` answer the questions.
+`bindingHealth()` returns the counts with the supervision report: `.stale` and
+`.stagnant` are the faults supervision found, also while `ignored` overrides them, as
+the input's row on `~/state` shows them; `stale()` and `stagnant()` hide an ignored fault.
 
 Each change of an input's judgement is logged once; execution model §6.4 lists the lines.
 
