@@ -37,16 +37,24 @@
 /// rcl's time point: nanoseconds.
 using rcl_time_point_value_t = int64_t;
 
+/// rcl's clock kinds, at global scope as rcl's C enum is. hypha has one framework clock,
+/// simulated or not; an rclcpp::Time keeps the kind it was given and means framework time
+/// either way.
+enum rcl_clock_type_e {
+    RCL_CLOCK_UNINITIALIZED = 0,
+    RCL_ROS_TIME,
+    RCL_SYSTEM_TIME,
+    RCL_STEADY_TIME
+};
+
+using rcl_clock_type_t = rcl_clock_type_e;
+
 namespace rclcpp {
 
 // ---------------------------------------------------------------------------------------
 // Time
 
-/// The clock kinds of rclcpp. hypha has one framework clock, simulated or not; a Time
-/// keeps the kind it was given and means framework time either way.
-enum class ClockType { RCL_ROS_TIME, RCL_SYSTEM_TIME, RCL_STEADY_TIME };
-using rcl_clock_type_t = ClockType;
-inline constexpr ClockType RCL_ROS_TIME = ClockType::RCL_ROS_TIME;
+using ClockType = rcl_clock_type_t;
 
 class Duration
 {
@@ -108,8 +116,9 @@ class Time
     {
     }
 
-    Time(int32_t seconds, uint32_t nanoseconds)
+    Time(int32_t seconds, uint32_t nanoseconds, ClockType clockType = ClockType::RCL_ROS_TIME)
         : nanos_(static_cast<int64_t>(seconds) * 1000000000 + static_cast<int64_t>(nanoseconds))
+        , clockType_(clockType)
     {
     }
 
@@ -589,6 +598,12 @@ class Node : public std::enable_shared_from_this<Node>
         return "/";
     }
 
+    /// The ROS name in the root namespace: `/<name>`.
+    std::string get_fully_qualified_name() const
+    {
+        return "/" + this->name_;
+    }
+
     Logger get_logger() const
     {
         return this->logger_;
@@ -863,6 +878,9 @@ bool ok();
 void shutdown();
 /// Runs every callback of the process on this thread until shutdown() or a signal.
 void spin(const std::shared_ptr<Node>& node);
+/// One dispatch turn on the calling thread: the timers that are due and the samples
+/// already queued, never a wait. @throws std::runtime_error when the run fails.
+void spin_some(const std::shared_ptr<Node>& node);
 /// The outcome of the last spin(), for the exit code of the runner.
 std::optional<hypha::RunResult> last_spin_result();
 

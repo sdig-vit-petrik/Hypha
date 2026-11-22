@@ -185,6 +185,18 @@ void spin(const std::shared_ptr<Node>& node)
     ctx.lastSpin = std::move(result);
 }
 
+void spin_some(const std::shared_ptr<Node>& node)
+{
+    // A run always takes its first dispatch turn (docs/execution-model.md section 4), so
+    // the shortest bounded run serves what is ready and returns.
+    const hypha::RunResult result = node->hypha_node().runFor(hypha::Duration::fromNanos(1));
+    if (!result.ok()) {
+        throw std::runtime_error(
+            std::string("rclcpp: spin_some: ") + std::string(result.status().name())
+        );
+    }
+}
+
 std::optional<hypha::RunResult> last_spin_result()
 {
     Context&                          ctx = context();
