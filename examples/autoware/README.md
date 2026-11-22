@@ -49,6 +49,7 @@ follows #46.
 | `now()`, `get_clock()` | framework time, simulated under `HYPHA_USE_SIM_TIME` |
 | `RCLCPP_*`, `RCLCPP_*_STREAM`, `RCLCPP_*_THROTTLE`, `RCLCPP_*_STREAM_THROTTLE` | `HYPHA_LOG_*` with the logger name in front; throttled in host time |
 | `rclcpp::spin(node)` | `node.run()` on the calling thread: a single-threaded executor |
+| `rclcpp::create_timer(node, clock, period, callback)`, `TimerBase::cancel`/`reset`/`is_canceled`/`time_until_trigger` | a `hypha::Timer` of the node on framework time, whatever the clock passed; created and controlled from a callback too (#90), refused inside a callback on a simulated clock the node does not own; a refused call throws. `create_wall_timer` is not offered |
 | `RCLCPP_COMPONENTS_REGISTER_NODE` | registers the class with the component runner `shim/src/component_main.cpp`: one program per component, argument the TOML file, the exit codes of `hypha/application_node.h` |
 | `sensor_msgs::msg::PointCloud2` and the other ROS 2 message paths | hypha's generated ROS 1 messages under a `msg` namespace name (`shim/include/hypha_rclcpp/message_namespace.hpp`); time stamps compare with `==` |
 | `tl::expected`, `rcpputils`' copy of it | `std::expected` |

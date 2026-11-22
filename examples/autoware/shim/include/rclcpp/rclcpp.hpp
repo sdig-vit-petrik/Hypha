@@ -757,6 +757,97 @@ class Node : public std::enable_shared_from_this<Node>
 };
 
 // ---------------------------------------------------------------------------------------
+// Timers
+
+/// An rclcpp timer on a hypha timer of its node: framework time (simulated under
+/// HYPHA_USE_SIM_TIME), whatever clock is passed. It may be created and controlled from
+/// a callback (hypha#90); on a simulated clock the node does not own, creating one inside
+/// a callback is refused. A refused call throws, as rclcpp's do.
+namespace detail {
+inline void requireTimer(const std::expected<void, hypha::Status>& result, const char* call)
+{
+    if (!result.has_value()) {
+        throw std::runtime_error(
+            std::string("rclcpp: timer ") + call + ": " + std::string(result.error().name())
+        );
+    }
+}
+}  // namespace detail
+
+class TimerBase
+{
+  public:
+    using SharedPtr = std::shared_ptr<TimerBase>;
+
+    explicit TimerBase(hypha::Timer timer) : timer_(std::move(timer))
+    {
+    }
+
+    /// No call until reset().
+    void cancel()
+    {
+        detail::requireTimer(this->timer_.cancel(), "cancel");
+    }
+    /// The next call one period from now; ends a cancel.
+    void reset()
+    {
+        detail::requireTimer(this->timer_.reset(), "reset");
+    }
+    bool is_canceled() const
+    {
+        return this->state().canceled;
+    }
+    /// The time until the next call; `nanoseconds::max()` while canceled, as rclcpp.
+    std::chrono::nanoseconds time_until_trigger() const
+    {
+        const hypha::TimerStatus status = this->state();
+        if (!status.untilDue.has_value()) {
+            return std::chrono::nanoseconds::max();
+        }
+        return std::chrono::nanoseconds(status.untilDue->nanos());
+    }
+
+  private:
+    hypha::TimerStatus state() const
+    {
+        auto read = this->timer_.state();
+        if (!read.has_value()) {
+            throw std::runtime_error(
+                std::string("rclcpp: timer state: ") + std::string(read.error().name())
+            );
+        }
+        return *read;
+    }
+
+    hypha::Timer timer_;
+};
+
+/// `rclcpp::create_timer(node, clock, period, callback)`: a callback that takes no argument.
+template <class NodePtr, class Rep, class Period, class Callback>
+TimerBase::SharedPtr create_timer(
+    const NodePtr& node, const Clock::SharedPtr& /*clock*/,
+    std::chrono::duration<Rep, Period> period, Callback&& callback
+)
+{
+    const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(period).count();
+    return std::make_shared<TimerBase>(node->hypha_node().timer(
+        hypha::Duration::fromNanos(nanos), std::function<void()>(std::forward<Callback>(callback))
+    ));
+}
+
+template <class NodePtr, class Callback>
+TimerBase::SharedPtr create_timer(
+    const NodePtr& node, const Clock::SharedPtr& clock, const Duration& period,
+    Callback&& callback
+)
+{
+    return create_timer(
+        node, clock, std::chrono::nanoseconds(period.nanoseconds()),
+        std::forward<Callback>(callback)
+    );
+}
+
+// ---------------------------------------------------------------------------------------
 // Process
 
 /// Records the parameter file: `--params-file <file>` or the first argument that is no
