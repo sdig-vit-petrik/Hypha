@@ -10,16 +10,26 @@ fn examples_dir() -> PathBuf {
 
 /// Every file under `dir` with one of `extensions`, `upstream/` and build output left out.
 fn files(dir: &Path, extensions: &[&str], out: &mut Vec<PathBuf>) {
+    collect(dir, extensions, true, out);
+}
+
+/// As `files`, `upstream/` included: the vendored code of a port declares its endpoints.
+fn files_with_upstream(dir: &Path, extensions: &[&str], out: &mut Vec<PathBuf>) {
+    collect(dir, extensions, false, out);
+}
+
+fn collect(dir: &Path, extensions: &[&str], skip_upstream: bool, out: &mut Vec<PathBuf>) {
     let entries = std::fs::read_dir(dir).expect("read an examples directory");
     for entry in entries {
         let path = entry.expect("read a directory entry").path();
         let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
-        let skipped = name == "upstream" || name == "build" || name.starts_with('.');
+        let skipped =
+            (skip_upstream && name == "upstream") || name == "build" || name.starts_with('.');
         if skipped {
             continue;
         }
         if path.is_dir() {
-            files(&path, extensions, out);
+            collect(&path, extensions, skip_upstream, out);
             continue;
         }
         let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
@@ -61,7 +71,9 @@ fn tagged_without_limit(sources: &[String], name: &str) -> bool {
 }
 
 /// True when a source subscribes to port `name` on a plain node (`node.subscribe<M>("name",
-/// ...)`, also across lines): a callback subscriber has no silence limit to declare.
+/// ...)`, also across lines, or an rclcpp node of the Autoware port's shim,
+/// `create_subscription<M>("name", ...)`): a callback subscriber has no silence limit to
+/// declare.
 fn subscribed_on_a_plain_node(sources: &[String], name: &str) -> bool {
     let argument = format!("(\"{name}\"");
     sources.iter().any(|source| {
@@ -69,7 +81,8 @@ fn subscribed_on_a_plain_node(sources: &[String], name: &str) -> bool {
         compact.match_indices(&argument).any(|(at, _)| {
             let before = compact.get(..at).unwrap_or("");
             let call = before.rsplit([';', '{', '}']).next().unwrap_or("");
-            call.contains(".subscribe<") && call.ends_with('>')
+            (call.contains(".subscribe<") || call.contains("create_subscription<"))
+                && call.ends_with('>')
         })
     })
 }
@@ -114,7 +127,7 @@ fn example_inputs_declare_silence_or_a_tag() {
     let mut configs = Vec::new();
     files(&examples_dir(), &["toml"], &mut configs);
     let mut code = Vec::new();
-    files(&examples_dir(), &["cpp", "h", "hpp"], &mut code);
+    files_with_upstream(&examples_dir(), &["cpp", "h", "hpp"], &mut code);
     for path in configs {
         let sources = own_sources(&path, &code);
         for name in inputs_without_limit(&read(&path)) {
