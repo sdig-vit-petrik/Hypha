@@ -1,0 +1,12 @@
+# autoware_voxel_grid_downsample_filter_node_test: the voxel grid node on the bus.
+
+voxel_size_x = 1.0
+voxel_size_y = 1.0
+voxel_size_z = 1.0
+max_queue_size = 3
+
+[ports.inputs.input]
+topic = "/test/voxel_grid/input"
+
+[ports.outputs.output]
+topic = "/test/voxel_grid/output"

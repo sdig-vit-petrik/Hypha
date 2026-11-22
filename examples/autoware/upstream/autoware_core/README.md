@@ -8,6 +8,9 @@ Licence: `LICENSE` in this directory (Apache 2.0, the Autoware Foundation and TI
 Only the packages the hypha port compiles are copied, at their upstream paths:
 
 - `sensing/autoware_crop_box_filter`: `src/`, `test/`, `config/`, `package.xml`, `README.md`.
+- `sensing/autoware_downsample_filters`: the voxel grid filter only:
+  `src/voxel_grid_downsample_filter/`, its unit test, its `config/` file, `package.xml`,
+  `README.md`.
 
 The files are unchanged. The edits the port needs are in `../patches/`, one file per
 package; the build applies them to a copy in the build directory.
