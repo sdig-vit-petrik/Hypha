@@ -603,3 +603,35 @@ fn a_publisher_that_takes_no_part_in_the_replay_is_named_once() {
     assert!(text.contains(&outsider_name), "the outsider is named: {text}");
     drop(context);
 }
+
+#[test]
+fn a_node_that_follows_the_clock_is_on_the_progress_topic_before_any_endpoint() {
+    use crate::common::replay::{SERIAL, create_sim_node, open_subscriber};
+    use hypha_msgs::hypha_msgs::ReplayProgress;
+    let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let observer = crate::common::create_node(&unique("observer"));
+    // SAFETY: the observer is live, and the topic and hash are valid text.
+    let reader =
+        unsafe { open_subscriber(observer, "/clock_progress", ReplayProgress::SCHEMA_HASH, 8) };
+    let publishers = || {
+        let mut count = usize::MAX;
+        // SAFETY: the reader is live, and `count` is one writable size_t.
+        let status = unsafe { hypha_subscriber_publisher_count(reader, &raw mut count) };
+        assert_eq!(status, HyphaStatus::Ok);
+        count
+    };
+    assert_eq!(publishers(), 0);
+    let follower = create_sim_node(&unique("follower"));
+    assert_eq!(publishers(), 1, "visible as an upstream before any topic of its own");
+    // A CLI tool's node may follow the clock too, but it never takes part.
+    let tool = create_sim_node("_hyphacli_progress_probe");
+    assert_eq!(publishers(), 1);
+    // SAFETY: each handle is destroyed once, the reader before its node.
+    unsafe {
+        hypha_subscriber_destroy(reader);
+        hypha_node_destroy(tool);
+        hypha_node_destroy(follower);
+        hypha_node_destroy(observer);
+    }
+    assert_eq!(hypha_clock_disable_sim_time(), HyphaStatus::Ok as i32);
+}
