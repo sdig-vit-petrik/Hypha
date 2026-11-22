@@ -9,8 +9,9 @@
 )]
 
 use std::ffi::{CString, c_void};
+use std::mem::MaybeUninit;
 use std::pin::Pin;
-use std::ptr;
+use std::ptr::{self, NonNull};
 use std::sync::Mutex;
 
 mod common;
@@ -221,14 +222,19 @@ fn create_publisher(node: *mut HyphaNode, topic: &CString) -> *mut HyphaPublishe
 
 /// Send one byte, stamped `framework_sent_nanos`, or framework time when negative.
 fn send(publisher: *mut HyphaPublisher, framework_sent_nanos: i64) {
-    let mut loan = ptr::null_mut();
-    let mut bytes = ptr::null_mut();
-    // SAFETY: `publisher` is live; the loan's one payload byte is written before its send,
-    // which consumes the loan.
+    let mut loan = MaybeUninit::<*mut HyphaLoan>::uninit();
+    let mut payload = MaybeUninit::<*mut u8>::uninit();
+    // SAFETY: `publisher` is live, and both out pointers are valid for a write.
+    let loaned = unsafe {
+        hypha_publisher_loan_frame(publisher, 1, loan.as_mut_ptr(), payload.as_mut_ptr())
+    };
+    assert_eq!(loaned, HyphaStatus::Ok);
+    // SAFETY: an accepted loan wrote both out pointers.
+    let (loan, payload) = unsafe { (loan.assume_init(), payload.assume_init()) };
+    let byte = NonNull::new(payload).expect("an accepted loan of one byte has its payload");
+    // SAFETY: the loan owns this one writable byte until its send, which consumes the loan.
     let status = unsafe {
-        let loaned = hypha_publisher_loan_frame(publisher, 1, &raw mut loan, &raw mut bytes);
-        assert_eq!(loaned, HyphaStatus::Ok);
-        *bytes = 1;
+        byte.write(1);
         hypha_loan_send(loan, framework_sent_nanos)
     };
     assert_eq!(status, HyphaStatus::Ok);
