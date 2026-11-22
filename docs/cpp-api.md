@@ -147,7 +147,10 @@ target_link_libraries(app PRIVATE hypha::sdk app_msgs)
 ```
 
 `DEPENDS` names a standard package or one an earlier call declared; never copy or
-regenerate a standard package. Types, constants and the wire format follow ROS 1;
+regenerate a standard package. Every message `M` carries the pointer typedefs of both
+ROS generations: `M::Ptr` and `M::ConstPtr` (ROS 1), `M::SharedPtr`, `M::ConstSharedPtr`
+and `M::UniquePtr` (ROS 2). Each field `f` names its type `M::_f_type`, as both
+generations' C++ does, and has ROS 2's fluent setter `M& set__f(const M::_f_type&)`. Types, constants and the wire format follow ROS 1;
 engineering-traps.md gives the rules that surprise (`byte` is signed, a constant out of
 its type's range fails generation, no big-endian target).
 
