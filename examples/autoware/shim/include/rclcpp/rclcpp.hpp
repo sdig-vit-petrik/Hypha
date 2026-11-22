@@ -5,7 +5,8 @@
 /// (#59); README.md of examples/autoware lists what it maps and what it refuses.
 ///
 /// - One `rclcpp::Node` holds one `hypha::Node`. Several share the process session and
-///   its one parameter file (`--params-file`, or the first program argument).
+///   its one parameter file (`--params-file`, or the first program argument). A CamelCase
+///   node name becomes snake_case for hypha; get_name() keeps the ROS name.
 /// - A relative topic name is a port: `output` reads `[ports.outputs.output]`,
 ///   `~/crop_box_polygon` reads `[ports.outputs.crop_box_polygon]`, `a/b` reads
 ///   `[ports.outputs."a.b"]`. An absolute name (`/tf`) is a literal topic.
@@ -355,6 +356,11 @@ namespace detail {
 /// The port name of a relative ROS name: `~/` dropped, `/` becomes `.`.
 std::string portName(const std::string& rosName);
 
+/// The hypha name of a ROS node name: CamelCase words become snake_case
+/// (`VoxelGridDownsampleFilter` is `voxel_grid_downsample_filter`).
+/// @throws std::invalid_argument for a name hypha cannot hold.
+std::string hyphaNodeName(const std::string& rosName);
+
 /// The parameter file of this process: set once by init() or a node's
 /// `--params-file`. @throws std::invalid_argument for a second, different file.
 std::string resolveParameterFile(const NodeOptions& options);
@@ -458,7 +464,9 @@ class Node : public std::enable_shared_from_this<Node>
 
     explicit Node(const std::string& name, const NodeOptions& options = NodeOptions())
         : name_(name),
-          hyphaNode_(std::make_unique<hypha::Node>(name, detail::resolveParameterFile(options))),
+          hyphaNode_(std::make_unique<hypha::Node>(
+              detail::hyphaNodeName(name), detail::resolveParameterFile(options)
+          )),
           clock_(std::make_shared<Clock>()),
           logger_(name)
     {
