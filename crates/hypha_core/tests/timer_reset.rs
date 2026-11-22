@@ -30,3 +30,13 @@ fn a_reset_of_a_timer_without_a_positive_period_never_fires() {
     timer.reset(ms(10));
     assert_eq!(timer.poll(ms(1_000_000)), 0);
 }
+
+#[test]
+fn the_latest_time_seen_follows_the_polls_and_a_reset() {
+    let mut timer = Timer::new(Duration::from_millis(100), ms(1_000));
+    assert_eq!(timer.latest_seen(), ms(1_000));
+    let _fired = timer.poll(ms(1_250));
+    assert_eq!(timer.latest_seen(), ms(1_250));
+    timer.reset(ms(1_300));
+    assert_eq!(timer.latest_seen(), ms(1_300));
+}

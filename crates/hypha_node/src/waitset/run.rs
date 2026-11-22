@@ -44,6 +44,9 @@ impl RunDriver for NativeRun<'_> {
         };
         IN_DISPATCH.with(|active| active.set(true));
         set.shared.set_run_owner(Some(std::thread::current().id()));
+        if let Ok(mut attaches) = set.run_attaches.try_borrow_mut() {
+            attaches.held = registrations.len();
+        }
         let due = Vec::with_capacity(registrations.len());
         let mut dispatcher = CallbackDispatcher {
             registrations: &mut registrations,
@@ -67,6 +70,11 @@ impl RunDriver for NativeRun<'_> {
         self.slow_callbacks = dispatcher.slow_callbacks;
         self.callback_failure = dispatcher.failure;
         drop(dispatcher);
+        // A timer a callback attached after the last wait joins for the next run, before
+        // the deferred detaches, which may name it.
+        if let Ok(mut attaches) = set.run_attaches.try_borrow_mut() {
+            registrations.append(&mut attaches.pending);
+        }
         drop(registrations);
         drop(cycles);
         drop(native);

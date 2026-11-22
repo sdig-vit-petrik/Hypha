@@ -60,7 +60,56 @@ class TimerHandle
         return this->timer ? this->timer->missed.load(std::memory_order_relaxed) : 0U;
     }
 
+    /// `hypha_waitset_timer_cancel` on this registration.
+    std::expected<void, Status> cancel() const
+    {
+        return this->control(&hypha_waitset_timer_cancel);
+    }
+
+    /// `hypha_waitset_timer_reset` on this registration.
+    std::expected<void, Status> reset() const
+    {
+        return this->control(&hypha_waitset_timer_reset);
+    }
+
+    /// `hypha_waitset_timer_state` of this registration.
+    std::expected<HyphaTimerState, Status> state() const
+    {
+        HyphaWaitSet* waitset = this->registeredWaitSet();
+        if (waitset == nullptr) {
+            return std::unexpected(Status::InvalidState);
+        }
+        HyphaTimerState out{};
+        const Status    status = hypha_waitset_timer_state(waitset, this->timer->executorId, &out);
+        if (status != HYPHA_STATUS_OK) {
+            return std::unexpected(status);
+        }
+        return out;
+    }
+
   private:
+    /// The WaitSet of a live registration, or null: no timer, a released one, or no node.
+    HyphaWaitSet* registeredWaitSet() const
+    {
+        if (!this->isValid() || this->timer->executorId == 0) {
+            return nullptr;
+        }
+        return defaultWaitSet();
+    }
+
+    std::expected<void, Status> control(HyphaStatus (*call)(HyphaWaitSet*, HyphaAttachmentId)) const
+    {
+        HyphaWaitSet* waitset = this->registeredWaitSet();
+        if (waitset == nullptr) {
+            return std::unexpected(Status::InvalidState);
+        }
+        const Status status = call(waitset, this->timer->executorId);
+        if (status != HYPHA_STATUS_OK) {
+            return std::unexpected(status);
+        }
+        return {};
+    }
+
     /// Remove the executor registration, then give up the held state: the executor
     /// borrows the state by raw pointer.
     void release()

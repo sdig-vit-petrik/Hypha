@@ -28,7 +28,7 @@ of every row from a test run.
 | FSR-12 | `hypha_ffi/subscriber_delivery_mode`, `cxx:test_subscriber` |  |
 | FSR-13 | `hypha_iceoryx2/notification`, `hypha_ffi/waitset_wakeups`, `hypha_iceoryx2/waitset_wake_cadence` |  |
 | FSR-14 | `hypha_iceoryx2/housekeeping_creates_no_thread`, `hypha_ffi/waitset_cross_thread_stop` |  |
-| FSR-15 | `hypha_core/timer_missed_count`, `hypha_core/timer_reset`, `hypha_time/cadence_policies` |  |
+| FSR-15 | `hypha_core/timer_missed_count`, `hypha_core/timer_reset`, `hypha_time/cadence_policies`, `hypha_ffi/waitset_timer_control` |  |
 | FSR-16 | `hypha_time/clock`, `hypha_time/cross_process_monotonic`, `cxx:test_clock` |  |
 | FSR-17 | `hypha_ffi/sim_time_environment`, `hypha_ffi/sim_time_waitset_turn`, `cxx:test_clock_driver`, `cxx:test_time_jump`; MRS flights in `examples/check.sh` |  |
 | FSR-18 | `hypha_core/parameters`, `hypha_core/parameter_constraints`, `hypha_ffi/parameter_boundary`, `cxx:test_parameters` |  |
@@ -49,7 +49,7 @@ of every row from a test run.
 | FSR-32 | `hypha_tools/test_foxglove_protocol` |  |
 | FSR-35 | `hypha_tools/launch_supervisor`, `hypha_tools/launch_session_lifecycle`, `hypha_tools/test_launch_units` |  |
 | FSR-36 | `hypha_log/*`, `cxx:test_log_*` |  |
-| FSR-37 | `hypha_ffi/sim_time_rewind`, `hypha_tools/play_restart`, `hypha_core/timer_time_jump` |  |
+| FSR-37 | `hypha_ffi/sim_time_rewind`, `hypha_tools/play_restart`, `hypha_core/timer_time_jump`, `hypha_ffi/waitset_timer_control` |  |
 | FSR-38 | `hypha_cycle/*`, `hypha_ffi/cycle_*`, `cxx:test_cycle_node`, `cxx:test_cycle_step_faults` |  |
 | FSR-39 | `hypha_cycle/input_supervision`, `cxx:test_input_supervision` |  |
 | FSR-41 | `hypha_ffi/introspection_snapshot`, `cxx:test_node_introspection` |  |

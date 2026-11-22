@@ -118,6 +118,12 @@ impl Timer {
         self.cadence.next_deadline()
     }
 
+    /// The latest time the timer has seen, which a rewind is measured against.
+    #[must_use]
+    pub const fn latest_seen(&self) -> Time {
+        self.cadence.anchor()
+    }
+
     /// How many periods went by without the caller noticing.
     #[must_use]
     pub const fn missed_count(&self) -> u64 {
