@@ -863,6 +863,7 @@ A node without a cycle reads TF with a `hypha::TransformBuffer` from
 the node ingests every message of `/tf` and `/tf_static` into the buffer, in host time
 and under simulated time alike; the lookups are those of `Transforms` and return the
 same `std::expected<geometry_msgs::TransformStamped, hypha::TransformError>`.
+`hypha::name(error)` gives the error's name for a log line (`"UnknownFrame"`).
 
 ```cpp
 // or {node, {.tf = "/tf", .tfStatic = "/tf_static"}, hypha::Duration::fromSeconds(10)}
@@ -997,7 +998,9 @@ is under 500 µs at p99), burst loss, idle CPU, shutdown latency, one stalled co
 ## 13. Complete API reference
 
 The reference is the doc comments of the public headers; no build runs Doxygen
-(`docs/Doxyfile` renders them for a reader who has it). `<hypha/hypha.h>` includes
+(`docs/Doxyfile` renders them for a reader who has it). Every result type prints as a
+name: `Status::name()`, and `hypha::name()` of a `TransformError`, an `InputVerdict` or
+a `StopReason`; a value outside the enum reads `"Unknown"`. `<hypha/hypha.h>` includes
 all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hypha/testing.h`.
 
 | Header                                                                   | Holds                                                                                                                                                                                                |

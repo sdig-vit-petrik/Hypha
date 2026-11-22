@@ -20,6 +20,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace hypha {
 
@@ -63,6 +64,20 @@ enum class InputVerdict : uint32_t {
     /// The newest sample is older than the silence limit of the port.
     Stale = 2,
 };
+
+/// @brief The name of @p verdict, such as "Stale"; "Unknown" for any other value.
+constexpr std::string_view name(InputVerdict verdict)
+{
+    switch (verdict) {
+        case InputVerdict::NeverArrived:
+            return "NeverArrived";
+        case InputVerdict::Usable:
+            return "Usable";
+        case InputVerdict::Stale:
+            return "Stale";
+    }
+    return "Unknown";
+}
 
 /// @brief Thrown by `*port` and `port->` of a Latest input that is not usable in this
 ///        step: stale, or no sample yet.

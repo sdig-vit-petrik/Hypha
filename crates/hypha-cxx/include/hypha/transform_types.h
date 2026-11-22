@@ -30,6 +30,24 @@ enum class TransformError {
     AfterBuffer,
 };
 
+/// @brief The name of @p error, such as "UnknownFrame"; "Unknown" for any other value.
+constexpr std::string_view name(TransformError error)
+{
+    switch (error) {
+        case TransformError::InvalidFrame:
+            return "InvalidFrame";
+        case TransformError::UnknownFrame:
+            return "UnknownFrame";
+        case TransformError::NotConnected:
+            return "NotConnected";
+        case TransformError::BeforeBuffer:
+            return "BeforeBuffer";
+        case TransformError::AfterBuffer:
+            return "AfterBuffer";
+    }
+    return "Unknown";
+}
+
 /// @brief The topics a TF reader subscribes: a Transforms port or a TransformBuffer.
 struct TransformTopics
 {
