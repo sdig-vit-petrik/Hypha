@@ -1,0 +1,59 @@
+# autoware_crop_box_filter: the edits of the hypha port, applied to a copy of
+# upstream/autoware_core/sensing/autoware_crop_box_filter by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
+diff -ruN a/src/crop_box_filter.cpp b/src/crop_box_filter.cpp
+--- a/src/crop_box_filter.cpp
++++ b/src/crop_box_filter.cpp
+@@ -59,7 +59,8 @@
+     std::ostringstream oss;
+     oss << "Invalid PointCloud (data.size = " << cloud.data.size() << ", width = " << cloud.width
+         << ", height = " << cloud.height << ", step = " << cloud.point_step << ") with stamp "
+-        << cloud.header.stamp.sec + cloud.header.stamp.nanosec * 1e-9 << ", and frame "
++        // hypha port: a ROS 1 Header stamp (secs, nsecs) until ROS 2 definitions (#45).
++        << cloud.header.stamp.secs + cloud.header.stamp.nsecs * 1e-9 << ", and frame "
+         << cloud.header.frame_id << " received!";
+     return {false, oss.str()};
+   }
+diff -ruN a/src/crop_box_filter.hpp b/src/crop_box_filter.hpp
+--- a/src/crop_box_filter.hpp
++++ b/src/crop_box_filter.hpp
+@@ -21,11 +21,13 @@
+ #include <geometry_msgs/msg/transform_stamped.hpp>
+ #include <sensor_msgs/msg/point_cloud2.hpp>
+ 
++#include <memory>
+ #include <optional>
+ #include <string>
+ 
+ using PointCloud2 = sensor_msgs::msg::PointCloud2;
+-using PointCloud2ConstPtr = sensor_msgs::msg::PointCloud2::ConstSharedPtr;
++// hypha port: hypha messages carry ConstPtr, not ConstSharedPtr (#57).
++using PointCloud2ConstPtr = std::shared_ptr<const PointCloud2>;
+ 
+ namespace autoware::crop_box_filter
+ {
+diff -ruN a/test/test_crop_box_filter.cpp b/test/test_crop_box_filter.cpp
+--- a/test/test_crop_box_filter.cpp
++++ b/test/test_crop_box_filter.cpp
+@@ -364,16 +364,17 @@
+   autoware::crop_box_filter::CropBoxParam param = {-5.0f, 5.0f, -5.0f, 5.0f, -5.0f, 5.0f};
+   const std::string frame_id = "base_link";
+   builtin_interfaces::msg::Time stamp;
+-  stamp.sec = 123;
+-  stamp.nanosec = 456;
++  // hypha port: a ROS 1 time (secs, nsecs) until ROS 2 definitions (#45).
++  stamp.secs = 123;
++  stamp.nsecs = 456;
+ 
+   // Act
+   const auto polygon = autoware::crop_box_filter::generate_crop_box_polygon(param, frame_id, stamp);
+ 
+   // Assert
+   EXPECT_EQ(polygon.header.frame_id, frame_id);
+-  EXPECT_EQ(polygon.header.stamp.sec, 123);
+-  EXPECT_EQ(polygon.header.stamp.nanosec, 456u);
++  EXPECT_EQ(polygon.header.stamp.secs, 123u);
++  EXPECT_EQ(polygon.header.stamp.nsecs, 456u);
+   EXPECT_EQ(polygon.polygon.points.size(), 16u);
+ }
+ 
