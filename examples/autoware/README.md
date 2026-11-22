@@ -6,11 +6,11 @@ in #47. Autoware 2.1.0: `autoware_core` 1.10.0, `autoware_universe` 0.53.2.
 
 | Slice | Pipeline | State |
 |---|---|---|
-| A, detection (Leo Drive Isuzu bus) | crop box → concatenate → ground filter → voxel downsample → euclidean cluster | `autoware_crop_box_filter`, the voxel grid filter of `autoware_downsample_filters`, `autoware_ground_filter`, both nodes of `autoware_euclidean_cluster_object_detector` and the concatenate-and-time-sync node of `autoware_pointcloud_preprocessor` ported; every node on synthetic inputs, replay open |
+| A, detection (Leo Drive Isuzu bus) | crop box → concatenate → ground filter → voxel downsample → euclidean cluster | `autoware_crop_box_filter`, the voxel grid filter of `autoware_downsample_filters`, `autoware_ground_filter`, both nodes of `autoware_euclidean_cluster_object_detector` and the concatenate-and-time-sync node of `autoware_pointcloud_preprocessor` ported; every node on synthetic inputs; ground filter → voxel downsample → clustering end to end on a recorded bag, deterministic (section "Slice A end to end"); the comparison against ROS 2 open |
 | B, localization (Istanbul Open Dataset) | crop box → downsample → NDT → gyro odometer → EKF | not started |
 
-Each node first computes on synthetic inputs in tests; replay of the recorded data
-follows #46.
+Each node first computes on synthetic inputs in tests, and then on a recorded bag, replayed
+in lockstep (#46, #72).
 
 ## How it is built
 
@@ -124,6 +124,59 @@ The two cluster nodes differ on a cluster above `max_cluster_size`, as upstream 
 PCL's extraction drops it before EuclideanClusterNode counts it, so that node reports
 OK, while VoxelGridBasedEuclideanClusterNode counts it and reports WARN. The node tests
 check both.
+
+## Slice A end to end
+
+`slice_a_replay.sh` replays the recorded concatenated lidar cloud of a ROS 2 bag through
+the last three nodes of Slice A:
+1. the ground filter;
+2. the voxel downsample;
+3. the voxel-grid based clustering of `autoware_core_perception`.
+
+Each node runs as its own process, on simulated time, in the replay lockstep. The nodes
+take part with their callbacks (#72), so the player never runs ahead of them.
+`hypha record --sync` records the three outputs. The script replays twice, at different
+rates and chunk lengths, and `autoware_slice_a_compare` checks that the two recordings
+hold the same messages, byte for byte. The configurations are in `config/slice_a/`.
+They include the deployment ones and change only the topics that chain the voxel
+downsample between the ground filter and the clustering.
+
+The input is a bag of the Leo Drive Isuzu bus (#46), converted with `hypha convert`. The
+bags stay out of the repository while their licence is open. `/data/` is ignored, and
+the commands below keep them there:
+
+```bash
+# All-sensors bag 4, 0.74 GB: https://autoware-files.s3.amazonaws.com/recordings/bags/2022-08-22_leo_drive_isuzu_bags/
+zstd -d data/isuzu/all-sensors-bag4/all-sensors-bag4_compressed_0.db3.zstd -o data/isuzu/all-sensors-bag4/all-sensors-bag4.db3
+target/release/hypha convert data/isuzu/all-sensors-bag4/all-sensors-bag4.db3 \
+    -o data/isuzu/all-sensors-bag4/slice-a.mcap --msg-path crates/hypha_msgs/msg \
+    --topic /sensing/lidar/concatenated/pointcloud --topic /tf_static \
+    --xyzirc /sensing/lidar/concatenated/pointcloud
+examples/autoware/slice_a_replay.sh --input data/isuzu/all-sensors-bag4/slice-a.mcap \
+    --build build/examples/autoware
+```
+
+The recorded cloud uses the XYZI layout of 2022, which Autoware 2.1.0 does not read, so
+`--xyzirc` rewrites it into XYZIRC. Its intensity field holds no intensity: every value
+rounds to 0, and `hypha convert` says so. The ground filter and the clustering do not
+read intensity.
+
+On bag 4 (macOS, 2026-11-22), each stage gave 179 frames, identical between the two
+runs:
+
+| Run | Rate, chunk | Effective rate |
+|---|---|---|
+| A | `--rate max`, 100 ms | 10.5× real time, set by the ground filter |
+| B | `--rate 2`, 50 ms | 2.0× |
+
+| Stage | Per frame (lowest / mean / highest) |
+|---|---|
+| ground filter | 15,219 / 18,675 / 27,566 points, from about 81,600 |
+| voxel downsample, 1.5 m voxels | 964 / 1,541 / 1,904 points |
+| clustering | 0 / 4.6 / 11 objects |
+
+The comparison with Autoware on ROS 2, on the same input and configurations, is the
+next step of #47.
 
 ## The gap so far
 
