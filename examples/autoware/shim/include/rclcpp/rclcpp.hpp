@@ -24,7 +24,9 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <map>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -32,10 +34,19 @@
 #include <variant>
 #include <vector>
 
+/// rcl's time point: nanoseconds.
+using rcl_time_point_value_t = int64_t;
+
 namespace rclcpp {
 
 // ---------------------------------------------------------------------------------------
 // Time
+
+/// The clock kinds of rclcpp. hypha has one framework clock, simulated or not; a Time
+/// keeps the kind it was given and means framework time either way.
+enum class ClockType { RCL_ROS_TIME, RCL_SYSTEM_TIME, RCL_STEADY_TIME };
+using rcl_clock_type_t = ClockType;
+inline constexpr ClockType RCL_ROS_TIME = ClockType::RCL_ROS_TIME;
 
 class Duration
 {
@@ -85,7 +96,8 @@ class Time
 {
   public:
     Time() = default;
-    explicit Time(int64_t nanoseconds) : nanos_(nanoseconds)
+    explicit Time(int64_t nanoseconds, ClockType clockType = ClockType::RCL_ROS_TIME)
+        : nanos_(nanoseconds), clockType_(clockType)
     {
     }
     Time(int32_t seconds, uint32_t nanoseconds)
@@ -116,6 +128,10 @@ class Time
     {
         return static_cast<double>(this->nanos_) * 1e-9;
     }
+    ClockType get_clock_type() const
+    {
+        return this->clockType_;
+    }
     hypha::Time toHypha() const
     {
         return hypha::Time::fromNanos(this->nanos_);
@@ -133,10 +149,18 @@ class Time
     {
         return Time(this->nanos_ + d.nanoseconds());
     }
-    auto operator<=>(const Time&) const = default;
+    bool operator==(const Time& other) const
+    {
+        return this->nanos_ == other.nanos_;
+    }
+    auto operator<=>(const Time& other) const
+    {
+        return this->nanos_ <=> other.nanos_;
+    }
 
   private:
-    int64_t nanos_{0};
+    int64_t   nanos_{0};
+    ClockType clockType_{ClockType::RCL_ROS_TIME};
 };
 
 /// The framework clock: hypha::now(), simulated under HYPHA_USE_SIM_TIME.
@@ -292,6 +316,22 @@ class Parameter
     const std::string& get_name() const
     {
         return this->name_;
+    }
+    double as_double() const
+    {
+        return this->get_value<double>();
+    }
+    int64_t as_int() const
+    {
+        return this->get_value<int64_t>();
+    }
+    bool as_bool() const
+    {
+        return this->get_value<bool>();
+    }
+    std::string as_string() const
+    {
+        return this->get_value<std::string>();
     }
     template <class T>
     T get_value() const
@@ -522,11 +562,13 @@ class Node : public std::enable_shared_from_this<Node>
     template <class T>
     T declare_parameter(const std::string& name, const T& defaultValue)
     {
-        return hypha::config().optional<T>(name, defaultValue);
+        return this->remember(name, hypha::config().optional<T>(name, defaultValue));
     }
     std::string declare_parameter(const std::string& name, const char* defaultValue)
     {
-        return hypha::config().optional<std::string>(name, std::string(defaultValue));
+        return this->remember(
+            name, hypha::config().optional<std::string>(name, std::string(defaultValue))
+        );
     }
     template <class T>
     std::vector<T> declare_parameter(const std::string& name, const std::vector<T>& defaultValue)
@@ -540,8 +582,19 @@ class Node : public std::enable_shared_from_this<Node>
         if constexpr (requires { typename T::value_type; } && !std::is_same_v<T, std::string>) {
             return hypha::config().requiredArray<typename T::value_type>(name);
         } else {
-            return hypha::config().required<T>(name);
+            return this->remember(name, hypha::config().required<T>(name));
         }
+    }
+
+    /// The value a declare_parameter call read. A list parameter is not kept.
+    /// @throws std::invalid_argument for a name no declare_parameter call read.
+    Parameter get_parameter(const std::string& name) const
+    {
+        const auto found = this->parameters_.find(name);
+        if (found == this->parameters_.end()) {
+            throw std::invalid_argument("rclcpp: parameter '" + name + "' is not declared");
+        }
+        return Parameter(name, found->second);
     }
 
     /// Kept and never called: parameters do not change while a hypha node runs.
@@ -608,6 +661,19 @@ class Node : public std::enable_shared_from_this<Node>
     }
 
   private:
+    template <class T>
+    T remember(const std::string& name, T value)
+    {
+        if constexpr (std::is_same_v<T, bool> || std::is_same_v<T, std::string>) {
+            this->parameters_.insert_or_assign(name, Parameter::Value(value));
+        } else if constexpr (std::is_integral_v<T>) {
+            this->parameters_.insert_or_assign(name, Parameter::Value(static_cast<int64_t>(value)));
+        } else if constexpr (std::is_floating_point_v<T>) {
+            this->parameters_.insert_or_assign(name, Parameter::Value(static_cast<double>(value)));
+        }
+        return value;
+    }
+
     template <class M>
     hypha::Publisher<M> advertise(const std::string& name, bool latched, bool optional)
     {
@@ -634,6 +700,7 @@ class Node : public std::enable_shared_from_this<Node>
     Clock::SharedPtr                                      clock_;
     Logger                                                logger_;
     std::vector<OnSetParametersCallbackHandle::SharedPtr> parameterCallbacks_;
+    std::map<std::string, Parameter::Value>               parameters_;
 };
 
 // ---------------------------------------------------------------------------------------
@@ -675,6 +742,19 @@ std::optional<hypha::RunResult> last_spin_result();
 #define RCLCPP_WARN(logger, ...) HYPHA_RCLCPP_LOG(WARN, logger, __VA_ARGS__)
 #define RCLCPP_ERROR(logger, ...) HYPHA_RCLCPP_LOG(ERROR, logger, __VA_ARGS__)
 #define RCLCPP_FATAL(logger, ...) HYPHA_RCLCPP_LOG(FATAL, logger, __VA_ARGS__)
+
+/// Stream forms: `RCLCPP_INFO_STREAM(logger, "a " << b)`.
+#define HYPHA_RCLCPP_LOG_STREAM(LEVEL, logger, expr)                                               \
+    do {                                                                                           \
+        std::ostringstream hyphaRclcppStream;                                                      \
+        hyphaRclcppStream << expr;                                                                 \
+        HYPHA_LOG_##LEVEL("[{}] {}", (logger).get_name(), hyphaRclcppStream.str());                \
+    } while (false)
+
+#define RCLCPP_DEBUG_STREAM(logger, expr) HYPHA_RCLCPP_LOG_STREAM(DEBUG, logger, expr)
+#define RCLCPP_INFO_STREAM(logger, expr) HYPHA_RCLCPP_LOG_STREAM(INFO, logger, expr)
+#define RCLCPP_WARN_STREAM(logger, expr) HYPHA_RCLCPP_LOG_STREAM(WARN, logger, expr)
+#define RCLCPP_ERROR_STREAM(logger, expr) HYPHA_RCLCPP_LOG_STREAM(ERROR, logger, expr)
 
 #define RCLCPP_DEBUG_THROTTLE(logger, clock, ms, ...)                                              \
     HYPHA_RCLCPP_LOG_THROTTLE(DEBUG, logger, clock, ms, __VA_ARGS__)
