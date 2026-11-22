@@ -50,6 +50,9 @@ __pycache__/
 # The recorded inputs of the sensor_pipeline replay recipe: small, synthetic, recorded
 # from hypha_sensor_source (examples/sensor_pipeline/README.md).
 !examples/sensor_pipeline/fixture/sensor_inputs.mcap
+# Downloaded recordings and other local data (#46), never committed. Only the top
+# level: crates/hypha-cxx/test/data/ holds tracked fixtures.
+/data/
 
 
 
