@@ -16,6 +16,7 @@ application node.
 | `speed` | a second cycle node to run beside `scan_cycle` | A source and a monitor. The monitor names never-arrived and stale apart with `verdict()` and withholds its Bool rather than send a false all-clear. No tests of its own. |
 | `sensor_fusion` | composed `hypha::Cycle`s built from a `[[sensors]]` list | A feature demonstration with a generator and a probe. Its mains return 0 or 1 for its script; an application returns the codes of `hypha/application_node.h`. |
 | [mrs](mrs/README.md) | nothing | A port of upstream ROS code behind a shim, kept close to the original. Its inputs are `unsupervised` with the upstream's own checks, which is why it reads `has()`; new code declares `silence_ms` and reads `usable()`. |
+| [autoware](autoware/README.md) | nothing | A port of upstream Autoware (ROS 2) nodes on an rclcpp shim over a plain `hypha::Node`. The upstream sources are vendored unchanged; the port's edits are patch files. |
 | `sim_twin`, `bench`, `large_payload` | nothing | Measurements of the framework, driven by scripts that read 0 or 1. |
 
 What a reference shows, and where to find the rule:
