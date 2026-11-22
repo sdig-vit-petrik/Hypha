@@ -13,6 +13,8 @@ if(NOT TARGET hypha::sdk)
 endif()
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 find_package(GTest REQUIRED)
+# The ground filter's point types and the clustering; Ubuntu's libpcl-dev.
+find_package(PCL 1.12 CONFIG REQUIRED COMPONENTS common)
 find_program(AUTOWARE_PATCH patch REQUIRED)
 enable_testing()
 
@@ -23,6 +25,10 @@ set(AUTOWARE_MSG_OUT "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 hypha_generate_messages(PACKAGE autoware_internal_debug_msgs
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/autoware_internal_debug_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}")
+hypha_generate_messages(PACKAGE pcl_msgs
+  MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/pcl_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}"
+  DEPENDS std_msgs sensor_msgs)
 hypha_generate_messages(PACKAGE autoware_internal_msgs
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/autoware_internal_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
@@ -127,3 +133,55 @@ autoware_test(autoware_voxel_grid_downsample_filter_node_test
   SOURCES test/test_voxel_grid_downsample_filter_node.cpp ${VOXEL_GRID_SOURCES}
     "${DOWNSAMPLE_DIR}/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter_node.cpp"
   INCLUDES "${DOWNSAMPLE_DIR}/src")
+
+# --- PCL and the Autoware helpers that use it ----------------------------------------------
+
+# pcl_conversions (perception_pcl, jazzy): sensor_msgs <-> PCL, header-only.
+autoware_patched(pcl_conversions "${AUTOWARE_UPSTREAM_DIR}/perception_pcl/pcl_conversions"
+  PCL_CONVERSIONS_DIR)
+add_library(autoware_pcl INTERFACE)
+target_include_directories(autoware_pcl SYSTEM INTERFACE ${PCL_INCLUDE_DIRS})
+target_include_directories(autoware_pcl INTERFACE "${PCL_CONVERSIONS_DIR}/include")
+target_link_libraries(autoware_pcl INTERFACE hypha_rclcpp pcl_msgs ${PCL_LIBRARIES})
+target_compile_definitions(autoware_pcl INTERFACE ${PCL_DEFINITIONS})
+
+# autoware_point_types (autoware_core) on point_cloud_msg_wrapper, both header-only.
+autoware_patched(point_cloud_msg_wrapper "${AUTOWARE_UPSTREAM_DIR}/point_cloud_msg_wrapper"
+  POINT_CLOUD_MSG_WRAPPER_DIR)
+add_library(autoware_point_types INTERFACE)
+target_include_directories(autoware_point_types INTERFACE
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/common/autoware_point_types/include"
+  "${POINT_CLOUD_MSG_WRAPPER_DIR}/include")
+target_link_libraries(autoware_point_types INTERFACE autoware_pcl)
+
+# autoware_utils_math (header-only) and autoware_utils_debug's TimeKeeper.
+add_library(autoware_utils_extra STATIC
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_debug/src/time_keeper.cpp")
+target_include_directories(autoware_utils_extra PUBLIC
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_math/include"
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_debug/include")
+target_link_libraries(autoware_utils_extra PUBLIC hypha_rclcpp)
+
+# --- Slice A: autoware_ground_filter (autoware_core 1.10.0) --------------------------------
+
+autoware_patched(autoware_ground_filter
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/perception/autoware_ground_filter" GROUND_FILTER_DIR)
+add_library(autoware_ground_filter_core STATIC
+  "${GROUND_FILTER_DIR}/src/ground_filter.cpp" "${GROUND_FILTER_DIR}/src/sanity_check.cpp")
+target_include_directories(autoware_ground_filter_core PUBLIC "${GROUND_FILTER_DIR}/src")
+target_link_libraries(autoware_ground_filter_core PUBLIC
+  autoware_point_types autoware_utils_extra autoware_pcl)
+
+autoware_component(autoware_ground_filter
+  SOURCES "${GROUND_FILTER_DIR}/src/ground_filter_node.cpp")
+target_link_libraries(autoware_ground_filter PRIVATE autoware_ground_filter_core)
+
+autoware_test(autoware_ground_filter_upstream_test
+  SOURCES "${GROUND_FILTER_DIR}/test/test_ground_filter.cpp" LIBS autoware_ground_filter_core)
+autoware_test(autoware_ground_filter_sanity_check_upstream_test
+  SOURCES "${GROUND_FILTER_DIR}/test/test_sanity_check.cpp"
+  LIBS autoware_ground_filter_core GTest::gtest_main)
+
+autoware_test(autoware_ground_filter_node_test
+  SOURCES test/test_ground_filter_node.cpp "${GROUND_FILTER_DIR}/src/ground_filter_node.cpp"
+  LIBS autoware_ground_filter_core)
