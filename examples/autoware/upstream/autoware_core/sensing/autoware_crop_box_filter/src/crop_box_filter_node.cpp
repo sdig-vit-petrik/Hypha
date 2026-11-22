@@ -186,6 +186,7 @@ void CropBoxFilterNode::pointcloud_callback(const PointCloud2ConstPtr cloud)
   published_time_publisher_->publish_if_subscribed(pub_output_, cloud->header.stamp);
 }
 
+// update parameters dynamicly
 rcl_interfaces::msg::SetParametersResult CropBoxFilterNode::param_callback(
   const std::vector<rclcpp::Parameter> & p)
 {
