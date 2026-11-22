@@ -42,7 +42,8 @@ pub fn publisher_loan_frame(
     Ok(held)
 }
 
-/// Send a filled loan. A negative `framework_sent_nanos` stamps the framework clock. The
+/// Send a filled loan. A negative `framework_sent_nanos` stamps framework time on this
+/// thread: the time of the step or the replayed callback that sends, else the clock. The
 /// loan is released whatever the result.
 ///
 /// # Errors
@@ -123,9 +124,12 @@ impl HyphaLoan {
                 u64::try_from(hypha_time::steady_now().nanos()).map_err(|_| Error::InvalidState)?
             }
         };
+        // Framework time on this thread: the time of the step or of the replayed callback
+        // that sends, else the clock.
         let framework_stamp = match self.framework_sent_nanos {
             Some(nanos) => nanos,
-            None => u64::try_from(hypha_time::now().nanos()).map_err(|_| Error::InvalidState)?,
+            None => u64::try_from(hypha_time::framework_now().nanos())
+                .map_err(|_| Error::InvalidState)?,
         };
         let metadata = FrameMetadata {
             schema_hash: self.schema_hash,

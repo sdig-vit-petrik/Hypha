@@ -285,11 +285,15 @@ fn a_reset_moves_the_next_call_one_period_past_the_reset() {
     set_clock(reset_at + PERIOD);
     turn(sim.waitset);
     assert_eq!(probe.calls(), [(reset_at + PERIOD, 0)]);
-    // The periods go on from the reset: a call a period and a half late missed one.
+    // The periods go on from the reset. A node that follows `/clock` runs each period at
+    // its deadline (#72): a turn a period and a half late runs the two it passed.
     let late = reset_at + 3 * PERIOD + PERIOD / 2;
     set_clock(late);
     turn(sim.waitset);
-    assert_eq!(probe.calls(), [(reset_at + PERIOD, 0), (late, 1)]);
+    assert_eq!(
+        probe.calls(),
+        [(reset_at + PERIOD, 0), (reset_at + 2 * PERIOD, 0), (reset_at + 3 * PERIOD, 0)]
+    );
 }
 
 #[test]
@@ -303,7 +307,8 @@ fn the_time_until_a_call_counts_down_on_the_timer_clock_and_is_zero_once_due() {
     set_clock(START + 2 * PERIOD);
     assert_eq!(state(sim.waitset, timer), running(0), "due, and no turn ran");
     turn(sim.waitset);
-    assert_eq!(probe.calls(), [(START + 2 * PERIOD, 1)]);
+    // Each period at its deadline, on a node that follows `/clock` (#72).
+    assert_eq!(probe.calls(), [(START + PERIOD, 0), (START + 2 * PERIOD, 0)]);
     assert_eq!(state(sim.waitset, timer), running(PERIOD));
 }
 

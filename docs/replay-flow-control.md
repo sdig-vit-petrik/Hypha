@@ -32,10 +32,14 @@ network transport, and replay across hosts.
 
 ## 3. Roles
 
-- **Participant**: a process whose output must be faithful. By default every node with a cycle on
-  simulated time. `hypha record --sync` makes the recorder one too.
+- **Participant**: a process whose output must be faithful. By default every node on simulated
+  time with a cycle, and every node that follows `/clock` with a plain subscription or a plain
+  timer: its callbacks run as events in time order (`execution-model.md` §11.2), so a plain
+  callback node replays as a cycle node does (#72). `hypha record --sync` makes the recorder one
+  too.
 - **Observer**: everything else (`hypha foxglove`, `hypha top`, `hypha topic`, and
-  `hypha record` without `--sync`). An observer samples and may lose data; it never slows the
+  `hypha record` without `--sync`). A CLI tool's node (`_hyphacli_<tool>`) never takes part, even
+  on simulated time. An observer samples and may lose data; it never slows the
   replay. Each followed topic has a queue of 8.
 - **Player**: `hypha play --clock`. It is the only source of time and the only place where
   pacing and loss are decided. One player per domain. It refuses to start while another process in
@@ -81,8 +85,8 @@ runtime publishes one `ReplayProgress` for the newest `/clock` sample it has rea
   when the same sample's clock has risen since the last report. A report is never skipped because
   the clock value equals an earlier one: a resend or a later pass reuses clock values, and a
   repeated value must still be answered.
-- **Only a replay `WaitSet` reports.** The `WaitSet` must hold a cycle on simulated time. It reports
-  after its timers, so the steps that the sample made due are published first. A sample ahead of the
+- **Only a replay `WaitSet` reports.** The `WaitSet` must hold a cycle on simulated time, or plain
+  callbacks that take part (`execution-model.md` §11.2). It reports after its timers and events, so the steps that the sample made due are published first. A sample ahead of the
   node's own time waits for a later turn. A run that stops or fails reports nothing.
 - **A node reports for all its `WaitSet`s.** When several `WaitSet`s of a node hold such cycles, the
   node sends the lowest clock they offer, and only once each has answered the same sample. A
@@ -308,8 +312,9 @@ turn.
 - **No timeout in the node.** A held deadline waits for as long as its upstream does not report. The
   player's `--timeout` (5 s by default) is the one bound: it names the participant that stopped
   reporting and ends the replay.
-- **Scope.** The hold covers the outputs of cycle steps. An output that a plain callback publishes is
-  not held.
+- **Scope.** The hold covers the outputs of cycle steps, and those of the plain callbacks of a node
+  that follows `/clock`, which run at their events' times (`execution-model.md` §11.2). A sample
+  at `t` waits for every upstream at `t`, a timer at `t` for every upstream at `t - 1 ns`.
 - **Progress input.** It holds 64 reports between two drains and keeps the newest report of each
   upstream node. A missed report is logged as an error. The next report from that node replaces it.
 
@@ -333,8 +338,15 @@ history is shorter than one replay chunk`. An input whose first samples come aft
 These are the limits of the built replay. Each is a rule for how a replay is built, not a fault to
 wait out.
 
-- **Progress covers cycle steps only.** A node with no cycle on simulated time reports nothing, so
-  the player does not wait for it. With `--nodes` the start fails after 30 s.
+- **Progress covers cycles and plain callbacks.** A node on simulated time with neither a cycle nor
+  a plain subscription or timer in a `WaitSet` reports nothing, so the player does not wait for it;
+  nor does a node whose own loop reads raw subscribers outside a `WaitSet`, such as the ROS bridge.
+  With `--nodes` the start fails after 30 s.
+- **Cycles and callbacks of one `WaitSet` keep separate orders.** Each runs in its own time
+  order; state that a cycle step shares with a callback of the same node is not ordered between
+  them.
+- **A loop of callback nodes has no delay element.** It holds until `--timeout`, as a loop of
+  triggered cycles does; a rate cycle or a clock driver in the loop is the delay element.
 - **A callback that waits on simulated time stalls the replay.** For example, a sleep that follows
   `/clock`. The player waits for the node's acknowledgement, so the run stops only at `--timeout`.
 - **Inputs are drained at step time.** A chunk is split so that a topic's samples fit the smallest

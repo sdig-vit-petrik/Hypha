@@ -250,6 +250,11 @@ Reference: `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h`,
   time or on its own simulated clock. It joins before the run next waits; on a
   simulated clock the node does not own, `Node::timer()` throws. Reference:
   `hypha/node.h` (`Timer`, `TimerStatus`).
+- In a replay, a node that follows `/clock` runs its subscription and timer callbacks
+  in time order, each at its event's time: inside the callback `hypha::now()` and the
+  stamp of every message it publishes are the sample's send time or the timer's
+  deadline, and a timer runs every period (execution-model.md §11.2, #72). A worker
+  thread the node starts is outside that order.
 - There is no implicit `Time` to `RosTime` conversion; never stamp with `steadyNow()`,
   and check a time computed from an input once where it enters:
 

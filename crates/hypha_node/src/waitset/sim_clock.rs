@@ -73,10 +73,11 @@ impl CallbackDispatcher<'_> {
         })
     }
 
-    /// True when this `WaitSet` has a cycle whose steps the progress reports: a replay
-    /// cycle or a triggered cycle.
+    /// True when this `WaitSet` has steps or events the progress reports: a replay
+    /// cycle, a triggered cycle, or plain callbacks that take part (`callback_events`).
     fn reports_progress(&self) -> bool {
-        self.has_replay_timer()
+        self.callbacks.participating
+            || self.has_replay_timer()
             || self
                 .registrations
                 .iter()
@@ -105,10 +106,12 @@ impl CallbackDispatcher<'_> {
         }
     }
 
-    /// The earliest deadline that the cycles of this `WaitSet` have not run. `None` when
-    /// no cycle holds one.
+    /// The earliest deadline or event time that this `WaitSet` has not run. `None` when
+    /// nothing holds one.
     fn progress_frontier(&self) -> Option<i64> {
-        self.registrations
+        let callbacks = self.callbacks.participating.then_some(self.callbacks.frontier).flatten();
+        let cycles = self
+            .registrations
             .iter()
             .filter_map(|registration| match registration.target {
                 Target::Timer { ref timer, cycle: Some(ref cycle), .. }
@@ -123,6 +126,7 @@ impl CallbackDispatcher<'_> {
                 }
                 _ => None,
             })
-            .min()
+            .min();
+        [callbacks, cycles].into_iter().flatten().min()
     }
 }

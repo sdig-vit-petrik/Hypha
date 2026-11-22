@@ -1355,8 +1355,9 @@ HyphaStatus hypha_publisher_loan_frame(struct HyphaPublisher *publisher,
 
 // Send a filled loan. The loan is released whatever the result.
 //
-// The framework send time is `framework_sent_nanos` when it is zero or more, else the
-// framework clock. A null `loan` returns `InvalidArgument`.
+// The framework send time is `framework_sent_nanos` when it is zero or more, else
+// framework time on the calling thread: the time of the cycle step or the replayed
+// callback that sends, else the framework clock. A null `loan` returns `InvalidArgument`.
 //
 // # Safety
 // `loan` must come from `hypha_publisher_loan_frame` and must not be used afterwards.

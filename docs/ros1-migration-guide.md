@@ -991,19 +991,21 @@ transform up at the cloud's stamp and publishes. Its replay recipe, `replay_chec
 runs the node on simulated time from a recorded fixture of 98296 bytes with `hypha play
 --clock` and `hypha record --sync`, and makes three checks:
 
-- **Loss.** The node prints `missingSequences()` and `metrics()` of each subscriber; a
-  clean run reports `missing=0`, and its slow mode (`[slow] enabled = true`) a growing
-  count.
-- **Timer misses.** The node prints `Timer::missedCount()`. Under simulated time the
-  first `/clock` adds the jump from time 0 to the recording's start, so compare two runs
-  of one fixture, not one count with zero.
+- **Loss.** The node prints `missingSequences()` and `metrics()` of each subscriber. A
+  replay reports `missing=0`, also in slow mode (`[slow] enabled = true`): the player
+  waits for the stalled node instead of overrunning its queues. Live, slow mode shows a
+  growing count.
+- **Timer misses.** The node prints `Timer::missedCount()`. In a replay its timer runs
+  every period at its deadline and misses none; live, the stalls show as misses.
 - **Comparison by stamp.** `sensor_pipeline_compare` reads two recordings with the test
   MCAP reader and pairs the outputs by `header.stamp`: two runs of the node, or a run and
   the ROS node's golden output.
 
-A plain node sends no replay progress, so the player does not wait for it
-([replay-flow-control.md](replay-flow-control.md) §6.7): the recipe replays at `--rate 1`
-and checks that the node received every input.
+A plain node on simulated time takes part in the replay (#72): its callbacks run in
+time order at their events' times, and the player waits for it
+([execution-model.md](execution-model.md) §11.2). Two replays of the recipe are
+identical, and the slow run sets the replay's rate instead of losing samples. A worker
+thread the node starts is outside that order.
 
 
 ### 10.9 The exit code of a custom `main`

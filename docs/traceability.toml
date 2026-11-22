@@ -170,6 +170,7 @@ tests = [
   "hypha_tools/record_sync",
   "hypha_tools/utc_replay_bus",
   "hypha_tools/play_flow_control",
+  "hypha_ffi/replay_callbacks",
 ]
 
 [[requirement]]
@@ -230,7 +231,7 @@ tests = ["hypha_log/*", "cxx:test_log_*"]
 
 [[requirement]]
 id = "FSR-37"
-tests = ["hypha_ffi/sim_time_rewind", "hypha_tools/play_restart", "hypha_core/timer_time_jump", "hypha_ffi/waitset_timer_control"]
+tests = ["hypha_ffi/sim_time_rewind", "hypha_tools/play_restart", "hypha_core/timer_time_jump", "hypha_ffi/waitset_timer_control", "hypha_ffi/replay_callbacks"]
 
 [[requirement]]
 id = "FSR-38"

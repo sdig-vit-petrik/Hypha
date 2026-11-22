@@ -48,6 +48,8 @@ pub(super) struct CallbackDispatcher<'a> {
     pub(super) due: Vec<Due>,
     /// Registrations a callback detached during this run: never dispatched again.
     pub(super) detached: &'a std::cell::RefCell<Vec<AttachmentId>>,
+    /// The replay state of the plain callbacks (`callback_events`).
+    pub(super) callbacks: &'a mut super::callback_events::CallbackReplay,
 }
 
 impl Due {
@@ -80,7 +82,7 @@ fn find_cycle(cycles: &[Cycle], id: CycleId) -> Result<&Cycle, Error> {
 
 impl CallbackDispatcher<'_> {
     /// Add slow callbacks to this run's report and to the node's health.
-    fn count_slow(&mut self, slow: u64) {
+    pub(super) fn count_slow(&mut self, slow: u64) {
         self.slow_callbacks = self.slow_callbacks.wrapping_add(slow);
         self.health.add_slow_callbacks(slow);
     }
@@ -90,7 +92,7 @@ impl CallbackDispatcher<'_> {
     }
 
     /// Take the timers a callback attached since the last wait into the dispatch.
-    fn admit_attached(&mut self) {
+    pub(super) fn admit_attached(&mut self) {
         let Ok(mut attaches) = self.set.run_attaches.try_borrow_mut() else {
             return;
         };
@@ -154,6 +156,10 @@ impl CallbackDispatcher<'_> {
             else {
                 continue;
             };
+            // Under replay a plain timer's periods are events of `callback_events`.
+            if self.callbacks.participating && cycle.is_none() {
+                continue;
+            }
             let grid = if timer.is_grid() { cycle.as_mut() } else { None };
             if let Some(owned) = grid {
                 match grid_due(cycles, registration.id, timer, owned, now) {
@@ -339,7 +345,7 @@ fn invalid(status: Error) -> HyphaCallbackResult {
 }
 
 /// Time one callback of registration `id` and count it in `warnings` when slow.
-fn timed<F: FnOnce() -> HyphaCallbackResult>(
+pub(super) fn timed<F: FnOnce() -> HyphaCallbackResult>(
     warnings: &mut CallbackWarnings,
     id: AttachmentId,
     warn_nanos: u64,
@@ -383,6 +389,7 @@ impl Dispatcher for CallbackDispatcher<'_> {
         let warn_interval = self.warn_interval_nanos;
         let health = self.health;
         let set = self.set;
+        let deferred = self.callbacks.participating;
 
         if self.is_detached(attachment) {
             return EventOutcome::Drained;
@@ -399,7 +406,13 @@ impl Dispatcher for CallbackDispatcher<'_> {
             let Registration { id, ref mut target, ref mut warnings, ref mut transport_failing } =
                 *registration;
             let (subscriber, callback) = match *target {
-                Target::Subscription { ref subscriber, ref mut callback } => (subscriber, callback),
+                // Under replay the samples wait in the queue for their turn in time order.
+                Target::Subscription { .. } if deferred => {
+                    return EventOutcome::Drained;
+                }
+                Target::Subscription { ref subscriber, ref mut callback, .. } => {
+                    (subscriber, callback)
+                }
                 Target::LatchReplay => {
                     // Replay latched topics after a subscriber was created.
                     self.node.transport.replay_latched();
@@ -486,6 +499,13 @@ impl Dispatcher for CallbackDispatcher<'_> {
         // snapshot are then among those that this turn's timers fire.
         let snapshot = if sim { self.newest_read() } else { None };
         let now = hypha_time::scheduling_now();
+        // The plain callbacks' events before the cycles: each keeps its own time order.
+        if self.decide_participation() {
+            let decision = self.run_callback_events(now.nanos());
+            if decision != Progression::Continue {
+                return decision;
+            }
+        }
         let decision = self.fire_due_timers(now);
         if decision != Progression::Continue {
             return decision;
@@ -536,7 +556,7 @@ impl Dispatcher for CallbackDispatcher<'_> {
             Target::Triggered(ref state) => state.schedule.capped(),
             _ => false,
         });
-        if sliced {
+        if sliced || self.callbacks.capped {
             return Some(std::time::Duration::ZERO);
         }
         let host_timers = !self.node.on_sim_time();
@@ -563,7 +583,7 @@ fn anchor_at_first_run(
 
 /// Observe `timer` at `now`, with the periods this observation skipped: the `missed` of
 /// the callback, not the running total.
-fn observe_with_delta(
+pub(super) fn observe_with_delta(
     timer: &mut hypha_core::timer::Timer,
     now: hypha_time::Time,
 ) -> (hypha_core::timer::Observation, u64) {
@@ -614,7 +634,7 @@ fn grid_due(
     })))
 }
 
-fn is_detached_in(
+pub(super) fn is_detached_in(
     detached: &std::cell::RefCell<Vec<AttachmentId>>,
     attachment: AttachmentId,
 ) -> bool {
@@ -643,7 +663,7 @@ pub(crate) fn status_from_code(code: i32) -> HyphaStatus {
 }
 
 /// How a rewind line names a plain timer: by its attachment id and period.
-fn timer_subject(id: AttachmentId, period_nanos: i64) -> String {
+pub(super) fn timer_subject(id: AttachmentId, period_nanos: i64) -> String {
     let period_millis = period_nanos / 1_000_000;
     format!("timer {id} (period {period_millis} ms)")
 }
