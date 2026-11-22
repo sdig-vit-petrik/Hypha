@@ -100,6 +100,34 @@ std::string portName(const std::string& rosName)
     return name;
 }
 
+std::string hyphaNodeName(const std::string& rosName)
+{
+    std::string name;
+    for (size_t i = 0; i < rosName.size(); ++i) {
+        const char c = rosName[i];
+        const bool upper = c >= 'A' && c <= 'Z';
+        const bool lower = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+        if (upper) {
+            const bool wordStart = i > 0 && !name.empty() && name.back() != '_';
+            if (wordStart) {
+                name.push_back('_');
+            }
+            name.push_back(static_cast<char>(c - 'A' + 'a'));
+        } else if (lower || c == '_') {
+            name.push_back(c);
+        } else {
+            throw std::invalid_argument(
+                "rclcpp: node name '" + rosName + "' has a character hypha does not take"
+            );
+        }
+    }
+    const bool startsWithLetter = !name.empty() && name.front() >= 'a' && name.front() <= 'z';
+    if (!startsWithLetter || name.size() > 64) {
+        throw std::invalid_argument("rclcpp: node name '" + rosName + "' names no hypha node");
+    }
+    return name;
+}
+
 std::string resolveParameterFile(const NodeOptions& options)
 {
     const std::optional<std::string> fromOptions = parameterFileOf(options.arguments());

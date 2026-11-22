@@ -104,3 +104,26 @@ autoware_test(autoware_crop_box_filter_node_test
 
 # The shim itself.
 autoware_test(autoware_rclcpp_shim_test SOURCES test/test_rclcpp_shim.cpp LIBS GTest::gtest_main)
+
+# --- Slice A: autoware_downsample_filters, the voxel grid filter (autoware_core 1.10.0) --
+
+autoware_patched(autoware_downsample_filters
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/sensing/autoware_downsample_filters" DOWNSAMPLE_DIR)
+set(VOXEL_GRID_SOURCES
+  "${DOWNSAMPLE_DIR}/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter.cpp"
+  "${DOWNSAMPLE_DIR}/src/voxel_grid_downsample_filter/faster_voxel_grid_downsample_filter.cpp")
+
+autoware_component(autoware_voxel_grid_downsample_filter
+  SOURCES ${VOXEL_GRID_SOURCES}
+    "${DOWNSAMPLE_DIR}/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter_node.cpp"
+  INCLUDES "${DOWNSAMPLE_DIR}/src")
+
+autoware_test(autoware_voxel_grid_downsample_filter_upstream_test
+  SOURCES "${DOWNSAMPLE_DIR}/test/test_voxel_grid_downsample_filter.cpp" ${VOXEL_GRID_SOURCES}
+  INCLUDES "${DOWNSAMPLE_DIR}/src"
+  LIBS GTest::gtest_main)
+
+autoware_test(autoware_voxel_grid_downsample_filter_node_test
+  SOURCES test/test_voxel_grid_downsample_filter_node.cpp ${VOXEL_GRID_SOURCES}
+    "${DOWNSAMPLE_DIR}/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter_node.cpp"
+  INCLUDES "${DOWNSAMPLE_DIR}/src")

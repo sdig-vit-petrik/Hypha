@@ -20,6 +20,18 @@ TEST(RclcppShim, RelativeNamesArePorts)
     EXPECT_THROW((void)rclcpp::detail::portName("~/"), std::invalid_argument);
 }
 
+TEST(RclcppShim, NodeNamesBecomeHyphaNames)
+{
+    EXPECT_EQ(rclcpp::detail::hyphaNodeName("crop_box_filter"), "crop_box_filter");
+    EXPECT_EQ(
+        rclcpp::detail::hyphaNodeName("VoxelGridDownsampleFilter"), "voxel_grid_downsample_filter"
+    );
+    EXPECT_EQ(rclcpp::detail::hyphaNodeName("ndt_scan_matcher2"), "ndt_scan_matcher2");
+    EXPECT_THROW((void)rclcpp::detail::hyphaNodeName("my-node"), std::invalid_argument);
+    EXPECT_THROW((void)rclcpp::detail::hyphaNodeName("_hidden"), std::invalid_argument);
+    EXPECT_THROW((void)rclcpp::detail::hyphaNodeName(""), std::invalid_argument);
+}
+
 TEST(RclcppShim, TimeRoundTripsThroughAStamp)
 {
     builtin_interfaces::msg::Time stamp;
