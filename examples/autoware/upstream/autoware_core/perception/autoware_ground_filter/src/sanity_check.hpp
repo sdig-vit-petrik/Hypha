@@ -23,8 +23,8 @@ namespace autoware::ground_filter
  * say whether you can memcpy from the PointCloud2 data buffer to a PointXYZI */
 bool is_data_layout_compatible_with_point_xyzi(const sensor_msgs::msg::PointCloud2 & input);
 
-/** \brief Return whether the input PointCloud2 data has the same layout than PointXYZIRC. That
- * is to say whether you can memcpy from the PointCloud2 data buffer to a PointXYZIRC */
+/** \brief Return whether the input PointCloud2 data has the same layout than PointXYZIRC. That is
+ * to say whether you can memcpy from the PointCloud2 data buffer to a PointXYZIRC */
 bool is_data_layout_compatible_with_point_xyzirc(const sensor_msgs::msg::PointCloud2 & input);
 
 /** \brief Return whether the input PointCloud2 data has the same layout than PointXYZIRADRT. That
