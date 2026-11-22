@@ -1,8 +1,8 @@
 # Command-line tools
 
-Nine tools ship with hypha, as one executable: `hypha <tool>` with the tools
-`topic`, `top`, `node`, `record`, `play`, `intercept`, `foxglove`, `launch` and
-`param`; `hypha --help` lists them. The installation also links each old name
+Ten tools ship with hypha, as one executable: `hypha <tool>` with the tools
+`topic`, `top`, `node`, `record`, `play`, `convert`, `intercept`, `foxglove`, `launch`
+and `param`; `hypha --help` lists them. The installation also links each old name
 (`hypha_topic`, `hypha_play`, ..., `hypha_foxglove_bridge` for `hypha foxglove`)
 to `hypha`, and a start under such a name runs that tool, so `hypha_play --input
 run.mcap` and `hypha play --input run.mcap` are the same command. Messages name
@@ -11,6 +11,7 @@ executables of their own.
 
 The tools are ordinary bus nodes: each one joins the
 bus through the framework, and none of them reaches around it to the transport.
+`hypha convert` and `hypha param` work on files and do not join the bus.
 
 `hypha top`, `hypha topic`, `hypha node` and `hypha record` without `--sync` join
 as CLI tool nodes, `_hyphacli_<tool>`: any number of each runs at once in one
@@ -389,6 +390,38 @@ before one connects is lost to it.
 
 Interactive keys while playing: pause (`<Space>`), step one chunk (`<s>`), speed
 up and slow down (`<+>` and `<->`), restart (`<r>`), quit (`<q>`).
+
+### `hypha convert` — a ROS 2 bag into a recording
+
+Turns a ROS 2 bag in rosbag2's SQLite storage (`.db3`) into an MCAP recording that
+`hypha play` replays, without ROS (#46). Uncompress a `.db3.zstd` bag with `zstd -d`
+first.
+
+```bash
+hypha convert run.db3 -o run.mcap --msg-path <dir>    # every topic it has a definition for
+hypha convert run.db3 -o run.mcap --topic /imu --topic /lidar/points --xyzirc /lidar/points
+```
+
+- **Serialization.** Each topic's CDR messages become ROS 1 serialization through the
+  ROS 1 definition of its type, which the recording carries with its MD5, as
+  `hypha record` writes them. Bags recorded before rosbag2 embedded definitions hold
+  none, so the definitions come from the message paths: each `--msg-path`, in order,
+  then the SDK's `share/hypha/msg`. A path holds `<package>/<Name>.msg` or
+  `<package>/msg/<Name>.msg`.
+- **ROS 2 types.** `std_msgs/Header` has no `seq` in ROS 2: the converter writes the
+  message's index on its topic. `builtin_interfaces/Time` becomes `time`, and a negative
+  second fails the conversion, as ROS 1's `time` is unsigned; `Duration` becomes
+  `duration`.
+- **Times.** A message's log and publish time is the bag's receive time.
+- **What is left out.** A topic whose type has no definition, or that is not CDR, is left
+  out and listed with its reason. One named with `--topic` fails the conversion instead.
+  A message that does not decode fails it, naming the topic and the message.
+- **Point layouts.** `--xyzirc <topic>` rewrites an XYZI `sensor_msgs/PointCloud2`
+  (four `float32`) into the XYZIRC that Autoware 2.1.0 reads: `intensity` and
+  `return_type` as `uint8`, `channel` as `uint16`, still 16 bytes a point. Each intensity
+  is rounded and held to 0 to 255, return type and channel are 0, and `row_step` is
+  recomputed. The tool reports the highest intensity it saw. When every intensity rounds
+  to 0, it says the recording holds no intensity on that scale.
 
 ---
 
