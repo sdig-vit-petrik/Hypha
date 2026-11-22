@@ -657,7 +657,10 @@ or 1.
 
 hypha has no equivalent for these. Stop and ask the user before you continue:
 
-- `tf2_ros::Buffer` or `TransformListener` lookups. hypha ships no TF buffer.
+- A transform lookup that waits: `waitForTransform`, `lookupTransform` with a timeout,
+  or `canTransform` in a loop. `hypha::TransformBuffer` lookups never wait (§10.6;
+  [cpp-api.md](cpp-api.md) section 10.2): the node holds its message until a later
+  callback finds the transform, or drops it.
 - `dynamic_reconfigure`, or a parameter changed at run time. Parameters are
   read once at start.
 - `actionlib`.
@@ -684,7 +687,7 @@ yourself.
 Report these:
 
 - **Blocker:** the node cannot be migrated without the missing item. Example:
-  a `tf2_ros::Buffer` lookup.
+  a lookup that must wait for its transform.
 - **Gap:** the migration is possible, but a hypha feature would make it
   smaller or safer. Example: a service name
   that does not resolve from the ports tables.
