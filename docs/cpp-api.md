@@ -885,6 +885,13 @@ const bool sent = statics.send(baseToLidar);            // keeps it, resends the
   thread. Two limits: create and destroy the buffer on the thread that configures the
   node, not while the node runs on another thread; and nothing is ingested unless the
   node runs. The cache (default 10 s) must be positive.
+- No lookup waits for a transform to arrive, by design (#91). The buffer fills only
+  while the node runs, on the thread that runs it, so a callback that waited would
+  block every other callback of the node and, under replay, the clock it waits for.
+  A transform that is not there yet is an error the caller handles. ROS 2's
+  `lookupTransform` with a timeout and `waitForTransform` have no counterpart: hold
+  the message and try again in a later callback, once `/tf` has brought the
+  transform (what `tf2_ros::MessageFilter` does), or drop it.
 - The buffer declares the `tf` policy on both topics, as `Transforms` does: a topic
   that a raw endpoint or a tool created first, with the `default` policy, refuses it
   with `QosMismatch`, and the constructor throws `ConfigError`.
