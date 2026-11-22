@@ -8,3 +8,4 @@
 #include <hypha_rclcpp/message_namespace.hpp>
 
 HYPHA_RCLCPP_MSG_NAMESPACE(sensor_msgs)
+HYPHA_RCLCPP_MSG_ALLOCATOR_TEMPLATE(sensor_msgs, PointField)

@@ -11,6 +11,9 @@ Only the packages the hypha port compiles are copied, at their upstream paths:
 - `sensing/autoware_downsample_filters`: the voxel grid filter only:
   `src/voxel_grid_downsample_filter/`, its unit test, its `config/` file, `package.xml`,
   `README.md`.
+- `perception/autoware_ground_filter`: `src/`, its two unit tests (`test_ground_filter.cpp`,
+  `test_sanity_check.cpp`), `config/ground_filter.param.yaml`, `package.xml`, `README.md`.
+- `common/autoware_point_types`: `include/autoware/point_types/types.hpp`.
 
 The files are unchanged. The edits the port needs are in `../patches/`, one file per
 package; the build applies them to a copy in the build directory.
