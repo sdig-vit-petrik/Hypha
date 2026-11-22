@@ -1,0 +1,18 @@
+# autoware_euclidean_cluster_object_detector EuclideanClusterNode: the values of upstream
+# config/euclidean_cluster.param.yaml that the node declares. Its low-height crop box keys
+# (max_x ... negative) belong to a crop box filter the launch file starts, not to this
+# node. Topics are the node's ports, ROS `input`, `output` and `debug/clusters`.
+
+max_cluster_size = 1000
+min_cluster_size = 10
+tolerance = 0.7
+use_height = false
+
+[ports.inputs.input]
+topic = "/perception/obstacle_segmentation/pointcloud"
+
+[ports.outputs.output]
+topic = "/perception/object_recognition/detection/objects"
+
+[ports.outputs."debug.clusters"]
+topic = "/perception/object_recognition/debug/clusters"

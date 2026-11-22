@@ -1,0 +1,93 @@
+# autoware_euclidean_cluster_object_detector: the edits of the hypha port, applied to a copy of
+# upstream/autoware_core/perception/autoware_euclidean_cluster_object_detector by the build
+# (patch -p1). Every edit is also marked '// hypha port:' with its reason.
+diff -ruN a/test/test_ros_conversions.cpp b/test/test_ros_conversions.cpp
+--- a/test/test_ros_conversions.cpp
++++ b/test/test_ros_conversions.cpp
+@@ -33,8 +33,9 @@
+   {
+     // Create a test point cloud
+     pointcloud_.header.frame_id = "base_link";
+-    pointcloud_.header.stamp.sec = 1;
+-    pointcloud_.header.stamp.nanosec = 0;
++    // hypha port: a ROS 1 time (secs, nsecs) until ROS 2 definitions (#45).
++    pointcloud_.header.stamp.secs = 1;
++    pointcloud_.header.stamp.nsecs = 0;
+ 
+     // Setup fields
+     pointcloud_.fields.resize(3);
+@@ -113,8 +114,9 @@
+   // Create an empty point cloud
+   sensor_msgs::msg::PointCloud2 empty_pointcloud;
+   empty_pointcloud.header.frame_id = "base_link";
+-  empty_pointcloud.header.stamp.sec = 1;
+-  empty_pointcloud.header.stamp.nanosec = 0;
++  // hypha port: a ROS 1 time (secs, nsecs) until ROS 2 definitions (#45).
++  empty_pointcloud.header.stamp.secs = 1;
++  empty_pointcloud.header.stamp.nsecs = 0;
+ 
+   // Setup fields
+   empty_pointcloud.fields.resize(3);
+@@ -153,8 +155,9 @@
+   // Create header for conversion
+   std_msgs::msg::Header header;
+   header.frame_id = "base_link";
+-  header.stamp.sec = 1;
+-  header.stamp.nanosec = 0;
++  // hypha port: a ROS 1 time (secs, nsecs) until ROS 2 definitions (#45).
++  header.stamp.secs = 1;
++  header.stamp.nsecs = 0;
+ 
+   // Convert clusters to msg
+   autoware_perception_msgs::msg::DetectedObjects objects;
+@@ -162,8 +165,9 @@
+ 
+   // Check results
+   EXPECT_EQ(objects.header.frame_id, "base_link");
+-  EXPECT_EQ(objects.header.stamp.sec, 1);
+-  EXPECT_EQ(objects.header.stamp.nanosec, 0);
++  // hypha port: a ROS 1 time (secs, nsecs) until ROS 2 definitions (#45).
++  EXPECT_EQ(objects.header.stamp.secs, 1u);
++  EXPECT_EQ(objects.header.stamp.nsecs, 0u);
+   EXPECT_EQ(objects.objects.size(), 2);
+ 
+   // Check first object's centroid (average of cloud1 points)
+@@ -189,8 +193,9 @@
+   // Create header for conversion
+   std_msgs::msg::Header header;
+   header.frame_id = "base_link";
+-  header.stamp.sec = 1;
+-  header.stamp.nanosec = 0;
++  // hypha port: a ROS 1 time (secs, nsecs) until ROS 2 definitions (#45).
++  header.stamp.secs = 1;
++  header.stamp.nsecs = 0;
+ 
+   // Convert clusters to sensor msg
+   sensor_msgs::msg::PointCloud2 output;
+@@ -198,8 +203,9 @@
+ 
+   // Check header
+   EXPECT_EQ(output.header.frame_id, "base_link");
+-  EXPECT_EQ(output.header.stamp.sec, 1);
+-  EXPECT_EQ(output.header.stamp.nanosec, 0);
++  // hypha port: a ROS 1 time (secs, nsecs) until ROS 2 definitions (#45).
++  EXPECT_EQ(output.header.stamp.secs, 1u);
++  EXPECT_EQ(output.header.stamp.nsecs, 0u);
+ 
+   // Check size
+   EXPECT_EQ(output.width, 4);  // total number of points (2 per cluster)
+diff -ruN a/test/test_voxel_grid_based_euclidean_cluster.cpp b/test/test_voxel_grid_based_euclidean_cluster.cpp
+--- a/test/test_voxel_grid_based_euclidean_cluster.cpp
++++ b/test/test_voxel_grid_based_euclidean_cluster.cpp
+@@ -55,8 +55,9 @@
+   cloud.is_bigendian = false;
+   cloud.is_dense = true;
+   cloud.header.frame_id = "dummy_frame_id";
+-  cloud.header.stamp.sec = 0;
+-  cloud.header.stamp.nanosec = 0;
++  // hypha port: a ROS 1 time (secs, nsecs) until ROS 2 definitions (#45).
++  cloud.header.stamp.secs = 0;
++  cloud.header.stamp.nsecs = 0;
+ 
+   cloud.data.resize(points.size() * cloud.point_step);
+   for (size_t i = 0; i < points.size(); ++i) {

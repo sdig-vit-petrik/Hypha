@@ -14,7 +14,7 @@ endif()
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 find_package(GTest REQUIRED)
 # The ground filter's point types and the clustering; Ubuntu's libpcl-dev.
-find_package(PCL 1.12 CONFIG REQUIRED COMPONENTS common)
+find_package(PCL 1.12 CONFIG REQUIRED COMPONENTS common filters kdtree search segmentation)
 find_program(AUTOWARE_PATCH patch REQUIRED)
 enable_testing()
 
@@ -29,6 +29,10 @@ hypha_generate_messages(PACKAGE pcl_msgs
   MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/pcl_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
   DEPENDS std_msgs sensor_msgs)
+hypha_generate_messages(PACKAGE autoware_perception_msgs
+  MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_msgs/autoware_perception_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}"
+  DEPENDS std_msgs geometry_msgs)
 hypha_generate_messages(PACKAGE autoware_internal_msgs
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/autoware_internal_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
@@ -62,7 +66,8 @@ target_include_directories(hypha_rclcpp PUBLIC
   shim/include
   "${AUTOWARE_MSG_OUT}/hypha_msgs"
   "${AUTOWARE_UPSTREAM_DIR}/common_interfaces/sensor_msgs/include"
-  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_system/include")
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_system/include"
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_diagnostics/include")
 target_link_libraries(hypha_rclcpp PUBLIC
   hypha::sdk autoware_internal_debug_msgs autoware_internal_msgs Eigen3::Eigen)
 target_compile_features(hypha_rclcpp PUBLIC cxx_std_23)
@@ -171,6 +176,15 @@ add_library(autoware_ground_filter_core STATIC
 target_include_directories(autoware_ground_filter_core PUBLIC "${GROUND_FILTER_DIR}/src")
 target_link_libraries(autoware_ground_filter_core PUBLIC
   autoware_point_types autoware_utils_extra autoware_pcl)
+# grid.hpp uses glibc's float constants of <math.h>; a C library without them (macOS) gets
+# their glibc values.
+include(CheckSymbolExists)
+check_symbol_exists(M_PIf "math.h" AUTOWARE_HAVE_M_PIF)
+if(NOT AUTOWARE_HAVE_M_PIF)
+  target_compile_definitions(autoware_ground_filter_core PUBLIC
+    "M_PIf=3.14159265358979323846f" "M_PI_2f=1.57079632679489661923f"
+    "M_PI_4f=0.785398163397448309616f")
+endif()
 
 autoware_component(autoware_ground_filter
   SOURCES "${GROUND_FILTER_DIR}/src/ground_filter_node.cpp")
@@ -185,3 +199,37 @@ autoware_test(autoware_ground_filter_sanity_check_upstream_test
 autoware_test(autoware_ground_filter_node_test
   SOURCES test/test_ground_filter_node.cpp "${GROUND_FILTER_DIR}/src/ground_filter_node.cpp"
   LIBS autoware_ground_filter_core)
+
+# --- Slice A: autoware_euclidean_cluster_object_detector (autoware_core 1.10.0) -----------
+
+autoware_patched(autoware_euclidean_cluster_object_detector
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/perception/autoware_euclidean_cluster_object_detector"
+  EUCLIDEAN_CLUSTER_DIR)
+add_library(autoware_euclidean_cluster_core STATIC
+  "${EUCLIDEAN_CLUSTER_DIR}/lib/ros_conversions.cpp"
+  "${EUCLIDEAN_CLUSTER_DIR}/src/euclidean_cluster_object_detector.cpp")
+target_include_directories(autoware_euclidean_cluster_core PUBLIC "${EUCLIDEAN_CLUSTER_DIR}/src")
+target_link_libraries(autoware_euclidean_cluster_core PUBLIC
+  autoware_point_types autoware_pcl autoware_perception_msgs)
+
+autoware_component(autoware_euclidean_cluster
+  SOURCES "${EUCLIDEAN_CLUSTER_DIR}/src/euclidean_cluster_node.cpp")
+target_link_libraries(autoware_euclidean_cluster PRIVATE autoware_euclidean_cluster_core)
+autoware_component(autoware_voxel_grid_based_euclidean_cluster
+  SOURCES "${EUCLIDEAN_CLUSTER_DIR}/src/voxel_grid_based_euclidean_cluster_node.cpp")
+target_link_libraries(autoware_voxel_grid_based_euclidean_cluster PRIVATE
+  autoware_euclidean_cluster_core)
+
+# The upstream unit tests; each has its own main().
+foreach(upstream_test euclidean_cluster voxel_grid_based_euclidean_cluster ros_conversions)
+  autoware_test(autoware_${upstream_test}_upstream_test
+    SOURCES "${EUCLIDEAN_CLUSTER_DIR}/test/test_${upstream_test}.cpp"
+    LIBS autoware_euclidean_cluster_core)
+endforeach()
+
+# Each node on the bus, one per process: the nodes of a process share its parameter file.
+foreach(node euclidean_cluster voxel_grid_based_euclidean_cluster)
+  autoware_test(autoware_${node}_node_test
+    SOURCES test/test_${node}_node.cpp "${EUCLIDEAN_CLUSTER_DIR}/src/${node}_node.cpp"
+    LIBS autoware_euclidean_cluster_core)
+endforeach()

@@ -13,6 +13,9 @@ Only the packages the hypha port compiles are copied, at their upstream paths:
   `README.md`.
 - `perception/autoware_ground_filter`: `src/`, its two unit tests (`test_ground_filter.cpp`,
   `test_sanity_check.cpp`), `config/ground_filter.param.yaml`, `package.xml`, `README.md`.
+- `perception/autoware_euclidean_cluster_object_detector`: `src/`, `lib/`, its three unit
+  tests (`test_euclidean_cluster.cpp`, `test_voxel_grid_based_euclidean_cluster.cpp`,
+  `test_ros_conversions.cpp`), `config/`, `package.xml`, `README.md`.
 - `common/autoware_point_types`: `include/autoware/point_types/types.hpp`.
 
 The files are unchanged. The edits the port needs are in `../patches/`, one file per

@@ -10,7 +10,9 @@ Only these files, unchanged:
 - `autoware_utils_math/include/autoware_utils_math/`: `constants.hpp`, `normalization.hpp`,
   `unit_conversion.hpp`;
 - `autoware_utils_debug/include/autoware_utils_debug/time_keeper.hpp` and
-  `autoware_utils_debug/src/time_keeper.cpp`, the processing-time tree.
+  `autoware_utils_debug/src/time_keeper.cpp`, the processing-time tree;
+- `autoware_utils_diagnostics/include/autoware_utils_diagnostics/diagnostics_interface.hpp`,
+  the header-only diagnostics publisher of the clustering, on the shim's `rclcpp`.
 
 The ROS-bound utilities the ported nodes use (`autoware_utils_debug`'s debug and
 published-time publishers, `autoware_utils_tf`'s transform listener) are the shim's,

@@ -817,3 +817,26 @@ std::optional<hypha::RunResult> last_spin_result();
     HYPHA_RCLCPP_LOG_THROTTLE(WARN, logger, clock, ms, __VA_ARGS__)
 #define RCLCPP_ERROR_THROTTLE(logger, clock, ms, ...)                                              \
     HYPHA_RCLCPP_LOG_THROTTLE(ERROR, logger, clock, ms, __VA_ARGS__)
+
+/// Throttled stream forms, throttled as the printf ones.
+#define HYPHA_RCLCPP_LOG_STREAM_THROTTLE(LEVEL, logger, clock, ms, expr)                           \
+    do {                                                                                           \
+        (void)(clock);                                                                             \
+        std::ostringstream hyphaRclcppStream;                                                      \
+        hyphaRclcppStream << expr;                                                                 \
+        HYPHA_LOG_##LEVEL##_THROTTLE(                                                              \
+            static_cast<double>(ms) / 1000.0,                                                      \
+            "[{}] {}",                                                                             \
+            (logger).get_name(),                                                                   \
+            hyphaRclcppStream.str()                                                                \
+        );                                                                                         \
+    } while (false)
+
+#define RCLCPP_DEBUG_STREAM_THROTTLE(logger, clock, ms, expr)                                      \
+    HYPHA_RCLCPP_LOG_STREAM_THROTTLE(DEBUG, logger, clock, ms, expr)
+#define RCLCPP_INFO_STREAM_THROTTLE(logger, clock, ms, expr)                                       \
+    HYPHA_RCLCPP_LOG_STREAM_THROTTLE(INFO, logger, clock, ms, expr)
+#define RCLCPP_WARN_STREAM_THROTTLE(logger, clock, ms, expr)                                       \
+    HYPHA_RCLCPP_LOG_STREAM_THROTTLE(WARN, logger, clock, ms, expr)
+#define RCLCPP_ERROR_STREAM_THROTTLE(logger, clock, ms, expr)                                      \
+    HYPHA_RCLCPP_LOG_STREAM_THROTTLE(ERROR, logger, clock, ms, expr)

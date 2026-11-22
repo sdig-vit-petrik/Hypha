@@ -6,7 +6,7 @@ in #47. Autoware 2.1.0: `autoware_core` 1.10.0, `autoware_universe` 0.53.2.
 
 | Slice | Pipeline | State |
 |---|---|---|
-| A, detection (Leo Drive Isuzu bus) | crop box → concatenate → ground filter → voxel downsample → euclidean cluster | `autoware_crop_box_filter`, the voxel grid filter of `autoware_downsample_filters` and `autoware_ground_filter` ported |
+| A, detection (Leo Drive Isuzu bus) | crop box → concatenate → ground filter → voxel downsample → euclidean cluster | `autoware_crop_box_filter`, the voxel grid filter of `autoware_downsample_filters`, `autoware_ground_filter` and both nodes of `autoware_euclidean_cluster_object_detector` ported; concatenate open |
 | B, localization (Istanbul Open Dataset) | crop box → downsample → NDT → gyro odometer → EKF | not started |
 
 Each node first computes on synthetic inputs in tests; replay of the recorded data
@@ -25,7 +25,9 @@ follows #46.
   `hypha_rclcpp` (#59) and moves into its own package once #56 decides where it lives.
 - `msg/`: the messages the nodes publish that hypha does not ship, in ROS 1 syntax
   until hypha reads ROS 2 definitions (#45). `pcl_msgs` is vendored as its ROS 1
-  definitions (`upstream/pcl_msgs/`).
+  definitions (`upstream/pcl_msgs/`); the `autoware_perception_msgs` the clustering
+  publishes are ROS 2 definitions that are valid ROS 1 syntax, vendored unchanged
+  (`upstream/autoware_msgs/`).
 - `config/`: one TOML file per process, holding exactly the keys the node declares.
   A missing key or an unread one is refused with exit 78.
 
@@ -45,7 +47,7 @@ follows #46.
 | `publish` failure | logged with its status, counted in `failed_publish_count()` |
 | `get_subscription_count` | `subscriberCount()`; a count the transport cannot give reads as 1 |
 | `now()`, `get_clock()` | framework time, simulated under `HYPHA_USE_SIM_TIME` |
-| `RCLCPP_*`, `RCLCPP_*_STREAM`, `RCLCPP_*_THROTTLE` | `HYPHA_LOG_*` with the logger name in front; throttled in host time |
+| `RCLCPP_*`, `RCLCPP_*_STREAM`, `RCLCPP_*_THROTTLE`, `RCLCPP_*_STREAM_THROTTLE` | `HYPHA_LOG_*` with the logger name in front; throttled in host time |
 | `rclcpp::spin(node)` | `node.run()` on the calling thread: a single-threaded executor |
 | `RCLCPP_COMPONENTS_REGISTER_NODE` | registers the class with the component runner `shim/src/component_main.cpp`: one program per component, argument the TOML file, the exit codes of `hypha/application_node.h` |
 | `sensor_msgs::msg::PointCloud2` and the other ROS 2 message paths | hypha's generated ROS 1 messages under a `msg` namespace name (`shim/include/hypha_rclcpp/message_namespace.hpp`); time stamps compare with `==` |
@@ -57,6 +59,7 @@ follows #46.
 | `autoware_utils_tf::TransformListener` | `hypha::TransformBuffer`; before spin, a lookup with a timeout runs the process's callbacks in 10 ms slices until the transform arrives or the timeout passes |
 | `autoware_utils_debug::DebugPublisher` | optional ports `<node>.debug.<name>`: wired in the TOML file or disabled |
 | `autoware_utils_debug::PublishedTimePublisher` | `<output topic>/debug/published_time`, sent while it has a subscriber |
+| `autoware_utils_diagnostics::DiagnosticsInterface` | upstream's, unchanged, on a shim publisher of the literal `/diagnostics`; the topic has hypha's `default` policy, at most 8 publishers |
 
 A generated message carries the members ROS generated C++ gives: `Ptr`/`ConstPtr`,
 `SharedPtr`/`ConstSharedPtr`/`UniquePtr`, `_<field>_type` and `set__<field>()`
@@ -77,6 +80,13 @@ build/examples/autoware/autoware_crop_box_filter examples/autoware/config/crop_b
 
 `examples/check.sh` runs these tests; `./test.sh cpp` runs it against the installed SDK.
 
+On macOS the port builds natively with Apple clang and Homebrew's `pcl`, `googletest`
+and `eigen` (`brew install pcl googletest eigen`); CMake finds them through `PATH`.
+`examples/autoware` also configures on its own: `cmake -S examples/autoware -B
+build/autoware -DCMAKE_PREFIX_PATH=/tmp/hypha-sdk`. The ground filter's `grid.hpp` uses
+glibc's float constants `M_PIf`, `M_PI_2f` and `M_PI_4f`; where `<math.h>` lacks them, the
+CMake file defines them with glibc's values, so the patches stay the same on both systems.
+
 ## Tests
 
 | Test | What it checks |
@@ -88,12 +98,22 @@ build/examples/autoware/autoware_crop_box_filter examples/autoware/config/crop_b
 | `autoware_ground_filter_upstream_test` | the upstream unit test (14 cases): the grid and radial modes, the centroids, the slope classification, the parameter ranges, the point layouts |
 | `autoware_ground_filter_sanity_check_upstream_test` | the upstream layout check (5 cases): XYZI, XYZIRC, XYZIRADRT, XYZIRCAEDT, an empty cloud |
 | `autoware_ground_filter_node_test` | the upstream node on the bus: its parameters and the vehicle's from TOML, a flat ground with a pole in, every pole point and no ground point out |
+| `autoware_euclidean_cluster_upstream_test` | the upstream unit test (4 cases): clusters with and without height, the size limits |
+| `autoware_voxel_grid_based_euclidean_cluster_upstream_test` | the upstream unit test (9 cases): the size limits, separate groups, the mean position, points on voxel boundaries, an empty cloud |
+| `autoware_ros_conversions_upstream_test` | the upstream unit test (4 cases): centroids, the objects message, the coloured debug cloud |
+| `autoware_euclidean_cluster_node_test` | the upstream EuclideanClusterNode on the bus: two clusters as objects at their centroids, a cluster above `max_cluster_size` and lone points dropped, the debug cloud, an OK diagnostic |
+| `autoware_voxel_grid_based_euclidean_cluster_node_test` | the upstream VoxelGridBasedEuclideanClusterNode on the bus: the same scene, and a WARN diagnostic that names the skipped cluster |
 | `autoware_rclcpp_shim_test` | the shim's names, time conversion and QoS check |
 
 Upstream integration tests spin several nodes on an executor thread, with tf2_ros
-broadcasters, which the shim does not offer; they are not built. The crop box's
-(`test_crop_box_filter_integration.cpp`) is vendored as the reference case for #59; the
-others are not copied.
+broadcasters and parameter overrides, which the shim does not offer; they are not built.
+The crop box's (`test_crop_box_filter_integration.cpp`) is vendored as the reference case
+for #59; the others, the euclidean cluster's `test_nodes.cpp` among them, are not copied.
+
+The two cluster nodes differ on a cluster above `max_cluster_size`, as upstream does:
+PCL's extraction drops it before EuclideanClusterNode counts it, so that node reports
+OK, while VoxelGridBasedEuclideanClusterNode counts it and reports WARN. The node tests
+check both.
 
 ## The gap so far
 
@@ -104,6 +124,7 @@ What the patches change, per package. It is the input to #56 and, for messages, 
 | `autoware_crop_box_filter` | `stamp.sec`/`nanosec` → `secs`/`nsecs` (node and test) | ROS 1 time fields (#45) |
 | `autoware_downsample_filters` | PCL includes and `PCL_MAKE_ALIGNED_OPERATOR_NEW` → Eigen | the voxel grid filter uses only Eigen; the port does not depend on PCL for it |
 | `autoware_ground_filter` | `message_filters` removed; `use_indices = true` refused at start-up | the input/indices synchronizer is `message_filters`, which the shim does not offer (#56) |
+| `autoware_euclidean_cluster_object_detector` | `stamp.sec`/`nanosec` → `secs`/`nsecs` (two unit tests) | ROS 1 time fields (#45) |
 | `pcl_conversions` | two unused `message_filters` includes removed | as above |
 | `point_cloud_msg_wrapper` | `#include <algorithm>` added | an upstream omission |
 
