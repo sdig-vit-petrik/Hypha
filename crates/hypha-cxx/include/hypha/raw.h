@@ -27,6 +27,22 @@ enum class StopReason : uint8_t {
     Deadline = 3,
 };
 
+/// @brief The name of @p reason, such as "Deadline"; "Unknown" for any other value.
+constexpr std::string_view name(StopReason reason)
+{
+    switch (reason) {
+        case StopReason::Requested:
+            return "Requested";
+        case StopReason::SetupFailed:
+            return "SetupFailed";
+        case StopReason::RuntimeFailed:
+            return "RuntimeFailed";
+        case StopReason::Deadline:
+            return "Deadline";
+    }
+    return "Unknown";
+}
+
 /// @brief The outcome of one blocking run: whether the call was refused, and how the run
 ///        ended.
 class [[nodiscard]] RunResult

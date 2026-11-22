@@ -301,6 +301,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_ros1_codec_encode.cpp
     test/test_typed_schema_identity.cpp
     test/test_publish_receive_status.cpp
+    test/test_result_names.cpp
     test/test_callback_failure.cpp
     test/test_node_health.cpp
     test/test_metrics.cpp
