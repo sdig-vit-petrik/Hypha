@@ -118,10 +118,36 @@ fn emit_struct(output: &mut String, spec: &MessageSpec, md5: &str) {
             ),
         );
     }
+    // The member types under the names ROS 1 and ROS 2 generated C++ gives them.
+    if !spec.fields.is_empty() {
+        output.push('\n');
+    }
+    for field in &spec.fields {
+        put(
+            output,
+            format_args!(
+                "  using _{}_type = {};\n",
+                field.name,
+                cpp_field_type(&field.field_type, field.multiplicity)
+            ),
+        );
+    }
+    // ROS 2's fluent setters: `msg.set__frame_id("map").set__seq(1)`.
+    for field in &spec.fields {
+        put(
+            output,
+            format_args!(
+                "  {name}& set__{}(const _{}_type& _arg) {{\n    this->{} = _arg;\n    return *this;\n  }}\n",
+                field.name,
+                field.name,
+                field_name_safe(&field.name)
+            ),
+        );
+    }
     put(
         output,
         format_args!(
-            "\n  using Ptr = std::shared_ptr<{name}>;\n  using ConstPtr = std::shared_ptr<const {name}>;\n\n  static constexpr const char* TYPE_NAME = \"{}\";\n  static constexpr const char* MD5 = \"{md5}\";\n}};\n\nusing {name}Ptr = {name}::Ptr;\nusing {name}ConstPtr = {name}::ConstPtr;\n\n}}  // namespace {package}\n\n",
+            "\n  using Ptr = std::shared_ptr<{name}>;\n  using ConstPtr = std::shared_ptr<const {name}>;\n  using SharedPtr = std::shared_ptr<{name}>;\n  using ConstSharedPtr = std::shared_ptr<const {name}>;\n  using UniquePtr = std::unique_ptr<{name}>;\n\n  static constexpr const char* TYPE_NAME = \"{}\";\n  static constexpr const char* MD5 = \"{md5}\";\n}};\n\nusing {name}Ptr = {name}::Ptr;\nusing {name}ConstPtr = {name}::ConstPtr;\n\n}}  // namespace {package}\n\n",
             spec.type_name.full()
         ),
     );
