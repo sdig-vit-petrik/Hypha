@@ -11,3 +11,11 @@
     namespace package {                                                                            \
     namespace msg = ::package;                                                                     \
     }
+
+/// Declares `<package>::<Name>_<Allocator>`, the allocator template ROS generated C++ puts
+/// under every message, as `<package>::<Name>`: hypha messages use the standard allocator.
+#define HYPHA_RCLCPP_MSG_ALLOCATOR_TEMPLATE(package, Name)                                        \
+    namespace package {                                                                            \
+    template <class Allocator>                                                                     \
+    using Name##_ = ::package::Name;                                                               \
+    }

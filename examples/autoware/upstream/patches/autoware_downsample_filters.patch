@@ -17,52 +17,12 @@ diff -ruN a/src/voxel_grid_downsample_filter/faster_voxel_grid_downsample_filter
  
  #include <string>
  #include <unordered_map>
-@@ -35,7 +35,8 @@
- class FasterVoxelGridDownsampleFilter
- {
-   using PointCloud2 = sensor_msgs::msg::PointCloud2;
--  using PointCloud2ConstPtr = sensor_msgs::msg::PointCloud2::ConstSharedPtr;
-+  // hypha port: hypha messages carry ConstPtr, not ConstSharedPtr (#57).
-+  using PointCloud2ConstPtr = std::shared_ptr<const sensor_msgs::msg::PointCloud2>;
- 
- public:
-   FasterVoxelGridDownsampleFilter();
-diff -ruN a/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter.cpp b/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter.cpp
---- a/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter.cpp
-+++ b/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter.cpp
-@@ -19,7 +19,8 @@
- #include <string>
- 
- using PointCloud2 = sensor_msgs::msg::PointCloud2;
--using PointCloud2ConstPtr = sensor_msgs::msg::PointCloud2::ConstSharedPtr;
-+// hypha port: hypha messages carry ConstPtr, not ConstSharedPtr (#57).
-+using PointCloud2ConstPtr = std::shared_ptr<const sensor_msgs::msg::PointCloud2>;
- 
- namespace autoware::downsample_filters
- {
-diff -ruN a/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter.hpp b/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter.hpp
---- a/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter.hpp
-+++ b/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter.hpp
-@@ -30,7 +30,8 @@
- {
- public:
-   using PointCloud2 = sensor_msgs::msg::PointCloud2;
--  using PointCloud2ConstPtr = sensor_msgs::msg::PointCloud2::ConstSharedPtr;
-+  // hypha port: hypha messages carry ConstPtr, not ConstSharedPtr (#57).
-+  using PointCloud2ConstPtr = std::shared_ptr<const sensor_msgs::msg::PointCloud2>;
- 
-   struct Parameters
-   {
 diff -ruN a/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter_node.hpp b/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter_node.hpp
 --- a/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter_node.hpp
 +++ b/src/voxel_grid_downsample_filter/voxel_grid_downsample_filter_node.hpp
-@@ -36,9 +36,11 @@
- {
- public:
+@@ -38,7 +38,8 @@
    using PointCloud2 = sensor_msgs::msg::PointCloud2;
--  using PointCloud2ConstPtr = sensor_msgs::msg::PointCloud2::ConstSharedPtr;
-+  // hypha port: hypha messages carry ConstPtr, not ConstSharedPtr (#57).
-+  using PointCloud2ConstPtr = std::shared_ptr<const sensor_msgs::msg::PointCloud2>;
+   using PointCloud2ConstPtr = sensor_msgs::msg::PointCloud2::ConstSharedPtr;
  
 -  PCL_MAKE_ALIGNED_OPERATOR_NEW
 +  // hypha port: PCL's name for Eigen's macro; the port does not include PCL.
