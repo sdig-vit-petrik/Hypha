@@ -1,0 +1,10 @@
+# Slice A, stage 2 of 3: the voxel downsample between the ground filter and the
+# clustering. The values of ../voxel_grid_downsample_filter.toml on the obstacle
+# segmentation topics.
+include = ["../voxel_grid_downsample_filter.toml"]
+
+[ports.inputs.input]
+topic = "/perception/obstacle_segmentation/single_frame/pointcloud"
+
+[ports.outputs.output]
+topic = "/perception/obstacle_segmentation/pointcloud"

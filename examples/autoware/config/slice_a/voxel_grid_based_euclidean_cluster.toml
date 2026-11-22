@@ -1,0 +1,4 @@
+# Slice A, stage 3 of 3: the clustering of autoware_core_perception on the downsampled
+# obstacles. The values of ../voxel_grid_based_euclidean_cluster.toml, Autoware's
+# deployment topics included.
+include = ["../voxel_grid_based_euclidean_cluster.toml"]
