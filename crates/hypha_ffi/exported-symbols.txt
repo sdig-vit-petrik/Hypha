@@ -83,3 +83,6 @@ T hypha_waitset_detach
 T hypha_waitset_request_failure
 T hypha_waitset_request_stop
 T hypha_waitset_run
+T hypha_waitset_timer_cancel
+T hypha_waitset_timer_reset
+T hypha_waitset_timer_state

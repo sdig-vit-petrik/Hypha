@@ -52,7 +52,8 @@ pub use crate::waitset::registrations::waitset_attach_foreign;
 pub use crate::waitset::{
     CallbackAction, DeliveryHandler, ForeignCallbacks, HYPHA_RUN_REASON_DEADLINE,
     HYPHA_RUN_REASON_RUNTIME_FAILED, HYPHA_RUN_REASON_SETUP_FAILED, HYPHA_RUN_REASON_STOPPED,
-    HyphaWaitSet, HyphaWaitSetRunReport, IntervalHandler, SampleDelivery, SubscriptionHandler,
-    WaitSetLease, WaitSetShared, node_default_waitset, waitset_attach_subscription, waitset_detach,
-    waitset_request_stop, waitset_run,
+    HyphaTimerState, HyphaWaitSet, HyphaWaitSetRunReport, IntervalHandler, SampleDelivery,
+    SubscriptionHandler, WaitSetLease, WaitSetShared, node_default_waitset,
+    waitset_attach_subscription, waitset_detach, waitset_request_stop, waitset_run,
+    waitset_timer_cancel, waitset_timer_reset, waitset_timer_state,
 };

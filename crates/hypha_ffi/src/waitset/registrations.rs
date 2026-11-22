@@ -14,6 +14,13 @@ use std::sync::Arc;
 /// read. Success transfers `context` and `release`, released once at the detach or the
 /// node's destruction; a refused attach transfers nothing. `InvalidState`: during a run,
 /// or a subscriber another registration dispatches.
+///
+/// During a run a callback, on the run's thread, may attach a `HYPHA_ATTACH_TIMER` when
+/// the node runs on host time or on its own simulated clock (`use_sim_time`): it joins
+/// the dispatch before the run's next wait, and its first call comes one period after
+/// the attach. Its id lies above every id a registration attached between runs takes.
+/// The attach is `InvalidState` from any other thread, for any other kind, and for a
+/// timer on a simulated clock driven from outside the node, which needs a native poll.
 /// # Safety
 /// `waitset` and `attachment` are live; `out` is writable. The subscriber of
 /// `attachment` is null or a live handle from `hypha_subscribe_typed`.

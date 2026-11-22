@@ -566,6 +566,21 @@ static ROWS: &[Row] = rows! {
     hypha_waitset_request_failure => |_live| {
         assert_eq!(unsafe { hypha_waitset_request_failure(null_mut()) }, INVALID);
     }
+    hypha_waitset_timer_cancel => |_live| {
+        // SAFETY: a null `WaitSet` is the refused argument; nothing is dereferenced.
+        assert_eq!(unsafe { hypha_waitset_timer_cancel(null_mut(), 1) }, INVALID);
+    }
+    hypha_waitset_timer_reset => |_live| {
+        // SAFETY: as for `hypha_waitset_timer_cancel`.
+        assert_eq!(unsafe { hypha_waitset_timer_reset(null_mut(), 1) }, INVALID);
+    }
+    hypha_waitset_timer_state => |live| {
+        let mut state = HyphaTimerState { canceled: false, period_nanos: 0, until_due_nanos: 0 };
+        // SAFETY: a null `WaitSet` is the refused argument; `state` is a writable local.
+        assert_eq!(unsafe { hypha_waitset_timer_state(null(), 1, &raw mut state) }, INVALID);
+        // SAFETY: the `WaitSet` is live; a null `out` is the refused argument.
+        assert_eq!(unsafe { hypha_waitset_timer_state(live.waitset, 1, null_mut()) }, INVALID);
+    }
 };
 
 #[test]

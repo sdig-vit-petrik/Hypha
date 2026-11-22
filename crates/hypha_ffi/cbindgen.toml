@@ -7,7 +7,7 @@
 header = "/* The C ABI for hypha. A callback sample lives only for its callback. */"
 include_guard = "HYPHA_FFI_H"
 includes = []
-sys_includes = ["stddef.h", "stdint.h"]
+sys_includes = ["stdbool.h", "stddef.h", "stdint.h"]
 no_includes = true
 language = "C"
 style = "both"

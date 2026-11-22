@@ -161,6 +161,8 @@ impl Iox2WaitSet {
         StopHandle { stop: Arc::clone(&self.stop), notifier: Arc::clone(&self.control.notifier) }
     }
 
+    /// The next free id, at most `LAST_NATIVE_IDENTIFIER`: the ids above it name the
+    /// registrations a dispatcher holds alone, which this set never sees.
     fn claim_id(&mut self) -> Result<AttachmentId, PortError> {
         let registrations = &self.registrations;
         let in_use =

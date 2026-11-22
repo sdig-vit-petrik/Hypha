@@ -88,9 +88,13 @@ Consequences you must plan for:
   a topic and never runs the executor reports the usage error once per
   publisher as one log line. Readers see the topic as undescribed until the
   publishing loop runs the executor.
-- **Attachments freeze during a run.** Create every subscription and timer
+- **Attachments freeze during a run.** Create every subscription and cycle
   before you call `run()`. A subscription created during a run is refused
-  with `InvalidState`.
+  with `InvalidState`. A timer is the exception: a callback may create one when
+  the node runs on host time or on its own simulated clock, and it joins before
+  the run next waits. On a simulated clock the node does not own, it is refused.
+  A callback may also cancel and reset a timer (`Timer::cancel()`,
+  `Timer::reset()`; [cpp-api.md](cpp-api.md) section 3).
 - **One `WaitSet` has one thread.** Two `WaitSet`s may run at the same time on
   two threads you created. Their callbacks then run concurrently with each
   other, so shared state needs your own synchronisation.
@@ -885,7 +889,9 @@ attach returns `InvalidState` until the first registration is detached or its
 - **Nothing progresses until you run a `WaitSet`.** Schema queries go
   unanswered and latched topics are not replayed until then. A node that only
   publishes still needs a run for its housekeeping.
-- **You cannot subscribe during a run.** Attachments freeze at run entry.
+- **You cannot subscribe during a run.** Attachments freeze at run entry; only a
+  timer on host time or on the node's own simulated clock may be created from a
+  callback.
 - A wildcard subscription runs about 1000 times a second whether or not data
   arrived: a pattern has no event service, so it is polled. See section 8.
 - A publisher or an output writes `header.seq` and nothing else. hypha does not write

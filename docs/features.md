@@ -71,7 +71,8 @@ as it arrives, below one cycle period, or by a tool.**
 | Publisher readiness | Is anyone listening yet? | `Publisher::subscriberCount()`, `Output::hasSubscribers()`, `hypha_publisher_subscriber_count`, `hypha_publisher_min_subscriber_buffer` | app 1, tools |
 | Typed subscriber | How do I handle each message as it arrives? | `Node::subscribe<T>()`, `subscriber.h`, `hypha_subscribe_typed`, `hypha_subscriber_destroy`, `hypha_subscriber_topic`, `hypha_subscriber_publisher_count` | ex 1 (application tests only) |
 | Wake on a sample | When does the run wake for a sample? | When something reads the topic on arrival. Every publisher notifies after a send (no option, in any SDK or the C ABI). A callback subscription and a triggered cycle's trigger get a listener when attached, so the run wakes at once; a rate cycle's input is drained at its tick and has no listener, so its publishers wake nobody. An idle node does not wake: nothing polls a queue, and a failed notification is counted (`transport.failed_notifications`). A wildcard pattern has no event service and is read every 1 ms. | all nodes |
-| Timer | How do I run a callback at a rate? | `Node::timer` | app 1, mrs 3, ex 3 |
+| Timer | How do I run a callback at a rate? | `Node::timer`; a callback of the running `WaitSet` may create one on host time or on the node's own simulated clock (`hypha_waitset_attach`, #90) | app 1, mrs 3, ex 3 |
+| Timer control | How do I stop, restart or inspect a timer, also from a callback? | `Timer::cancel()`, `Timer::reset()`, `Timer::state()` (`TimerStatus`) over `hypha_waitset_timer_cancel` (calls nothing, costs no wake-up), `hypha_waitset_timer_reset` (next call one period after now on the timer's clock), `hypha_waitset_timer_state` (`HyphaTimerState`: canceled, period, time until the next call); plain timers only, a cycle runs at its rate | Autoware port (#47, #59) |
 
 ### 3.3 Cycles
 

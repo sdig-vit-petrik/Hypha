@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use hypha_ffi::waitset::*;
 use hypha_ffi::*;
 
+/// The first id above every id the native set hands out: a timer attached during a run.
+const FIRST_DISPATCHER_ID: u64 = 0x8000_0000_0000_0000;
+
 /// Counts the releases of the context that points to it.
 extern "C" fn count_release(context: *mut c_void) {
     let counter = unsafe { &*context.cast::<AtomicU64>() };
@@ -211,11 +214,12 @@ struct AttachInsideRun {
     subscription_releases: AtomicU64,
     timer_status: AtomicI32,
     subscription_status: AtomicI32,
-    written_ids: AtomicU64,
+    timer_id: AtomicU64,
+    subscription_id: AtomicU64,
 }
 
 /// Inside the run: attach a counted timer and a counted subscription, record their
-/// statuses, and stop the run.
+/// statuses and ids, and stop the run.
 extern "C" fn attach_inside_the_run(_missed: u64, context: *mut c_void) -> HyphaCallbackResult {
     // SAFETY: the context is the test's `AttachInsideRun`, alive until the node goes.
     let state = unsafe { &*context.cast::<AttachInsideRun>() };
@@ -238,7 +242,8 @@ extern "C" fn attach_inside_the_run(_missed: u64, context: *mut c_void) -> Hypha
         unsafe { attach_record(state.waitset, &subscription) };
     state.timer_status.store(timer_status as i32, Ordering::SeqCst);
     state.subscription_status.store(subscription_status as i32, Ordering::SeqCst);
-    state.written_ids.store(timer_id | subscription_id, Ordering::SeqCst);
+    state.timer_id.store(timer_id, Ordering::SeqCst);
+    state.subscription_id.store(subscription_id, Ordering::SeqCst);
     HyphaCallbackResult { action: HYPHA_ACTION_STOP, status: 0 }
 }
 
@@ -255,7 +260,8 @@ fn an_attach_refused_inside_a_run_leaves_the_context_to_the_caller() {
         subscription_releases: AtomicU64::new(0),
         timer_status: AtomicI32::new(i32::MIN),
         subscription_status: AtomicI32::new(i32::MIN),
-        written_ids: AtomicU64::new(u64::MAX),
+        timer_id: AtomicU64::new(0),
+        subscription_id: AtomicU64::new(u64::MAX),
     };
     let context = ptr::from_ref(&state).cast_mut().cast::<c_void>();
     let driver = attach::timer(1_000_000, Some(attach_inside_the_run), context, None);
@@ -269,28 +275,26 @@ fn an_attach_refused_inside_a_run_leaves_the_context_to_the_caller() {
     let run = unsafe { hypha_waitset_run(waitset, 2_000_000_000, &raw mut report) };
     assert_eq!(run, HyphaStatus::Ok);
     assert_eq!(report.reason, HYPHA_RUN_REASON_STOPPED, "the callback ran and stopped the run");
-    let invalid_state = HyphaStatus::InvalidState as i32;
-    assert_eq!(state.timer_status.load(Ordering::SeqCst), invalid_state, "timer inside a run");
+    // A timer on host time needs no native attachment, so a callback may attach it; the
+    // registration owns its context from then on. A subscription is refused.
+    assert_eq!(state.timer_status.load(Ordering::SeqCst), HyphaStatus::Ok as i32);
+    let timer_id = state.timer_id.load(Ordering::SeqCst);
+    assert!(timer_id >= FIRST_DISPATCHER_ID, "timer id {timer_id:#x} inside a run");
     assert_eq!(
         state.subscription_status.load(Ordering::SeqCst),
-        invalid_state,
+        HyphaStatus::InvalidState as i32,
         "subscription inside a run"
     );
-    assert_eq!(state.written_ids.load(Ordering::SeqCst), 0, "a refused attach fills no id");
+    assert_eq!(state.subscription_id.load(Ordering::SeqCst), 0, "a refused attach fills no id");
     let releases = (
         state.timer_releases.load(Ordering::SeqCst),
         state.subscription_releases.load(Ordering::SeqCst),
     );
-    assert_eq!(releases, (0, 0), "a refused timer and subscription are not released");
+    assert_eq!(releases, (0, 0), "the timer is held, the refused subscription not released");
 
-    // The caller still owns both contexts, and the subscriber is not claimed: the same
-    // records are accepted after the run, and each context is released once, at destroy.
-    let timer = attach::timer(
-        1_000_000,
-        Some(no_op_interval),
-        counter_context(&state.timer_releases),
-        Some(count_release),
-    );
+    // The caller still owns the subscription's context, and the subscriber is not
+    // claimed: the same record is accepted after the run. Each context is released
+    // once, at destroy.
     let subscription = attach::subscription(
         subscriber,
         Some(no_op_delivery),
@@ -298,8 +302,6 @@ fn an_attach_refused_inside_a_run_leaves_the_context_to_the_caller() {
         Some(count_release),
     );
     // SAFETY: the handles are live; the counters outlive the node.
-    assert_eq!(unsafe { attach_record(waitset, &timer) }.0, HyphaStatus::Ok);
-    // SAFETY: as above.
     assert_eq!(unsafe { attach_record(waitset, &subscription) }.0, HyphaStatus::Ok);
     // SAFETY: every handle is live and destroyed once, the node last.
     unsafe {
