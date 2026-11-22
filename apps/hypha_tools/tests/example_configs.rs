@@ -87,6 +87,27 @@ fn subscribed_on_a_plain_node(sources: &[String], name: &str) -> bool {
     })
 }
 
+/// The sources of the example that holds `config`: every one under its directory.
+fn example_sources(config: &Path, code: &[PathBuf]) -> Vec<String> {
+    let examples = examples_dir();
+    let example = config
+        .ancestors()
+        .find(|dir| dir.parent().is_some_and(|parent| parent == examples.as_path()));
+    code.iter()
+        .filter(|path| example.is_some_and(|dir| path.starts_with(dir)))
+        .map(|path| read(path))
+        .collect()
+}
+
+/// True when no source creates a cycle: every node of the example then reads its inputs
+/// through callback subscribers, which have no silence limit to declare. A port's name can
+/// then come from a parameter, as the topics of the Autoware port's concatenate node do,
+/// where no source spells it.
+fn creates_no_cycle(sources: &[String]) -> bool {
+    let cycle_api = ["CycleNode", "hypha::Cycle", "<hypha/cycle", "hypha_cycle_"];
+    !sources.iter().any(|source| cycle_api.iter().any(|name| source.contains(name)))
+}
+
 /// The sources of the node that reads `config`: those whose file name starts with the
 /// config's name (`control_manager.toml` -> `control_manager.cpp`, and `mrs_simulator_teleop`
 /// -> `mrs_simulator.cpp`), else every source of the example's directory.
@@ -127,11 +148,13 @@ fn example_inputs_declare_silence_or_a_tag() {
     let mut configs = Vec::new();
     files(&examples_dir(), &["toml"], &mut configs);
     let mut code = Vec::new();
-    files_with_upstream(&examples_dir(), &["cpp", "h", "hpp"], &mut code);
+    files_with_upstream(&examples_dir(), &["cpp", "h", "hpp", "ipp"], &mut code);
     for path in configs {
         let sources = own_sources(&path, &code);
+        let no_cycle = creates_no_cycle(&example_sources(&path, &code));
         for name in inputs_without_limit(&read(&path)) {
-            let needs_no_limit = tagged_without_limit(&sources, &name)
+            let needs_no_limit = no_cycle
+                || tagged_without_limit(&sources, &name)
                 || subscribed_on_a_plain_node(&sources, &name);
             assert!(
                 needs_no_limit,
@@ -165,6 +188,16 @@ fn a_plain_node_subscriber_needs_no_limit() {
     assert!(!subscribed_on_a_plain_node(&imu_source, "cloud"));
     let advertised = String::from("auto out = node.advertise<Imu>(\"imu\");");
     assert!(!subscribed_on_a_plain_node(&[advertised], "imu"));
+}
+
+#[test]
+fn an_example_without_a_cycle_needs_no_limit() {
+    let plain = [String::from("auto sub = this->create_subscription<Cloud>(topic, qos, cb);")];
+    assert!(creates_no_cycle(&plain));
+    let cycle = [String::from("class Fusion : public hypha::CycleNode {};")];
+    assert!(!creates_no_cycle(&cycle));
+    let composed = [String::from("#include <hypha/cycle.h>")];
+    assert!(!creates_no_cycle(&composed));
 }
 
 #[test]
