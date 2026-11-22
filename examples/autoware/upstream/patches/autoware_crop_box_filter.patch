@@ -14,24 +14,6 @@ diff -ruN a/src/crop_box_filter.cpp b/src/crop_box_filter.cpp
          << cloud.header.frame_id << " received!";
      return {false, oss.str()};
    }
-diff -ruN a/src/crop_box_filter.hpp b/src/crop_box_filter.hpp
---- a/src/crop_box_filter.hpp
-+++ b/src/crop_box_filter.hpp
-@@ -21,11 +21,13 @@
- #include <geometry_msgs/msg/transform_stamped.hpp>
- #include <sensor_msgs/msg/point_cloud2.hpp>
- 
-+#include <memory>
- #include <optional>
- #include <string>
- 
- using PointCloud2 = sensor_msgs::msg::PointCloud2;
--using PointCloud2ConstPtr = sensor_msgs::msg::PointCloud2::ConstSharedPtr;
-+// hypha port: hypha messages carry ConstPtr, not ConstSharedPtr (#57).
-+using PointCloud2ConstPtr = std::shared_ptr<const PointCloud2>;
- 
- namespace autoware::crop_box_filter
- {
 diff -ruN a/test/test_crop_box_filter.cpp b/test/test_crop_box_filter.cpp
 --- a/test/test_crop_box_filter.cpp
 +++ b/test/test_crop_box_filter.cpp
