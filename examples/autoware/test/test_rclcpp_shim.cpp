@@ -70,3 +70,34 @@ TEST(RclcppShim, PrintfFormatting)
 {
     EXPECT_EQ(rclcpp::detail::formatPrintf("%d points in %s", 3, "lidar"), "3 points in lidar");
 }
+
+TEST(RclcppShim, ATimerCreatedInACallbackIsCanceledAndReset)
+{
+    auto                         node = rclcpp::Node::make_shared("timer_probe");
+    rclcpp::TimerBase::SharedPtr late;
+    int                          lateCalls = 0;
+    // As a cloud collector does: the timer is created in a callback, canceled at once,
+    // and reset when work arrives.
+    auto starter = rclcpp::create_timer(node, node->get_clock(), std::chrono::milliseconds(1), [&] {
+        if (late) {
+            return;
+        }
+        late = rclcpp::create_timer(node, node->get_clock(), std::chrono::milliseconds(2), [&] {
+            ++lateCalls;
+            late->cancel();
+        });
+        late->cancel();
+        EXPECT_TRUE(late->is_canceled());
+        EXPECT_EQ(late->time_until_trigger(), std::chrono::nanoseconds::max());
+        late->reset();
+        EXPECT_FALSE(late->is_canceled());
+        EXPECT_LE(late->time_until_trigger(), std::chrono::milliseconds(2));
+    });
+    // Only outcomes: the late timer fired once and canceled itself.
+    for (int slice = 0; slice < 200 && lateCalls == 0; ++slice) {
+        ASSERT_TRUE(node->hypha_node().runFor(hypha::Duration::fromMillis(10)).ok());
+    }
+    ASSERT_TRUE(late);
+    EXPECT_EQ(lateCalls, 1);
+    EXPECT_TRUE(late->is_canceled());
+}

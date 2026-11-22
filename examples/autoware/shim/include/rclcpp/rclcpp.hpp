@@ -788,15 +788,18 @@ class TimerBase
     {
         detail::requireTimer(this->timer_.cancel(), "cancel");
     }
+
     /// The next call one period from now; ends a cancel.
     void reset()
     {
         detail::requireTimer(this->timer_.reset(), "reset");
     }
+
     bool is_canceled() const
     {
         return this->state().canceled;
     }
+
     /// The time until the next call; `nanoseconds::max()` while canceled, as rclcpp.
     std::chrono::nanoseconds time_until_trigger() const
     {
@@ -825,8 +828,10 @@ class TimerBase
 /// `rclcpp::create_timer(node, clock, period, callback)`: a callback that takes no argument.
 template <class NodePtr, class Rep, class Period, class Callback>
 TimerBase::SharedPtr create_timer(
-    const NodePtr& node, const Clock::SharedPtr& /*clock*/,
-    std::chrono::duration<Rep, Period> period, Callback&& callback
+    const NodePtr& node,
+    const Clock::SharedPtr& /*clock*/,
+    std::chrono::duration<Rep, Period> period,
+    Callback&&                         callback
 )
 {
     const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(period).count();
@@ -837,12 +842,13 @@ TimerBase::SharedPtr create_timer(
 
 template <class NodePtr, class Callback>
 TimerBase::SharedPtr create_timer(
-    const NodePtr& node, const Clock::SharedPtr& clock, const Duration& period,
-    Callback&& callback
+    const NodePtr& node, const Clock::SharedPtr& clock, const Duration& period, Callback&& callback
 )
 {
     return create_timer(
-        node, clock, std::chrono::nanoseconds(period.nanoseconds()),
+        node,
+        clock,
+        std::chrono::nanoseconds(period.nanoseconds()),
         std::forward<Callback>(callback)
     );
 }
