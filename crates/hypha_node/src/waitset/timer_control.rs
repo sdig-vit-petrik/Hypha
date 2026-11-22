@@ -134,10 +134,10 @@ impl TimerControl {
     }
 }
 
-/// The clock of a plain timer: framework time for a timer on simulated time, else the
-/// host's monotonic scheduling clock.
+/// The clock of a plain timer: framework time for a timer on simulated time, which is
+/// the event's time inside a replayed callback, else the host's monotonic scheduling clock.
 pub(crate) fn clock_now(sim_time: bool) -> Time {
-    if sim_time { hypha_time::now() } else { hypha_time::scheduling_now() }
+    if sim_time { hypha_time::framework_now() } else { hypha_time::scheduling_now() }
 }
 
 /// Cancel the plain timer `timer` of `set`: it calls nothing until a reset, counts no

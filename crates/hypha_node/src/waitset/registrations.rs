@@ -277,7 +277,7 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
                             DataCallback::Foreign(Some(foreign.adopt()))
                         }
                     };
-                    Ok((id, Target::Subscription { subscriber, callback }))
+                    Ok((id, Target::Subscription { subscriber, callback, head: None }))
                 }
                 Err(status) => {
                     // A refused attach claims nothing.
@@ -304,7 +304,10 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
             let cycle = cycle.map(super::replay::CycleTimer::new);
             // Nothing refuses the attach from here: the C context changes owner.
             let callback = callback.map(Adoption::adopt);
-            Ok((id, Target::Timer { timer, callback, cycle, run_anchored: sim_time, control }))
+            // A plain timer made before the first clock value starts on that value, not on
+            // the placeholder zero.
+            let run_anchored = sim_time && (cycle.is_some() || hypha_time::sim_time_has_value());
+            Ok((id, Target::Timer { timer, callback, cycle, run_anchored, control }))
         }
         Request::Triggered { cycle, silence_nanos, notified } => {
             let schedule = hypha_runtime::trigger_schedule::TriggerSchedule::new(silence_nanos)

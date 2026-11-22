@@ -32,6 +32,7 @@ fn build(node: Arc<HyphaNode>) -> Result<Box<HyphaWaitSet>, Error> {
         run_attaches: RefCell::new(RunAttaches::new()),
         live: RefCell::new(Vec::new()),
         input_sources: RefCell::new(Vec::new()),
+        callback_replay: RefCell::new(super::callback_events::CallbackReplay::default()),
         health,
     }))
 }

@@ -789,7 +789,8 @@ host:
   each `/clock` event. Its timers do not poll. A run at 50 Hz with idle inputs takes
   about two turns per clock event.
 - **Progress is reported per `/clock` sample.** After each turn of a `WaitSet`
-  that holds a replay cycle or a triggered cycle (section 6.6), it publishes `hypha_msgs/ReplayProgress` on
+  that holds a replay cycle, a triggered cycle (section 6.6) or plain callbacks that take part
+  (section 11.2), it publishes `hypha_msgs/ReplayProgress` on
   `/clock_progress`: the node's name, a clock value and the host send time of the
   sample it answers. The clock value is the sample's value, lowered to one
   nanosecond below the earliest deadline that has not run. A report is sent for
@@ -825,11 +826,12 @@ host:
   the process: `hypha::runNode` exits 75, `hypha launch` starts it again, and it rejoins on the next `/clock`
   (`replay-flow-control.md`, section 4.4). The new process anchors its grid on
   its first clock value, so a pass that starts again runs on the same phase as
-  the first one. A plain timer (`Node::timer`) is not a cycle: it restarts one
-  period after the new time.
-- **Plain timers are unchanged.** A `Node::timer` callback has no time argument,
-  so under simulated time it still fires once per sweep and counts the missed
-  periods.
+  the first one. A plain timer (`Node::timer`) is not a cycle: it starts one
+  period after the first clock value of the new process.
+- **Plain timers.** On a node that follows `/clock`, a plain timer is an event of
+  section 11.2: each period runs at its deadline, with no missed period. On a
+  process clock set from code (`enableSimTime`, `setSimTime`), it still fires
+  once per sweep and counts the missed periods.
 
 A replay is faithful when no sample it should have read was lost. A loss is one
 of two things: a transport overflow, which shows as a sequence gap, or a history
@@ -861,6 +863,53 @@ for one chunk of an input's samples (`replay-flow-control.md`, section 6.7). A r
 `--rate` is only as faithful as the host keeps up.
 
 ---
+
+### 11.2 Plain callbacks in a replay
+
+A node that follows `/clock` (`HYPHA_USE_SIM_TIME`) takes part in the replay with its
+plain callbacks too, not only with its cycles (#72). Its plain subscriptions and plain
+timers become events, and a `WaitSet` runs them in time order, so a callback node
+replays identically on any host, at any `--rate` and `--chunk`:
+
+- **Events.** A sample of a plain subscription is an event at its framework send time;
+  a plain timer's period is an event at its deadline. Events run in the order of their
+  time, then a timer before a sample (a timer at `t` sees the inputs before `t`, as a
+  cycle step does), then the order in which the registrations were attached.
+- **Event time.** While a callback runs, framework time on its thread is the event's
+  time: `hypha::now()`, the framework stamp of every message it publishes, and a
+  timer's `reset()` read it. Downstream nodes therefore cut on its outputs as they cut
+  on a cycle's.
+- **Admission.** An event waits until the node's clock has reached it. A timer at `t`
+  also waits until every upstream node has reported at least `t - 1 ns`; a sample at
+  `t` until every upstream has reported `t`, so every sample stamped `t` is present
+  and samples that share a stamp run in the same order on every replay. The upstream
+  nodes are those that publish on the `WaitSet`'s subscriptions and report progress
+  (`replay-flow-control.md` §6.4), the node itself excluded.
+- **Progress.** After each turn the `WaitSet` reports the newest `/clock` sample,
+  lowered to one nanosecond below its earliest event not yet run and to the lowest
+  report of its upstream nodes. A node fed only by the player answers a chunk once it
+  has run the chunk's events.
+- **Order and loss.** Each subscription holds one sample, the next it will run; the
+  rest wait in its queue, which must hold one chunk, as a cycle input's must. A sample
+  stamped before the event that ran last fails the run with `SequenceGap`, as an
+  out-of-order trigger does. A sample the queue lost fails it too, and the node logs
+  `replay not faithful: N samples lost on <topic>`.
+- **Rewind.** Simulated time that goes back ends the run with `ClockRewound`, as for
+  a cycle: `runNode` restarts the process (section 11.1).
+- **Who takes part.** A `WaitSet` with at least one plain subscription or plain timer,
+  of a node that follows `/clock`, is not a CLI tool (`_hyphacli_<tool>`) and drives no
+  clock. A process put on simulated time from code (`enableSimTime`) has no player to
+  pace it, and its callbacks run as samples arrive, as before.
+- **Limits.** Cycles and plain callbacks of one `WaitSet` each keep their own time
+  order, not one between them: state a cycle step shares with a callback of the same
+  node is not ordered by the replay. A loop of callback nodes has no delay element
+  and holds until the player's `--timeout`, as a loop of triggered cycles does (section
+  6.6). A publisher that takes no part in the replay (it reports no progress and is not
+  the player: a node on host time, `hypha topic pub`) is not waited for; its samples
+  run by their stamps alone, wait until the clock reaches them, or fail the run when
+  they are older than the last event. The node names it once: `hypha: '<name>'
+  publishes on [...] but takes no part in the replay`. A worker thread that publishes
+  outside its node's callbacks is outside the order the same way.
 
 ## 12. One subscriber, one delivery style
 
@@ -900,7 +949,8 @@ attach returns `InvalidState` until the first registration is detached or its
   the conversion.
 - A raw callback's bytes are gone after the callback returns.
 - A timer that fell behind does not catch up with a burst. A cycle on
-  simulated time runs each expired deadline (section 11.1).
+  simulated time runs each expired deadline (section 11.1), and so does a plain
+  timer of a node that follows `/clock` (section 11.2).
 - A loop of triggered cycles alone fails with `Timeout` under simulated time. Put
   a rate cycle in the loop (section 6.6).
 - A callback that throws does not reach `main`. The run counts it as a
