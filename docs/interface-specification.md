@@ -182,6 +182,7 @@ Two clocks drive the framework, and the split is deliberate:
 | Framework time (`/clock` under simulated time) | Host monotonic time |
 |---|---|
 | `hypha_waitset_attach` (timer kind) under simulated time | `hypha_waitset_attach` (timer kind) on host time |
+| `hypha_waitset_timer_reset` and `until_due_nanos` of a timer under simulated time | the same for a timer on host time |
 | | `hypha_waitset_run` limits |
 | | schema-lookup timeouts |
 | `node.last_sweep_end_nanos` metric | |
@@ -456,7 +457,15 @@ running `WaitSet`, and a stop that arrives before
 the run starts is recorded, so the next run returns at once. Any thread may also call
 `hypha_transform_buffer_lookup` and `hypha_subscriber_counters` while a run goes on.
 
-Attachments freeze for the duration of a run. Create and attach every
-subscription and timer before the run starts; attaching during one is refused with
-`InvalidState`, and so is a detach from another thread. A callback's own detach is
-deferred to the end of the run (see `hypha_waitset_detach`).
+Attachments freeze for the duration of a run, with one exception. Create and attach
+every subscription and cycle before the run starts; attaching one during a run is
+refused with `InvalidState`, and so is any attach, detach or timer call from another
+thread. A callback's own detach is deferred to the end of the run (see
+`hypha_waitset_detach`). A callback may attach a timer (`HYPHA_ATTACH_TIMER`) when the
+node runs on host time or on its own simulated clock: the timer needs no native
+attachment, joins the dispatch before the run's next wait, and takes an id above every
+id the native set hands out. On a simulated clock driven from outside the node a timer
+is polled natively, so the attach is refused. A callback may also cancel, reset and read
+a timer (`hypha_waitset_timer_cancel`, `hypha_waitset_timer_reset`,
+`hypha_waitset_timer_state`); a cancel or reset holds back a call of that timer still
+due later in the same turn, and a reset takes effect before the next wait.

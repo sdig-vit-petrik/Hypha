@@ -239,6 +239,17 @@ Reference: `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h`,
 - The framework `/clock` subscriber wakes on the notification every `/clock` publisher
   sends. `/clock` going back ends a cycle's or
   timer's run with `ClockRewound`, and `runNode` restarts the process.
+- A `Timer` can be stopped and restarted. `cancel()` stops its calls until `reset()`; a
+  canceled timer counts no missed period and costs no wake-up. `reset()` puts the next
+  call one period after the call. `state()` returns a `TimerStatus`: `canceled`,
+  `period`, and `untilDue`, the time to the next call (empty while canceled). All
+  three use the timer's clock, framework time under simulated time, else host
+  monotonic time. A cancel or reset from a callback also holds back a call of that
+  timer still due later in the same turn; from another thread during a run each
+  returns `InvalidState`. A callback may create a timer when the node runs on host
+  time or on its own simulated clock. It joins before the run next waits; on a
+  simulated clock the node does not own, `Node::timer()` throws. Reference:
+  `hypha/node.h` (`Timer`, `TimerStatus`).
 - There is no implicit `Time` to `RosTime` conversion; never stamp with `steadyNow()`,
   and check a time computed from an input once where it enters:
 

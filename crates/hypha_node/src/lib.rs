@@ -38,7 +38,7 @@ pub mod waitset;
 pub use waitset::{
     HYPHA_ATTACH_SUBSCRIPTION, HYPHA_ATTACH_TIMER, HyphaAttachment, HyphaAttachmentId,
     HyphaCallbackResult, HyphaContextRelease, HyphaDelivery, HyphaIntervalCallback,
-    HyphaSubscriptionCallback, HyphaWaitSet, HyphaWaitSetRunReport,
+    HyphaSubscriptionCallback, HyphaTimerState, HyphaWaitSet, HyphaWaitSetRunReport,
 };
 
 pub use config::HyphaConfig;

@@ -3,8 +3,9 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 1
+#define HYPHA_ABI_REVISION 2
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -357,10 +358,12 @@ typedef struct HyphaTransformBuffer HyphaTransformBuffer;
 // `hypha_waitset_request_stop`, `hypha_waitset_request_failure`, `hypha_cycle_health` and
 // `hypha_cycle_binding`; any other call that names this `WaitSet`, one of its cycles or
 // input sources returns `InvalidState` on that thread and changes nothing. On the run's
-// own thread a callback may also detach a registration, applied when the run returns; an
-// attach, a second run, and a call that creates, configures or destroys a cycle or an
-// input source return `InvalidState`. A run must not start while another thread is
-// inside a call on this `WaitSet`: that is a caller error with no status.
+// own thread a callback may also detach a registration, applied when the run returns;
+// attach a timer whose wake needs no native attachment, which joins the dispatch before
+// the next wait; and cancel, reset or read a timer. Any other attach, a second run, and
+// a call that creates, configures or destroys a cycle or an input source return
+// `InvalidState`. A run must not start while another thread is inside a call on this
+// `WaitSet`: that is a caller error with no status.
 typedef struct HyphaWaitSet HyphaWaitSet;
 
 // The settings of a cycle that drives `/clock` for a simulator.
@@ -869,6 +872,19 @@ typedef struct HyphaWaitSetRunReport {
   // most once per 1 s warning interval.
   uint64_t slow_callbacks;
 } HyphaWaitSetRunReport;
+
+// The state of a plain timer registration, as `hypha_waitset_timer_state` reports it.
+typedef struct HyphaTimerState {
+  // True after a cancel, until the next reset.
+  bool canceled;
+  // The attached period, in nanoseconds.
+  int64_t period_nanos;
+  // Nanoseconds until the next call, on the timer's own clock: simulated framework
+  // time under simulated time, else the host monotonic scheduling clock. Zero when
+  // the call is due now, `INT64_MAX` while canceled. Before the first run of a timer
+  // on host time it counts from the attach; the run starts the period anew.
+  int64_t until_due_nanos;
+} HyphaTimerState;
 
 #ifdef __cplusplus
 extern "C" {
@@ -1772,6 +1788,13 @@ HyphaStatus hypha_node_default_waitset(struct HyphaNode *node,
 // read. Success transfers `context` and `release`, released once at the detach or the
 // node's destruction; a refused attach transfers nothing. `InvalidState`: during a run,
 // or a subscriber another registration dispatches.
+//
+// During a run a callback, on the run's thread, may attach a `HYPHA_ATTACH_TIMER` when
+// the node runs on host time or on its own simulated clock (`use_sim_time`): it joins
+// the dispatch before the run's next wait, and its first call comes one period after
+// the attach. Its id lies above every id a registration attached between runs takes.
+// The attach is `InvalidState` from any other thread, for any other kind, and for a
+// timer on a simulated clock driven from outside the node, which needs a native poll.
 // # Safety
 // `waitset` and `attachment` are live; `out` is writable. The subscriber of
 // `attachment` is null or a live handle from `hypha_subscribe_typed`.
@@ -1821,6 +1844,48 @@ HyphaStatus hypha_waitset_request_stop(struct HyphaWaitSet *waitset);
 // `waitset` must be a live handle or null. Any thread may call it on a running
 // `WaitSet`.
 HyphaStatus hypha_waitset_request_failure(struct HyphaWaitSet *waitset);
+
+// Cancel a plain timer: it calls nothing until `hypha_waitset_timer_reset`, counts no
+// missed period and holds no wake-up of the run. Idempotent. From a callback it also
+// holds back a call of the timer still due later in the same dispatch turn. A canceled
+// timer on simulated time still follows its clock: time going back ends the run with
+// `ClockRewound`, as for any timer, and so does a reset to a time earlier than it saw.
+//
+// `InvalidArgument`: null `waitset`, or a `timer` that names no plain timer of it (a
+// cycle's timer, a subscription, an unknown id). `InvalidState`: another thread than
+// the run's during a run.
+//
+// # Safety
+// `waitset` must be null or a live handle.
+HyphaStatus hypha_waitset_timer_cancel(struct HyphaWaitSet *waitset,
+                                       HyphaAttachmentId timer);
+
+// Reset a plain timer: its next call comes one period after now on the clock it was
+// created on (simulated framework time under simulated time, else the host monotonic
+// scheduling clock), and a cancel ends. The time before the reset counts as missed in
+// no call. From a callback it takes effect before the run's next wait and holds back a
+// call of the timer still due later in the same dispatch turn.
+//
+// `InvalidArgument` and `InvalidState` as `hypha_waitset_timer_cancel`.
+//
+// # Safety
+// `waitset` must be null or a live handle.
+HyphaStatus hypha_waitset_timer_reset(struct HyphaWaitSet *waitset,
+                                      HyphaAttachmentId timer);
+
+// Write the state of a plain timer to `out`, read at the call (see `HyphaTimerState`).
+// It does not wait for the run: a callback may read it.
+//
+// `InvalidArgument`: null `waitset` or `out`, or a `timer` that names no plain timer of
+// it. `InvalidState`: another thread than the run's during a run. Only `Ok` writes
+// `out`.
+//
+// # Safety
+// `waitset` must be null or a live handle; `out` null or writable for one
+// `HyphaTimerState`, which the caller owns.
+HyphaStatus hypha_waitset_timer_state(const struct HyphaWaitSet *waitset,
+                                      HyphaAttachmentId timer,
+                                      struct HyphaTimerState *out);
 
 #ifdef __cplusplus
 }  // extern "C"

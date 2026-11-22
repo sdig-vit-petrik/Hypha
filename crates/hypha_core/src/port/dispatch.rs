@@ -6,11 +6,20 @@ use crate::port::error::PortError;
 /// Identifies one registration. Never zero, and never that of another live registration.
 pub type AttachmentId = u64;
 
+/// The highest identifier [`next_free_identifier`] hands out. The identifiers above it,
+/// from [`FIRST_DISPATCHER_IDENTIFIER`], are never a native registration's: they name
+/// the registrations a dispatcher holds alone, such as a timer attached during a run.
+pub const LAST_NATIVE_IDENTIFIER: AttachmentId = 0x7FFF_FFFF_FFFF_FFFF;
+
+/// The first identifier above [`LAST_NATIVE_IDENTIFIER`].
+pub const FIRST_DISPATCHER_IDENTIFIER: AttachmentId = 0x8000_0000_0000_0000;
+
 /// The identifier after `previous` that is neither zero nor in use.
 ///
-/// Identifiers wrap past zero, and a live identifier is never handed out twice. Zero
-/// means "no identifier" at the C ABI. `None` means `in_use` reported more identifiers
-/// than `in_use_count`.
+/// Identifiers wrap from [`LAST_NATIVE_IDENTIFIER`] to one, so none reaches the
+/// dispatcher range, and a live identifier is never handed out twice. Zero means "no
+/// identifier" at the C ABI. `None` means `in_use` reported more identifiers than
+/// `in_use_count`.
 #[must_use]
 pub fn next_free_identifier(
     previous: u64,
@@ -19,9 +28,9 @@ pub fn next_free_identifier(
 ) -> Option<u64> {
     let mut candidate = previous;
     for _ in 0..=in_use_count.saturating_add(1) {
-        candidate = candidate.wrapping_add(1);
-        let is_free = candidate != 0 && !in_use(candidate);
-        if is_free {
+        candidate =
+            candidate.checked_add(1).filter(|next| *next <= LAST_NATIVE_IDENTIFIER).unwrap_or(1);
+        if !in_use(candidate) {
             return Some(candidate);
         }
     }

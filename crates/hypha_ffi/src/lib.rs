@@ -132,7 +132,8 @@ pub use transform_buffer::{
 };
 pub use waitset::{
     HyphaAttachment, HyphaAttachmentId, HyphaCallbackResult, HyphaContextRelease, HyphaDelivery,
-    HyphaIntervalCallback, HyphaSubscriptionCallback, HyphaWaitSet, HyphaWaitSetRunReport,
-    hypha_node_default_waitset, hypha_waitset_attach, hypha_waitset_detach,
+    HyphaIntervalCallback, HyphaSubscriptionCallback, HyphaTimerState, HyphaWaitSet,
+    HyphaWaitSetRunReport, hypha_node_default_waitset, hypha_waitset_attach, hypha_waitset_detach,
     hypha_waitset_request_failure, hypha_waitset_request_stop, hypha_waitset_run,
+    hypha_waitset_timer_cancel, hypha_waitset_timer_reset, hypha_waitset_timer_state,
 };
