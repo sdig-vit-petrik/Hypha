@@ -124,6 +124,7 @@ What the patches change, per package. It is the input to #56 and, for messages, 
 | `autoware_crop_box_filter` | `stamp.sec`/`nanosec` → `secs`/`nsecs` (node and test) | ROS 1 time fields (#45) |
 | `autoware_downsample_filters` | PCL includes and `PCL_MAKE_ALIGNED_OPERATOR_NEW` → Eigen | the voxel grid filter uses only Eigen; the port does not depend on PCL for it |
 | `autoware_ground_filter` | `message_filters` removed; `use_indices = true` refused at start-up | the input/indices synchronizer is `message_filters`, which the shim does not offer (#56) |
+| `autoware_ground_filter` | `abs()` → `std::abs()` on the eight float heights of `ground_filter.cpp` | an upstream bug: with libstdc++ and PCL 1.15 the unqualified call is C's `int abs(int)`, which truncates the heights; the ground filter node test fails without it |
 | `autoware_euclidean_cluster_object_detector` | `stamp.sec`/`nanosec` → `secs`/`nsecs` (two unit tests) | ROS 1 time fields (#45) |
 | `pcl_conversions` | two unused `message_filters` includes removed | as above |
 | `point_cloud_msg_wrapper` | `#include <algorithm>` added | an upstream omission |
