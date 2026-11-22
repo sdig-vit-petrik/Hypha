@@ -4,6 +4,7 @@
 /// configuration or an unread key, 75 simulated time went back, 70 anything else.
 
 #include <hypha/application_node.h>
+
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 
@@ -39,7 +40,7 @@ int main(int argc, char** argv)
                   << ")\n";
         return hypha::kExitUsage;
     }
-    const std::string parameterFile(argv[1]);
+    const std::string                   parameterFile(argv[1]);
     std::optional<hypha::ConfigContext> configuration;
     try {
         // Loaded first and alone: a file that is missing or does not parse is a

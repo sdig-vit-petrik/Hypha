@@ -23,8 +23,8 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
-#include <memory>
 #include <map>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -52,10 +52,12 @@ class Duration
 {
   public:
     Duration() = default;
+
     Duration(int32_t seconds, uint32_t nanoseconds)
         : nanos_(static_cast<int64_t>(seconds) * 1000000000 + static_cast<int64_t>(nanoseconds))
     {
     }
+
     template <class Rep, class Period>
     Duration(std::chrono::duration<Rep, Period> value)  // NOLINT: implicit, as in rclcpp
         : nanos_(std::chrono::duration_cast<std::chrono::nanoseconds>(value).count())
@@ -66,6 +68,7 @@ class Duration
     {
         return from_nanoseconds(hypha::Duration::fromSeconds(seconds).nanos());
     }
+
     static Duration from_nanoseconds(int64_t nanoseconds)
     {
         Duration d;
@@ -77,14 +80,17 @@ class Duration
     {
         return this->nanos_;
     }
+
     double seconds() const
     {
         return static_cast<double>(this->nanos_) * 1e-9;
     }
+
     hypha::Duration toHypha() const
     {
         return hypha::Duration::fromNanos(this->nanos_);
     }
+
     auto operator<=>(const Duration&) const = default;
 
   private:
@@ -96,14 +102,17 @@ class Time
 {
   public:
     Time() = default;
+
     explicit Time(int64_t nanoseconds, ClockType clockType = ClockType::RCL_ROS_TIME)
         : nanos_(nanoseconds), clockType_(clockType)
     {
     }
+
     Time(int32_t seconds, uint32_t nanoseconds)
         : nanos_(static_cast<int64_t>(seconds) * 1000000000 + static_cast<int64_t>(nanoseconds))
     {
     }
+
     /// From a message stamp. @throws std::invalid_argument for nsecs of one second or more.
     Time(const builtin_interfaces::msg::Time& stamp)  // NOLINT: implicit, as in rclcpp
     {
@@ -124,14 +133,17 @@ class Time
     {
         return this->nanos_;
     }
+
     double seconds() const
     {
         return static_cast<double>(this->nanos_) * 1e-9;
     }
+
     ClockType get_clock_type() const
     {
         return this->clockType_;
     }
+
     hypha::Time toHypha() const
     {
         return hypha::Time::fromNanos(this->nanos_);
@@ -141,18 +153,22 @@ class Time
     {
         return Duration::from_nanoseconds(this->nanos_ - other.nanos_);
     }
+
     Time operator-(const Duration& d) const
     {
         return Time(this->nanos_ - d.nanoseconds());
     }
+
     Time operator+(const Duration& d) const
     {
         return Time(this->nanos_ + d.nanoseconds());
     }
+
     bool operator==(const Time& other) const
     {
         return this->nanos_ == other.nanos_;
     }
+
     auto operator<=>(const Time& other) const
     {
         return this->nanos_ <=> other.nanos_;
@@ -168,6 +184,7 @@ class Clock
 {
   public:
     using SharedPtr = std::shared_ptr<Clock>;
+
     Time now() const
     {
         return Time(hypha::now().nanos());
@@ -183,10 +200,12 @@ class Logger
     explicit Logger(std::string name) : name_(std::move(name))
     {
     }
+
     const char* get_name() const
     {
         return this->name_.c_str();
     }
+
     Logger get_child(const std::string& suffix) const
     {
         return Logger(this->name_ + "." + suffix);
@@ -204,6 +223,7 @@ inline Logger get_logger(const std::string& name)
 namespace detail {
 /// printf-style formatting into a string.
 std::string formatPrintf(const char* format, ...) __attribute__((format(printf, 1, 2)));
+
 inline std::string formatPrintf(const std::string& text)
 {
     return text;
@@ -226,39 +246,47 @@ class QoS
     QoS(size_t depth) : depth_(depth)  // NOLINT: implicit, as rclcpp's KeepLast
     {
     }
+
     QoS& keep_last(size_t depth)
     {
         this->depth_ = depth;
         return *this;
     }
+
     QoS& reliable()
     {
         this->reliability_ = ReliabilityPolicy::Reliable;
         return *this;
     }
+
     QoS& best_effort()
     {
         this->reliability_ = ReliabilityPolicy::BestEffort;
         return *this;
     }
+
     QoS& transient_local()
     {
         this->durability_ = DurabilityPolicy::TransientLocal;
         return *this;
     }
+
     QoS& durability_volatile()
     {
         this->durability_ = DurabilityPolicy::Volatile;
         return *this;
     }
+
     size_t depth() const
     {
         return this->depth_;
     }
+
     ReliabilityPolicy reliability() const
     {
         return this->reliability_;
     }
+
     DurabilityPolicy durability() const
     {
         return this->durability_;
@@ -310,29 +338,36 @@ class Parameter
 {
   public:
     using Value = std::variant<bool, int64_t, double, std::string>;
+
     Parameter(std::string name, Value value) : name_(std::move(name)), value_(std::move(value))
     {
     }
+
     const std::string& get_name() const
     {
         return this->name_;
     }
+
     double as_double() const
     {
         return this->get_value<double>();
     }
+
     int64_t as_int() const
     {
         return this->get_value<int64_t>();
     }
+
     bool as_bool() const
     {
         return this->get_value<bool>();
     }
+
     std::string as_string() const
     {
         return this->get_value<std::string>();
     }
+
     template <class T>
     T get_value() const
     {
@@ -382,6 +417,7 @@ class NodeOptions
         this->arguments_ = args;
         return *this;
     }
+
     const std::vector<std::string>& arguments() const
     {
         return this->arguments_;
@@ -414,8 +450,8 @@ size_t checkedDepth(const std::string& name, const QoS& qos)
     const uint32_t maxDepth = hypha::QosOf<M>::value.maxDepth;
     if (qos.depth() == 0 || qos.depth() > maxDepth) {
         throw std::invalid_argument(
-            "rclcpp: '" + name + "': queue depth " + std::to_string(qos.depth())
-            + " is outside 1.." + std::to_string(maxDepth) + " of the hypha policy '"
+            "rclcpp: '" + name + "': queue depth " + std::to_string(qos.depth()) + " is outside 1.."
+            + std::to_string(maxDepth) + " of the hypha policy '"
             + std::string(hypha::QosOf<M>::value.name) + "' of its message type"
         );
     }
@@ -450,6 +486,7 @@ class Publisher
             );
         }
     }
+
     void publish(const std::unique_ptr<M>& message)
     {
         this->publish(*message);
@@ -464,10 +501,12 @@ class Publisher
         }
         return this->publisher_.subscriberCount().value_or(1);
     }
+
     std::string get_topic_name() const
     {
         return this->publisher_.topic();
     }
+
     /// Shim only.
     uint64_t failed_publish_count() const
     {
@@ -484,9 +523,11 @@ class Subscription
 {
   public:
     using SharedPtr = std::shared_ptr<Subscription>;
+
     explicit Subscription(hypha::Subscriber<M> subscriber) : subscriber_(std::move(subscriber))
     {
     }
+
     std::string get_topic_name() const
     {
         return this->subscriber_.topic();
@@ -503,14 +544,17 @@ class Node : public std::enable_shared_from_this<Node>
     using OnSetParametersCallbackHandle = node_interfaces::OnSetParametersCallbackHandle;
 
     explicit Node(const std::string& name, const NodeOptions& options = NodeOptions())
-        : name_(name),
-          hyphaNode_(std::make_unique<hypha::Node>(
-              detail::hyphaNodeName(name), detail::resolveParameterFile(options)
-          )),
-          clock_(std::make_shared<Clock>()),
-          logger_(name)
+        : name_(name)
+        , hyphaNode_(
+              std::make_unique<hypha::Node>(
+                  detail::hyphaNodeName(name), detail::resolveParameterFile(options)
+              )
+          )
+        , clock_(std::make_shared<Clock>())
+        , logger_(name)
     {
     }
+
     /// Only the root namespace: hypha topics are absolute or private, and a port's topic
     /// comes from the parameter file. @throws std::invalid_argument for another namespace.
     Node(const std::string& name, const std::string& namespace_, const NodeOptions& options)
@@ -523,6 +567,7 @@ class Node : public std::enable_shared_from_this<Node>
             );
         }
     }
+
     virtual ~Node() = default;
 
     Node(const Node&) = delete;
@@ -538,18 +583,22 @@ class Node : public std::enable_shared_from_this<Node>
     {
         return this->name_.c_str();
     }
+
     const char* get_namespace() const
     {
         return "/";
     }
+
     Logger get_logger() const
     {
         return this->logger_;
     }
+
     Clock::SharedPtr get_clock() const
     {
         return this->clock_;
     }
+
     Time now() const
     {
         return this->clock_->now();
@@ -564,17 +613,20 @@ class Node : public std::enable_shared_from_this<Node>
     {
         return this->remember(name, hypha::config().optional<T>(name, defaultValue));
     }
+
     std::string declare_parameter(const std::string& name, const char* defaultValue)
     {
         return this->remember(
             name, hypha::config().optional<std::string>(name, std::string(defaultValue))
         );
     }
+
     template <class T>
     std::vector<T> declare_parameter(const std::string& name, const std::vector<T>& defaultValue)
     {
         return hypha::config().optionalArray<T>(name).value_or(defaultValue);
     }
+
     /// The value of @p name. @throws hypha::ParameterError when the file does not hold it.
     template <class T>
     T declare_parameter(const std::string& name)
@@ -610,9 +662,8 @@ class Node : public std::enable_shared_from_this<Node>
     // -- endpoints ----------------------------------------------------------------------
 
     template <class M>
-    typename Publisher<M>::SharedPtr create_publisher(
-        const std::string& name, const QoS& qos, const PublisherOptions& options = {}
-    )
+    typename Publisher<M>::SharedPtr
+    create_publisher(const std::string& name, const QoS& qos, const PublisherOptions& options = {})
     {
         (void)detail::checkedDepth<M>(name, qos);
         const bool latched = qos.durability() == DurabilityPolicy::TransientLocal;
@@ -624,7 +675,9 @@ class Node : public std::enable_shared_from_this<Node>
     /// A callback takes `std::shared_ptr<const M>` (`M::ConstPtr`) or `const M&`.
     template <class M, class Callback>
     typename Subscription<M>::SharedPtr create_subscription(
-        const std::string& name, const QoS& qos, Callback&& callback,
+        const std::string& name,
+        const QoS&         qos,
+        Callback&&         callback,
         const SubscriptionOptions& /*options*/ = {}
     )
     {

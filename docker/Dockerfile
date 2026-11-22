@@ -33,7 +33,7 @@ RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
 
 # lsof lets clean-shm.sh find the processes that still hold shared memory;
 # tmux runs hypha_launch sessions; Eigen builds the MRS example that test.sh flies;
-# PCL builds the Autoware port (examples/autoware).
+# PCL builds the Autoware port (examples/autoware), and patch applies its edits.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         binutils \
         bzip2 \
@@ -50,6 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl-dev \
         lsof \
         make \
+        patch \
         pkgconf \
         python3 \
         python3-pip \

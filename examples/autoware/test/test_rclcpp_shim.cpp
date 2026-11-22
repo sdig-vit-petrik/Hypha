@@ -1,10 +1,10 @@
 /// @file
 /// The rclcpp shim without a bus: names, time and the QoS check.
 
+#include <hypha_msgs/sensor_msgs/PointCloud2.h>
+
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
-
-#include <hypha_msgs/sensor_msgs/PointCloud2.h>
 
 #include <stdexcept>
 

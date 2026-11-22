@@ -5,9 +5,8 @@
 /// `PublishedTime` on its topic plus `/debug/published_time` (a literal topic), sent
 /// only while it has a subscriber.
 
-#include <rclcpp/rclcpp.hpp>
-
 #include <autoware_internal_msgs/msg/published_time.hpp>
+#include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/header.hpp>
 
 #include <map>
@@ -22,7 +21,8 @@ class PublishedTimePublisher
 {
   public:
     explicit PublishedTimePublisher(
-        rclcpp::Node* node, std::string suffix = "/debug/published_time",
+        rclcpp::Node*      node,
+        std::string        suffix = "/debug/published_time",
         const rclcpp::QoS& qos = rclcpp::QoS(1)
     )
         : node_(node), suffix_(std::move(suffix)), qos_(qos)
@@ -58,9 +58,10 @@ class PublishedTimePublisher
         if (found == this->pubs_.end()) {
             found = this->pubs_
                         .emplace(
-                            key, this->node_->create_publisher<PublishedTime>(
-                                     topic + this->suffix_, this->qos_
-                                 )
+                            key,
+                            this->node_->create_publisher<PublishedTime>(
+                                topic + this->suffix_, this->qos_
+                            )
                         )
                         .first;
         }

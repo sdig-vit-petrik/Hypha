@@ -70,12 +70,15 @@ TEST(GroundFilterNode, RemovesTheGroundAndKeepsTheObstacle)
         "/test/ground_filter/input", rclcpp::SensorDataQoS()
     );
     auto output = probe->create_subscription<sensor_msgs::msg::PointCloud2>(
-        "/test/ground_filter/output", rclcpp::SensorDataQoS(),
-        [&](const sensor_msgs::msg::PointCloud2& cloud) { received = cloud; }
+        "/test/ground_filter/output",
+        rclcpp::SensorDataQoS(),
+        [&](const sensor_msgs::msg::PointCloud2& cloud) {
+            received = cloud;
+        }
     );
 
-    std::size_t groundCount = 0;
-    std::size_t poleCount = 0;
+    std::size_t                   groundCount = 0;
+    std::size_t                   poleCount = 0;
     sensor_msgs::msg::PointCloud2 cloud;
     pcl::toROSMsg(scene(groundCount, poleCount), cloud);
     cloud.header.frame_id = "base_link";

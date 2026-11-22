@@ -12,6 +12,7 @@ inline bool operator==(const RosTime& a, const RosTime& b)
 {
     return a.secs == b.secs && a.nsecs == b.nsecs;
 }
+
 inline bool operator==(const RosDuration& a, const RosDuration& b)
 {
     return a.secs == b.secs && a.nsecs == b.nsecs;

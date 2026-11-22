@@ -3,12 +3,12 @@
 /// from TOML, its static transform from /tf_static before spin, a cloud in on a hypha
 /// topic, the cropped cloud out on another.
 
+#include <hypha/transform_buffer.h>
+
 #include "crop_box_filter_node.hpp"
 
 #include <gtest/gtest.h>
-#include <hypha/transform_buffer.h>
 #include <rclcpp/rclcpp.hpp>
-
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
 #include <array>
@@ -40,9 +40,19 @@ sensor_msgs::msg::PointCloud2 makeCloud(const std::vector<PointXYZI>& points)
     cloud.header.stamp.nsecs = 250;
     sensor_msgs::PointCloud2Modifier modifier(cloud);
     modifier.setPointCloud2Fields(
-        4, "x", 1, sensor_msgs::msg::PointField::FLOAT32, "y", 1,
-        sensor_msgs::msg::PointField::FLOAT32, "z", 1, sensor_msgs::msg::PointField::FLOAT32,
-        "intensity", 1, sensor_msgs::msg::PointField::FLOAT32
+        4,
+        "x",
+        1,
+        sensor_msgs::msg::PointField::FLOAT32,
+        "y",
+        1,
+        sensor_msgs::msg::PointField::FLOAT32,
+        "z",
+        1,
+        sensor_msgs::msg::PointField::FLOAT32,
+        "intensity",
+        1,
+        sensor_msgs::msg::PointField::FLOAT32
     );
     modifier.resize(points.size());
     std::memcpy(cloud.data.data(), points.data(), points.size() * sizeof(PointXYZI));
@@ -51,7 +61,7 @@ sensor_msgs::msg::PointCloud2 makeCloud(const std::vector<PointXYZI>& points)
 
 std::vector<PointXYZI> pointsOf(const sensor_msgs::msg::PointCloud2& cloud)
 {
-    std::vector<PointXYZI> points;
+    std::vector<PointXYZI>                       points;
     sensor_msgs::PointCloud2ConstIterator<float> x(cloud, "x");
     sensor_msgs::PointCloud2ConstIterator<float> y(cloud, "y");
     sensor_msgs::PointCloud2ConstIterator<float> z(cloud, "z");
@@ -80,7 +90,7 @@ TEST(CropBoxFilterNode, CropsInTheInputFrameAndKeepsTheOtherFields)
     rclcpp::init(2, argv);
 
     // The probe publishes the static transform before the filter looks it up.
-    auto probe = rclcpp::Node::make_shared("crop_box_probe");
+    auto                              probe = rclcpp::Node::make_shared("crop_box_probe");
     hypha::StaticTransformBroadcaster statics{probe->hypha_node()};
     ASSERT_TRUE(statics.send(baseToLidar()));
 
@@ -93,8 +103,11 @@ TEST(CropBoxFilterNode, CropsInTheInputFrameAndKeepsTheOtherFields)
         "/test/crop_box/input", rclcpp::SensorDataQoS()
     );
     auto output = probe->create_subscription<sensor_msgs::msg::PointCloud2>(
-        "/test/crop_box/output", rclcpp::SensorDataQoS(),
-        [&](const sensor_msgs::msg::PointCloud2::ConstPtr& cloud) { received = *cloud; }
+        "/test/crop_box/output",
+        rclcpp::SensorDataQoS(),
+        [&](const sensor_msgs::msg::PointCloud2::ConstPtr& cloud) {
+            received = *cloud;
+        }
     );
 
     const float nan = std::numeric_limits<float>::quiet_NaN();

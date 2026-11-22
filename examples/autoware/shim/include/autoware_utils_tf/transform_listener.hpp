@@ -8,10 +8,10 @@
 /// callbacks in 10 ms slices until the transform is found or the timeout (host time)
 /// has passed.
 
-#include <rclcpp/rclcpp.hpp>
+#include <hypha/transform_buffer.h>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
-#include <hypha/transform_buffer.h>
+#include <rclcpp/rclcpp.hpp>
 
 #include <chrono>
 #include <memory>
@@ -35,8 +35,12 @@ class TransformListener
         const auto found = this->buffer_->lookupLatest(from, to);
         if (!found) {
             RCLCPP_WARN_THROTTLE(
-                this->node_->get_logger(), *this->node_->get_clock(), 5000,
-                "failed to get transform from %s to %s", from.c_str(), to.c_str()
+                this->node_->get_logger(),
+                *this->node_->get_clock(),
+                5000,
+                "failed to get transform from %s to %s",
+                from.c_str(),
+                to.c_str()
             );
             return {};
         }
@@ -46,12 +50,14 @@ class TransformListener
     /// The transform from @p to coordinates into @p from at @p time; waits up to
     /// @p timeout (see the file comment). Empty when none is found.
     std::shared_ptr<const geometry_msgs::msg::TransformStamped> get_transform(
-        const std::string& from, const std::string& to, const rclcpp::Time& time,
+        const std::string&      from,
+        const std::string&      to,
+        const rclcpp::Time&     time,
         const rclcpp::Duration& timeout
     )
     {
-        const auto deadline = std::chrono::steady_clock::now()
-                              + std::chrono::nanoseconds(timeout.nanoseconds());
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::nanoseconds(timeout.nanoseconds());
         for (;;) {
             const auto found = this->buffer_->lookup(from, to, time.toHypha());
             if (found) {
@@ -59,14 +65,18 @@ class TransformListener
             }
             const auto latest = this->buffer_->lookupLatest(from, to);
             const bool staticChain = latest.has_value() && latest->header.stamp.secs == 0
-                                     && latest->header.stamp.nsecs == 0;
+                                  && latest->header.stamp.nsecs == 0;
             if (staticChain) {
                 return std::make_shared<const geometry_msgs::msg::TransformStamped>(*latest);
             }
             if (std::chrono::steady_clock::now() >= deadline) {
                 RCLCPP_WARN_THROTTLE(
-                    this->node_->get_logger(), *this->node_->get_clock(), 5000,
-                    "failed to get transform from %s to %s", from.c_str(), to.c_str()
+                    this->node_->get_logger(),
+                    *this->node_->get_clock(),
+                    5000,
+                    "failed to get transform from %s to %s",
+                    from.c_str(),
+                    to.c_str()
                 );
                 return {};
             }

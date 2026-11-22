@@ -5,9 +5,8 @@
 /// port `<ns>.<name with dots>` (`crop_box_filter.debug.processing_time_ms`). A
 /// deployment wires the ones it reads; the rest are disabled and publish nothing.
 
-#include <rclcpp/rclcpp.hpp>
-
 #include <autoware_internal_debug_msgs/msg/float64_stamped.hpp>
+#include <rclcpp/rclcpp.hpp>
 #include <ros/message_traits.h>
 
 #include <any>

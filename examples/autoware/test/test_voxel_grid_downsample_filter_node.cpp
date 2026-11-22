@@ -6,7 +6,6 @@
 
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
-
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
 #include <algorithm>
@@ -37,10 +36,25 @@ sensor_msgs::msg::PointCloud2 makeCloud(const std::vector<Point>& points)
     cloud.header.stamp.nsecs = 5;
     sensor_msgs::PointCloud2Modifier modifier(cloud);
     modifier.setPointCloud2Fields(
-        6, "x", 1, sensor_msgs::msg::PointField::FLOAT32, "y", 1,
-        sensor_msgs::msg::PointField::FLOAT32, "z", 1, sensor_msgs::msg::PointField::FLOAT32,
-        "intensity", 1, sensor_msgs::msg::PointField::UINT8, "return_type", 1,
-        sensor_msgs::msg::PointField::UINT8, "channel", 1, sensor_msgs::msg::PointField::UINT16
+        6,
+        "x",
+        1,
+        sensor_msgs::msg::PointField::FLOAT32,
+        "y",
+        1,
+        sensor_msgs::msg::PointField::FLOAT32,
+        "z",
+        1,
+        sensor_msgs::msg::PointField::FLOAT32,
+        "intensity",
+        1,
+        sensor_msgs::msg::PointField::UINT8,
+        "return_type",
+        1,
+        sensor_msgs::msg::PointField::UINT8,
+        "channel",
+        1,
+        sensor_msgs::msg::PointField::UINT16
     );
     modifier.resize(points.size());
     sensor_msgs::PointCloud2Iterator<float>   x(cloud, "x");
@@ -96,8 +110,11 @@ TEST(VoxelGridDownsampleFilterNode, OneCentroidPerVoxel)
         "/test/voxel_grid/input", rclcpp::SensorDataQoS()
     );
     auto output = probe->create_subscription<sensor_msgs::msg::PointCloud2>(
-        "/test/voxel_grid/output", rclcpp::SensorDataQoS(),
-        [&](const sensor_msgs::msg::PointCloud2& cloud) { received = cloud; }
+        "/test/voxel_grid/output",
+        rclcpp::SensorDataQoS(),
+        [&](const sensor_msgs::msg::PointCloud2& cloud) {
+            received = cloud;
+        }
     );
 
     // Three points in the voxel at the origin, two in the voxel at x 5.

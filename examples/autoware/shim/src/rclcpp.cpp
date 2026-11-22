@@ -52,7 +52,7 @@ std::optional<std::string> parameterFileOf(const std::vector<std::string>& args)
 
 void recordParameterFile(const std::string& file)
 {
-    Context&                    ctx = context();
+    Context&                          ctx = context();
     const std::lock_guard<std::mutex> lock(ctx.mutex);
     if (ctx.parameterFile.has_value() && *ctx.parameterFile != file) {
         throw std::invalid_argument(
@@ -179,7 +179,7 @@ void shutdown()
 
 void spin(const std::shared_ptr<Node>& node)
 {
-    hypha::RunResult result = node->hypha_node().run();
+    hypha::RunResult                  result = node->hypha_node().run();
     Context&                          ctx = context();
     const std::lock_guard<std::mutex> lock(ctx.mutex);
     ctx.lastSpin = std::move(result);
