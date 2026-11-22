@@ -1,0 +1,30 @@
+# autoware_concatenate_and_time_sync_node_test: the node on the bus. Upstream's
+# config/concatenate_and_time_sync_node.param.yaml with two lidars on test topics.
+
+debug_mode = false
+rosbag_length = 10.0
+maximum_queue_size = 5
+timeout_sec = 0.2
+is_motion_compensated = true
+publish_synchronized_pointcloud = true
+keep_input_frame_in_synchronized_pointcloud = true
+publish_previous_but_late_pointcloud = false
+synchronized_pointcloud_postfix = "pointcloud"
+input_twist_topic_type = "twist"
+input_topics = [
+  "/test/concatenate/left/pointcloud_before_sync",
+  "/test/concatenate/right/pointcloud_before_sync",
+]
+output_frame = "base_link"
+
+[matching_strategy]
+type = "naive"
+
+[ports.inputs."input.twist"]
+topic = "/test/concatenate/twist"
+
+[ports.outputs.output]
+topic = "/test/concatenate/output"
+
+[ports.outputs.output_info]
+topic = "/test/concatenate/output_info"

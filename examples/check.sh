@@ -68,4 +68,8 @@ for scenario in estimation takeoff takeoff_via_uav_manager goto_outside_safety_a
   examples/mrs/run.sh "$BUILD_DIR/mrs" "$scenario"
 done
 
+echo -e "\n-> The Autoware port: the upstream unit tests, the shim, each node on the bus"
+./clean-shm.sh --force
+ctest --test-dir "$BUILD_DIR/autoware" --output-on-failure
+
 echo -e "\nGate complete."

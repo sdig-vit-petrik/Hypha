@@ -1,0 +1,21 @@
+# autoware_euclidean_cluster_object_detector VoxelGridBasedEuclideanClusterNode, the
+# clustering of autoware_core_perception: the values of upstream
+# config/voxel_grid_based_euclidean_cluster.param.yaml that the node declares. Its
+# `input_frame` and low-height crop box keys (max_x ... negative) are read by no node.
+# Topics are the node's ports, ROS `input`, `output` and `debug/clusters`.
+
+tolerance = 0.7
+voxel_leaf_size = 0.3
+min_points_number_per_voxel = 1
+min_cluster_size = 10
+max_cluster_size = 3000
+use_height = false
+
+[ports.inputs.input]
+topic = "/perception/obstacle_segmentation/pointcloud"
+
+[ports.outputs.output]
+topic = "/perception/object_recognition/detection/objects"
+
+[ports.outputs."debug.clusters"]
+topic = "/perception/object_recognition/debug/clusters"

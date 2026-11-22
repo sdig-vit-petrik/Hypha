@@ -1,0 +1,14 @@
+# autoware_downsample_filters VoxelGridDownsampleFilterNode: the values of upstream
+# config/voxel_grid_downsample_filter_node.param.yaml. Topics are the node's ports,
+# ROS `input` and `output`.
+
+voxel_size_x = 1.5
+voxel_size_y = 1.5
+voxel_size_z = 1.5
+max_queue_size = 3
+
+[ports.inputs.input]
+topic = "/sensing/lidar/top/self_cropped/pointcloud"
+
+[ports.outputs.output]
+topic = "/sensing/lidar/top/downsampled/pointcloud"

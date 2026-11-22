@@ -26,8 +26,9 @@ The vendors' payload field names are the likely place to need a fix.
   - Block edits to the files that make up the fence: the allowlists, the five
     adapter files, `.githooks/` and this directory. The copies in a worktree under
     `.claude/worktrees/` are protected as well.
-  - Block these commands: `git push`, `stash`, `reset --hard`; setting
-    `core.hooksPath`.
+  - Block these commands: `stash`, `reset --hard`; setting `core.hooksPath`.
+    `git push` passes only for a named feature branch from the main session: no
+    force, delete, mirror or tags, and never to `main`, `master`, `develop` or `HEAD`.
   - Block what discards work or rewrites history: `git clean`, `git restore`
     and `git checkout -- <path>` of the working tree (`restore --staged` is
     allowed), `rebase`, `branch -D`, `commit --no-verify` and `commit --amend`.

@@ -47,6 +47,7 @@ Reference standards (background only; no compliance claim):
 | [../AGENTS.md](../AGENTS.md) | Shared working instructions for Codex, Claude Code, and GitHub Copilot. |
 | [engineering-traps.md](engineering-traps.md) | Observed transport, execution, and integration failure modes; consult relevant entries when needed. |
 | [rust-style.md](rust-style.md) | How the Rust code is written: sources in order of precedence, house rules beyond the lint configuration, and the lint-to-SCRC mapping. |
+| [autoware-ground-filter-abs.md](autoware-ground-filter-abs.md) | A bug the Autoware port (`examples/autoware`) found upstream: `autoware_ground_filter` truncates float heights through `int abs(int)` with libstdc++ and PCL 1.15. The report for `autoware_core`. |
 
 Rust crate documentation is generated from the source code:
 

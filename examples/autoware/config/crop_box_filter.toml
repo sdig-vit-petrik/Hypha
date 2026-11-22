@@ -1,0 +1,24 @@
+# autoware_crop_box_filter: the values of upstream config/crop_box_filter_node.param.yaml
+# and the node's declared defaults, one key per parameter. Topics are the ports of the
+# node: ROS `input` and `output`, and `~/crop_box_polygon`.
+
+max_queue_size = 5
+input_pointcloud_frame = "base_link"
+input_frame = "base_link"
+output_frame = "base_link"
+min_x = -5.0
+min_y = -5.0
+min_z = -5.0
+max_x = 5.0
+max_y = 5.0
+max_z = 5.0
+negative = true
+
+[ports.inputs.input]
+topic = "/sensing/lidar/top/pointcloud_raw"
+
+[ports.outputs.output]
+topic = "/sensing/lidar/top/self_cropped/pointcloud"
+
+[ports.outputs.crop_box_polygon]
+topic = "/crop_box_filter/crop_box_polygon"

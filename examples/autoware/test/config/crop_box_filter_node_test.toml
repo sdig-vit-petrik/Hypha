@@ -1,0 +1,25 @@
+# autoware_crop_box_filter_node_test: the crop box node on the bus. The cloud comes in
+# the lidar frame, which /tf_static places 1 m ahead of base_link; the node crops in
+# base_link and publishes in base_link.
+
+# The upstream parameters (crop_box_filter_node.param.yaml and the node's defaults).
+max_queue_size = 5
+input_pointcloud_frame = "lidar"
+input_frame = "base_link"
+output_frame = "base_link"
+min_x = 0.0
+max_x = 2.0
+min_y = -1.0
+max_y = 1.0
+min_z = -1.0
+max_z = 1.0
+negative = false
+
+[ports.inputs.input]
+topic = "/test/crop_box/input"
+
+[ports.outputs.output]
+topic = "/test/crop_box/output"
+
+[ports.outputs.crop_box_polygon]
+topic = "/test/crop_box/polygon"
