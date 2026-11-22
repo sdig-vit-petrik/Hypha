@@ -1,0 +1,49 @@
+# autoware_concatenate_node_unit_upstream_test: the parameter_overrides of upstream
+# test/test_concatenate_node_unit.cpp, and the ports of its node on test topics. The
+# relative input topics are ports; each synchronized cloud is `<input>pointcloud`, as the
+# node names it for a topic without a namespace.
+
+debug_mode = false
+rosbag_length = 0.0
+maximum_queue_size = 5
+timeout_sec = 0.2
+is_motion_compensated = true
+publish_synchronized_pointcloud = true
+keep_input_frame_in_synchronized_pointcloud = true
+publish_previous_but_late_pointcloud = false
+synchronized_pointcloud_postfix = "pointcloud"
+input_twist_topic_type = "twist"
+input_topics = ["lidar_top", "lidar_left", "lidar_right"]
+output_frame = "base_link"
+
+[matching_strategy]
+type = "advanced"
+lidar_timestamp_offsets = [0.0, 0.04, 0.08]
+lidar_timestamp_noise_window = [0.01, 0.01, 0.01]
+
+[ports.inputs.lidar_top]
+topic = "/test/concatenate_unit/lidar_top"
+
+[ports.inputs.lidar_left]
+topic = "/test/concatenate_unit/lidar_left"
+
+[ports.inputs.lidar_right]
+topic = "/test/concatenate_unit/lidar_right"
+
+[ports.inputs."input.twist"]
+topic = "/test/concatenate_unit/twist"
+
+[ports.outputs.output]
+topic = "/test/concatenate_unit/output"
+
+[ports.outputs.output_info]
+topic = "/test/concatenate_unit/output_info"
+
+[ports.outputs.lidar_toppointcloud]
+topic = "/test/concatenate_unit/lidar_top/pointcloud"
+
+[ports.outputs.lidar_leftpointcloud]
+topic = "/test/concatenate_unit/lidar_left/pointcloud"
+
+[ports.outputs.lidar_rightpointcloud]
+topic = "/test/concatenate_unit/lidar_right/pointcloud"

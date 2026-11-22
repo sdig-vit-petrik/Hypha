@@ -1,0 +1,34 @@
+# autoware_pointcloud_preprocessor PointCloudConcatenateDataSynchronizerComponent: the
+# values of upstream config/concatenate_and_time_sync_node.param.yaml. Topics are the
+# remaps of upstream launch/concatenate_and_time_sync_node.launch.xml: the node's ports,
+# ROS `~/input/twist`, `output` and `output_info`. The input topics are absolute names,
+# and each synchronized cloud goes to its input topic with the postfix `pointcloud`.
+
+debug_mode = false
+rosbag_length = 10.0
+maximum_queue_size = 5
+timeout_sec = 0.2
+is_motion_compensated = true
+publish_synchronized_pointcloud = true
+keep_input_frame_in_synchronized_pointcloud = true
+publish_previous_but_late_pointcloud = false
+synchronized_pointcloud_postfix = "pointcloud"
+input_twist_topic_type = "twist"
+input_topics = [
+  "/sensing/lidar/right/pointcloud_before_sync",
+  "/sensing/lidar/top/pointcloud_before_sync",
+  "/sensing/lidar/left/pointcloud_before_sync",
+]
+output_frame = "base_link"
+
+[matching_strategy]
+type = "naive"
+
+[ports.inputs."input.twist"]
+topic = "/sensing/vehicle_velocity_converter/twist_with_covariance"
+
+[ports.outputs.output]
+topic = "/sensing/lidar/concatenated/pointcloud"
+
+[ports.outputs.output_info]
+topic = "/sensing/lidar/concatenated/pointcloud_info"

@@ -12,7 +12,10 @@ Only these files, unchanged:
 - `autoware_utils_debug/include/autoware_utils_debug/time_keeper.hpp` and
   `autoware_utils_debug/src/time_keeper.cpp`, the processing-time tree;
 - `autoware_utils_diagnostics/include/autoware_utils_diagnostics/diagnostics_interface.hpp`,
-  the header-only diagnostics publisher of the clustering, on the shim's `rclcpp`.
+  the header-only diagnostics publisher of the clustering, on the shim's `rclcpp`;
+- of the `autoware_utils` umbrella package, the three forwarding headers the
+  concatenate node includes: `ros/debug_publisher.hpp`, `ros/diagnostics_interface.hpp`
+  and `system/stop_watch.hpp`, each a `using namespace` of the split package.
 
 The ROS-bound utilities the ported nodes use (`autoware_utils_debug`'s debug and
 published-time publishers, `autoware_utils_tf`'s transform listener) are the shim's,

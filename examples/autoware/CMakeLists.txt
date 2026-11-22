@@ -37,6 +37,10 @@ hypha_generate_messages(PACKAGE autoware_internal_msgs
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/autoware_internal_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
   DEPENDS std_msgs)
+hypha_generate_messages(PACKAGE autoware_sensing_msgs
+  MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_msgs/autoware_sensing_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}"
+  DEPENDS std_msgs)
 
 # autoware_patched(<package> <upstream dir> <out var>): a copy of the upstream package in
 # the build directory with upstream/patches/<package>.patch applied. The vendored files
@@ -233,3 +237,46 @@ foreach(node euclidean_cluster voxel_grid_based_euclidean_cluster)
     SOURCES test/test_${node}_node.cpp "${EUCLIDEAN_CLUSTER_DIR}/src/${node}_node.cpp"
     LIBS autoware_euclidean_cluster_core)
 endforeach()
+
+# --- Slice A: concatenate-and-time-sync (autoware_universe 0.53.2) -------------------------
+
+autoware_patched(autoware_pointcloud_preprocessor
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_universe/sensing/autoware_pointcloud_preprocessor"
+  POINTCLOUD_PREPROCESSOR_DIR)
+set(CONCATENATE_DIR "${POINTCLOUD_PREPROCESSOR_DIR}/src/concatenate_data")
+add_library(autoware_concatenate_core STATIC
+  "${CONCATENATE_DIR}/cloud_collector.cpp"
+  "${CONCATENATE_DIR}/collector_matcher.cpp"
+  "${CONCATENATE_DIR}/combine_cloud_handler.cpp"
+  "${CONCATENATE_DIR}/combine_cloud_handler_base.cpp"
+  "${CONCATENATE_DIR}/concatenation_diagnostics.cpp"
+  "${CONCATENATE_DIR}/matching_policy.cpp"
+  "${POINTCLOUD_PREPROCESSOR_DIR}/src/utility/memory.cpp")
+target_include_directories(autoware_concatenate_core PUBLIC
+  "${POINTCLOUD_PREPROCESSOR_DIR}/include" "${CONCATENATE_DIR}"
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils/include")
+target_link_libraries(autoware_concatenate_core PUBLIC
+  autoware_point_types autoware_pcl autoware_sensing_msgs)
+
+autoware_component(autoware_concatenate_and_time_sync
+  SOURCES "${CONCATENATE_DIR}/concatenate_and_time_sync_node.cpp")
+target_link_libraries(autoware_concatenate_and_time_sync PRIVATE autoware_concatenate_core)
+
+autoware_test(autoware_concatenation_info_upstream_test
+  SOURCES "${POINTCLOUD_PREPROCESSOR_DIR}/test/test_concatenation_info.cpp"
+  LIBS autoware_concatenate_core GTest::gtest_main)
+autoware_test(autoware_concatenation_diagnostics_upstream_test
+  SOURCES "${POINTCLOUD_PREPROCESSOR_DIR}/test/test_concatenation_diagnostics.cpp"
+  LIBS autoware_concatenate_core)
+# The upstream node unit test (its own main()): a node per case, from a TOML file in place of
+# parameter_overrides.
+autoware_test(autoware_concatenate_node_unit_upstream_test
+  SOURCES "${POINTCLOUD_PREPROCESSOR_DIR}/test/test_concatenate_node_unit.cpp"
+    "${CONCATENATE_DIR}/concatenate_and_time_sync_node.cpp"
+  LIBS autoware_concatenate_core)
+
+# The node on the bus: two lidars, their mounts on /tf_static and the vehicle's twist.
+autoware_test(autoware_concatenate_and_time_sync_node_test
+  SOURCES test/test_concatenate_and_time_sync_node.cpp
+    "${CONCATENATE_DIR}/concatenate_and_time_sync_node.cpp"
+  LIBS autoware_concatenate_core)
