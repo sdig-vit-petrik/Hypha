@@ -94,16 +94,30 @@ GIT_RULES = {
 PROTECTED_BRANCHES = {"main", "master", "develop"}
 # Push options that overwrite, delete or push more than one named branch.
 PUSH_FORBIDDEN_OPTIONS = {
-    "-f", "--force", "--force-with-lease", "--force-if-includes",
-    "-d", "--delete", "--mirror", "--all", "--tags", "--prune",
+    "-f",
+    "--force",
+    "--force-with-lease",
+    "--force-if-includes",
+    "-d",
+    "--delete",
+    "--mirror",
+    "--all",
+    "--tags",
+    "--prune",
 }
+
 
 def push_rule(rest: list[str], is_subagent: bool) -> str | None:
     """A fast-forward push of a named feature branch passes; anything else is blocked."""
     if is_subagent:
         return "subagents do not push; the orchestrator does"
-    if any(a in PUSH_FORBIDDEN_OPTIONS or a.startswith(("--force=", "--force-with-lease=")) for a in rest):
-        return "agents push only a fast-forward of a feature branch: no force, delete, mirror or tags"
+    if any(
+        a in PUSH_FORBIDDEN_OPTIONS or a.startswith(("--force=", "--force-with-lease="))
+        for a in rest
+    ):
+        return (
+            "agents push only a fast-forward of a feature branch: no force, delete, mirror or tags"
+        )
     refspecs = [a for a in rest if not a.startswith("-")][1:]
     if not refspecs:
         return "name the remote and the branch: git push -u origin <branch>"
@@ -114,6 +128,7 @@ def push_rule(rest: list[str], is_subagent: bool) -> str | None:
         if target in PROTECTED_BRANCHES or target == "HEAD" or target.startswith("refs/tags/"):
             return f"agents never push to {target}; the owner does"
     return None
+
 
 # What the main session may do and a subagent may not: the branch and its history
 # belong to the session the owner talks to.

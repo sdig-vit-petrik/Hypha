@@ -299,9 +299,12 @@ class PreTool(unittest.TestCase):
             claude("Write", file_path=str(Path.home() / ".cargo/config.toml"), content=""),
             "outside",
         )
-        
+
     def test_a_feature_branch_push_passes_and_force_does_not(self) -> None:
-        for command in ("git push -u origin feat/47-autoware-detection-port", "git push origin claude/x"):
+        for command in (
+            "git push -u origin feat/47-autoware-detection-port",
+            "git push origin claude/x",
+        ):
             with self.subTest(command=command):
                 self.assert_allowed(claude("Bash", command=command))
                 self.assert_blocked(claude("Bash", subagent=True, command=command), "subagents")
