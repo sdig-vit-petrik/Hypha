@@ -299,6 +299,22 @@ class PreTool(unittest.TestCase):
             claude("Write", file_path=str(Path.home() / ".cargo/config.toml"), content=""),
             "outside",
         )
+        
+    def test_a_feature_branch_push_passes_and_force_does_not(self) -> None:
+        for command in ("git push -u origin feat/47-autoware-detection-port", "git push origin claude/x"):
+            with self.subTest(command=command):
+                self.assert_allowed(claude("Bash", command=command))
+                self.assert_blocked(claude("Bash", subagent=True, command=command), "subagents")
+        for command in (
+            "git push --force origin feat/x",
+            "git push origin +feat/x",
+            "git push origin feat/x:main",
+            "git push --delete origin feat/x",
+            "git push --tags origin",
+            "git push origin HEAD",
+        ):
+            with self.subTest(command=command):
+                self.assert_blocked(claude("Bash", command=command), "blocked")
 
     def test_the_allowlist_opens_a_path(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.home()) as extra:
