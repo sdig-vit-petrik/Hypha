@@ -214,27 +214,54 @@ runs:
 The comparison with Autoware on ROS 2, on the same input and configurations, is the
 next step of #47.
 
-## Watch Slice A in Foxglove
+## Watch the port in Foxglove
 
 ```bash
+# Bag 4 with the lidar and the localization inputs (README "Slice A end to end" fetches it)
+target/release/hypha convert data/isuzu/all-sensors-bag4/all-sensors-bag4.db3 \
+    -o data/isuzu/all-sensors-bag4/isuzu-localization.mcap \
+    --msg-path crates/hypha_msgs/msg --msg-path examples/autoware/msg \
+    --topic /sensing/lidar/concatenated/pointcloud --topic /tf_static --topic /tf \
+    --topic /gnss/fix --topic /sensing/imu/imu_data \
+    --topic /lvx_client/gsof/ins_solution_49 --topic /lvx_client/gsof/ins_solution_rms_50 \
+    --xyzirc /sensing/lidar/concatenated/pointcloud
 examples/autoware/launch.sh up --attach
 examples/autoware/launch.sh down     # stop
 ```
 
 `launch.sh [up [--attach] | attach | down]` runs `hypha launch` (tmux 3.0 or newer) on
-[`launch/slice_a.toml`](launch/slice_a.toml): the three nodes of "Slice A end to end"
-with the same configurations, `hypha foxglove`, and `hypha play` looping
-`SLICE_A_INPUT` at real time, one tmux window each. The player keeps the replay
-lockstep with the nodes, so no frame is dropped; each loop sends `/clock` back, and the
-nodes exit 75 and start again at once. `launch.sh` puts the build's executables on
-`PATH` (`AUTOWARE_BUILD_DIR`, default `build/examples/autoware`), and `hypha` from
-`PATH` or else from `target/release`. `SLICE_A_INPUT` names the recording, by default
-the one the previous section makes. The player has no keys here (its stdin is `/dev/null`, #109): stop
-its window with `Ctrl-c` and run `hypha play` in a terminal of your own to pause or step.
+[`launch/isuzu.toml`](launch/isuzu.toml), one tmux window each:
+
+- the three nodes of "Slice A end to end", with the same configurations;
+- the localization of #110, configured in `config/isuzu_localization/`:
+  - `applanix_lvx_client_replay` (`tools/`): the Applanix driver's NavSatFix, GNSS/INS
+    orientation and twist from the bag's recorded GSOF 49 and 50, through the driver's own
+    conversions (`upstream/applanix/`);
+  - the map projection loader, on a local Cartesian map about the bag's first fix;
+  - the GNSS poser, the gyro odometer and the EKF;
+  - `gnss_pose_initializer` (`tools/`): starts the EKF from the first valid GNSS pose,
+    and again when no odometry follows, as `autoware_pose_initializer` and
+    `automatic_pose_initializer` would;
+- `hypha foxglove`, and `hypha play` looping `ISUZU_INPUT` at real time, 20 ms per
+  `/clock` step so the EKF's 50 Hz timer runs every period.
+
+The nodes run with `HYPHA_USE_SIM_TIME=follow`: they follow the player's `/clock`
+outside the replay lockstep, as ROS nodes follow `ros2 bag play`, because the
+localization's `/tf` loop (EKF and GNSS poser) cannot replay in lockstep yet (#103).
+Each loop sends `/clock` back: the nodes exit 75 and start again at once. `launch.sh`
+puts the build's executables on `PATH` (`AUTOWARE_BUILD_DIR`, default
+`build/examples/autoware`), and `hypha` from `PATH` or else from `target/release`.
+`ISUZU_INPUT` names the recording, by default the one above. The player has no keys
+here (its stdin is `/dev/null`, #109): stop its window with `Ctrl-c` and run `hypha play`
+in a terminal of your own to pause or step.
+
+On bag 4 (macOS, 2026-11-23) the bus drives 115 m in 17.9 s, up to 7.6 m/s; the EKF's
+estimate stays within 0.8 m of the GNSS poses (mean 0.45 m, most of it the time between
+an estimate and its nearest pose).
 
 Open Foxglove, connect to `ws://localhost:8765` and import
 [`foxglove_layout.json`](foxglove_layout.json) (Layouts, Import from file). Its 3D panel
-follows `base_link`:
+follows `base_link` through `map`:
 
 | Layer | Topic | Shown as |
 |---|---|---|
@@ -243,18 +270,22 @@ follows `base_link`:
 | voxel centroids | `/perception/obstacle_segmentation/pointcloud` | teal, hidden at first |
 | clusters | `/perception/object_recognition/debug/clusters` | upstream's six cluster colours |
 | boxes | `/studio_script/slice_a/boxes` | a box and `#i` label per cluster, in its colour |
+| the bus and its trail | `/studio_script/isuzu/ego` | a yellow box with the speed, and the EKF's path in `map` |
+| EKF | `/localization/pose_twist_fusion_filter/kinematic_state` | a yellow arrow |
+| GNSS | `/sensing/gnss/pose_with_covariance` | blue arrows with covariance, hidden at first |
 
 The objects carry only a centroid: the clustering fills no shape, size or orientation.
 The boxes come from the cluster points instead. Upstream writes the debug cloud cluster
 by cluster, cluster *i* in colour *i* mod 6, so a change of colour starts the next
 cluster and box *i* belongs to object *i*. A box is the smallest rectangle around the
 points in the ground plane, its yaw searched in 1° steps, from the lowest point to the
-highest. It is a display aid, not Autoware's shape estimation, which is not ported. Two
-user scripts in the layout make the boxes layer and `/studio_script/slice_a/object_count`. Beside the 3D panel are the points per
-frame of each stage, the objects per frame and `/diagnostics`, where the clustering
-reports `OK`, or `WARN` with a cluster above `max_cluster_size`. The recording's `/tf`
-holds the GNSS/INS tree (`ned`, `POS_REF`), which does not reach `base_link`; the layout
-hides its frames.
+highest. It is a display aid, not Autoware's shape estimation, which is not ported. The
+bus box is approximate too, from the bag's sensor mounts: the sensor kit 6.2 m ahead of
+`base_link` at the front, the side lidars 1.27 m to each side. User scripts in the layout
+make the boxes, the bus and `/studio_script/slice_a/object_count`. Beside the 3D panel
+are the EKF's speed and yaw rate, the objects per frame, the ground filter's points per
+frame and `/diagnostics`. The recording's `/tf` holds the GNSS/INS tree (`ned`,
+`POS_REF`), which does not reach `base_link`; the layout hides its frames.
 
 ## The gap so far
 

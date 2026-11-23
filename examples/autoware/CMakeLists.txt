@@ -42,6 +42,10 @@ hypha_generate_messages(PACKAGE autoware_sensing_msgs
   MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_msgs/autoware_sensing_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
   DEPENDS std_msgs geometry_msgs)
+hypha_generate_messages(PACKAGE applanix_msgs
+  MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/applanix_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}"
+  DEPENDS std_msgs)
 hypha_generate_messages(PACKAGE geographic_msgs
   MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/geographic_info/geographic_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}")
@@ -525,3 +529,22 @@ if(TARGET hypha::testing_mcap)
   target_link_libraries(autoware_slice_a_compare PRIVATE
     hypha::testing_mcap autoware_perception_msgs hypha_rclcpp)
 endif()
+
+# --- The Applanix INS: the driver's ROS outputs of a recorded GSOF 49 and 50 ---------------
+
+# The conversions of autoware/applanix's driver (applanix_driver_ros/conversions.cpp), from
+# its GSOF solution structs to the NavSatFix, GNSS/INS orientation and twist it publishes.
+set(APPLANIX_DRIVER_DIR "${AUTOWARE_UPSTREAM_DIR}/applanix/applanix_driver")
+add_library(autoware_applanix_conversions STATIC
+  "${APPLANIX_DRIVER_DIR}/src/applanix_driver_ros/conversions.cpp")
+target_include_directories(autoware_applanix_conversions PUBLIC "${APPLANIX_DRIVER_DIR}/include")
+target_include_directories(autoware_applanix_conversions SYSTEM PUBLIC ${GeographicLib_INCLUDE_DIRS})
+target_link_libraries(autoware_applanix_conversions PUBLIC
+  applanix_msgs autoware_sensing_msgs hypha_rclcpp ${GeographicLib_LIBRARIES})
+
+# The driver's outputs from a recording of its GSOF 49 and 50 (tools/).
+autoware_component(applanix_lvx_client_replay SOURCES tools/applanix_lvx_client_replay.cpp)
+target_link_libraries(applanix_lvx_client_replay PRIVATE autoware_applanix_conversions)
+
+# --- Localization start-up: the EKF from the first GNSS pose (tools/) --------------------
+autoware_component(gnss_pose_initializer SOURCES tools/gnss_pose_initializer.cpp)

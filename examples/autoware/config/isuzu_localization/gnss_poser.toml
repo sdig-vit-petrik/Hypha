@@ -1,0 +1,8 @@
+# The GNSS poser of ../gnss_poser.toml on the Applanix driver's fix and orientation.
+include = ["../gnss_poser.toml"]
+
+[ports.inputs.fix]
+topic = "/applanix/lvx_client/gnss/fix"
+
+[ports.inputs.autoware_orientation]
+topic = "/applanix/lvx_client/autoware_orientation"

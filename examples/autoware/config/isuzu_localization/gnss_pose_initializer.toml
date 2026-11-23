@@ -1,0 +1,12 @@
+# The EKF's start from the first GNSS pose (tools/gnss_pose_initializer.cpp).
+[services]
+ekf_trigger_node = "/localization/pose_twist_fusion_filter/trigger_node"
+
+[ports.inputs.gnss_pose_cov]
+topic = "/sensing/gnss/pose_with_covariance"
+
+[ports.outputs.initialpose]
+topic = "/initialpose3d"
+
+[ports.inputs.ekf_odom]
+topic = "/localization/pose_twist_fusion_filter/kinematic_state"
