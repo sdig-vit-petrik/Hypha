@@ -167,8 +167,12 @@ fn attach_sim_clock(waitset: &HyphaWaitSet) -> Result<(), Error> {
     if !node.uses_sim_time {
         return Ok(());
     }
-    // A sample of either input wakes this WaitSet, which then drains both.
+    // A sample of either input wakes this WaitSet, which then drains both. A node outside
+    // the lockstep reads no reports, so it has no progress input.
     attach_input_listener(waitset, &node.sim_clock_subscriber)?;
+    if node.replay_follow {
+        return Ok(());
+    }
     attach_input_listener(waitset, &node.progress_subscriber)
 }
 

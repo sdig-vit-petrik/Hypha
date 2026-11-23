@@ -866,8 +866,14 @@ for one chunk of an input's samples (`replay-flow-control.md`, section 6.7). A r
 
 ### 11.2 Plain callbacks in a replay
 
-A node that follows `/clock` (`HYPHA_USE_SIM_TIME`) takes part in the replay with its
-plain callbacks too, not only with its cycles (#72). Its plain subscriptions and plain
+A node that follows `/clock` (`HYPHA_USE_SIM_TIME=1`) takes part in the replay with its
+plain callbacks too, not only with its cycles (#72). A node started with
+`HYPHA_USE_SIM_TIME=follow` takes no part: it follows `/clock` as a ROS node follows
+`ros2 bag play`, reports no progress, is waited for by no one, and runs its callbacks
+as their samples arrive. Its timers still fire against `/clock`, once per clock step
+(no burst), so a player's `--chunk` shorter than the timer's period keeps its rate. It
+is for nodes in a feedback loop that cannot replay in lockstep yet (#103); its replays
+are not identical from run to run. Its plain subscriptions and plain
 timers become events, and a `WaitSet` runs them in time order, so a callback node
 replays identically on any host, at any `--rate` and `--chunk`:
 

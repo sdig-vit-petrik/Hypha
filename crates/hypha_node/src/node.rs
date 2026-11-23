@@ -9,8 +9,9 @@ use crate::status::Error;
 /// A session on the bus. Opaque to the caller.
 ///
 /// `hypha_node_create` reads `HYPHA_USE_SIM_TIME`: `1` or `true` puts the node on
-/// simulated time, `0`, `false` or an unset variable leaves it off, and any other value
-/// is `InvalidArgument`. A refused parameter file or `[log]` table is `InvalidArgument`,
+/// simulated time, in the replay lockstep; `follow` puts it on simulated time outside the
+/// lockstep, as a ROS node follows `ros2 bag play`; `0`, `false` or an unset variable
+/// leaves it off, and any other value is `InvalidArgument`. A refused parameter file or `[log]` table is `InvalidArgument`,
 /// or `InvalidState` for a sink lock another process holds or a second, different `[log]`
 /// table. Each `WaitSet` on the node co-owns it, so the node outlives it whatever order
 /// (or thread) the caller destroys them in.
@@ -35,6 +36,10 @@ pub struct HyphaNode {
     /// The replay progress publisher and what it reported last. Declared before `transport`.
     pub(crate) progress: std::sync::Mutex<crate::node_progress::NodeProgress>,
     pub(crate) uses_sim_time: bool,
+    /// On simulated time outside the replay lockstep (`HYPHA_USE_SIM_TIME=follow`): the
+    /// node reports no progress, so no player or node waits for it, and it holds no event
+    /// for another node's report.
+    pub(crate) replay_follow: bool,
     /// Committed cycles of this node. A node with a clock driver runs no other cycle.
     pub(crate) committed_cycles: std::sync::atomic::AtomicUsize,
     /// True while a committed cycle of this node drives `/clock`.
@@ -58,22 +63,38 @@ const SIM_TIME_WARNING: &str =
 
 static SIM_TIME_WARNED: AtomicBool = AtomicBool::new(false);
 
-/// Whether the environment asks for simulated time.
+/// The clock the environment asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SimTime {
+    /// Host time.
+    Off,
+    /// Simulated time, in the replay lockstep.
+    Lockstep,
+    /// Simulated time, outside the replay lockstep.
+    Follow,
+}
+
+/// The clock the environment asks for.
 ///
-/// An unset variable means `false`. Any other value than `1`, `true`, `0` or `false` is
-/// an error: a wrong deployment setting must stop the node.
-fn sim_time_requested() -> Result<bool, String> {
+/// An unset variable means host time. Any other value than `1`, `true`, `follow`, `0` or
+/// `false` is an error: a wrong deployment setting must stop the node.
+fn sim_time_requested() -> Result<SimTime, String> {
     let text = match std::env::var(SIM_TIME_VARIABLE) {
         Ok(text) => text,
-        Err(std::env::VarError::NotPresent) => return Ok(false),
+        Err(std::env::VarError::NotPresent) => return Ok(SimTime::Off),
         Err(std::env::VarError::NotUnicode(_)) => {
             return Err(format!("{SIM_TIME_VARIABLE} is not readable text"));
         }
     };
-    match text.as_str() {
-        "1" | "true" => Ok(true),
-        "0" | "false" => Ok(false),
-        _ => Err(format!("{SIM_TIME_VARIABLE} must be 1, true, 0 or false, not '{text}'")),
+    parse_sim_time(&text)
+}
+
+fn parse_sim_time(text: &str) -> Result<SimTime, String> {
+    match text {
+        "1" | "true" => Ok(SimTime::Lockstep),
+        "follow" => Ok(SimTime::Follow),
+        "0" | "false" => Ok(SimTime::Off),
+        _ => Err(format!("{SIM_TIME_VARIABLE} must be 1, true, follow, 0 or false, not '{text}'")),
     }
 }
 
@@ -96,11 +117,16 @@ fn create_sim_inputs(
     transport: &hypha_iceoryx2::Iox2Transport,
     introspection: &std::sync::Arc<crate::introspection::IntrospectionRegistry>,
     use_sim_time: bool,
+    replay_follow: bool,
 ) -> Result<SimInputs, Error> {
     if !use_sim_time {
         return Ok((None, None));
     }
     let clock = crate::subscriber::create_sim_clock_subscriber(transport, introspection)?;
+    // Outside the lockstep no report is read: the node waits for no other node.
+    if replay_follow {
+        return Ok((Some(clock), None));
+    }
     let progress = crate::subscriber::create_progress_subscriber(transport, introspection)?;
     Ok((Some(clock), Some(progress)))
 }
@@ -247,7 +273,9 @@ pub fn node_create(
     let config = node_config(parameter_file, config)?;
     let parameters = &*config;
     let parameter_path = config.parameter_file.as_deref();
-    let use_sim_time = sim_time_requested().map_err(|cause| report_invalid(&cause))?;
+    let sim_time = sim_time_requested().map_err(|cause| report_invalid(&cause))?;
+    let use_sim_time = sim_time != SimTime::Off;
+    let replay_follow = sim_time == SimTime::Follow;
     let node_name = effective_node_name(name, parameters)?;
     let transport = hypha_iceoryx2::Iox2Transport::with_name(&node_name).map_err(|cause| {
         log::error!(target: "hypha", "hypha: node creation refused: the iceoryx2 node '{node_name}' cannot be opened: {cause:?}");
@@ -262,7 +290,7 @@ pub fn node_create(
         introspection.record_config(row);
     }
     let (sim_clock_subscriber, progress_subscriber) =
-        create_sim_inputs(&transport, &introspection, use_sim_time)?;
+        create_sim_inputs(&transport, &introspection, use_sim_time, replay_follow)?;
     // Prepared here, not above: a prepared configuration holds the log's prepare gate
     // until it is committed, and the steps before this line wait on other processes.
     let prepared_log = match (parameters.log_table(), parameter_path) {
@@ -315,6 +343,7 @@ pub fn node_create(
         upstream: std::sync::Mutex::new(hypha_runtime::upstream_reports::UpstreamReports::default()),
         progress: std::sync::Mutex::new(crate::node_progress::NodeProgress::default()),
         uses_sim_time: use_sim_time,
+        replay_follow,
         committed_cycles: std::sync::atomic::AtomicUsize::new(0),
         drives_clock: std::sync::atomic::AtomicBool::new(false),
         schema: crate::schema::SchemaState::default(),
@@ -323,7 +352,7 @@ pub fn node_create(
         transport,
     };
     // A process that a backward seek restarted waits here, before any port of its own.
-    if use_sim_time {
+    if use_sim_time && !replay_follow {
         crate::replay_restart::rejoin(&node)?;
     }
     hypha_sys::signal::install();
@@ -349,4 +378,20 @@ pub fn node_ok(node: &HyphaNode) -> bool {
 /// Ask the node to stop.
 pub fn node_shutdown(node: &HyphaNode) {
     node.running.store(false, Ordering::Release);
+}
+
+#[cfg(test)]
+mod sim_time_tests {
+    use super::{SimTime, parse_sim_time};
+
+    #[test]
+    fn follow_is_simulated_time_outside_the_lockstep_and_other_text_is_refused() {
+        assert_eq!(parse_sim_time("1"), Ok(SimTime::Lockstep));
+        assert_eq!(parse_sim_time("true"), Ok(SimTime::Lockstep));
+        assert_eq!(parse_sim_time("follow"), Ok(SimTime::Follow));
+        assert_eq!(parse_sim_time("0"), Ok(SimTime::Off));
+        assert_eq!(parse_sim_time("false"), Ok(SimTime::Off));
+        assert!(parse_sim_time("Follow").is_err());
+        assert!(parse_sim_time("yes").is_err());
+    }
 }

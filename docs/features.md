@@ -119,7 +119,7 @@ fault.**
 | Framework time | What time is it for this node? | `hypha::now()`, `hypha_clock_now_nanos`, `hypha_base/time.h` | app 7, mrs 1, ex 4 |
 | Host time | How much real time passed? | `hypha::steadyNow()`, `hypha_clock_steady_now_nanos`, `hypha_base/clock.h` | app 2, ex 1 |
 | Step time | When is this step? | `CycleTime` (`now`, `stamp`, `dt`, `missed`); `hypha::now()` returns `now` while the step runs | all cycle users |
-| Simulated time | Does this process follow `/clock`? | `HYPHA_USE_SIM_TIME`, `hypha_clock_*sim_time` | tests, tools |
+| Simulated time | Does this process follow `/clock`? | `HYPHA_USE_SIM_TIME` (`1`/`true` in the replay lockstep, `follow` outside it), `hypha_clock_*sim_time` | tests, tools, ex autoware |
 | ROS stamps | How do I write or read a ROS `Header` stamp? | `hypha::toRosTime`, `hypha::fromRosTime`, `message_stamp.h` | app 9 |
 
 ### 3.6 Configuration

@@ -116,7 +116,12 @@ Simulated time, the logging configuration and the stop request belong to the
 process, not to one node:
 
 - **Simulated time.** The environment variable `HYPHA_USE_SIM_TIME` alone puts a node
-  on simulated time; the parameter file has no switch for it. The first node of a
+  on simulated time; the parameter file has no switch for it. `1` or `true` is
+  simulated time in the replay lockstep; `follow` is simulated time outside it: the
+  node reports no progress on `/clock_progress`, so no player or node waits for it, it
+  waits for no other node's report, and its plain callbacks run as their samples
+  arrive while its timers follow `/clock` (execution-model.md §11.2); `0`, `false` or
+  unset is host time, and any other value fails node creation. The first node of a
   process that starts on simulated time writes one `WARN` line, target `hypha`, after
   its `[log]` table is applied:
   `simulated time is on (HYPHA_USE_SIM_TIME): this node follows /clock`. The first
