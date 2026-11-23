@@ -26,11 +26,12 @@ TEST(MapProjectionLoaderNode, ALateSubscriberReceivesTheProjection)
     auto loader = std::make_shared<autoware::map_projection_loader::MapProjectionLoader>(
         rclcpp::NodeOptions{}
     );
-    auto harness = rclcpp::Node::make_shared("projection_test_harness");
+    auto                         harness = rclcpp::Node::make_shared("projection_test_harness");
     std::optional<ProjectorInfo> received;
-    auto subscription = harness->hypha_node().subscribe<ProjectorInfo>(
-        hypha::Topic{"/map/map_projector_info"},
-        [&](const ProjectorInfo::ConstPtr& info) { received = *info; }
+    auto                         subscription = harness->hypha_node().subscribe<ProjectorInfo>(
+        hypha::Topic{"/map/map_projector_info"}, [&](const ProjectorInfo::ConstPtr& info) {
+            received = *info;
+        }
     );
     for (int i = 0; i < 20 && !received; ++i) {
         rclcpp::spin_some(harness);

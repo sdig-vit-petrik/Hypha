@@ -12,6 +12,7 @@ enum rmw_qos_reliability_policy_e {
     RMW_QOS_POLICY_RELIABILITY_UNKNOWN,
     RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE
 };
+
 using rmw_qos_reliability_policy_t = rmw_qos_reliability_policy_e;
 
 enum rmw_qos_durability_policy_e {
@@ -21,4 +22,5 @@ enum rmw_qos_durability_policy_e {
     RMW_QOS_POLICY_DURABILITY_UNKNOWN,
     RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE
 };
+
 using rmw_qos_durability_policy_t = rmw_qos_durability_policy_e;
