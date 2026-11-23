@@ -70,7 +70,7 @@ fn roundtrips_channels_schemas_md5_and_bytes() {
         assert_eq!(counts[0], ("/odom_speed".to_string(), 2));
         assert_eq!(counts[1], ("/gripper_report".to_string(), 1));
 
-        rec.finish();
+        assert_eq!(rec.finish(), Ok(()));
     }
 
     {
@@ -127,7 +127,7 @@ fn roundtrips_zstd_and_uncompressed() {
                 publish_time_nanos: 500_000,
             };
             assert!(rec.record(&sample));
-            rec.finish();
+            assert_eq!(rec.finish(), Ok(()));
         }
 
         {
@@ -188,7 +188,7 @@ fn topics_filter_excludes_unlisted_channels() {
             publish_time_nanos: 10_900,
         };
         assert!(rec.record(&kept_again));
-        rec.finish();
+        assert_eq!(rec.finish(), Ok(()));
     }
 
     {
@@ -236,7 +236,7 @@ fn channels_are_listed_in_recording_order() {
                 publish_time_nanos: time,
             }));
         }
-        rec.finish();
+        assert_eq!(rec.finish(), Ok(()));
     }
 
     let player = Player::new(&path);

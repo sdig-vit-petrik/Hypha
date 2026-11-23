@@ -168,13 +168,18 @@ impl Recorder {
         writer.write_to_known_channel(&header, sample.bytes).is_ok()
     }
 
-    /// Finalizes the MCAP file, writing the summary section and footer. A failed
-    /// finalize is reported on stderr.
-    pub fn finish(&mut self) {
-        if let Some(mut writer) = self.writer.take()
-            && let Err(e) = writer.finish()
-        {
-            eprintln!("hypha record: failed to finalize mcap index: {e}");
+    /// Finalizes the MCAP file, writing the summary section and footer. Only the first
+    /// call writes them; a later one does nothing.
+    ///
+    /// # Errors
+    /// The writer's error when the summary or the footer cannot be written.
+    pub fn finish(&mut self) -> Result<(), String> {
+        match self.writer.take() {
+            Some(mut writer) => writer
+                .finish()
+                .map(|_| ())
+                .map_err(|e| format!("failed to finalize mcap index: {e}")),
+            None => Ok(()),
         }
     }
 
@@ -194,6 +199,8 @@ impl Recorder {
 
 impl Drop for Recorder {
     fn drop(&mut self) {
-        self.finish();
+        if let Err(error) = self.finish() {
+            eprintln!("hypha record: {error}");
+        }
     }
 }

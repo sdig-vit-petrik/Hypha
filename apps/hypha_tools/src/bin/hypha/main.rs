@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod cli;
+mod convert;
 mod foxglove;
 mod intercept;
 mod launch;
@@ -33,7 +34,7 @@ struct Tool {
 }
 
 /// Every tool, in the order `hypha --help` lists them.
-const TOOLS: [Tool; 9] = [
+const TOOLS: [Tool; 10] = [
     Tool {
         subcommand: "topic",
         linked_name: "hypha_topic",
@@ -63,6 +64,12 @@ const TOOLS: [Tool; 9] = [
         linked_name: "hypha_play",
         main: play::main,
         summary: "replay an MCAP recording onto the bus",
+    },
+    Tool {
+        subcommand: "convert",
+        linked_name: "hypha_convert",
+        main: convert::main,
+        summary: "turn a ROS 2 bag into an MCAP recording",
     },
     Tool {
         subcommand: "intercept",
