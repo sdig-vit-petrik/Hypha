@@ -95,7 +95,7 @@ field, and an assessment by persons independent of the development.
 
 | Has | Evidence |
 |---|---|
-| Configuration management | git; `Cargo.lock` pins every Rust dependency; `rust-toolchain.toml` pins the compiler; `abi.revision` |
+| Configuration management | git; `Cargo.lock` pins every Rust dependency; `abi.revision`. The compiler is the latest stable, not pinned |
 | Change control by gates | `check.sh`, `test.sh`, CI (`.github/workflows/ci.yml`) |
 | Dependency advisories and licences | `deny.toml`, `cargo deny` in `check.sh` |
 
@@ -191,7 +191,7 @@ measures that would catch their errors.
 
 | Tool | Class | State |
 |---|---|---|
-| `rustc` 1.98.0, LLVM, `cargo` | T3 | Pinned. Not qualified. |
+| `rustc` (latest stable), LLVM, `cargo` | T3 | Not pinned, for convenience. Not qualified. |
 | C++ compiler and standard library of the builder image | T3 | Pinned by the image. Not qualified. |
 | `cbindgen` (generates `hypha_ffi.h`) | T3 | Output committed and compared in `check.sh`. |
 | `hypha_msggen` (generates message types) | T3 | Golden MD5 of every message, round-trip tests (FSR-04, FSR-21). |
