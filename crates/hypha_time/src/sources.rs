@@ -33,9 +33,21 @@ impl SimulatedClock {
     /// Move the clock forward by `span`, saturating at the latest time.
     pub(crate) fn advance(&self, span: Duration) {
         self.has_value.store(true, Ordering::Release);
-        let _ = self.nanos.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-            Some(current.saturating_add(span.nanos()))
-        });
+        // A compare-exchange loop, not `fetch_update`: newer Rust deprecates that name, and
+        // its successor `try_update` is newer than the minimum supported Rust.
+        let mut current = self.nanos.load(Ordering::Acquire);
+        loop {
+            let next = current.saturating_add(span.nanos());
+            match self.nanos.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     /// The reading the clock holds now.
