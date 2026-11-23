@@ -5,7 +5,8 @@
 /// (`/tf`, `/tf_static`). As in ROS, the Buffer is a BufferCore with a clock, and the
 /// listener feeds a BufferCore: it creates the hypha buffer on its node and hands it over.
 /// A lookup before that, or one that fails, throws the tf2 exception of its kind.
-/// A lookup never waits: a timeout is refused (hypha#91, decision (b)).
+/// A lookup never waits (hypha#91, decision (b)): a timeout is accepted and not waited
+/// for, as the shim's managed_transform_buffer ignores it.
 
 #include <hypha/transform_buffer.h>
 
@@ -36,17 +37,14 @@ class BufferCore
     /// tf2::TimePointZero is the latest time the chain has in common.
     /// @throws tf2::LookupException (unknown or invalid frame), tf2::ConnectivityException,
     ///         tf2::ExtrapolationException (outside the buffer), tf2::TransformException
-    ///         (no listener yet), std::invalid_argument for a timeout.
+    ///         (no listener yet).
     geometry_msgs::msg::TransformStamped lookupTransform(
         const std::string&    target,
         const std::string&    source,
         const tf2::TimePoint& time,
-        const tf2::Duration   timeout = tf2::Duration::zero()
+        const tf2::Duration /*timeout*/ = tf2::Duration::zero()
     ) const
     {
-        if (timeout != tf2::Duration::zero()) {
-            throw std::invalid_argument("tf2: a lookup never waits on hypha; give no timeout");
-        }
         if (!this->transforms_) {
             throw tf2::TransformException("tf2: no TransformListener feeds this buffer yet");
         }
@@ -74,6 +72,56 @@ class BufferCore
         throw tf2::TransformException(what);
     }
 
+    /// As above, at an rclcpp time; tf2_ros::Buffer's overload.
+    geometry_msgs::msg::TransformStamped lookupTransform(
+        const std::string&  target,
+        const std::string&  source,
+        const rclcpp::Time& time,
+        const rclcpp::Duration& /*timeout*/ = rclcpp::Duration::from_nanoseconds(0)
+    ) const
+    {
+        return this->lookupTransform(
+            target, source, tf2::TimePoint(tf2::Duration(time.nanoseconds()))
+        );
+    }
+
+    /// Whether lookupTransform would find the transform; the reason in @p error_msg when not.
+    bool canTransform(
+        const std::string&    target,
+        const std::string&    source,
+        const tf2::TimePoint& time,
+        const tf2::Duration   timeout = tf2::Duration::zero(),
+        std::string*          error_msg = nullptr
+    ) const
+    {
+        try {
+            (void)this->lookupTransform(target, source, time, timeout);
+            return true;
+        } catch (const tf2::TransformException& failure) {
+            if (error_msg != nullptr) {
+                *error_msg = failure.what();
+            }
+            return false;
+        }
+    }
+
+    bool canTransform(
+        const std::string&  target,
+        const std::string&  source,
+        const rclcpp::Time& time,
+        const rclcpp::Duration& /*timeout*/ = rclcpp::Duration::from_nanoseconds(0),
+        std::string* error_msg = nullptr
+    ) const
+    {
+        return this->canTransform(
+            target,
+            source,
+            tf2::TimePoint(tf2::Duration(time.nanoseconds())),
+            tf2::Duration::zero(),
+            error_msg
+        );
+    }
+
   private:
     friend class tf2_ros::TransformListener;
 
@@ -93,21 +141,37 @@ class Buffer : public tf2::BufferCore
     }
 };
 
-/// Subscribes `/tf` and `/tf_static` on @p node for @p buffer. A spin thread is never
-/// started: the transforms arrive on the node's spin thread.
+/// Subscribes `/tf` and `/tf_static` for @p buffer. A spin thread is never started: the
+/// transforms arrive on the spin thread of the process, which runs every subscription of
+/// its session. Without a node, as ROS's standalone listener, it subscribes through a
+/// handle on the process session.
 class TransformListener
 {
   public:
+    explicit TransformListener(tf2::BufferCore& buffer, bool /*spin_thread*/ = true)
+    {
+        this->attach(buffer, this->session_);
+    }
+
     TransformListener(tf2::BufferCore& buffer, rclcpp::Node& node, bool /*spin_thread*/ = true)
     {
-        if (buffer.transforms_) {
-            throw std::invalid_argument("tf2_ros::TransformListener: the buffer has one already");
-        }
-        buffer.transforms_ = std::make_unique<hypha::TransformBuffer>(node.hypha_node());
+        this->attach(buffer, node.hypha_node());
     }
 
     TransformListener(const TransformListener&) = delete;
     TransformListener& operator=(const TransformListener&) = delete;
+
+  private:
+    static void attach(tf2::BufferCore& buffer, hypha::Node& node)
+    {
+        if (buffer.transforms_) {
+            throw std::invalid_argument("tf2_ros::TransformListener: the buffer has one already");
+        }
+        buffer.transforms_ = std::make_unique<hypha::TransformBuffer>(node);
+    }
+
+    /// A handle on the process session, for a listener without a node.
+    hypha::Node session_;
 };
 
 }  // namespace tf2_ros

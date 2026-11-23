@@ -103,6 +103,38 @@ class Duration
         return hypha::Duration::fromNanos(this->nanos_);
     }
 
+    /// The message duration, as rclcpp converts it: whole seconds rounded down, the
+    /// nanoseconds in [0, 1 s).
+    operator builtin_interfaces::msg::Duration() const  // NOLINT: implicit, as in rclcpp
+    {
+        constexpr int64_t kSecond = 1000000000;
+        int64_t           secs = this->nanos_ / kSecond;
+        int64_t           nanos = this->nanos_ % kSecond;
+        if (nanos < 0) {
+            secs -= 1;
+            nanos += kSecond;
+        }
+        builtin_interfaces::msg::Duration out;
+        out.secs = static_cast<int32_t>(secs);
+        out.nsecs = static_cast<int32_t>(nanos);
+        return out;
+    }
+
+    Duration operator+(const Duration& other) const
+    {
+        return from_nanoseconds(this->nanos_ + other.nanos_);
+    }
+
+    Duration operator-(const Duration& other) const
+    {
+        return from_nanoseconds(this->nanos_ - other.nanos_);
+    }
+
+    Duration operator-() const
+    {
+        return from_nanoseconds(-this->nanos_);
+    }
+
     auto operator<=>(const Duration&) const = default;
 
   private:
@@ -134,6 +166,12 @@ class Time
             throw std::invalid_argument("rclcpp::Time: a stamp with nsecs of one second or more");
         }
         this->nanos_ = value->nanos();
+    }
+
+    /// From a message stamp, keeping @p clockType as rclcpp does.
+    Time(const builtin_interfaces::msg::Time& stamp, ClockType clockType) : Time(stamp)
+    {
+        this->clockType_ = clockType;
     }
 
     /// @throws std::out_of_range for a time before the epoch or after 2106.
@@ -169,12 +207,24 @@ class Time
 
     Time operator-(const Duration& d) const
     {
-        return Time(this->nanos_ - d.nanoseconds());
+        return Time(this->nanos_ - d.nanoseconds(), this->clockType_);
     }
 
     Time operator+(const Duration& d) const
     {
-        return Time(this->nanos_ + d.nanoseconds());
+        return Time(this->nanos_ + d.nanoseconds(), this->clockType_);
+    }
+
+    Time& operator+=(const Duration& d)
+    {
+        this->nanos_ += d.nanoseconds();
+        return *this;
+    }
+
+    Time& operator-=(const Duration& d)
+    {
+        this->nanos_ -= d.nanoseconds();
+        return *this;
     }
 
     bool operator==(const Time& other) const
@@ -192,16 +242,44 @@ class Time
     ClockType clockType_{ClockType::RCL_ROS_TIME};
 };
 
-/// The framework clock: hypha::now(), simulated under HYPHA_USE_SIM_TIME.
+/// A clock of rcl's kinds: ROS time is the framework clock, hypha::now(), simulated under
+/// HYPHA_USE_SIM_TIME; system time is the host's wall clock; steady time its monotonic
+/// clock.
 class Clock
 {
   public:
     using SharedPtr = std::shared_ptr<Clock>;
 
+    explicit Clock(ClockType clockType = ClockType::RCL_ROS_TIME) : clockType_(clockType)
+    {
+    }
+
     Time now() const
     {
-        return Time(hypha::now().nanos());
+        using namespace std::chrono;
+        switch (this->clockType_) {
+            case ClockType::RCL_STEADY_TIME:
+                return Time(
+                    duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count(),
+                    this->clockType_
+                );
+            case ClockType::RCL_SYSTEM_TIME:
+                return Time(
+                    duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count(),
+                    this->clockType_
+                );
+            default:
+                return Time(hypha::now().nanos(), this->clockType_);
+        }
     }
+
+    ClockType get_clock_type() const
+    {
+        return this->clockType_;
+    }
+
+  private:
+    ClockType clockType_;
 };
 
 // ---------------------------------------------------------------------------------------
@@ -943,10 +1021,17 @@ class Node : public std::enable_shared_from_this<Node>
 
     /// The value of @p name, or @p defaultValue when the file does not hold it.
     /// @throws hypha::ParameterError for a value that does not read as T.
+    /// A list type (`std::vector<T>`) given as T reads a list, as the overload below.
     template <class T>
     T declare_parameter(const std::string& name, const T& defaultValue)
     {
-        return this->remember(name, hypha::config().optional<T>(name, defaultValue));
+        if constexpr (requires { typename T::value_type; } && !std::is_same_v<T, std::string>) {
+            return hypha::config().optionalArray<typename T::value_type>(name).value_or(
+                defaultValue
+            );
+        } else {
+            return this->remember(name, hypha::config().optional<T>(name, defaultValue));
+        }
     }
 
     std::string declare_parameter(const std::string& name, const char* defaultValue)
@@ -1228,6 +1313,32 @@ TimerBase::SharedPtr create_timer(
         std::forward<Callback>(callback)
     );
 }
+
+/// rclcpp::Rate's period. A Rate only gives its period here: nodes time their work with
+/// timers, and the shim offers no sleep.
+class Rate
+{
+  public:
+    explicit Rate(double rate)
+        : period_(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::duration<double>(1.0 / rate)
+              )
+          )
+    {
+        if (!(rate > 0.0)) {
+            throw std::invalid_argument("rclcpp::Rate: the rate must be positive");
+        }
+    }
+
+    std::chrono::nanoseconds period() const
+    {
+        return this->period_;
+    }
+
+  private:
+    std::chrono::nanoseconds period_;
+};
 
 // ---------------------------------------------------------------------------------------
 // Process

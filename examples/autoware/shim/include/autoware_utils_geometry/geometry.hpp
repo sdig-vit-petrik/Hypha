@@ -4,7 +4,8 @@
 /// The part of autoware_utils_geometry/geometry.hpp (autoware_utils 1.11.0) the port uses,
 /// as upstream writes it (src/geometry/geometry.cpp for the functions it defines there):
 /// the distances between two points that have `x`, `y` and `z`, the roll, pitch and yaw of
-/// a quaternion, a quaternion from them, a point, and the transform of a pose. Upstream's
+/// a quaternion, a quaternion from them, a point, a translation, a pose offset in its own
+/// frame (calc_offset_pose), and the transform of a pose. Upstream's
 /// header brings the planning messages and Boost.Geometry with it; the tf2 types are the
 /// vendored ones (upstream/geometry2). `msg/covariance.hpp` is upstream's, unchanged.
 
@@ -98,6 +99,37 @@ inline geometry_msgs::msg::Quaternion create_quaternion_from_yaw(const double ya
     tf2::Quaternion q;
     q.setRPY(0, 0, yaw);
     return tf2::toMsg(q);
+}
+
+inline geometry_msgs::msg::Vector3
+create_translation(const double x, const double y, const double z)
+{
+    geometry_msgs::msg::Vector3 v;
+    v.x = x;
+    v.y = y;
+    v.z = z;
+    return v;
+}
+
+/// @p p moved by (x, y, z) and turned by @p yaw in its own frame.
+inline geometry_msgs::msg::Pose calc_offset_pose(
+    const geometry_msgs::msg::Pose& p,
+    const double                    x,
+    const double                    y,
+    const double                    z,
+    const double                    yaw = 0.0
+)
+{
+    geometry_msgs::msg::Pose      pose;
+    geometry_msgs::msg::Transform transform;
+    transform.translation = create_translation(x, y, z);
+    transform.rotation = create_quaternion_from_yaw(yaw);
+    tf2::Transform tf_pose;
+    tf2::Transform tf_offset;
+    tf2::fromMsg(transform, tf_offset);
+    tf2::fromMsg(p, tf_pose);
+    tf2::toMsg(tf_pose * tf_offset, pose);
+    return pose;
 }
 
 inline geometry_msgs::msg::Transform pose2transform(const geometry_msgs::msg::Pose& pose)

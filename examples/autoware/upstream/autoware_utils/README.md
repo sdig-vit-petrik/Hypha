@@ -15,9 +15,14 @@ Only these files, unchanged:
   the header-only diagnostics publisher of the clustering, on the shim's `rclcpp`;
 - `autoware_utils_geometry/include/autoware_utils_geometry/msg/covariance.hpp`, the
   covariance indices of the EKF;
-- of the `autoware_utils` umbrella package, the three forwarding headers the
-  concatenate node includes: `ros/debug_publisher.hpp`, `ros/diagnostics_interface.hpp`
-  and `system/stop_watch.hpp`, each a `using namespace` of the split package.
+- of the `autoware_utils` umbrella package, the forwarding headers the ported nodes
+  include: `ros/debug_publisher.hpp`, `ros/diagnostics_interface.hpp`,
+  `ros/published_time_publisher.hpp`, `system/stop_watch.hpp`, `geometry/geometry.hpp` and
+  `math/unit_conversion.hpp`, each a `using namespace` of the split package;
+- `autoware_utils_geometry`'s Boost.Geometry types and polygon utilities
+  (`boost_geometry.hpp`, `boost_polygon_utils.hpp`, `src/geometry/boost_polygon_utils.cpp`),
+  for the tracker; the patch removes the `PredictedObject` overloads, whose message holds a
+  `builtin_interfaces/Duration` (#45);
 
 The ROS-bound utilities the ported nodes use (`autoware_utils_debug`'s debug and
 published-time publishers, `autoware_utils_tf`'s transform listener) are the shim's,

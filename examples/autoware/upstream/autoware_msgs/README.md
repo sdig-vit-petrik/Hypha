@@ -9,7 +9,8 @@ Only the messages the ported nodes publish, unchanged, each package with its
 `package.xml`:
 
 - `autoware_perception_msgs`: `DetectedObjects`, `DetectedObject`,
-  `DetectedObjectKinematics`, `ObjectClassification` and `Shape`;
+  `DetectedObjectKinematics`, `ObjectClassification`, `Shape`, and the tracker's
+  `TrackedObjects`, `TrackedObject` and `TrackedObjectKinematics`;
 - `autoware_sensing_msgs`: `ConcatenatedPointCloudInfo`, `SourcePointCloudInfo`,
   `GnssInsOrientationStamped` and `GnssInsOrientation`.
 

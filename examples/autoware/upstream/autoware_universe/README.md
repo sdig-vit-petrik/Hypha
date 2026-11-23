@@ -16,6 +16,19 @@ Only the files the hypha port compiles are copied, at their upstream paths:
   `test_concatenate_node_unit.cpp`), `config/concatenate_and_time_sync_node.param.yaml`,
   `docs/concatenate-data.md` and `package.xml`.
 
-The files are unchanged. The edits the port needs are in
-`../patches/autoware_pointcloud_preprocessor.patch`; the build applies it to a copy in
-the build directory.
+- `perception/autoware_euclidean_cluster`: the voxel-grid based clustering of the
+  rule-based detection, which keeps the cluster points: `include/` without the label-based
+  variant, `lib/` (`confusable_cluster_merger`, `utils`, `voxel_grid_based_euclidean_cluster`),
+  its node in `src/`, its unit test, `config/`, `package.xml`, `README.md`.
+- `perception/autoware_shape_estimation`: `include/` and `lib/` without the TensorRT
+  estimator (upstream's CMake leaves it out without CUDA), the node in `src/`, the unit
+  tests `test_shape_estimator.cpp` and `test_corrector_utils.cpp` (the node test needs
+  rclcpp executors), `config/`, `package.xml`, `README.md`.
+- `perception/autoware_detected_object_feature_remover`: `include/`, `lib/`, `src/`, its
+  unit test, `package.xml`, `README.md`.
+- `perception/autoware_multi_object_tracker`: `include/`, `lib/`, `src/`, `config/`, and the
+  unit tests `test_vehicle_tracker.cpp` and `test_uuid_generator.cpp`; the others read
+  rosbag2 bags through their bench helpers, which are not ported.
+
+The files are unchanged. The edits the port needs are in `../patches/`, one file per
+package; the build applies them to a copy in the build directory.

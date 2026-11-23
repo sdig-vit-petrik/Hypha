@@ -30,10 +30,13 @@ hypha_generate_messages(PACKAGE pcl_msgs
   MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/pcl_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
   DEPENDS std_msgs sensor_msgs)
+hypha_generate_messages(PACKAGE unique_identifier_msgs
+  MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/unique_identifier_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}")
 hypha_generate_messages(PACKAGE autoware_perception_msgs
   MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_msgs/autoware_perception_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
-  DEPENDS std_msgs geometry_msgs)
+  DEPENDS std_msgs geometry_msgs unique_identifier_msgs)
 hypha_generate_messages(PACKAGE autoware_internal_msgs
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/autoware_internal_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
@@ -46,6 +49,10 @@ hypha_generate_messages(PACKAGE applanix_msgs
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/applanix_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
   DEPENDS std_msgs)
+hypha_generate_messages(PACKAGE tier4_perception_msgs
+  MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/tier4_perception_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}"
+  DEPENDS std_msgs sensor_msgs autoware_perception_msgs)
 hypha_generate_messages(PACKAGE geographic_msgs
   MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/geographic_info/geographic_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}")
@@ -548,3 +555,129 @@ target_link_libraries(applanix_lvx_client_replay PRIVATE autoware_applanix_conve
 
 # --- Localization start-up: the EKF from the first GNSS pose (tools/) --------------------
 autoware_component(gnss_pose_initializer SOURCES tools/gnss_pose_initializer.cpp)
+
+# --- Tracking (#114): Universe's autoware_euclidean_cluster (autoware_universe 0.53.2) ----
+
+# The voxel-grid based clustering of Autoware's rule-based detection: clusters with their
+# points (tier4_perception_msgs/DetectedObjectsWithFeature), which shape estimation reads.
+autoware_patched(autoware_universe_euclidean_cluster
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_universe/perception/autoware_euclidean_cluster"
+  UNIVERSE_CLUSTER_DIR)
+add_library(autoware_universe_euclidean_cluster_core STATIC
+  "${UNIVERSE_CLUSTER_DIR}/lib/confusable_cluster_merger.cpp"
+  "${UNIVERSE_CLUSTER_DIR}/lib/utils.cpp"
+  "${UNIVERSE_CLUSTER_DIR}/lib/voxel_grid_based_euclidean_cluster.cpp")
+target_include_directories(autoware_universe_euclidean_cluster_core PUBLIC
+  "${UNIVERSE_CLUSTER_DIR}/include"
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils/include")
+target_link_libraries(autoware_universe_euclidean_cluster_core PUBLIC
+  autoware_point_types autoware_pcl autoware_perception_msgs tier4_perception_msgs
+  autoware_utils_extra)
+
+autoware_component(autoware_universe_voxel_grid_based_euclidean_cluster
+  SOURCES "${UNIVERSE_CLUSTER_DIR}/src/voxel_grid_based_euclidean_cluster_node.cpp")
+target_link_libraries(autoware_universe_voxel_grid_based_euclidean_cluster PRIVATE
+  autoware_universe_euclidean_cluster_core)
+
+autoware_test(autoware_universe_voxel_grid_based_euclidean_cluster_upstream_test
+  SOURCES "${UNIVERSE_CLUSTER_DIR}/test/test_voxel_grid_based_euclidean_cluster.cpp"
+  LIBS autoware_universe_euclidean_cluster_core)
+
+# --- Tracking (#114): autoware_shape_estimation (autoware_universe 0.53.2) ----------------
+
+# The CPU estimator: L-shape boxes, convex hulls and cylinders by label, then filters and
+# correctors. Without CUDA upstream's CMake leaves the TensorRT estimator out, as here.
+find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+set(SHAPE_ESTIMATION_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_universe/perception/autoware_shape_estimation")
+file(GLOB SHAPE_ESTIMATION_SOURCES
+  "${SHAPE_ESTIMATION_DIR}/lib/*.cpp" "${SHAPE_ESTIMATION_DIR}/lib/*/*.cpp")
+add_library(autoware_shape_estimation_core STATIC ${SHAPE_ESTIMATION_SOURCES})
+target_include_directories(autoware_shape_estimation_core PUBLIC "${SHAPE_ESTIMATION_DIR}/include"
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils/include")
+target_include_directories(autoware_shape_estimation_core SYSTEM PUBLIC ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(autoware_shape_estimation_core PUBLIC
+  ${OpenCV_LIBS} autoware_pcl autoware_perception_msgs tier4_perception_msgs hypha_rclcpp)
+
+autoware_component(autoware_shape_estimation
+  SOURCES "${SHAPE_ESTIMATION_DIR}/src/shape_estimation_node.cpp")
+target_link_libraries(autoware_shape_estimation PRIVATE
+  autoware_shape_estimation_core autoware_utils_extra)
+
+autoware_test(autoware_shape_estimation_upstream_test
+  SOURCES "${SHAPE_ESTIMATION_DIR}/test/shape_estimation/test_shape_estimator.cpp"
+    "${SHAPE_ESTIMATION_DIR}/test/test_corrector_utils.cpp"
+  LIBS autoware_shape_estimation_core GTest::gtest_main)
+
+# --- Tracking (#114): autoware_detected_object_feature_remover (autoware_universe 0.53.2) --
+
+set(FEATURE_REMOVER_DIR
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_universe/perception/autoware_detected_object_feature_remover")
+add_library(autoware_detected_object_feature_remover_core STATIC
+  "${FEATURE_REMOVER_DIR}/lib/convert.cpp")
+target_include_directories(autoware_detected_object_feature_remover_core PUBLIC
+  "${FEATURE_REMOVER_DIR}/include")
+target_include_directories(autoware_detected_object_feature_remover_core SYSTEM PUBLIC
+  ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(autoware_detected_object_feature_remover_core PUBLIC
+  ${OpenCV_LIBS} autoware_pcl autoware_perception_msgs tier4_perception_msgs)
+
+autoware_component(autoware_detected_object_feature_remover
+  SOURCES "${FEATURE_REMOVER_DIR}/src/detected_object_feature_remover_node.cpp")
+target_link_libraries(autoware_detected_object_feature_remover PRIVATE
+  autoware_detected_object_feature_remover_core autoware_utils_extra)
+target_include_directories(autoware_detected_object_feature_remover PRIVATE
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils/include")
+
+autoware_test(autoware_detected_object_feature_remover_upstream_test
+  SOURCES "${FEATURE_REMOVER_DIR}/test/test_detected_object_feature_remover_node.cpp"
+  LIBS autoware_detected_object_feature_remover_core GTest::gtest_main)
+
+# --- Tracking (#114): autoware_multi_object_tracker (autoware_universe 0.53.2) ------------
+
+# muSSP (tier4/muSSP, pinned by Autoware 2.1.0): the min-cost-flow solver of the tracker's
+# data association.
+add_library(autoware_mussp STATIC
+  "${AUTOWARE_UPSTREAM_DIR}/muSSP/muSSP/Graph.cpp" "${AUTOWARE_UPSTREAM_DIR}/muSSP/muSSP/Node.cpp"
+  "${AUTOWARE_UPSTREAM_DIR}/muSSP/muSSP/Sink.cpp" "${AUTOWARE_UPSTREAM_DIR}/muSSP/muSSP/mussp.cpp")
+# Installed as <mussp/mussp.h>, as the tracker includes it.
+set(MUSSP_INCLUDE "${CMAKE_CURRENT_BINARY_DIR}/mussp_include")
+file(MAKE_DIRECTORY "${MUSSP_INCLUDE}")
+file(CREATE_LINK "${AUTOWARE_UPSTREAM_DIR}/muSSP/muSSP" "${MUSSP_INCLUDE}/mussp" SYMBOLIC)
+target_include_directories(autoware_mussp PUBLIC "${MUSSP_INCLUDE}")
+target_compile_features(autoware_mussp PUBLIC cxx_std_14)
+
+# autoware_utils_geometry's polygon utilities (autoware_utils 1.11.0), patched without the
+# PredictedObject overloads.
+autoware_patched(autoware_utils_geometry
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_geometry" UTILS_GEOMETRY_DIR)
+add_library(autoware_utils_geometry_polygon STATIC
+  "${UTILS_GEOMETRY_DIR}/src/geometry/boost_polygon_utils.cpp")
+target_include_directories(autoware_utils_geometry_polygon BEFORE PUBLIC
+  "${UTILS_GEOMETRY_DIR}/include")
+target_link_libraries(autoware_utils_geometry_polygon PUBLIC
+  hypha_rclcpp autoware_perception_msgs Boost::headers)
+
+autoware_patched(autoware_multi_object_tracker
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_universe/perception/autoware_multi_object_tracker"
+  TRACKER_DIR)
+file(GLOB_RECURSE TRACKER_LIB_SOURCES "${TRACKER_DIR}/lib/*.cpp")
+add_library(autoware_multi_object_tracker_core STATIC ${TRACKER_LIB_SOURCES}
+  "${TRACKER_DIR}/src/multi_object_tracker_core.cpp"
+  "${TRACKER_DIR}/src/debugger/debugger.cpp"
+  "${TRACKER_DIR}/src/debugger/debug_object.cpp"
+  "${TRACKER_DIR}/src/processor/processor.cpp"
+  "${TRACKER_DIR}/src/processor/input_manager.cpp")
+target_include_directories(autoware_multi_object_tracker_core PUBLIC
+  "${TRACKER_DIR}/include" "${TRACKER_DIR}/src")
+target_link_libraries(autoware_multi_object_tracker_core PUBLIC
+  autoware_mussp autoware_utils_geometry_polygon autoware_utils_extra
+  autoware_perception_msgs visualization_msgs hypha_rclcpp)
+
+autoware_component(autoware_multi_object_tracker
+  SOURCES "${TRACKER_DIR}/src/multi_object_tracker_node.cpp")
+target_link_libraries(autoware_multi_object_tracker PRIVATE autoware_multi_object_tracker_core)
+
+autoware_test(autoware_multi_object_tracker_upstream_test
+  SOURCES "${TRACKER_DIR}/test/test_vehicle_tracker.cpp"
+    "${TRACKER_DIR}/test/test_uuid_generator.cpp"
+  LIBS autoware_multi_object_tracker_core GTest::gtest_main)

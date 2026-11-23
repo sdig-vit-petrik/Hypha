@@ -10,6 +10,10 @@
 /// starts again when no EKF odometry arrives within a second of the trigger: an EKF that
 /// restarted, or one that answered and then exited, is started anew.
 ///
+/// The initial pose takes the covariance of output_pose_covariance, as pose_initializer's
+/// does: the GNSS pose's own covariance can hold a zero rotation variance before the INS
+/// reports its errors, and an EKF started from it divides by zero.
+///
 /// A pose with a value that is not finite is skipped: the poser's first fix can meet an
 /// orientation that has not arrived yet, and an EKF started from it would stay invalid.
 
@@ -18,8 +22,11 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 
+#include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace gnss_pose_initializer {
 
@@ -28,6 +35,9 @@ class GnssPoseInitializer : public rclcpp::Node
   public:
     explicit GnssPoseInitializer(const rclcpp::NodeOptions& options)
         : Node("gnss_pose_initializer", options)
+        , output_pose_covariance_(
+              covariance(declare_parameter<std::vector<double>>("output_pose_covariance"))
+          )
         , initial_pose_pub_(
               create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("initialpose", 1)
           )
@@ -74,7 +84,13 @@ class GnssPoseInitializer : public rclcpp::Node
             );
             return;
         }
-        this->initial_pose_pub_->publish(pose);
+        auto initial = pose;
+        std::copy(
+            this->output_pose_covariance_.begin(),
+            this->output_pose_covariance_.end(),
+            initial.pose.covariance.begin()
+        );
+        this->initial_pose_pub_->publish(initial);
         auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
         request->data = true;
         this->trigger_client_->async_send_request(
@@ -111,6 +127,15 @@ class GnssPoseInitializer : public rclcpp::Node
         }
     }
 
+    /// The 36 values of a 6x6 covariance. @throws std::invalid_argument for another count.
+    static std::vector<double> covariance(std::vector<double> values)
+    {
+        if (values.size() != 36) {
+            throw std::invalid_argument("output_pose_covariance must hold 36 values");
+        }
+        return values;
+    }
+
     static bool is_finite(const geometry_msgs::msg::PoseWithCovarianceStamped& pose)
     {
         const auto& p = pose.pose.pose.position;
@@ -123,9 +148,10 @@ class GnssPoseInitializer : public rclcpp::Node
         return true;
     }
 
-    bool initialized_{false};
-    bool odometry_seen_{false};
-    int  silent_checks_{0};
+    std::vector<double> output_pose_covariance_;
+    bool                initialized_{false};
+    bool                odometry_seen_{false};
+    int                 silent_checks_{0};
     rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_pub_;
     rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr                           trigger_client_;
     rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr gnss_pose_sub_;

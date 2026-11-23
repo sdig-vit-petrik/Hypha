@@ -7,6 +7,7 @@ in #47. Autoware 2.1.0: `autoware_core` 1.10.0, `autoware_universe` 0.53.2.
 | Slice | Pipeline | State |
 |---|---|---|
 | A, detection (Leo Drive Isuzu bus) | crop box → concatenate → ground filter → euclidean cluster, a voxel downsample beside it | `autoware_crop_box_filter`, the voxel grid filter of `autoware_downsample_filters`, `autoware_ground_filter`, both nodes of `autoware_euclidean_cluster_object_detector` and the concatenate-and-time-sync node of `autoware_pointcloud_preprocessor` ported; every node on synthetic inputs; ground filter → clustering, with the voxel downsample beside it, end to end on a recorded bag, deterministic (section "Slice A end to end"); the comparison against ROS 2 open |
+| Tracking on the Isuzu bus (#114) | ground filter → clustering (Universe) → shape estimation → feature remover → multi-object tracker in `map` | the rule-based detection of Autoware 2.1.0 and its tracker ported, every upstream unit test that needs no rosbag2 on synthetic inputs; on bag 4 in the Foxglove demo |
 | B, localization (Istanbul Open Dataset) | crop box → downsample → NDT → gyro odometer → EKF | `autoware_ekf_localizer` and `autoware_gyro_odometer` ported, on synthetic inputs; the rest open. For the Isuzu bags, `autoware_gnss_poser` and `autoware_map_projection_loader` ported too, with `autoware_geography_utils` on Lanelet2's projection and map reading; on synthetic inputs. On the Isuzu bags, which have no map, GNSS and the Applanix INS feed the EKF in place of NDT (#110) |
 
 Each node first computes on synthetic inputs in tests, and then on a recorded bag, replayed
@@ -53,6 +54,11 @@ in lockstep (#46, #72).
 | `Client::async_send_request` (with or without a callback), `service_is_ready`, `prune_pending_requests` | the future is set on the spin thread when the response arrives; ready means a server reads the request topic. `wait_for_service` and a blocking call are not offered |
 | `create_callback_group`, `CallbackGroup` | kept, without effect: every callback runs on the one spin thread |
 | `QoS::reliability`, `QoS::durability` with rmw's kinds (`rmw/qos_profiles.h`) | reliable or best effort, volatile or transient local; a kind that leaves the choice to the middleware is refused |
+| `rclcpp::Clock(type)` | ROS time is the framework clock; system time the host's wall clock; steady time its monotonic clock |
+| `rclcpp::Time(stamp, clock_type)`, `Time +=`/`-=` a `Duration`, `Duration` arithmetic, `Duration` to a message duration | as rclcpp |
+| `rclcpp::Rate(hz).period()` | the period only: nodes time their work with timers, and no `sleep` is offered |
+| `declare_parameter<std::vector<T>>(name, default)` | a list read, as the overload without a type |
+| `diagnostic_updater::Updater`, `DiagnosticStatusWrapper` | the tasks run every period on a timer of the node, one `/diagnostics` array with a `<node>: <task>` status each; `summary`, `add`, `setHardwareID`, `setPeriod`, `force_update`. The `diagnostic_updater.period` parameter is not read |
 | `rclcpp::spin(node)` | `node.run()` on the calling thread: a single-threaded executor |
 | `rclcpp::spin_some(node)` | `node.runFor()` with the shortest limit: one dispatch turn, the due timers and the queued samples, never a wait; a failed run throws |
 | `rcl_clock_type_t`, `RCL_ROS_TIME` | rcl's enum at global scope; every kind means framework time |
@@ -67,6 +73,10 @@ in lockstep (#46, #72).
 | `tf2::Quaternion`, `Vector3`, `Matrix3x3`, `Transform`, `tf2::Stamped`, `tf2::TimePointZero`, the tf2 exceptions | geometry2's headers, vendored (`upstream/geometry2`) |
 | `tf2::getYaw`, `tf2::getEulerYPR`, `tf2::toMsg`/`fromMsg` of a quaternion, vector, transform or pose, `tf2::doTransform` of a `Vector3` or `Vector3Stamped` (KDL's rotation of a quaternion) | tf2's formulas in the shim (`shim/include/tf2/utils.hpp`, `tf2_geometry_msgs/`); upstream's headers need tf2's conversion machinery and KDL |
 | `tf2::BufferCore`, `tf2_ros::Buffer` (a BufferCore with a clock), `tf2_ros::TransformListener` | `hypha::TransformBuffer` on `/tf` and `/tf_static`; `lookupTransform` at `TimePointZero` is the latest common time, never waits, and throws the tf2 exception of the failure's kind |
+| `tf2_ros::TransformListener(buffer)`, without a node | subscribes through a handle on the process session, which the node's spin serves, as ROS's standalone listener spins its own |
+| `canTransform`, `lookupTransform` at an `rclcpp::Time` | as the tf2 lookups above; a timeout is accepted and never waited for |
+| `tf2::doTransform` of a `Pose`, `tf2::fromMsg` of a `Pose` or `Transform` into a `tf2::Transform` or an Eigen affine, `tf2::transformCovariance` | tf2_geometry_msgs' and tf2_eigen's formulas, on the vendored tf2 types |
+| `autoware_utils_debug::BasicDebugPublisher<NodeT>`, `BasicPublishedTimePublisher<NodeT>` | the debug and published-time publishers; the shim's only node is `rclcpp::Node` |
 | `tf2_ros::TransformBroadcaster` | a `tf2_msgs/TFMessage` publisher on `/tf` with the `tf` policy |
 | `autoware_agnocast_wrapper` | its build without Agnocast: upstream's `macros.hpp`; `Node`, `Service`, `Client`, `create_timer` and the tf2 types are the shim's |
 | `autoware_utils_logging::LoggerLevelConfigure` | the `~/config_logger` service, which refuses every request: hypha sets log levels from `[log]` in the parameter file only |
@@ -138,6 +148,10 @@ CMake file defines them with glibc's values, so the patches stay the same on bot
 | `autoware_map_projection_loader_yaml_upstream_test` | the upstream unit test: the MGRS, local, local Cartesian UTM and transverse Mercator projections read from YAML, and the files it refuses |
 | `autoware_map_projection_loader_lanelet2_upstream_test` | the upstream unit test: the MGRS grid and the local projection read from a Lanelet2 map, through Lanelet2's OSM reader and Autoware's OSM parser |
 | `autoware_map_projection_loader_node_test` | the upstream MapProjectionLoader on the bus: the projection read from upstream's local Cartesian UTM file, latched on `/map/map_projector_info`, received by a subscriber created after the node (upstream's node tests are Python launch tests) |
+| `autoware_universe_voxel_grid_based_euclidean_cluster_upstream_test` | the upstream unit test of Universe's voxel-grid clustering |
+| `autoware_shape_estimation_upstream_test` | the upstream unit tests: the shape estimator by label and the correctors' utilities |
+| `autoware_detected_object_feature_remover_upstream_test` | the upstream unit test: the objects without their features, compared with `==` |
+| `autoware_multi_object_tracker_upstream_test` | the upstream unit tests of the vehicle tracker (its motion model, update, exported covariance) and of the track ids |
 | `autoware_rclcpp_shim_test` | the shim's names, time conversion, QoS check, timers and services: a call through a callback, two clients that each take only their own response, a request that does not decode, the service names |
 
 Upstream integration tests spin several nodes on an executor thread, with tf2_ros
@@ -233,6 +247,9 @@ examples/autoware/launch.sh down     # stop
 [`launch/isuzu.toml`](launch/isuzu.toml), one tmux window each:
 
 - the three nodes of "Slice A end to end", with the same configurations;
+- the rule-based detection and tracking of #114, configured in `config/isuzu_tracking/`:
+  Universe's clustering (in place of Slice A's Core one, whose node has the same name),
+  shape estimation, the feature remover and the multi-object tracker, tracking in `map`;
 - the localization of #110, configured in `config/isuzu_localization/`:
   - `applanix_lvx_client_replay` (`tools/`): the Applanix driver's NavSatFix, GNSS/INS
     orientation and twist from the bag's recorded GSOF 49 and 50, through the driver's own
@@ -268,22 +285,21 @@ follows `base_link` through `map`:
 | lidar in | `/sensing/lidar/concatenated/pointcloud` | grey, translucent |
 | ground filter out | `/perception/obstacle_segmentation/single_frame/pointcloud` | orange |
 | voxel centroids | `/perception/obstacle_segmentation/pointcloud` | teal, hidden at first |
-| clusters | `/perception/object_recognition/debug/clusters` | upstream's six cluster colours |
-| boxes | `/studio_script/slice_a/boxes` | a box and `#i` label per cluster, in its colour |
+| clusters | `/perception/object_recognition/detection/clustering/debug/clusters` | upstream's six cluster colours, hidden at first |
+| tracks | `/studio_script/tracking/tracks` | a box per track, the smallest rectangle around its footprint extruded to its height, in a colour fixed by its id, with its short id, speed and velocity arrow |
 | the bus and its trail | `/studio_script/isuzu/ego` | a yellow box with the speed, and the EKF's path in `map` |
 | EKF | `/localization/pose_twist_fusion_filter/kinematic_state` | a yellow arrow |
 | GNSS | `/sensing/gnss/pose_with_covariance` | blue arrows with covariance, hidden at first |
 
-The objects carry only a centroid: the clustering fills no shape, size or orientation.
-The boxes come from the cluster points instead. Upstream writes the debug cloud cluster
-by cluster, cluster *i* in colour *i* mod 6, so a change of colour starts the next
-cluster and box *i* belongs to object *i*. A box is the smallest rectangle around the
-points in the ground plane, its yaw searched in 1° steps, from the lowest point to the
-highest. It is a display aid, not Autoware's shape estimation, which is not ported. The
-bus box is approximate too, from the bag's sensor mounts: the sensor kit 6.2 m ahead of
+The tracks are the tracker's output: shape estimation gives each UNKNOWN cluster its
+convex hull, and the tracker keeps an id, a velocity and an existence probability per
+track. In Autoware 2.1.0 shape estimation runs on the DNN detection path; here it runs on
+the clusters, so the tracker has footprints to track. The rectangle around a footprint,
+its angle searched in 1° steps, is a display aid: the tracker tracks the footprint. The bus
+box is approximate, from the bag's sensor mounts: the sensor kit 6.2 m ahead of
 `base_link` at the front, the side lidars 1.27 m to each side. User scripts in the layout
-make the boxes, the bus and `/studio_script/slice_a/object_count`. Beside the 3D panel
-are the EKF's speed and yaw rate, the objects per frame, the ground filter's points per
+make the tracks, the bus and `/studio_script/slice_a/object_count`. Beside the 3D panel
+are the EKF's speed and yaw rate, the tracks per message, the ground filter's points per
 frame and `/diagnostics`. The recording's `/tf` holds the GNSS/INS tree (`ned`,
 `POS_REF`), which does not reach `base_link`; the layout hides its frames.
 
@@ -306,6 +322,11 @@ What the patches change, per package. It is the input to #56 and, for messages, 
 | `autoware_gnss_poser` | `stamp.sec`/`nanosec` → `secs`/`nsecs` in the static transform lookup | ROS 1 time fields (#45) |
 | `autoware_gnss_poser` | `#include <numeric>` added | an upstream omission: `std::reduce` comes through other headers only with libstdc++ |
 | `autoware_localization_util` | `stamp.sec`/`nanosec` → `secs`/`nsecs` in the covariance ellipse test | ROS 1 time fields (#45) |
+| `autoware_universe_euclidean_cluster` | the unit test's `std::experimental::randint` → a seeded `<random>` engine over the same range; stamp fields | the former is libstdc++'s only; ROS 1 time fields (#45) |
+| `autoware_multi_object_tracker` | `#include <iomanip>`, `#include <boost/container_hash/hash.hpp>` added | upstream omissions: libstdc++ and older Boost bring them through other headers |
+| `autoware_multi_object_tracker` | a `DiagnosticStatus` level kept in its own type, not `uint8_t` | ROS 1's `byte` is signed, ROS 2's unsigned; brace initialization narrows (#45) |
+| `autoware_multi_object_tracker` | the bicycle model's exported pose covariance averaged with its transpose | `G * P * G^T` is symmetric only up to rounding; with Eigen on ARM the triangles differ by a few ULP, and the upstream test asserts exact symmetry |
+| `autoware_utils_geometry` | the `PredictedObject` overloads of the polygon utilities removed | `PredictedPath` holds a `builtin_interfaces/Duration`, which hypha reads only as ROS 1 `duration` (#45); nothing ported uses them |
 | `pcl_conversions` | two unused `message_filters` includes removed | as above |
 | `point_cloud_msg_wrapper` | `#include <algorithm>` added | an upstream omission |
 

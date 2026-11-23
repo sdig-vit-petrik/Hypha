@@ -125,23 +125,25 @@ class LvxClientReplay : public rclcpp::Node
 
   private:
     /// The driver's GSOF 49 callbacks: NavSatFix, GNSS/INS orientation and twist, each with
-    /// the latest GSOF 50 when one has arrived.
+    /// the latest GSOF 50. Nothing goes out before the first GSOF 50: the driver on the bus
+    /// runs long before localization starts and always has the INS errors, where a replay
+    /// starts mid-stream. Without them the orientation carries a zero error, and the EKF
+    /// divides by its zero yaw variance.
     void publish(const gsof::InsSolution& solution)
     {
+        if (!this->rms_) {
+            return;
+        }
         const rclcpp::Time stamp = this->now();
         namespace ros = applanix_driver_ros;
 
-        auto fix =
-            this->rms_ ? ros::toNavSatFix(solution, *this->rms_) : ros::toNavSatFix(solution);
+        auto fix = ros::toNavSatFix(solution, *this->rms_);
         fix.header.frame_id = this->child_frame_id_;
         fix.header.stamp = stamp;
         this->fix_pub_->publish(fix);
 
         auto orientation =
-            this->rms_ ? ros::toAutowareOrientationMsg(
-                             solution, *this->rms_, this->enable_ned2enu_transform_
-                         )
-                       : ros::toAutowareOrientationMsg(solution, this->enable_ned2enu_transform_);
+            ros::toAutowareOrientationMsg(solution, *this->rms_, this->enable_ned2enu_transform_);
         orientation.header.frame_id = this->gnss_ins_frame_id_;
         orientation.header.stamp = stamp;
         this->orientation_pub_->publish(orientation);

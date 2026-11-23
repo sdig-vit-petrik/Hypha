@@ -13,9 +13,13 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/vector3.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
+#include <tf2/LinearMath/Matrix3x3.hpp>
 #include <tf2/LinearMath/Quaternion.hpp>
 #include <tf2/LinearMath/Transform.hpp>
 #include <tf2/LinearMath/Vector3.hpp>
+
+#include <array>
+#include <utility>
 
 namespace tf2 {
 
@@ -46,6 +50,33 @@ inline geometry_msgs::msg::Vector3 toMsg(const tf2::Vector3& in)
 inline void fromMsg(const geometry_msgs::msg::Vector3& in, tf2::Vector3& out)
 {
     out = tf2::Vector3(in.x, in.y, in.z);
+}
+
+/// geometry2's: the 6x6 pose covariance @p cov_in rotated by @p transform, block by block,
+/// R * C * R^T.
+inline std::array<double, 36>
+transformCovariance(const std::array<double, 36>& cov_in, const tf2::Transform& transform)
+{
+    const tf2::Matrix3x3   R = transform.getBasis();
+    const tf2::Matrix3x3   R_transpose = R.transpose();
+    std::array<double, 36> cov_out{};
+    // The four 3x3 blocks start at (row, column) 0/0, 0/3, 3/0 and 3/3.
+    for (const auto [row0, col0] :
+         {std::pair{0, 0}, std::pair{0, 3}, std::pair{3, 0}, std::pair{3, 3}}) {
+        const auto at = [&](int r, int c) {
+            return cov_in[static_cast<size_t>((row0 + r) * 6 + col0 + c)];
+        };
+        const tf2::Matrix3x3 block(
+            at(0, 0), at(0, 1), at(0, 2), at(1, 0), at(1, 1), at(1, 2), at(2, 0), at(2, 1), at(2, 2)
+        );
+        const tf2::Matrix3x3 result = R * block * R_transpose;
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                cov_out[static_cast<size_t>((row0 + r) * 6 + col0 + c)] = result[r][c];
+            }
+        }
+    }
+    return cov_out;
 }
 
 inline geometry_msgs::msg::Transform toMsg(const tf2::Transform& in)
@@ -107,6 +138,21 @@ inline void doTransform(
             + (2 * q.y * q.z - 2 * q.w * q.x) * z;
     t_out.z = (2 * q.x * q.z - 2 * q.w * q.y) * x + (2 * q.y * q.z + 2 * q.w * q.x) * y
             + (w2 - x2 - y2 + z2) * z;
+}
+
+/// @p t_in moved by @p transform: geometry2 composes the two as KDL frames; here as tf2
+/// transforms, the same for a unit quaternion.
+inline void doTransform(
+    const geometry_msgs::msg::Pose&             t_in,
+    geometry_msgs::msg::Pose&                   t_out,
+    const geometry_msgs::msg::TransformStamped& transform
+)
+{
+    tf2::Transform frame;
+    tf2::Transform pose;
+    fromMsg(transform.transform, frame);
+    fromMsg(t_in, pose);
+    toMsg(frame * pose, t_out);
 }
 
 /// As above, in the frame and at the time of @p transform.
