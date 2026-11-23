@@ -6,6 +6,8 @@
 /// which needs rclcpp executors, with exact expectations: x and y are GeographicLib's local
 /// Cartesian projection of the fix about the map origin, z its altitude above the origin's.
 
+#include <hypha/transform_buffer.h>
+
 #include "gnss_poser_node.hpp"
 
 #include <GeographicLib/LocalCartesian.hpp>
@@ -15,7 +17,6 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <gtest/gtest.h>
-#include <hypha/transform_buffer.h>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
@@ -57,18 +58,22 @@ class GnssPoserNodeTest : public ::testing::Test
         this->orientation_ = bus.advertise<Orientation>(hypha::Topic{"/autoware_orientation"});
         this->tfStatic_.emplace(bus);
         this->poseIn_ = bus.subscribe<Pose>(
-            hypha::Topic{"/sensing/gnss/pose"}, [this](const Pose::ConstPtr& m) { this->pose_ = *m; }
+            hypha::Topic{"/sensing/gnss/pose"}, [this](const Pose::ConstPtr& m) {
+                this->pose_ = *m;
+            }
         );
         this->poseCovIn_ = bus.subscribe<PoseCov>(
-            hypha::Topic{"/sensing/gnss/pose_with_covariance"},
-            [this](const PoseCov::ConstPtr& m) { this->poseCov_ = *m; }
+            hypha::Topic{"/sensing/gnss/pose_with_covariance"}, [this](const PoseCov::ConstPtr& m) {
+                this->poseCov_ = *m;
+            }
         );
         this->fixedIn_ = bus.subscribe<Fixed>(
-            hypha::Topic{"/sensing/gnss/fixed"}, [this](const Fixed::ConstPtr& m) { this->fixed_ = *m; }
+            hypha::Topic{"/sensing/gnss/fixed"}, [this](const Fixed::ConstPtr& m) {
+                this->fixed_ = *m;
+            }
         );
         this->tfIn_ = bus.subscribe<tf2_msgs::msg::TFMessage>(
-            hypha::Topic{"/tf"},
-            [this](const tf2_msgs::msg::TFMessage::ConstPtr& message) {
+            hypha::Topic{"/tf"}, [this](const tf2_msgs::msg::TFMessage::ConstPtr& message) {
                 for (const auto& transform : message->transforms) {
                     if (transform.child_frame_id == "gnss_base_link") {
                         this->gnssBaseLink_ = transform;
@@ -97,7 +102,9 @@ class GnssPoserNodeTest : public ::testing::Test
         info.map_origin.altitude = 0.0;
         info.scale_factor = 1.0F;
         ASSERT_TRUE(this->projector_.publish(info));
-        this->turnUntil([] { return false; });
+        this->turnUntil([] {
+            return false;
+        });
     }
 
     /// A u-blox INS heading: @p yaw about z, with the rotation errors 0.1, 0.2, 0.3 rad.
@@ -111,7 +118,9 @@ class GnssPoserNodeTest : public ::testing::Test
         orientation.orientation.rmse_rotation_y = 0.2F;
         orientation.orientation.rmse_rotation_z = 0.3F;
         ASSERT_TRUE(this->orientation_.publish(orientation));
-        this->turnUntil([] { return false; });
+        this->turnUntil([] {
+            return false;
+        });
     }
 
     /// A fix at @p frame with the position variances 2, 3, 4 m^2 on the diagonal.
@@ -127,32 +136,34 @@ class GnssPoserNodeTest : public ::testing::Test
         fix.position_covariance = {2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0};
         fix.position_covariance_type = Fix::COVARIANCE_TYPE_DIAGONAL_KNOWN;
         ASSERT_TRUE(this->fix_.publish(fix));
-        this->turnUntil([this] { return this->fixed_.has_value(); });
+        this->turnUntil([this] {
+            return this->fixed_.has_value();
+        });
     }
 
     /// GeographicLib's local Cartesian coordinates of the fix about the map origin.
     static std::array<double, 3> expectedPosition()
     {
         const GeographicLib::LocalCartesian projection(kOriginLatitude, kOriginLongitude, 0.0);
-        std::array<double, 3> xyz{};
+        std::array<double, 3>               xyz{};
         projection.Forward(kLatitude, kLongitude, kAltitude, xyz[0], xyz[1], xyz[2]);
         return xyz;
     }
 
-    std::shared_ptr<autoware::gnss_poser::GNSSPoser>     poser_;
-    rclcpp::Node::SharedPtr                              harness_;
-    hypha::Publisher<ProjectorInfo>                      projector_;
-    hypha::Publisher<Fix>                                fix_;
-    hypha::Publisher<Orientation>                        orientation_;
-    std::optional<hypha::StaticTransformBroadcaster>     tfStatic_;
-    hypha::Subscriber<Pose>                              poseIn_;
-    hypha::Subscriber<PoseCov>                           poseCovIn_;
-    hypha::Subscriber<Fixed>                             fixedIn_;
-    hypha::Subscriber<tf2_msgs::msg::TFMessage>          tfIn_;
-    std::optional<Pose>                                  pose_;
-    std::optional<PoseCov>                               poseCov_;
-    std::optional<Fixed>                                 fixed_;
-    std::optional<geometry_msgs::msg::TransformStamped>  gnssBaseLink_;
+    std::shared_ptr<autoware::gnss_poser::GNSSPoser>    poser_;
+    rclcpp::Node::SharedPtr                             harness_;
+    hypha::Publisher<ProjectorInfo>                     projector_;
+    hypha::Publisher<Fix>                               fix_;
+    hypha::Publisher<Orientation>                       orientation_;
+    std::optional<hypha::StaticTransformBroadcaster>    tfStatic_;
+    hypha::Subscriber<Pose>                             poseIn_;
+    hypha::Subscriber<PoseCov>                          poseCovIn_;
+    hypha::Subscriber<Fixed>                            fixedIn_;
+    hypha::Subscriber<tf2_msgs::msg::TFMessage>         tfIn_;
+    std::optional<Pose>                                 pose_;
+    std::optional<PoseCov>                              poseCov_;
+    std::optional<Fixed>                                fixed_;
+    std::optional<geometry_msgs::msg::TransformStamped> gnssBaseLink_;
 };
 
 }  // namespace
@@ -168,7 +179,9 @@ TEST_F(GnssPoserNodeTest, AFixedFixBecomesTheMapPose)
 
     ASSERT_TRUE(this->fixed_.has_value());
     EXPECT_TRUE(this->fixed_->data);
-    this->turnUntil([this] { return this->pose_ && this->poseCov_ && this->gnssBaseLink_; });
+    this->turnUntil([this] {
+        return this->pose_ && this->poseCov_ && this->gnssBaseLink_;
+    });
     ASSERT_TRUE(this->pose_ && this->poseCov_ && this->gnssBaseLink_);
     const std::array<double, 3> expected = expectedPosition();
     EXPECT_EQ(this->pose_->header.frame_id, "map");
@@ -176,7 +189,7 @@ TEST_F(GnssPoserNodeTest, AFixedFixBecomesTheMapPose)
     EXPECT_NEAR(this->pose_->pose.position.y, expected[1], kNear);
     // project_forward replaces the projector's z with the altitude above the map origin's.
     EXPECT_NEAR(this->pose_->pose.position.z, kAltitude - 0.0, kNear);
-    EXPECT_GT(this->pose_->pose.position.x, 80.0);   // about 90 m east
+    EXPECT_GT(this->pose_->pose.position.x, 80.0);  // about 90 m east
     EXPECT_GT(this->pose_->pose.position.y, 100.0);  // about 111 m north
     EXPECT_NEAR(this->pose_->pose.orientation.z, std::sin(M_PI / 4.0), kNear);
     EXPECT_NEAR(this->pose_->pose.orientation.w, std::cos(M_PI / 4.0), kNear);
@@ -217,7 +230,9 @@ TEST_F(GnssPoserNodeTest, TheAntennaMountMovesThePoseToBaseLink)
     this->sendOrientation(0.0);
     this->sendFix(sensor_msgs::msg::NavSatStatus::STATUS_FIX, "gnss_link");
 
-    this->turnUntil([this] { return this->pose_.has_value(); });
+    this->turnUntil([this] {
+        return this->pose_.has_value();
+    });
     ASSERT_TRUE(this->pose_.has_value());
     const std::array<double, 3> expected = expectedPosition();
     EXPECT_NEAR(this->pose_->pose.position.x, expected[0] - 1.0, kNear);

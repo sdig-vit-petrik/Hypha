@@ -47,8 +47,9 @@ hypha_generate_messages(PACKAGE geographic_msgs
   OUT_DIR "${AUTOWARE_MSG_OUT}")
 hypha_generate_messages(PACKAGE autoware_map_msgs
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/autoware_map_msgs/msg"
+  SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/autoware_map_msgs/srv"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
-  DEPENDS geographic_msgs)
+  DEPENDS geographic_msgs std_msgs sensor_msgs)
 # The shim's service envelope, and the services the ported nodes offer.
 hypha_generate_messages(PACKAGE hypha_rclcpp_msgs
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/hypha_rclcpp_msgs/msg"
@@ -408,33 +409,45 @@ autoware_test(autoware_gyro_odometer_node_test
 
 # --- GNSS: Lanelet2's projection, autoware_lanelet2_extension's projectors --------------
 
-# GeographicLib does the projections; Lanelet2 wraps it, header-only Boost and Eigen.
+# GeographicLib does the projections; Lanelet2 wraps it.
 # Debian and Ubuntu ship its find module there, Homebrew a package configuration; both set
 # GeographicLib_LIBRARIES and GeographicLib_INCLUDE_DIRS.
 list(APPEND CMAKE_MODULE_PATH /usr/share/cmake/geographiclib)
 find_package(GeographicLib REQUIRED)
-find_package(Boost REQUIRED)
 
-# Lanelet2 1.2.3: the UTM and local Cartesian projectors and the headers they include.
+# Lanelet2 1.2.3: the map (lanelet2_core), its reading and writing (lanelet2_io: OSM on
+# pugixml, binary on Boost.Serialization) and the UTM and local Cartesian projectors.
+# Shared libraries, as upstream builds them: a reader registers itself from a static
+# object of its own file, which a static archive would leave out of the program.
+find_package(pugixml REQUIRED)
+find_package(Boost REQUIRED COMPONENTS filesystem serialization)
 set(LANELET2_DIR "${AUTOWARE_UPSTREAM_DIR}/lanelet2")
-add_library(autoware_lanelet2_projection STATIC
+file(GLOB LANELET2_CORE_SOURCES "${LANELET2_DIR}/lanelet2_core/src/*.cpp")
+add_library(autoware_lanelet2_core SHARED ${LANELET2_CORE_SOURCES})
+target_include_directories(autoware_lanelet2_core SYSTEM PUBLIC "${LANELET2_DIR}/lanelet2_core/include")
+target_link_libraries(autoware_lanelet2_core PUBLIC Boost::headers Eigen3::Eigen)
+target_compile_features(autoware_lanelet2_core PUBLIC cxx_std_23)
+file(GLOB LANELET2_IO_SOURCES "${LANELET2_DIR}/lanelet2_io/src/*.cpp")
+add_library(autoware_lanelet2_io SHARED ${LANELET2_IO_SOURCES})
+target_include_directories(autoware_lanelet2_io SYSTEM PUBLIC "${LANELET2_DIR}/lanelet2_io/include")
+target_link_libraries(autoware_lanelet2_io PUBLIC
+  autoware_lanelet2_core pugixml::pugixml Boost::filesystem Boost::serialization)
+add_library(autoware_lanelet2_projection SHARED
   "${LANELET2_DIR}/lanelet2_projection/src/UTM.cpp"
   "${LANELET2_DIR}/lanelet2_projection/src/LocalCartesian.cpp")
 target_include_directories(autoware_lanelet2_projection SYSTEM PUBLIC
-  "${LANELET2_DIR}/lanelet2_core/include"
-  "${LANELET2_DIR}/lanelet2_io/include"
-  "${LANELET2_DIR}/lanelet2_projection/include")
+  "${LANELET2_DIR}/lanelet2_projection/include" ${GeographicLib_INCLUDE_DIRS})
 target_link_libraries(autoware_lanelet2_projection PUBLIC
-  ${GeographicLib_LIBRARIES} Boost::headers Eigen3::Eigen)
-target_include_directories(autoware_lanelet2_projection SYSTEM PUBLIC ${GeographicLib_INCLUDE_DIRS})
-target_compile_features(autoware_lanelet2_projection PUBLIC cxx_std_23)
+  autoware_lanelet2_io ${GeographicLib_LIBRARIES})
 
-# autoware_lanelet2_extension 1.3.0: the MGRS and transverse Mercator projectors.
+# autoware_lanelet2_extension 1.3.0: the MGRS and transverse Mercator projectors, and the
+# OSM parser that reads Autoware's map format.
 set(LANELET2_EXTENSION_DIR
   "${AUTOWARE_UPSTREAM_DIR}/autoware_lanelet2_extension/autoware_lanelet2_extension")
-add_library(autoware_lanelet2_extension_projection STATIC
+add_library(autoware_lanelet2_extension_projection SHARED
   "${LANELET2_EXTENSION_DIR}/lib/mgrs_projector.cpp"
-  "${LANELET2_EXTENSION_DIR}/lib/transverse_mercator_projector.cpp")
+  "${LANELET2_EXTENSION_DIR}/lib/transverse_mercator_projector.cpp"
+  "${LANELET2_EXTENSION_DIR}/lib/autoware_osm_parser.cpp")
 target_include_directories(autoware_lanelet2_extension_projection PUBLIC
   "${LANELET2_EXTENSION_DIR}/include")
 target_link_libraries(autoware_lanelet2_extension_projection PUBLIC autoware_lanelet2_projection)
@@ -469,3 +482,36 @@ autoware_test(autoware_gnss_poser_node_test
   SOURCES test/test_gnss_poser_node.cpp "${GNSS_POSER_DIR}/src/gnss_poser_node.cpp"
   INCLUDES "${GNSS_POSER_DIR}/src"
   LIBS autoware_geography_utils autoware_sensing_msgs)
+
+# --- Map: autoware_map_projection_loader (autoware_core 1.10.0) --------------------------
+
+find_package(yaml-cpp REQUIRED)
+set(COMPONENT_INTERFACE_SPECS_DIR
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/common/autoware_component_interface_specs")
+set(MAP_PROJECTION_LOADER_DIR
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/map/autoware_map_projection_loader")
+add_library(autoware_map_projection_loader_core STATIC
+  "${MAP_PROJECTION_LOADER_DIR}/src/map_projection_loader.cpp"
+  "${MAP_PROJECTION_LOADER_DIR}/src/load_info_from_lanelet2_map.cpp")
+target_include_directories(autoware_map_projection_loader_core PUBLIC
+  "${MAP_PROJECTION_LOADER_DIR}/include" "${COMPONENT_INTERFACE_SPECS_DIR}/include")
+target_link_libraries(autoware_map_projection_loader_core PUBLIC
+  autoware_lanelet2_extension_projection autoware_map_msgs hypha_rclcpp yaml-cpp::yaml-cpp)
+
+autoware_component(autoware_map_projection_loader
+  SOURCES "${MAP_PROJECTION_LOADER_DIR}/src/map_projection_loader_node.cpp")
+target_link_libraries(autoware_map_projection_loader PRIVATE autoware_map_projection_loader_core)
+
+autoware_test(autoware_map_projection_loader_yaml_upstream_test
+  SOURCES "${MAP_PROJECTION_LOADER_DIR}/test/test_load_info_from_yaml.cpp"
+  LIBS autoware_map_projection_loader_core GTest::gmock)
+autoware_test(autoware_map_projection_loader_lanelet2_upstream_test
+  SOURCES "${MAP_PROJECTION_LOADER_DIR}/test/test_load_info_from_lanelet2_map.cpp"
+  LIBS autoware_map_projection_loader_core GTest::gmock)
+
+# The node on the bus: the projection read from YAML, latched on /map/map_projector_info.
+autoware_test(autoware_map_projection_loader_node_test
+  SOURCES test/test_map_projection_loader_node.cpp
+    "${MAP_PROJECTION_LOADER_DIR}/src/map_projection_loader_node.cpp"
+  INCLUDES "${MAP_PROJECTION_LOADER_DIR}/src"
+  LIBS autoware_map_projection_loader_core)

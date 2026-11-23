@@ -7,7 +7,7 @@ in #47. Autoware 2.1.0: `autoware_core` 1.10.0, `autoware_universe` 0.53.2.
 | Slice | Pipeline | State |
 |---|---|---|
 | A, detection (Leo Drive Isuzu bus) | crop box → concatenate → ground filter → voxel downsample → euclidean cluster | `autoware_crop_box_filter`, the voxel grid filter of `autoware_downsample_filters`, `autoware_ground_filter`, both nodes of `autoware_euclidean_cluster_object_detector` and the concatenate-and-time-sync node of `autoware_pointcloud_preprocessor` ported; every node on synthetic inputs, replay open |
-| B, localization (Istanbul Open Dataset) | crop box → downsample → NDT → gyro odometer → EKF | `autoware_ekf_localizer` and `autoware_gyro_odometer` ported, on synthetic inputs; the rest open. For the Isuzu bags, `autoware_gnss_poser` ported too, with `autoware_geography_utils` on Lanelet2's projection; on synthetic inputs. On the Isuzu bags, which have no map, GNSS and the Applanix INS feed the EKF in place of NDT (#110) |
+| B, localization (Istanbul Open Dataset) | crop box → downsample → NDT → gyro odometer → EKF | `autoware_ekf_localizer` and `autoware_gyro_odometer` ported, on synthetic inputs; the rest open. For the Isuzu bags, `autoware_gnss_poser` and `autoware_map_projection_loader` ported too, with `autoware_geography_utils` on Lanelet2's projection and map reading; on synthetic inputs. On the Isuzu bags, which have no map, GNSS and the Applanix INS feed the EKF in place of NDT (#110) |
 
 Each node first computes on synthetic inputs in tests; replay of the recorded data
 follows #46.
@@ -52,6 +52,7 @@ follows #46.
 | `create_service`, `create_client` | two topics of `hypha_rclcpp_msgs/ServiceCall`, `<name>/request` and `<name>/response` (hypha has no RPC, [cpp-api.md](../../docs/cpp-api.md) §8): a request carries its client's identity and a sequence number, the server answers in its callback on the spin thread, and a client takes only its own responses. A name resolves as ROS resolves it in the root namespace: absolute as it is, `~/x` as `/<node>/x`, a relative `x` as the parameter `services.x` when the file sets it, else `/x`. A request that does not decode is answered unhandled, and the client's future holds an exception |
 | `Client::async_send_request` (with or without a callback), `service_is_ready`, `prune_pending_requests` | the future is set on the spin thread when the response arrives; ready means a server reads the request topic. `wait_for_service` and a blocking call are not offered |
 | `create_callback_group`, `CallbackGroup` | kept, without effect: every callback runs on the one spin thread |
+| `QoS::reliability`, `QoS::durability` with rmw's kinds (`rmw/qos_profiles.h`) | reliable or best effort, volatile or transient local; a kind that leaves the choice to the middleware is refused |
 | `rclcpp::spin(node)` | `node.run()` on the calling thread: a single-threaded executor |
 | `rclcpp::spin_some(node)` | `node.runFor()` with the shortest limit: one dispatch turn, the due timers and the queued samples, never a wait; a failed run throws |
 | `rcl_clock_type_t`, `RCL_ROS_TIME` | rcl's enum at global scope; every kind means framework time |
@@ -83,8 +84,9 @@ A generated message carries the members ROS generated C++ gives: `Ptr`/`ConstPtr
 ## How to run
 
 Against an installed SDK, with Eigen 3, GoogleTest, PCL 1.12 or newer (Ubuntu's
-`libpcl-dev`, which brings Boost) and GeographicLib (`libgeographiclib-dev`);
-`docker/Dockerfile` installs all four:
+`libpcl-dev`), GeographicLib, pugixml, yaml-cpp and Boost's filesystem and serialization
+libraries (`libgeographiclib-dev`, `libpugixml-dev`, `libyaml-cpp-dev`,
+`libboost-filesystem-dev`, `libboost-serialization-dev`); `docker/Dockerfile` installs them:
 
 ```bash
 ./build.sh && cmake --install build --prefix /tmp/hypha-sdk
@@ -96,8 +98,9 @@ build/examples/autoware/autoware_crop_box_filter examples/autoware/config/crop_b
 `examples/check.sh` runs these tests; `./test.sh cpp` runs it against the installed SDK.
 
 On macOS the port builds natively with Apple clang and Homebrew's `pcl`, `googletest`,
-`eigen` and `geographiclib` (`brew install pcl googletest eigen geographiclib`); CMake finds
-them through `PATH`.
+`eigen`, `geographiclib`, `pugixml` and `yaml-cpp` (`brew install pcl googletest eigen
+geographiclib pugixml yaml-cpp`; Homebrew's `boost`, which `pcl` brings, holds the compiled
+Boost libraries); CMake finds them through `PATH`.
 `examples/autoware` also configures on its own: `cmake -S examples/autoware -B
 build/autoware -DCMAKE_PREFIX_PATH=/tmp/hypha-sdk`. The ground filter's `grid.hpp` uses
 glibc's float constants `M_PIf`, `M_PI_2f` and `M_PI_4f`; where `<math.h>` lacks them, the
@@ -132,6 +135,9 @@ CMake file defines them with glibc's values, so the patches stay the same on bot
 | `autoware_gyro_odometer_node_test` | the upstream GyroOdometerNode on the bus, on simulated time the test drives, with the deployment topics: a completed pair on all four twist topics with its covariances, an IMU frame that cannot be resolved (no output, ERROR), an IMU mounted a quarter turn rotated into `base_link`, OK after a fusion (upstream's node scenarios) |
 | `autoware_geography_utils_upstream_test` | the upstream unit tests of `autoware_geography_utils` (21 cases): the MGRS, local Cartesian UTM, local Cartesian and transverse Mercator projectors forward and back, on the vendored Lanelet2 and extension projectors, and the vertical datums; the two cases that need the EGM2008 geoid dataset skip without it, as upstream's do |
 | `autoware_gnss_poser_node_test` | the upstream GNSSPoser on the bus, with the deployment configuration: a fixed fix projected about a local Cartesian map origin (x and y as GeographicLib's, z the altitude above the origin's), with the INS heading, the fix's variances and the INS errors squared, and `map → gnss_base_link`; a fix without a fix flagged and dropped; an antenna mounted 1 m ahead of `base_link` (upstream's node scenarios, with exact values) |
+| `autoware_map_projection_loader_yaml_upstream_test` | the upstream unit test: the MGRS, local, local Cartesian UTM and transverse Mercator projections read from YAML, and the files it refuses |
+| `autoware_map_projection_loader_lanelet2_upstream_test` | the upstream unit test: the MGRS grid and the local projection read from a Lanelet2 map, through Lanelet2's OSM reader and Autoware's OSM parser |
+| `autoware_map_projection_loader_node_test` | the upstream MapProjectionLoader on the bus: the projection read from upstream's local Cartesian UTM file, latched on `/map/map_projector_info`, received by a subscriber created after the node (upstream's node tests are Python launch tests) |
 | `autoware_rclcpp_shim_test` | the shim's names, time conversion, QoS check, timers and services: a call through a callback, two clients that each take only their own response, a request that does not decode, the service names |
 
 Upstream integration tests spin several nodes on an executor thread, with tf2_ros

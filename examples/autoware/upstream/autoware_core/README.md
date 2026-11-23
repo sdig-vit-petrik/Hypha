@@ -24,6 +24,10 @@ Only the packages the hypha port compiles are copied, at their upstream paths:
 - `common/autoware_geography_utils`: `include/`, `src/`, `test/`, `package.xml`, `README.md`;
   its projectors are Lanelet2's and `autoware_lanelet2_extension`'s (`../lanelet2/`,
   `../autoware_lanelet2_extension/`).
+- `common/autoware_component_interface_specs`: `include/autoware/component_interface_specs/`
+  `map.hpp`, `utils.hpp`, `version.hpp`, the map interface; `package.xml`, `README.md`.
+- `map/autoware_map_projection_loader`: `include/`, `src/`, `test/` (its C++ tests and their
+  data; the Python launch tests are copied, not run), `config/`, `package.xml`, `README.md`.
 - `sensing/autoware_gnss_poser`: `src/`, `test/`, `config/`, `package.xml`, `README.md`.
 - `common/autoware_kalman_filter`: `include/`, `src/`, `test/`, `package.xml`, `README.md`.
 - `localization/autoware_localization_util`: the covariance ellipse the EKF uses

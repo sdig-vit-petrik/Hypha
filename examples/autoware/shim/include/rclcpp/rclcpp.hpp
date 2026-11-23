@@ -21,6 +21,7 @@
 #include <hypha_rclcpp_msgs/ServiceCall.h>
 
 #include <builtin_interfaces/msg/time.hpp>
+#include <rmw/qos_profiles.h>
 
 #include <chrono>
 #include <cstdint>
@@ -287,6 +288,37 @@ class QoS
     {
         this->durability_ = DurabilityPolicy::Volatile;
         return *this;
+    }
+
+    /// rmw's reliability kind. @throws std::invalid_argument for one that leaves the choice
+    /// to the middleware (system default, best available) or is unknown.
+    QoS& reliability(rmw_qos_reliability_policy_t policy)
+    {
+        switch (policy) {
+            case RMW_QOS_POLICY_RELIABILITY_RELIABLE:
+                return this->reliable();
+            case RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT:
+                return this->best_effort();
+            default:
+                throw std::invalid_argument(
+                    "rclcpp: QoS reliability must be reliable or best effort"
+                );
+        }
+    }
+
+    /// rmw's durability kind. @throws std::invalid_argument as reliability().
+    QoS& durability(rmw_qos_durability_policy_t policy)
+    {
+        switch (policy) {
+            case RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL:
+                return this->transient_local();
+            case RMW_QOS_POLICY_DURABILITY_VOLATILE:
+                return this->durability_volatile();
+            default:
+                throw std::invalid_argument(
+                    "rclcpp: QoS durability must be volatile or transient local"
+                );
+        }
     }
 
     size_t depth() const
