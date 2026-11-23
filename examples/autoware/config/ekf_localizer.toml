@@ -1,7 +1,8 @@
 # autoware_ekf_localizer EKFLocalizerNode: the values of upstream
-# config/ekf_localizer.param.yaml, and the topics and service of autoware_core's
-# autoware_core_localization.launch.xml, where the node runs in the namespace
-# /localization/pose_twist_fusion_filter. Topics are the node's ports.
+# config/ekf_localizer.param.yaml, and the topics and service of autoware_launch 0.53.0
+# (Autoware 2.1.0), pose_twist_fusion_filter.launch.xml, where the node runs in the
+# namespace /localization/pose_twist_fusion_filter; its parameter file there holds the
+# same values. Topics are the node's ports.
 
 # The node: upstream config/ekf_localizer.param.yaml.
 [node]
@@ -54,7 +55,7 @@ pose_frame_id = "map"
 [services]
 trigger_node_srv = "/localization/pose_twist_fusion_filter/trigger_node"
 
-# Inputs, as autoware_core_localization.launch.xml remaps them.
+# Inputs, as pose_twist_fusion_filter.launch.xml remaps them.
 [ports.inputs.initialpose]
 topic = "/initialpose3d"
 
@@ -65,8 +66,9 @@ topic = "/localization/pose_estimator/pose_with_covariance"
 topic = "/localization/twist_estimator/twist_with_covariance"
 
 # Outputs: an absolute remap as it is, a relative one in the namespace.
+# The stop filter, not ported, turns kinematic_state into /localization/kinematic_state.
 [ports.outputs.ekf_odom]
-topic = "/localization/kinematic_state"
+topic = "/localization/pose_twist_fusion_filter/kinematic_state"
 
 [ports.outputs.ekf_pose]
 topic = "/localization/pose_twist_fusion_filter/pose"

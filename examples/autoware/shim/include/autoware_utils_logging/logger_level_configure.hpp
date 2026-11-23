@@ -40,7 +40,7 @@ class BasicLoggerLevelConfigure
     }
 
   private:
-    rclcpp::Logger                               logger_;
+    rclcpp::Logger                                    logger_;
     typename rclcpp::Service<ConfigLogger>::SharedPtr service_;
 };
 

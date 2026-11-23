@@ -1,7 +1,10 @@
 #pragma once
 
 /// @file
-/// autoware_utils_tf::TransformListener on hypha::TransformBuffer (`/tf`, `/tf_static`).
+/// autoware_utils_tf::TransformListenerT on hypha::TransformBuffer (`/tf`, `/tf_static`).
+/// Upstream's template takes the node, buffer and listener types; here the buffer is
+/// hypha's, whichever buffer and listener types are named. TransformListener is upstream's
+/// alias on rclcpp::Node.
 ///
 /// hypha ingests transforms only while the node runs. Before spin(), where Autoware nodes
 /// look their static transforms up, get_transform() with a timeout runs the process's
@@ -12,6 +15,7 @@
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <tf2_ros/buffer.hpp>
 
 #include <chrono>
 #include <memory>
@@ -19,10 +23,11 @@
 
 namespace autoware_utils_tf {
 
-class TransformListener
+template <class NodeT, class BufferT, class ListenerT>
+class TransformListenerT
 {
   public:
-    explicit TransformListener(rclcpp::Node* node)
+    explicit TransformListenerT(NodeT* node)
         : node_(node), buffer_(std::make_unique<hypha::TransformBuffer>(node->hypha_node()))
     {
     }
@@ -89,8 +94,11 @@ class TransformListener
     }
 
   private:
-    rclcpp::Node*                           node_;
+    NodeT*                                  node_;
     std::unique_ptr<hypha::TransformBuffer> buffer_;
 };
+
+using TransformListener =
+    TransformListenerT<rclcpp::Node, tf2_ros::Buffer, tf2_ros::TransformListener>;
 
 }  // namespace autoware_utils_tf

@@ -38,8 +38,8 @@ class Buffer
     ///         tf2::ExtrapolationException (outside the buffer), tf2::TransformException
     ///         (no listener yet), std::invalid_argument for a timeout.
     geometry_msgs::msg::TransformStamped lookupTransform(
-        const std::string& target,
-        const std::string& source,
+        const std::string&    target,
+        const std::string&    source,
         const tf2::TimePoint& time,
         const tf2::Duration   timeout = tf2::Duration::zero()
     ) const
@@ -54,13 +54,12 @@ class Buffer
                 "tf2_ros::Buffer: no TransformListener feeds this buffer yet"
             );
         }
-        const auto found = time == tf2::TimePointZero
-                             ? this->transforms_->lookupLatest(target, source)
-                             : this->transforms_->lookup(
-                                   target,
-                                   source,
-                                   hypha::Time::fromNanos(time.time_since_epoch().count())
-                               );
+        const auto found =
+            time == tf2::TimePointZero
+                ? this->transforms_->lookupLatest(target, source)
+                : this->transforms_->lookup(
+                      target, source, hypha::Time::fromNanos(time.time_since_epoch().count())
+                  );
         if (found) {
             return *found;
         }

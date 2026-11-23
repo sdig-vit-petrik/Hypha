@@ -7,13 +7,14 @@
 /// diagnostics go from WARN to ERROR as pose updates stay away. Each step moves /clock by
 /// one predict period and turns each node once, so the EKF's timer runs once per step.
 
+#include <hypha_msgs/rosgraph_msgs/Clock.h>
+
 #include "ekf_localizer_node.hpp"
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/twist_with_covariance_stamped.hpp>
 #include <gtest/gtest.h>
-#include <hypha_msgs/rosgraph_msgs/Clock.h>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_srvs/srv/set_bool.hpp>
@@ -36,9 +37,8 @@ class EkfLocalizerNodeTest : public ::testing::Test
   protected:
     void SetUp() override
     {
-        this->ekf_ = std::make_shared<autoware::ekf_localizer::EKFLocalizerNode>(
-            rclcpp::NodeOptions{}
-        );
+        this->ekf_ =
+            std::make_shared<autoware::ekf_localizer::EKFLocalizerNode>(rclcpp::NodeOptions{});
         this->harness_ = rclcpp::Node::make_shared("ekf_test_harness");
         hypha::Node& bus = this->harness_->hypha_node();
         this->clock_ = bus.advertise<rosgraph_msgs::Clock>(hypha::Topic{"/clock"});
@@ -55,7 +55,7 @@ class EkfLocalizerNodeTest : public ::testing::Test
             "/localization/pose_twist_fusion_filter/trigger_node"
         );
         this->odomIn_ = bus.subscribe<nav_msgs::msg::Odometry>(
-            hypha::Topic{"/localization/kinematic_state"},
+            hypha::Topic{"/localization/pose_twist_fusion_filter/kinematic_state"},
             [this](const nav_msgs::msg::Odometry::ConstPtr& odom) {
                 this->odom_ = *odom;
                 ++this->odomCount_;
@@ -68,8 +68,7 @@ class EkfLocalizerNodeTest : public ::testing::Test
             }
         );
         this->tfIn_ = bus.subscribe<tf2_msgs::msg::TFMessage>(
-            hypha::Topic{"/tf"},
-            [this](const tf2_msgs::msg::TFMessage::ConstPtr& message) {
+            hypha::Topic{"/tf"}, [this](const tf2_msgs::msg::TFMessage::ConstPtr& message) {
                 for (const auto& transform : message->transforms) {
                     if (transform.child_frame_id == "base_link") {
                         this->baseLink_ = transform;
@@ -176,21 +175,21 @@ class EkfLocalizerNodeTest : public ::testing::Test
     /// Simulated time belongs to the process and never goes back, so every scenario goes on
     /// from where the one before it stopped: it starts at 100 s, as upstream's does, away
     /// from the edge cases of time 0.
-    static inline int64_t nowNanos_{100'000'000'000};
-    std::shared_ptr<autoware::ekf_localizer::EKFLocalizerNode>  ekf_;
-    rclcpp::Node::SharedPtr                                     harness_;
-    hypha::Publisher<rosgraph_msgs::Clock>                      clock_;
+    static inline int64_t                                            nowNanos_{100'000'000'000};
+    std::shared_ptr<autoware::ekf_localizer::EKFLocalizerNode>       ekf_;
+    rclcpp::Node::SharedPtr                                          harness_;
+    hypha::Publisher<rosgraph_msgs::Clock>                           clock_;
     hypha::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>  initialPose_;
     hypha::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>  pose_;
     hypha::Publisher<geometry_msgs::msg::TwistWithCovarianceStamped> twist_;
-    rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr           trigger_;
-    hypha::Subscriber<nav_msgs::msg::Odometry>                  odomIn_;
-    hypha::Subscriber<diagnostic_msgs::msg::DiagnosticArray>    diagnosticsIn_;
-    hypha::Subscriber<tf2_msgs::msg::TFMessage>                 tfIn_;
-    std::optional<nav_msgs::msg::Odometry>                      odom_;
-    std::optional<diagnostic_msgs::msg::DiagnosticArray>        diagnostics_;
-    std::optional<geometry_msgs::msg::TransformStamped>         baseLink_;
-    size_t                                                      odomCount_{0};
+    rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr                trigger_;
+    hypha::Subscriber<nav_msgs::msg::Odometry>                       odomIn_;
+    hypha::Subscriber<diagnostic_msgs::msg::DiagnosticArray>         diagnosticsIn_;
+    hypha::Subscriber<tf2_msgs::msg::TFMessage>                      tfIn_;
+    std::optional<nav_msgs::msg::Odometry>                           odom_;
+    std::optional<diagnostic_msgs::msg::DiagnosticArray>             diagnostics_;
+    std::optional<geometry_msgs::msg::TransformStamped>              baseLink_;
+    size_t                                                           odomCount_{0};
 };
 
 }  // namespace

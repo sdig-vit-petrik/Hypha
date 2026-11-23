@@ -372,3 +372,29 @@ autoware_test(autoware_ekf_localizer_node_test
   SOURCES test/test_ekf_localizer_node.cpp "${EKF_DIR}/src/ekf_localizer_node.cpp"
   LIBS autoware_ekf_localizer_core
   ENV HYPHA_USE_SIM_TIME=1)
+
+# --- Localization: autoware_gyro_odometer (autoware_core 1.10.0) -------------------------
+
+autoware_patched(autoware_gyro_odometer
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/localization/autoware_gyro_odometer" GYRO_ODOMETER_DIR)
+add_library(autoware_gyro_odometer_core STATIC
+  "${GYRO_ODOMETER_DIR}/src/gyro_odometer.cpp"
+  "${GYRO_ODOMETER_DIR}/src/gyro_odometer_diagnostics.cpp")
+target_include_directories(autoware_gyro_odometer_core PUBLIC "${GYRO_ODOMETER_DIR}/src")
+target_link_libraries(autoware_gyro_odometer_core PUBLIC hypha_rclcpp)
+
+autoware_component(autoware_gyro_odometer
+  SOURCES "${GYRO_ODOMETER_DIR}/src/gyro_odometer_node.cpp")
+target_link_libraries(autoware_gyro_odometer PRIVATE autoware_gyro_odometer_core)
+
+autoware_test(autoware_gyro_odometer_upstream_test
+  SOURCES "${GYRO_ODOMETER_DIR}/test/test_gyro_odometer.cpp"
+    "${GYRO_ODOMETER_DIR}/test/test_gyro_odometer_diagnostics.cpp"
+  LIBS autoware_gyro_odometer_core GTest::gtest_main)
+
+# The node on the bus, on simulated time the test drives: the vehicle twist and the IMU
+# in, the fused twist and the diagnostics out.
+autoware_test(autoware_gyro_odometer_node_test
+  SOURCES test/test_gyro_odometer_node.cpp "${GYRO_ODOMETER_DIR}/src/gyro_odometer_node.cpp"
+  LIBS autoware_gyro_odometer_core
+  ENV HYPHA_USE_SIM_TIME=1)

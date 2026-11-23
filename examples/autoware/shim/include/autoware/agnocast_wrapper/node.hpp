@@ -23,10 +23,10 @@ using Client = rclcpp::Client<S>;
 /// Upstream's free function for a timer on @p clock; the group changes nothing.
 template <class Callback>
 rclcpp::TimerBase::SharedPtr create_timer(
-    Node*                                  node,
-    const rclcpp::Clock::SharedPtr&        clock,
-    const rclcpp::Duration&                period,
-    Callback&&                             callback,
+    Node*                           node,
+    const rclcpp::Clock::SharedPtr& clock,
+    const rclcpp::Duration&         period,
+    Callback&&                      callback,
     const rclcpp::CallbackGroup::SharedPtr& /*group*/ = nullptr
 )
 {

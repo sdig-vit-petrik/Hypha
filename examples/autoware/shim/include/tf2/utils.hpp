@@ -6,9 +6,8 @@
 /// (tf2/impl/utils.hpp, geometry2 jazzy f702874, BSD 3-Clause); upstream's header needs
 /// tf2_geometry_msgs and KDL for the message conversion this one does in place.
 
-#include <tf2/LinearMath/Quaternion.hpp>
-
 #include <geometry_msgs/msg/quaternion.hpp>
+#include <tf2/LinearMath/Quaternion.hpp>
 
 #include <cmath>
 

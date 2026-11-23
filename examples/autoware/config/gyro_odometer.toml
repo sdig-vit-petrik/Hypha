@@ -1,0 +1,28 @@
+# autoware_gyro_odometer GyroOdometerNode: the values of upstream
+# config/gyro_odometer.param.yaml, and the topics of autoware_launch 0.53.0 (Autoware
+# 2.1.0), pose_twist_estimator/gyro_odometer.launch.xml over the node's own
+# launch/gyro_odometer.launch.xml. Topics are the node's ports.
+
+output_frame = "base_link"
+message_timeout_sec = 0.2
+
+[ports.inputs."vehicle.twist_with_covariance"]
+topic = "/sensing/vehicle_velocity_converter/twist_with_covariance"
+
+[ports.inputs.imu]
+topic = "/sensing/imu/imu_data"
+
+# The twist the EKF reads, and its raw form: set in autoware_launch.
+[ports.outputs.twist_with_covariance]
+topic = "/localization/twist_estimator/twist_with_covariance"
+
+[ports.outputs.twist_with_covariance_raw]
+topic = "/localization/twist_estimator/twist_with_covariance_raw"
+
+# gyro_twist and gyro_twist_raw are relative names in autoware_launch; the namespace
+# /localization/twist_estimator is assumed from Autoware's layout. Nothing reads them.
+[ports.outputs.twist]
+topic = "/localization/twist_estimator/gyro_twist"
+
+[ports.outputs.twist_raw]
+topic = "/localization/twist_estimator/gyro_twist_raw"

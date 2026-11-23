@@ -24,6 +24,8 @@ Only the packages the hypha port compiles are copied, at their upstream paths:
 - `common/autoware_kalman_filter`: `include/`, `src/`, `test/`, `package.xml`, `README.md`.
 - `localization/autoware_localization_util`: the covariance ellipse the EKF uses
   (`covariance_ellipse.hpp`, `.cpp` and its unit test), `package.xml`, `README.md`.
+- `localization/autoware_gyro_odometer`: `src/`, `test/`, `config/`, `package.xml`,
+  `README.md`.
 - `localization/autoware_ekf_localizer`: `src/`, `test/` (its C++ tests; the launch test
   `test/utils/test_ekf_localizer_launch.py` is not copied), `config/`, `package.xml`,
   `README.md`.
