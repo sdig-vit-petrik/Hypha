@@ -212,3 +212,38 @@ fn topics_filter_excludes_unlisted_channels() {
 
     let _ = fs::remove_file(path);
 }
+
+/// The player lists the channels in the order the recording made them, whatever the
+/// hash seed of the process: the summary holds them in a hash map.
+#[test]
+fn channels_are_listed_in_recording_order() {
+    let path = temp_mcap_path("channel_order", "mcap");
+    let definition = "float64 data\n".to_string();
+    let md5 = "fdb28210bfa9d7c91146260178d9a584".to_string();
+    let topics: Vec<String> = (0..12).map(|index| format!("/topic_{index:02}")).collect();
+    {
+        let mut rec = Recorder::new(&path);
+        assert!(rec.is_open(), "error: {}", rec.open_error());
+        for (index, topic) in topics.iter().enumerate() {
+            let time = 1_000_000 * (index as u64 + 1);
+            assert!(rec.record(&RecordSample {
+                topic,
+                data_type: "std_msgs/Float64",
+                md5: &md5,
+                definition: &definition,
+                bytes: &[0; 8],
+                log_time_nanos: time,
+                publish_time_nanos: time,
+            }));
+        }
+        rec.finish();
+    }
+
+    let player = Player::new(&path);
+    assert!(player.is_open(), "error: {}", player.open_error());
+    let listed: Vec<&str> =
+        player.channels().iter().map(|channel| channel.topic.as_str()).collect();
+    assert_eq!(listed, topics);
+
+    let _ = fs::remove_file(path);
+}
