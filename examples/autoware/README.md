@@ -7,7 +7,7 @@ in #47. Autoware 2.1.0: `autoware_core` 1.10.0, `autoware_universe` 0.53.2.
 | Slice | Pipeline | State |
 |---|---|---|
 | A, detection (Leo Drive Isuzu bus) | crop box → concatenate → ground filter → voxel downsample → euclidean cluster | `autoware_crop_box_filter`, the voxel grid filter of `autoware_downsample_filters`, `autoware_ground_filter`, both nodes of `autoware_euclidean_cluster_object_detector` and the concatenate-and-time-sync node of `autoware_pointcloud_preprocessor` ported; every node on synthetic inputs, replay open |
-| B, localization (Istanbul Open Dataset) | crop box → downsample → NDT → gyro odometer → EKF | not started |
+| B, localization (Istanbul Open Dataset) | crop box → downsample → NDT → gyro odometer → EKF | `autoware_ekf_localizer` ported, on synthetic inputs; the rest open. On the Isuzu bags, which have no map, GNSS and the Applanix INS feed the EKF in place of NDT (#110) |
 
 Each node first computes on synthetic inputs in tests; replay of the recorded data
 follows #46.
@@ -121,12 +121,18 @@ CMake file defines them with glibc's values, so the patches stay the same on bot
 | `autoware_concatenation_diagnostics_upstream_test` | the upstream unit test (11 cases): the diagnostic status of a concatenation: all topics, a missing topic or transform, an empty cloud, a late cloud, the advanced reference window |
 | `autoware_concatenate_node_unit_upstream_test` | the upstream node unit test (9 cases): the twist and odometry queues, motion compensation, the collector's info, the concatenation with non-finite points, a cloud that times out, three clouds at once; a node per case, its parameters from a TOML file |
 | `autoware_concatenate_and_time_sync_node_test` | the upstream node on the bus: two lidars' mounts from `/tf_static`, the vehicle's twist on the deeper `twist` policy, two clouds into one in `base_link` with the newer cloud motion-compensated 0.5 m ahead, the info and the synchronized clouds, an OK diagnostic; and a missing lidar after `timeout_sec`, through the collector's timer created in a callback (#90): its source `TIMEOUT` and an ERROR diagnostic |
+| `autoware_kalman_filter_upstream_test` | the upstream unit tests of `autoware_kalman_filter`: the Kalman filter and the time-delay Kalman filter |
+| `autoware_covariance_ellipse_upstream_test` | the upstream unit test of `autoware_localization_util`'s covariance ellipse |
+| `autoware_ekf_localizer_utils_upstream_test` | the upstream unit tests of the EKF's utilities: the aged queue, covariance, Mahalanobis distance, measurement, numeric checks, state transition, strings, warning messages |
+| `autoware_ekf_localizer_upstream_test` | the upstream unit test of the EKF itself: the delay table, the 1-D filters, pose and twist delay compensation |
+| `autoware_ekf_localizer_node_test` | the upstream EKFLocalizerNode on the bus, on simulated time the test drives, with the deployment configuration: no estimate before the `trigger_node` service call and an initial pose, then odometry and `map → base_link` at that pose; WARN after 50 ticks without a pose, ERROR after 100; poses and twist at 1 m/s move the estimate (upstream's two integration scenarios and one of fusion) |
 | `autoware_rclcpp_shim_test` | the shim's names, time conversion, QoS check, timers and services: a call through a callback, two clients that each take only their own response, a request that does not decode, the service names |
 
 Upstream integration tests spin several nodes on an executor thread, with tf2_ros
 broadcasters and parameter overrides, which the shim does not offer; they are not built.
 The crop box's (`test_crop_box_filter_integration.cpp`) is vendored as the reference case
-for #59; the others, the euclidean cluster's `test_nodes.cpp` and the concatenate node's
+for #59, and so is the EKF's (`test_ekf_localizer_node_integration.cpp`), whose two
+scenarios `autoware_ekf_localizer_node_test` runs on the bus; the others, the euclidean cluster's `test_nodes.cpp` and the concatenate node's
 `test_concatenate_node_characterization.cpp` among them, are not copied.
 
 The two cluster nodes differ on a cluster above `max_cluster_size`, as upstream does:
@@ -148,6 +154,8 @@ What the patches change, per package. It is the input to #56 and, for messages, 
 | `autoware_pointcloud_preprocessor` | `sec`/`nanosec` → `secs`/`nsecs`: 66 uses in `time_utils.hpp`, `combine_cloud_handler`, `test_concatenation_info.cpp` | ROS 1 time fields (#45) |
 | `autoware_pointcloud_preprocessor` | the twist and odometry queues drop a twist by its age, `stamp - front < 1 s`, in place of comparing with `stamp - 1 s` | a hypha stamp is unsigned (ROS 1 `time`), so `stamp - 1 s` does not fit below 1 s, as under simulated time from 0; the test is the same |
 | `autoware_pointcloud_preprocessor` | five unused `message_filters` includes removed; `test_concatenate_node_unit.cpp` reads its parameters from a TOML file, not `parameter_overrides` | the shim offers neither; its parameters come from the parameter file |
+| `autoware_ekf_localizer` | `stamp.sec`/`nanosec` → `secs`/`nsecs` in `ekf_localizer.cpp` | ROS 1 time fields (#45) |
+| `autoware_localization_util` | `stamp.sec`/`nanosec` → `secs`/`nsecs` in the covariance ellipse test | ROS 1 time fields (#45) |
 | `pcl_conversions` | two unused `message_filters` includes removed | as above |
 | `point_cloud_msg_wrapper` | `#include <algorithm>` added | an upstream omission |
 

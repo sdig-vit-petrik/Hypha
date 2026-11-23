@@ -1,0 +1,93 @@
+# autoware_ekf_localizer EKFLocalizerNode: the values of upstream
+# config/ekf_localizer.param.yaml, and the topics and service of autoware_core's
+# autoware_core_localization.launch.xml, where the node runs in the namespace
+# /localization/pose_twist_fusion_filter. Topics are the node's ports.
+
+# The node: upstream config/ekf_localizer.param.yaml.
+[node]
+show_debug_info = false
+enable_yaw_bias_estimation = true
+predict_frequency = 50.0
+tf_rate = 50.0
+extend_state_step = 50
+
+[pose_measurement]
+pose_additional_delay = 0.0
+pose_measure_uncertainty_time = 0.01
+pose_smoothing_steps = 5
+max_pose_queue_size = 5
+pose_gate_dist = 49.5
+
+[twist_measurement]
+twist_additional_delay = 0.0
+twist_smoothing_steps = 2
+max_twist_queue_size = 2
+twist_gate_dist = 46.1
+
+[process_noise]
+proc_stddev_yaw_c = 0.005
+proc_stddev_vx_c = 10.0
+proc_stddev_wz_c = 5.0
+
+[simple_1d_filter_parameters]
+z_filter_proc_dev = 5.0
+roll_filter_proc_dev = 0.1
+pitch_filter_proc_dev = 0.1
+
+[diagnostics]
+pose_no_update_count_threshold_warn = 50
+pose_no_update_count_threshold_error = 100
+twist_no_update_count_threshold_warn = 50
+twist_no_update_count_threshold_error = 100
+ellipse_scale = 3.0
+error_ellipse_size = 1.5
+warn_ellipse_size = 1.2
+error_ellipse_size_lateral_direction = 0.3
+warn_ellipse_size_lateral_direction = 0.25
+diagnostics_publish_frequency = 10.0
+
+[misc]
+threshold_observable_velocity_mps = 0.0
+pose_frame_id = "map"
+
+# The service trigger_node_srv, remapped to trigger_node in the namespace.
+[services]
+trigger_node_srv = "/localization/pose_twist_fusion_filter/trigger_node"
+
+# Inputs, as autoware_core_localization.launch.xml remaps them.
+[ports.inputs.initialpose]
+topic = "/initialpose3d"
+
+[ports.inputs.in_pose_with_covariance]
+topic = "/localization/pose_estimator/pose_with_covariance"
+
+[ports.inputs.in_twist_with_covariance]
+topic = "/localization/twist_estimator/twist_with_covariance"
+
+# Outputs: an absolute remap as it is, a relative one in the namespace.
+[ports.outputs.ekf_odom]
+topic = "/localization/kinematic_state"
+
+[ports.outputs.ekf_pose]
+topic = "/localization/pose_twist_fusion_filter/pose"
+
+[ports.outputs.ekf_pose_with_covariance]
+topic = "/localization/pose_with_covariance"
+
+[ports.outputs.ekf_biased_pose]
+topic = "/localization/pose_twist_fusion_filter/biased_pose"
+
+[ports.outputs.ekf_biased_pose_with_covariance]
+topic = "/localization/pose_twist_fusion_filter/biased_pose_with_covariance"
+
+[ports.outputs.ekf_twist]
+topic = "/localization/pose_twist_fusion_filter/twist"
+
+[ports.outputs.ekf_twist_with_covariance]
+topic = "/localization/pose_twist_fusion_filter/twist_with_covariance"
+
+[ports.outputs.estimated_yaw_bias]
+topic = "/localization/pose_twist_fusion_filter/estimated_yaw_bias"
+
+[ports.outputs."debug.processing_time_ms"]
+topic = "/localization/pose_twist_fusion_filter/debug/processing_time_ms"

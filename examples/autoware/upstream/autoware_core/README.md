@@ -21,6 +21,12 @@ Only the packages the hypha port compiles are copied, at their upstream paths:
 - `common/autoware_agnocast_wrapper`: `include/autoware/agnocast_wrapper/macros.hpp` and
   `package.xml`; the rest of the wrapper, as it builds without Agnocast, is the shim's
   (`../../shim/include/autoware/agnocast_wrapper/`).
+- `common/autoware_kalman_filter`: `include/`, `src/`, `test/`, `package.xml`, `README.md`.
+- `localization/autoware_localization_util`: the covariance ellipse the EKF uses
+  (`covariance_ellipse.hpp`, `.cpp` and its unit test), `package.xml`, `README.md`.
+- `localization/autoware_ekf_localizer`: `src/`, `test/` (its C++ tests; the launch test
+  `test/utils/test_ekf_localizer_launch.py` is not copied), `config/`, `package.xml`,
+  `README.md`.
 
 The files are unchanged. The edits the port needs are in `../patches/`, one file per
 package; the build applies them to a copy in the build directory.

@@ -1,0 +1,3 @@
+# autoware_ekf_localizer_node_test: the node on the bus, with the deployment parameters,
+# topics and service of ../../config/ekf_localizer.toml.
+include = ["../../config/ekf_localizer.toml"]

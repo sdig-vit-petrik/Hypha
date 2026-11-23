@@ -24,7 +24,8 @@ set(AUTOWARE_MSG_OUT "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 # Messages the ported nodes publish that hypha does not ship, in ROS 1 syntax until #45.
 hypha_generate_messages(PACKAGE autoware_internal_debug_msgs
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/autoware_internal_debug_msgs/msg"
-  OUT_DIR "${AUTOWARE_MSG_OUT}")
+  OUT_DIR "${AUTOWARE_MSG_OUT}"
+  DEPENDS std_msgs)
 hypha_generate_messages(PACKAGE pcl_msgs
   MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/pcl_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
@@ -55,6 +56,10 @@ endif()
 hypha_generate_messages(PACKAGE logging_demo
   SRV_DIR "${AUTOWARE_UPSTREAM_DIR}/demos/logging_demo/srv"
   OUT_DIR "${AUTOWARE_MSG_OUT}")
+hypha_generate_messages(PACKAGE visualization_msgs
+  MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/visualization_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}"
+  DEPENDS std_msgs geometry_msgs sensor_msgs)
 
 # autoware_patched(<package> <upstream dir> <out var>): a copy of the upstream package in
 # the build directory with upstream/patches/<package>.patch applied. The vendored files
@@ -91,7 +96,7 @@ target_include_directories(hypha_rclcpp PUBLIC
   "${AUTOWARE_UPSTREAM_DIR}/geometry2/tf2/include")
 target_link_libraries(hypha_rclcpp PUBLIC
   hypha::sdk autoware_internal_debug_msgs autoware_internal_msgs hypha_rclcpp_msgs std_srvs
-  logging_demo Eigen3::Eigen)
+  logging_demo visualization_msgs Eigen3::Eigen)
 target_compile_features(hypha_rclcpp PUBLIC cxx_std_23)
 
 add_library(hypha_rclcpp_component_main OBJECT shim/src/component_main.cpp)
@@ -105,12 +110,13 @@ function(autoware_component program)
   target_link_libraries(${program} PRIVATE hypha_rclcpp)
 endfunction()
 
-# autoware_test(<name> SOURCES <file>... [INCLUDES <dir>...]): one GoogleTest program.
+# autoware_test(<name> SOURCES <file>... [INCLUDES <dir>...] [LIBS <lib>...]
+#               [ENV <VAR=value>...]): one GoogleTest program.
 # Each test runs in a bus domain of its own, autoware_<n>, so tests that ctest runs in
 # parallel share neither node names nor topics. A domain name has at most 32
 # characters, so it is numbered, not named after the test.
 function(autoware_test name)
-  cmake_parse_arguments(ARG "" "" "SOURCES;INCLUDES;LIBS" ${ARGN})
+  cmake_parse_arguments(ARG "" "" "SOURCES;INCLUDES;LIBS;ENV" ${ARGN})
   add_executable(${name} ${ARG_SOURCES})
   target_include_directories(${name} PRIVATE ${ARG_INCLUDES})
   target_link_libraries(${name} PRIVATE hypha_rclcpp GTest::gtest ${ARG_LIBS})
@@ -121,7 +127,7 @@ function(autoware_test name)
   endif()
   math(EXPR count "${count} + 1")
   set_property(GLOBAL PROPERTY AUTOWARE_TEST_COUNT ${count})
-  set_tests_properties(${name} PROPERTIES ENVIRONMENT "HYPHA_DOMAIN=autoware_${count}")
+  set_tests_properties(${name} PROPERTIES ENVIRONMENT "HYPHA_DOMAIN=autoware_${count};${ARG_ENV}")
 endfunction()
 
 # --- Slice A: autoware_crop_box_filter (autoware_core 1.10.0) --------------------------
@@ -308,3 +314,61 @@ autoware_test(autoware_concatenate_and_time_sync_node_test
   SOURCES test/test_concatenate_and_time_sync_node.cpp
     "${CONCATENATE_DIR}/concatenate_and_time_sync_node.cpp"
   LIBS autoware_concatenate_core)
+
+# --- Localization: autoware_ekf_localizer (autoware_core 1.10.0) -------------------------
+
+set(KALMAN_FILTER_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_core/common/autoware_kalman_filter")
+add_library(autoware_kalman_filter STATIC
+  "${KALMAN_FILTER_DIR}/src/kalman_filter.cpp"
+  "${KALMAN_FILTER_DIR}/src/time_delay_kalman_filter.cpp")
+target_include_directories(autoware_kalman_filter PUBLIC "${KALMAN_FILTER_DIR}/include")
+target_link_libraries(autoware_kalman_filter PUBLIC Eigen3::Eigen)
+target_compile_features(autoware_kalman_filter PUBLIC cxx_std_23)
+autoware_test(autoware_kalman_filter_upstream_test
+  SOURCES "${KALMAN_FILTER_DIR}/test/test_kalman_filter.cpp"
+    "${KALMAN_FILTER_DIR}/test/test_time_delay_kalman_filter.cpp"
+  LIBS autoware_kalman_filter GTest::gtest_main)
+
+# autoware_localization_util: the covariance ellipse, the one part the EKF uses.
+autoware_patched(autoware_localization_util
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/localization/autoware_localization_util"
+  LOCALIZATION_UTIL_DIR)
+add_library(autoware_localization_util STATIC
+  "${LOCALIZATION_UTIL_DIR}/src/covariance_ellipse.cpp")
+target_include_directories(autoware_localization_util PUBLIC "${LOCALIZATION_UTIL_DIR}/include")
+target_link_libraries(autoware_localization_util PUBLIC hypha_rclcpp)
+autoware_test(autoware_covariance_ellipse_upstream_test
+  SOURCES "${LOCALIZATION_UTIL_DIR}/test/test_covariance_ellipse.cpp"
+  LIBS autoware_localization_util GTest::gtest_main)
+
+autoware_patched(autoware_ekf_localizer
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/localization/autoware_ekf_localizer" EKF_DIR)
+add_library(autoware_ekf_localizer_core STATIC
+  "${EKF_DIR}/src/ekf_localizer.cpp"
+  "${EKF_DIR}/src/utils/hyper_parameters.cpp"
+  "${EKF_DIR}/src/utils/covariance.cpp"
+  "${EKF_DIR}/src/utils/diagnostics.cpp"
+  "${EKF_DIR}/src/utils/mahalanobis.cpp"
+  "${EKF_DIR}/src/utils/measurement.cpp"
+  "${EKF_DIR}/src/utils/state_transition.cpp"
+  "${EKF_DIR}/src/utils/warning_message.cpp")
+target_include_directories(autoware_ekf_localizer_core PUBLIC "${EKF_DIR}/src" "${EKF_DIR}")
+target_link_libraries(autoware_ekf_localizer_core PUBLIC
+  autoware_kalman_filter autoware_localization_util hypha_rclcpp)
+
+autoware_component(autoware_ekf_localizer SOURCES "${EKF_DIR}/src/ekf_localizer_node.cpp")
+target_link_libraries(autoware_ekf_localizer PRIVATE autoware_ekf_localizer_core)
+
+file(GLOB EKF_UPSTREAM_UTIL_TESTS "${EKF_DIR}/test/utils/*.cpp")
+autoware_test(autoware_ekf_localizer_utils_upstream_test
+  SOURCES ${EKF_UPSTREAM_UTIL_TESTS} LIBS autoware_ekf_localizer_core GTest::gtest_main)
+autoware_test(autoware_ekf_localizer_upstream_test
+  SOURCES "${EKF_DIR}/test/test_ekf_localizer.cpp"
+  LIBS autoware_ekf_localizer_core GTest::gtest_main)
+
+# The node on the bus, on simulated time the test drives: trigger, initial pose, pose and
+# twist in; odometry, /tf and diagnostics out.
+autoware_test(autoware_ekf_localizer_node_test
+  SOURCES test/test_ekf_localizer_node.cpp "${EKF_DIR}/src/ekf_localizer_node.cpp"
+  LIBS autoware_ekf_localizer_core
+  ENV HYPHA_USE_SIM_TIME=1)

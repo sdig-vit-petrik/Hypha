@@ -1,0 +1,37 @@
+# autoware_ekf_localizer: the edits of the hypha port, applied to a copy of
+# upstream/autoware_core/localization/autoware_ekf_localizer by the build (patch -p1). Every
+# edit is also marked '// hypha port:' with its reason.
+--- a/src/ekf_localizer.cpp
++++ b/src/ekf_localizer.cpp
+@@ -558,7 +558,8 @@
+   constexpr int dim_y = 3;  // pos_x, pos_y, yaw, depending on Pose output
+ 
+   /* Calculate delay step */
+-  const double stamp_sec = pose.header.stamp.sec + pose.header.stamp.nanosec * 1e-9;
++  // hypha port: ROS 1 stamps (secs, nsecs) until ROS 2 definitions (#45); every stamp field in this file is renamed.
++  const double stamp_sec = pose.header.stamp.secs + pose.header.stamp.nsecs * 1e-9;
+   double delay_time = (t_curr_sec - stamp_sec) + params_.pose_additional_delay;
+   if (delay_time < 0.0) {
+     warnings_out.push_back({pose_delay_time_warning_message(delay_time), 1000});
+@@ -665,9 +666,9 @@
+   pose_with_delay = pose;
+ 
+   // Native timestamp addition to avoid rclcpp::Time dependency
+-  double new_time_sec = pose.header.stamp.sec + (pose.header.stamp.nanosec * 1e-9) + delay_time;
+-  pose_with_delay.header.stamp.sec = static_cast<int32_t>(std::floor(new_time_sec));
+-  pose_with_delay.header.stamp.nanosec =
++  double new_time_sec = pose.header.stamp.secs + (pose.header.stamp.nsecs * 1e-9) + delay_time;
++  pose_with_delay.header.stamp.secs = static_cast<int32_t>(std::floor(new_time_sec));
++  pose_with_delay.header.stamp.nsecs =
+     static_cast<uint32_t>((new_time_sec - std::floor(new_time_sec)) * 1e9);
+ 
+   pose_with_delay.pose.pose.orientation.x = curr_orientation.x();
+@@ -698,7 +699,7 @@
+   constexpr int dim_y = 2;  // vx, wz
+ 
+   /* Calculate delay step */
+-  const double stamp_sec = twist.header.stamp.sec + twist.header.stamp.nanosec * 1e-9;
++  const double stamp_sec = twist.header.stamp.secs + twist.header.stamp.nsecs * 1e-9;
+   double delay_time = (t_curr_sec - stamp_sec) + params_.twist_additional_delay;
+   if (delay_time < 0.0) {
+     warnings_out.push_back({twist_delay_time_warning_message(delay_time), 1000});
