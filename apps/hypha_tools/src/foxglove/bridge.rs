@@ -145,9 +145,6 @@ impl FoxgloveBridge {
         let prev_clock = self.sim_clock_nanos.load(Ordering::Relaxed);
         let timeline_looped =
             prev_clock != 0 && clock_ns.saturating_add(1_000_000_000) < prev_clock;
-        if timeline_looped {
-            self.handle_timeline_reset();
-        }
         self.sim_clock_nanos.store(clock_ns, Ordering::Relaxed);
         let now_ns = epoch_nanos_now();
         let last_ns = self.last_time_broadcast_ns.load(Ordering::Relaxed);
@@ -157,6 +154,11 @@ impl FoxgloveBridge {
         if time_frame_due {
             self.last_time_broadcast_ns.store(now_ns, Ordering::Relaxed);
             self.server.broadcast_time(clock_ns);
+        }
+        // After the time frame: Foxglove clears its transforms when time goes back, so the
+        // latched /tf_static must reach it after the jump, not before.
+        if timeline_looped {
+            self.handle_timeline_reset();
         }
     }
 
