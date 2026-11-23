@@ -6,7 +6,9 @@ ported nodes publish. Licence: `LICENSE` (Apache 2.0).
 
 - `ProcessingTimeNode.msg`, `ProcessingTimeTree.msg`: unchanged; their ROS 2 definitions are
   valid ROS 1 syntax.
-- `Float64Stamped.msg`, `Int32Stamped.msg`, `StringStamped.msg`: rewritten in ROS 1 syntax
+- `BoolStamped.msg`, `Float64Stamped.msg`, `Float64MultiArrayStamped.msg`,
+  `Int32Stamped.msg`, `StringStamped.msg`: rewritten in ROS 1 syntax
   (`time` for `builtin_interfaces/Time`) until hypha reads ROS 2 definitions (#45); the
   upstream definition is in each one's comment. The concatenate node includes the two
-  last and publishes neither.
+  last and publishes neither; the EKF publishes `Float64Stamped` and `Float64MultiArrayStamped`, the GNSS poser
+  `BoolStamped`.

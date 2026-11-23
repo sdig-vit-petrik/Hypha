@@ -146,7 +146,7 @@ defect; T3 can introduce one.
 
 | Tool | Version control | Class | Justification today |
 |---|---|---|---|
-| `rustc`, LLVM, `cargo` | `rust-toolchain.toml`, checked against the builder image | T3 | None beyond the tests. Not qualified. |
+| `rustc`, LLVM, `cargo` | Not pinned: the latest stable (`rust-toolchain.toml`, the builder image) | T3 | None beyond the tests. Not qualified. |
 | C++ compiler, standard library | The builder image | T3 | None beyond the tests. Not qualified. |
 | Linker, CMake | The builder image | T3 | None beyond the tests. |
 | `cbindgen` | `docker/Dockerfile` | T3 | The generated header is committed and compared on every change; the C test `test_c_abi.c` compiles against it. |
@@ -172,8 +172,10 @@ compiler defect ([sil2-readiness.md](sil2-readiness.md) G-15, G-17).
 ## 9. Configuration management
 
 - Everything that makes a release is in the repository or pinned from it: sources,
-  `Cargo.lock`, `fuzz/Cargo.lock`, `rust-toolchain.toml`, `docker/Dockerfile` (base
-  image by digest), `abi.revision`, the vendored crate with its patch (`vendor/`).
+  `Cargo.lock`, `fuzz/Cargo.lock`, `docker/Dockerfile` (base image by digest),
+  `abi.revision`, the vendored crate with its patch (`vendor/`). The Rust compiler is
+  not pinned: `rust-toolchain.toml` takes the latest stable, so the qualification report
+  names the `rustc` a build used.
 - A release is a tag ([release-policy.md](release-policy.md)). The qualification
   report names the commit and says when the tree had uncommitted changes.
 - Generated files that are committed are compared with their generator on every

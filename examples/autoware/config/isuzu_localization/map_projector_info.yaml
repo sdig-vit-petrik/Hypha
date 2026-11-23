@@ -1,0 +1,9 @@
+# The map projection of the Isuzu localization (#110): no map comes with the bags, so the
+# map is a local Cartesian frame about the first GNSS fix of all-sensors bag 4, near the
+# Leo Drive route in Istanbul. Heights stay WGS84 ellipsoid heights.
+projector_type: LocalCartesian
+vertical_datum: WGS84
+map_origin:
+  latitude: 40.81352651372146 # [deg]
+  longitude: 29.362997372142644 # [deg]
+  altitude: 0.0 # [m]

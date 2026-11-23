@@ -54,4 +54,9 @@ class DebugPublisher
     std::unordered_map<std::string, std::any> pubs_;
 };
 
+/// Upstream's template over the node type, of which DebugPublisher is the rclcpp::Node form. The
+/// shim's only node is rclcpp::Node, which autoware::agnocast_wrapper::Node names too.
+template <class NodeT>
+using BasicDebugPublisher = DebugPublisher;
+
 }  // namespace autoware_utils_debug

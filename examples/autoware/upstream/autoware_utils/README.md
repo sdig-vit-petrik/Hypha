@@ -13,12 +13,22 @@ Only these files, unchanged:
   `autoware_utils_debug/src/time_keeper.cpp`, the processing-time tree;
 - `autoware_utils_diagnostics/include/autoware_utils_diagnostics/diagnostics_interface.hpp`,
   the header-only diagnostics publisher of the clustering, on the shim's `rclcpp`;
-- of the `autoware_utils` umbrella package, the three forwarding headers the
-  concatenate node includes: `ros/debug_publisher.hpp`, `ros/diagnostics_interface.hpp`
-  and `system/stop_watch.hpp`, each a `using namespace` of the split package.
+- `autoware_utils_geometry/include/autoware_utils_geometry/msg/covariance.hpp`, the
+  covariance indices of the EKF;
+- of the `autoware_utils` umbrella package, the forwarding headers the ported nodes
+  include: `ros/debug_publisher.hpp`, `ros/diagnostics_interface.hpp`,
+  `ros/published_time_publisher.hpp`, `system/stop_watch.hpp`, `geometry/geometry.hpp` and
+  `math/unit_conversion.hpp`, each a `using namespace` of the split package;
+- `autoware_utils_geometry`'s Boost.Geometry types and polygon utilities
+  (`boost_geometry.hpp`, `boost_polygon_utils.hpp`, `src/geometry/boost_polygon_utils.cpp`),
+  for the tracker; the patch removes the `PredictedObject` overloads, whose message holds a
+  `builtin_interfaces/Duration` (#45);
 
 The ROS-bound utilities the ported nodes use (`autoware_utils_debug`'s debug and
 published-time publishers, `autoware_utils_tf`'s transform listener) are the shim's,
-in `../../shim/include/`, on hypha endpoints and `hypha::TransformBuffer`; so is the one
-function of `autoware_utils_geometry` the ground filter uses (`calc_distance3d`), whose
-upstream header brings the planning messages, tf2 and Boost.Geometry.
+in `../../shim/include/`, on hypha endpoints and `hypha::TransformBuffer`; so are the
+functions of `autoware_utils_geometry/geometry.hpp` the ported nodes use (the distances,
+`get_rpy`, `create_quaternion_from_rpy`, `create_point`, `pose2transform`), copied from
+upstream's code, whose header brings the planning messages and Boost.Geometry; the
+logger level service of `autoware_utils_logging` is the shim's too, as hypha sets log
+levels from the parameter file only.

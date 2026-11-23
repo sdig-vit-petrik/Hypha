@@ -1,0 +1,6 @@
+# The EKF of ../ekf_localizer.toml with the GNSS pose as its pose: Autoware's GNSS-only
+# pose source, where pose_estimator_arbiter would relay /sensing/gnss/pose_with_covariance.
+include = ["../ekf_localizer.toml"]
+
+[ports.inputs.in_pose_with_covariance]
+topic = "/sensing/gnss/pose_with_covariance"

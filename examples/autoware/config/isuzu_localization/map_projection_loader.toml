@@ -1,0 +1,4 @@
+# The map projection of the Isuzu localization, from map_projector_info.yaml; no Lanelet2
+# map. Paths are relative to examples/autoware, where hypha launch runs the nodes.
+map_projector_info_path = "config/isuzu_localization/map_projector_info.yaml"
+lanelet2_map_path = ""

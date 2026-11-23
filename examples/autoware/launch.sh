@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Usage: launch.sh [up [--attach] | attach | down]
-# Replay a bag through Slice A under hypha launch (launch/slice_a.toml), for Foxglove.
+# Replay an Isuzu bag through Slice A and the localization under hypha launch
+# (launch/isuzu.toml), for Foxglove.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -10,14 +11,14 @@ absolute() { case "$1" in /*) echo "$1" ;; *) echo "$PWD/$1" ;; esac; }
 build=$(absolute "${AUTOWARE_BUILD_DIR:-$repo/build/examples/autoware}")
 # hypha from PATH, else the one ./build.sh leaves in target/release.
 export PATH="$build:$PATH:$repo/target/release"
-SLICE_A_INPUT=$(absolute "${SLICE_A_INPUT:-$repo/data/isuzu/all-sensors-bag4/slice-a.mcap}")
-export SLICE_A_INPUT
+ISUZU_INPUT=$(absolute "${ISUZU_INPUT:-$repo/data/isuzu/all-sensors-bag4/isuzu-localization.mcap}")
+export ISUZU_INPUT
 
-if [ "${1:-up}" = up ] && [ ! -f "$SLICE_A_INPUT" ]; then
-    echo "launch.sh: no recording at SLICE_A_INPUT=$SLICE_A_INPUT (README.md, \"Slice A end to end\")" >&2
+if [ "${1:-up}" = up ] && [ ! -f "$ISUZU_INPUT" ]; then
+    echo "launch.sh: no recording at ISUZU_INPUT=$ISUZU_INPUT (README.md, \"Watch the port in Foxglove\")" >&2
     exit 2
 fi
 
-echo "Slice A: binaries from $build, replaying $SLICE_A_INPUT"
+echo "Isuzu: binaries from $build, replaying $ISUZU_INPUT"
 cd "$here"
-exec hypha launch "${1:-up}" launch/slice_a.toml "${@:2}"
+exec hypha launch "${1:-up}" launch/isuzu.toml "${@:2}"

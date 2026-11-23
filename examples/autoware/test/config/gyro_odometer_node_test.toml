@@ -1,0 +1,5 @@
+# autoware_gyro_odometer_node_test: the node on the bus, with the deployment topics of
+# ../../config/gyro_odometer.toml. As upstream's node test, a 10 s message timeout, so
+# only the scenario decides what is missing.
+include = ["../../config/gyro_odometer.toml"]
+message_timeout_sec = 10.0

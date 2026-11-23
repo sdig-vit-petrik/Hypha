@@ -35,7 +35,7 @@ mix two lines in one domain.
 |---|---|
 | Operating system | Ubuntu 26.04, on amd64 and arm64 |
 | C++ compiler | The GCC of that distribution; C++23 |
-| Rust | The version `rust-toolchain.toml` names |
+| Rust | The latest stable, 1.98 or newer (`rust-toolchain.toml`, `rust-version`); not pinned |
 | Builder image | `docker/Dockerfile`, which installs exactly these |
 
 macOS is a development platform with no guarantee: CI builds the workspace there and

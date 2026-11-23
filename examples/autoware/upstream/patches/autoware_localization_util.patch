@@ -1,0 +1,17 @@
+# autoware_localization_util: the edits of the hypha port, applied to a copy of
+# upstream/autoware_core/localization/autoware_localization_util by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
+--- a/test/test_covariance_ellipse.cpp
++++ b/test/test_covariance_ellipse.cpp
+@@ -39,8 +39,9 @@
+       0.0, 0.0, 0.0, 0.0, 0.0, 1.0   // NOLINT
+     };
+ 
+-    header_.stamp.sec = 0;
+-    header_.stamp.nanosec = 0;
++    // hypha port: ROS 1 stamps (secs, nsecs) until ROS 2 definitions (#45); every stamp field in this file is renamed.
++    header_.stamp.secs = 0;
++    header_.stamp.nsecs = 0;
+     header_.frame_id = "map";
+   }
+ 

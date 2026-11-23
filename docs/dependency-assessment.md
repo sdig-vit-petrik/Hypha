@@ -28,7 +28,7 @@ Readers: an assessor, and the engineer who updates a dependency.
 | Transforms | `transforms` 2.3.0, `approx`, `num-traits`, `libm` | When a node uses the transform buffer | Interpolation of coordinate transforms |
 | Containers and errors | `hashbrown`, `foldhash`, `equivalent`, `allocator-api2`, `thiserror`, `log` | Yes | Maps, error types, the log facade |
 | Build time only | `proc-macro2`, `quote`, `syn`, `unicode-ident`, `serde_derive`, `thiserror-impl`, `enum-iterator-derive`, `iceoryx2-bb-derive-macros` | No | Procedural macros; they generate code at compile time |
-| Rust runtime | `core`, `alloc`, `std` of Rust 1.98.0 | Yes | The language runtime |
+| Rust runtime | `core`, `alloc`, `std` of the latest stable Rust, 1.98 or newer | Yes | The language runtime |
 | C++ runtime | The standard library of the builder image's GCC | In the application | The SDK headers use it |
 | Platform | Linux, the MMU, POSIX shared memory, the monotonic clock | — | Outside the item; an assumption of use |
 

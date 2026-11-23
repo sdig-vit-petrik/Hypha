@@ -1,0 +1,139 @@
+# Watch the Autoware port on a replayed Isuzu bag: detection (Slice A's ground filter and
+# voxel downsample, then the full stack's clustering, shape estimation and feature remover),
+# tracking (the multi-object tracker in map, #114), the localization of #110 (the Applanix
+# driver's outputs, the map projection, the GNSS poser, the gyro odometer, the EKF and its
+# start), the Foxglove bridge and the player, one tmux window each. Start it with examples/autoware/launch.sh,
+# which puts the build's executables on PATH, checks ISUZU_INPUT and runs hypha launch in
+# examples/autoware:
+#
+#   examples/autoware/launch.sh up --attach
+#   examples/autoware/launch.sh down
+#
+# Executables are found on PATH; files are relative to examples/autoware. The nodes follow
+# the player's /clock outside the replay lockstep (HYPHA_USE_SIM_TIME=follow), as ROS nodes
+# follow ros2 bag play: the localization's /tf loop cannot replay in lockstep yet (#103).
+# Each loop of the player sends /clock back: the nodes exit 75 and their windows start
+# them again at once. The bridge and the player run on host time.
+
+# --- Detection: Slice A -----------------------------------------------------------------
+
+[[units]]
+name = "ground_filter"
+exec = "autoware_ground_filter"
+args = ["config/slice_a/ground_filter.toml"]
+restart = "on-failure"
+[units.env]
+HYPHA_USE_SIM_TIME = "follow"
+
+[[units]]
+name = "voxel_grid_downsample_filter"
+exec = "autoware_voxel_grid_downsample_filter"
+args = ["config/slice_a/voxel_grid_downsample_filter.toml"]
+restart = "on-failure"
+[units.env]
+HYPHA_USE_SIM_TIME = "follow"
+
+# --- Tracking (#114): Autoware 2.1.0's rule-based detection into the tracker --------------
+# Universe's clustering, which keeps the cluster points, in place of Slice A's Core one.
+
+[[units]]
+name = "euclidean_cluster"
+exec = "autoware_universe_voxel_grid_based_euclidean_cluster"
+args = ["config/isuzu_tracking/euclidean_cluster.toml"]
+restart = "on-failure"
+[units.env]
+HYPHA_USE_SIM_TIME = "follow"
+
+[[units]]
+name = "shape_estimation"
+exec = "autoware_shape_estimation"
+args = ["config/isuzu_tracking/shape_estimation.toml"]
+restart = "on-failure"
+[units.env]
+HYPHA_USE_SIM_TIME = "follow"
+
+[[units]]
+name = "detected_object_feature_remover"
+exec = "autoware_detected_object_feature_remover"
+args = ["config/isuzu_tracking/detected_object_feature_remover.toml"]
+restart = "on-failure"
+[units.env]
+HYPHA_USE_SIM_TIME = "follow"
+
+[[units]]
+name = "multi_object_tracker"
+exec = "autoware_multi_object_tracker"
+args = ["config/isuzu_tracking/multi_object_tracker.toml"]
+restart = "on-failure"
+[units.env]
+HYPHA_USE_SIM_TIME = "follow"
+
+# --- Localization: GNSS and the Applanix INS into the EKF (#110) --------------------------
+
+[[units]]
+name = "map_projection_loader"
+exec = "autoware_map_projection_loader"
+args = ["config/isuzu_localization/map_projection_loader.toml"]
+restart = "on-failure"
+[units.env]
+HYPHA_USE_SIM_TIME = "follow"
+
+[[units]]
+name = "lvx_client"
+exec = "applanix_lvx_client_replay"
+args = ["config/isuzu_localization/lvx_client.toml"]
+restart = "on-failure"
+[units.env]
+HYPHA_USE_SIM_TIME = "follow"
+
+[[units]]
+name = "gnss_poser"
+exec = "autoware_gnss_poser"
+args = ["config/isuzu_localization/gnss_poser.toml"]
+restart = "on-failure"
+[units.env]
+HYPHA_USE_SIM_TIME = "follow"
+
+[[units]]
+name = "gyro_odometer"
+exec = "autoware_gyro_odometer"
+args = ["config/isuzu_localization/gyro_odometer.toml"]
+restart = "on-failure"
+[units.env]
+HYPHA_USE_SIM_TIME = "follow"
+
+[[units]]
+name = "ekf_localizer"
+exec = "autoware_ekf_localizer"
+args = ["config/isuzu_localization/ekf_localizer.toml"]
+restart = "on-failure"
+[units.env]
+HYPHA_USE_SIM_TIME = "follow"
+
+[[units]]
+name = "gnss_pose_initializer"
+exec = "gnss_pose_initializer"
+args = ["config/isuzu_localization/gnss_pose_initializer.toml"]
+restart = "on-failure"
+after = ["ekf_localizer"]
+[units.env]
+HYPHA_USE_SIM_TIME = "follow"
+
+# --- Foxglove and the player --------------------------------------------------------------
+
+# Foxglove: connect to ws://localhost:8765 and import foxglove_layout.json.
+[[units]]
+name = "foxglove_bridge"
+exec = "hypha"
+args = ["foxglove"]
+restart = "on-failure"
+
+# The recording in a loop at real time. /clock advances 20 ms at a time, so the EKF's 50 Hz
+# timer runs every period. stdin is /dev/null: a unit runs in the background of its window,
+# so the player's keys never reach it, and a key typed there hangs it (#109).
+[[units]]
+name = "player"
+exec = "/bin/sh"
+restart = "on-failure"
+args = ["-c", 'exec hypha play --input "$ISUZU_INPUT" --clock --rate 1 --chunk 20 --loop </dev/null']
+after = ["ground_filter", "voxel_grid_downsample_filter", "euclidean_cluster", "shape_estimation", "detected_object_feature_remover", "multi_object_tracker", "map_projection_loader", "lvx_client", "gnss_poser", "gyro_odometer", "ekf_localizer", "gnss_pose_initializer", "foxglove_bridge"]

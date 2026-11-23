@@ -18,7 +18,9 @@ ENV RUSTUP_HOME=/usr/local/rustup
 ENV CARGO_HOME=/usr/local/cargo
 ENV PATH=/usr/local/cargo/bin:$PATH
 
-ARG HYPHA_RUST_VERSION=1.98.0
+# Rust is not pinned: the image takes the latest stable when it is built, as
+# rust-toolchain.toml selects it everywhere else.
+ARG HYPHA_RUST_VERSION=stable
 ARG HYPHA_CHISEL_VERSION=v1.5.0
 # scripts/format.sh accepts exactly this clang-format major. The PyPI wheel
 # tracks the LLVM release on every host, the apt package does not.
@@ -32,8 +34,9 @@ RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
     && echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
 
 # lsof lets clean-shm.sh find the processes that still hold shared memory;
-# tmux runs hypha_launch sessions; Eigen builds the MRS example that test.sh flies;
-# PCL builds the Autoware port (examples/autoware), and patch applies its edits.
+# tmux runs hypha_launch sessions; patch applies the Autoware port's edits. The
+# examples' libraries come in a layer of their own below, after Rust, so a new one
+# does not rebuild the toolchain.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         binutils \
         bzip2 \
@@ -44,9 +47,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         g++ \
         gcc \
         git \
-        libeigen3-dev \
-        libgtest-dev \
-        libpcl-dev \
         libssl-dev \
         lsof \
         make \
@@ -97,6 +97,20 @@ RUN set -eux; \
     tar -xzf "${file}" -C /usr/local/bin chisel; \
     rm -f "${file}" "${file}.sha384"; \
     chisel version
+
+# The C++ libraries: GoogleTest builds the C++ tests, Eigen the MRS example that test.sh
+# flies; PCL, GeographicLib, pugixml, yaml-cpp and Boost's filesystem and serialization
+# build the Autoware port (examples/autoware).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libboost-filesystem-dev \
+        libboost-serialization-dev \
+        libeigen3-dev \
+        libgeographiclib-dev \
+        libgtest-dev \
+        libpcl-dev \
+        libpugixml-dev \
+        libyaml-cpp-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /work
 CMD ["/bin/bash"]

@@ -328,8 +328,9 @@ typedef struct HyphaLoan HyphaLoan;
 // A session on the bus. Opaque to the caller.
 //
 // `hypha_node_create` reads `HYPHA_USE_SIM_TIME`: `1` or `true` puts the node on
-// simulated time, `0`, `false` or an unset variable leaves it off, and any other value
-// is `InvalidArgument`. A refused parameter file or `[log]` table is `InvalidArgument`,
+// simulated time, in the replay lockstep; `follow` puts it on simulated time outside the
+// lockstep, as a ROS node follows `ros2 bag play`; `0`, `false` or an unset variable
+// leaves it off, and any other value is `InvalidArgument`. A refused parameter file or `[log]` table is `InvalidArgument`,
 // or `InvalidState` for a sink lock another process holds or a second, different `[log]`
 // table. Each `WaitSet` on the node co-owns it, so the node outlives it whatever order
 // (or thread) the caller destroys them in.

@@ -119,7 +119,7 @@ fault.**
 | Framework time | What time is it for this node? | `hypha::now()`, `hypha_clock_now_nanos`, `hypha_base/time.h` | app 7, mrs 1, ex 4 |
 | Host time | How much real time passed? | `hypha::steadyNow()`, `hypha_clock_steady_now_nanos`, `hypha_base/clock.h` | app 2, ex 1 |
 | Step time | When is this step? | `CycleTime` (`now`, `stamp`, `dt`, `missed`); `hypha::now()` returns `now` while the step runs | all cycle users |
-| Simulated time | Does this process follow `/clock`? | `HYPHA_USE_SIM_TIME`, `hypha_clock_*sim_time` | tests, tools |
+| Simulated time | Does this process follow `/clock`? | `HYPHA_USE_SIM_TIME` (`1`/`true` in the replay lockstep, `follow` outside it), `hypha_clock_*sim_time` | tests, tools, ex autoware |
 | ROS stamps | How do I write or read a ROS `Header` stamp? | `hypha::toRosTime`, `hypha::fromRosTime`, `message_stamp.h` | app 9 |
 
 ### 3.6 Configuration
@@ -171,7 +171,7 @@ fault.**
 
 | Feature | Question it answers | Where | Users |
 |---|---|---|---|
-| Message generation | How does an application get its message types? | `hypha_msggen`, `hypha_generate_messages()` | app, mrs |
+| Message generation | How does an application get its message types? | `hypha_msggen`, `hypha_generate_messages()`; every message compares with `==`, field by field | app, mrs, ex autoware |
 | Tools | How do I look at, record, replay, launch or bridge a system? | `hypha topic`, `hypha top`, `hypha record`, `hypha play`, `hypha convert`, `hypha launch`, `hypha param`, `hypha node`, `hypha foxglove`, `hypha_ros_bridge`, `hypha intercept` (`docs/tools.md`) | operators |
 | ROS 2 bags | How do I replay a ROS 2 bag on hypha? | `hypha convert <bag.db3> -o <run.mcap>`, then `hypha play` (`docs/tools.md`): CDR into ROS 1 serialization from `.msg` definitions, `--xyzirc` for Autoware's point layout | operators |
 | Fault injection | How do I change fields of a topic between a producer and its consumers? | `hypha intercept` (config file + latched state topic), driven from `hypha top`'s Intercept tab (`docs/tools.md`) | operators |

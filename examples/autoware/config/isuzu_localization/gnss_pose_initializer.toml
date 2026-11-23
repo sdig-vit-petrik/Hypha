@@ -1,0 +1,23 @@
+# The EKF's start from the first GNSS pose (tools/gnss_pose_initializer.cpp).
+
+# The covariance of the initial pose: autoware_pose_initializer's output_pose_covariance
+# (autoware_core 1.10.0, config/pose_initializer.param.yaml).
+output_pose_covariance = [
+  1.0, 0.0, 0.0,  0.0,  0.0,  0.0,
+  0.0, 1.0, 0.0,  0.0,  0.0,  0.0,
+  0.0, 0.0, 0.01, 0.0,  0.0,  0.0,
+  0.0, 0.0, 0.0,  0.01, 0.0,  0.0,
+  0.0, 0.0, 0.0,  0.0,  0.01, 0.0,
+  0.0, 0.0, 0.0,  0.0,  0.0,  0.2,
+]
+[services]
+ekf_trigger_node = "/localization/pose_twist_fusion_filter/trigger_node"
+
+[ports.inputs.gnss_pose_cov]
+topic = "/sensing/gnss/pose_with_covariance"
+
+[ports.outputs.initialpose]
+topic = "/initialpose3d"
+
+[ports.inputs.ekf_odom]
+topic = "/localization/pose_twist_fusion_filter/kinematic_state"

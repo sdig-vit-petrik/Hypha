@@ -24,15 +24,19 @@ set(AUTOWARE_MSG_OUT "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 # Messages the ported nodes publish that hypha does not ship, in ROS 1 syntax until #45.
 hypha_generate_messages(PACKAGE autoware_internal_debug_msgs
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/autoware_internal_debug_msgs/msg"
-  OUT_DIR "${AUTOWARE_MSG_OUT}")
+  OUT_DIR "${AUTOWARE_MSG_OUT}"
+  DEPENDS std_msgs)
 hypha_generate_messages(PACKAGE pcl_msgs
   MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/pcl_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
   DEPENDS std_msgs sensor_msgs)
+hypha_generate_messages(PACKAGE unique_identifier_msgs
+  MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/unique_identifier_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}")
 hypha_generate_messages(PACKAGE autoware_perception_msgs
   MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_msgs/autoware_perception_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
-  DEPENDS std_msgs geometry_msgs)
+  DEPENDS std_msgs geometry_msgs unique_identifier_msgs)
 hypha_generate_messages(PACKAGE autoware_internal_msgs
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/autoware_internal_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
@@ -40,7 +44,41 @@ hypha_generate_messages(PACKAGE autoware_internal_msgs
 hypha_generate_messages(PACKAGE autoware_sensing_msgs
   MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_msgs/autoware_sensing_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
+  DEPENDS std_msgs geometry_msgs)
+hypha_generate_messages(PACKAGE applanix_msgs
+  MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/applanix_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}"
   DEPENDS std_msgs)
+hypha_generate_messages(PACKAGE tier4_perception_msgs
+  MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/tier4_perception_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}"
+  DEPENDS std_msgs sensor_msgs autoware_perception_msgs)
+hypha_generate_messages(PACKAGE geographic_msgs
+  MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/geographic_info/geographic_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}")
+hypha_generate_messages(PACKAGE autoware_map_msgs
+  MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/autoware_map_msgs/msg"
+  SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/autoware_map_msgs/srv"
+  OUT_DIR "${AUTOWARE_MSG_OUT}"
+  DEPENDS geographic_msgs std_msgs sensor_msgs)
+# The shim's service envelope, and the services the ported nodes offer.
+hypha_generate_messages(PACKAGE hypha_rclcpp_msgs
+  MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/hypha_rclcpp_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}")
+# In examples/, the MRS port generates std_srvs first, from the same SetBool definition;
+# one target serves both.
+if(NOT TARGET std_srvs)
+  hypha_generate_messages(PACKAGE std_srvs
+    SRV_DIR "${AUTOWARE_UPSTREAM_DIR}/common_interfaces/std_srvs/srv"
+    OUT_DIR "${AUTOWARE_MSG_OUT}")
+endif()
+hypha_generate_messages(PACKAGE logging_demo
+  SRV_DIR "${AUTOWARE_UPSTREAM_DIR}/demos/logging_demo/srv"
+  OUT_DIR "${AUTOWARE_MSG_OUT}")
+hypha_generate_messages(PACKAGE visualization_msgs
+  MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/visualization_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}"
+  DEPENDS std_msgs geometry_msgs sensor_msgs)
 
 # autoware_patched(<package> <upstream dir> <out var>): a copy of the upstream package in
 # the build directory with upstream/patches/<package>.patch applied. The vendored files
@@ -71,9 +109,13 @@ target_include_directories(hypha_rclcpp PUBLIC
   "${AUTOWARE_MSG_OUT}/hypha_msgs"
   "${AUTOWARE_UPSTREAM_DIR}/common_interfaces/sensor_msgs/include"
   "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_system/include"
-  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_diagnostics/include")
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_diagnostics/include"
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_geometry/include"
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/common/autoware_agnocast_wrapper/include"
+  "${AUTOWARE_UPSTREAM_DIR}/geometry2/tf2/include")
 target_link_libraries(hypha_rclcpp PUBLIC
-  hypha::sdk autoware_internal_debug_msgs autoware_internal_msgs Eigen3::Eigen)
+  hypha::sdk autoware_internal_debug_msgs autoware_internal_msgs hypha_rclcpp_msgs std_srvs
+  logging_demo visualization_msgs Eigen3::Eigen)
 target_compile_features(hypha_rclcpp PUBLIC cxx_std_23)
 
 add_library(hypha_rclcpp_component_main OBJECT shim/src/component_main.cpp)
@@ -87,12 +129,13 @@ function(autoware_component program)
   target_link_libraries(${program} PRIVATE hypha_rclcpp)
 endfunction()
 
-# autoware_test(<name> SOURCES <file>... [INCLUDES <dir>...]): one GoogleTest program.
+# autoware_test(<name> SOURCES <file>... [INCLUDES <dir>...] [LIBS <lib>...]
+#               [ENV <VAR=value>...]): one GoogleTest program.
 # Each test runs in a bus domain of its own, autoware_<n>, so tests that ctest runs in
 # parallel share neither node names nor topics. A domain name has at most 32
 # characters, so it is numbered, not named after the test.
 function(autoware_test name)
-  cmake_parse_arguments(ARG "" "" "SOURCES;INCLUDES;LIBS" ${ARGN})
+  cmake_parse_arguments(ARG "" "" "SOURCES;INCLUDES;LIBS;ENV" ${ARGN})
   add_executable(${name} ${ARG_SOURCES})
   target_include_directories(${name} PRIVATE ${ARG_INCLUDES})
   target_link_libraries(${name} PRIVATE hypha_rclcpp GTest::gtest ${ARG_LIBS})
@@ -103,7 +146,7 @@ function(autoware_test name)
   endif()
   math(EXPR count "${count} + 1")
   set_property(GLOBAL PROPERTY AUTOWARE_TEST_COUNT ${count})
-  set_tests_properties(${name} PROPERTIES ENVIRONMENT "HYPHA_DOMAIN=autoware_${count}")
+  set_tests_properties(${name} PROPERTIES ENVIRONMENT "HYPHA_DOMAIN=autoware_${count};${ARG_ENV}")
 endfunction()
 
 # --- Slice A: autoware_crop_box_filter (autoware_core 1.10.0) --------------------------
@@ -291,6 +334,199 @@ autoware_test(autoware_concatenate_and_time_sync_node_test
     "${CONCATENATE_DIR}/concatenate_and_time_sync_node.cpp"
   LIBS autoware_concatenate_core)
 
+# --- Localization: autoware_ekf_localizer (autoware_core 1.10.0) -------------------------
+
+set(KALMAN_FILTER_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_core/common/autoware_kalman_filter")
+add_library(autoware_kalman_filter STATIC
+  "${KALMAN_FILTER_DIR}/src/kalman_filter.cpp"
+  "${KALMAN_FILTER_DIR}/src/time_delay_kalman_filter.cpp")
+target_include_directories(autoware_kalman_filter PUBLIC "${KALMAN_FILTER_DIR}/include")
+target_link_libraries(autoware_kalman_filter PUBLIC Eigen3::Eigen)
+target_compile_features(autoware_kalman_filter PUBLIC cxx_std_23)
+autoware_test(autoware_kalman_filter_upstream_test
+  SOURCES "${KALMAN_FILTER_DIR}/test/test_kalman_filter.cpp"
+    "${KALMAN_FILTER_DIR}/test/test_time_delay_kalman_filter.cpp"
+  LIBS autoware_kalman_filter GTest::gtest_main)
+
+# autoware_localization_util: the covariance ellipse, the one part the EKF uses.
+autoware_patched(autoware_localization_util
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/localization/autoware_localization_util"
+  LOCALIZATION_UTIL_DIR)
+add_library(autoware_localization_util STATIC
+  "${LOCALIZATION_UTIL_DIR}/src/covariance_ellipse.cpp")
+target_include_directories(autoware_localization_util PUBLIC "${LOCALIZATION_UTIL_DIR}/include")
+target_link_libraries(autoware_localization_util PUBLIC hypha_rclcpp)
+autoware_test(autoware_covariance_ellipse_upstream_test
+  SOURCES "${LOCALIZATION_UTIL_DIR}/test/test_covariance_ellipse.cpp"
+  LIBS autoware_localization_util GTest::gtest_main)
+
+autoware_patched(autoware_ekf_localizer
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/localization/autoware_ekf_localizer" EKF_DIR)
+add_library(autoware_ekf_localizer_core STATIC
+  "${EKF_DIR}/src/ekf_localizer.cpp"
+  "${EKF_DIR}/src/utils/hyper_parameters.cpp"
+  "${EKF_DIR}/src/utils/covariance.cpp"
+  "${EKF_DIR}/src/utils/diagnostics.cpp"
+  "${EKF_DIR}/src/utils/mahalanobis.cpp"
+  "${EKF_DIR}/src/utils/measurement.cpp"
+  "${EKF_DIR}/src/utils/state_transition.cpp"
+  "${EKF_DIR}/src/utils/warning_message.cpp")
+target_include_directories(autoware_ekf_localizer_core PUBLIC "${EKF_DIR}/src" "${EKF_DIR}")
+target_link_libraries(autoware_ekf_localizer_core PUBLIC
+  autoware_kalman_filter autoware_localization_util hypha_rclcpp)
+
+autoware_component(autoware_ekf_localizer SOURCES "${EKF_DIR}/src/ekf_localizer_node.cpp")
+target_link_libraries(autoware_ekf_localizer PRIVATE autoware_ekf_localizer_core)
+
+file(GLOB EKF_UPSTREAM_UTIL_TESTS "${EKF_DIR}/test/utils/*.cpp")
+autoware_test(autoware_ekf_localizer_utils_upstream_test
+  SOURCES ${EKF_UPSTREAM_UTIL_TESTS} LIBS autoware_ekf_localizer_core GTest::gtest_main)
+autoware_test(autoware_ekf_localizer_upstream_test
+  SOURCES "${EKF_DIR}/test/test_ekf_localizer.cpp"
+  LIBS autoware_ekf_localizer_core GTest::gtest_main)
+
+# The node on the bus, on simulated time the test drives: trigger, initial pose, pose and
+# twist in; odometry, /tf and diagnostics out.
+autoware_test(autoware_ekf_localizer_node_test
+  SOURCES test/test_ekf_localizer_node.cpp "${EKF_DIR}/src/ekf_localizer_node.cpp"
+  LIBS autoware_ekf_localizer_core
+  ENV HYPHA_USE_SIM_TIME=1)
+
+# --- Localization: autoware_gyro_odometer (autoware_core 1.10.0) -------------------------
+
+autoware_patched(autoware_gyro_odometer
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/localization/autoware_gyro_odometer" GYRO_ODOMETER_DIR)
+add_library(autoware_gyro_odometer_core STATIC
+  "${GYRO_ODOMETER_DIR}/src/gyro_odometer.cpp"
+  "${GYRO_ODOMETER_DIR}/src/gyro_odometer_diagnostics.cpp")
+target_include_directories(autoware_gyro_odometer_core PUBLIC "${GYRO_ODOMETER_DIR}/src")
+target_link_libraries(autoware_gyro_odometer_core PUBLIC hypha_rclcpp)
+
+autoware_component(autoware_gyro_odometer
+  SOURCES "${GYRO_ODOMETER_DIR}/src/gyro_odometer_node.cpp")
+target_link_libraries(autoware_gyro_odometer PRIVATE autoware_gyro_odometer_core)
+
+autoware_test(autoware_gyro_odometer_upstream_test
+  SOURCES "${GYRO_ODOMETER_DIR}/test/test_gyro_odometer.cpp"
+    "${GYRO_ODOMETER_DIR}/test/test_gyro_odometer_diagnostics.cpp"
+  LIBS autoware_gyro_odometer_core GTest::gtest_main)
+
+# The node on the bus, on simulated time the test drives: the vehicle twist and the IMU
+# in, the fused twist and the diagnostics out.
+autoware_test(autoware_gyro_odometer_node_test
+  SOURCES test/test_gyro_odometer_node.cpp "${GYRO_ODOMETER_DIR}/src/gyro_odometer_node.cpp"
+  LIBS autoware_gyro_odometer_core
+  ENV HYPHA_USE_SIM_TIME=1)
+
+# --- GNSS: Lanelet2's projection, autoware_lanelet2_extension's projectors --------------
+
+# GeographicLib does the projections; Lanelet2 wraps it.
+# Debian and Ubuntu ship its find module there, Homebrew a package configuration; both set
+# GeographicLib_LIBRARIES and GeographicLib_INCLUDE_DIRS.
+list(APPEND CMAKE_MODULE_PATH /usr/share/cmake/geographiclib)
+find_package(GeographicLib REQUIRED)
+
+# Lanelet2 1.2.3: the map (lanelet2_core), its reading and writing (lanelet2_io: OSM on
+# pugixml, binary on Boost.Serialization) and the UTM and local Cartesian projectors.
+# Shared libraries, as upstream builds them: a reader registers itself from a static
+# object of its own file, which a static archive would leave out of the program.
+find_package(pugixml REQUIRED)
+find_package(Boost REQUIRED COMPONENTS filesystem serialization)
+set(LANELET2_DIR "${AUTOWARE_UPSTREAM_DIR}/lanelet2")
+file(GLOB LANELET2_CORE_SOURCES "${LANELET2_DIR}/lanelet2_core/src/*.cpp")
+add_library(autoware_lanelet2_core SHARED ${LANELET2_CORE_SOURCES})
+target_include_directories(autoware_lanelet2_core SYSTEM PUBLIC "${LANELET2_DIR}/lanelet2_core/include")
+target_link_libraries(autoware_lanelet2_core PUBLIC Boost::headers Eigen3::Eigen)
+target_compile_features(autoware_lanelet2_core PUBLIC cxx_std_23)
+file(GLOB LANELET2_IO_SOURCES "${LANELET2_DIR}/lanelet2_io/src/*.cpp")
+add_library(autoware_lanelet2_io SHARED ${LANELET2_IO_SOURCES})
+target_include_directories(autoware_lanelet2_io SYSTEM PUBLIC "${LANELET2_DIR}/lanelet2_io/include")
+target_link_libraries(autoware_lanelet2_io PUBLIC
+  autoware_lanelet2_core pugixml::pugixml Boost::filesystem Boost::serialization)
+add_library(autoware_lanelet2_projection SHARED
+  "${LANELET2_DIR}/lanelet2_projection/src/UTM.cpp"
+  "${LANELET2_DIR}/lanelet2_projection/src/LocalCartesian.cpp")
+target_include_directories(autoware_lanelet2_projection SYSTEM PUBLIC
+  "${LANELET2_DIR}/lanelet2_projection/include" ${GeographicLib_INCLUDE_DIRS})
+target_link_libraries(autoware_lanelet2_projection PUBLIC
+  autoware_lanelet2_io ${GeographicLib_LIBRARIES})
+
+# autoware_lanelet2_extension 1.3.0: the MGRS and transverse Mercator projectors, and the
+# OSM parser that reads Autoware's map format.
+set(LANELET2_EXTENSION_DIR
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_lanelet2_extension/autoware_lanelet2_extension")
+add_library(autoware_lanelet2_extension_projection SHARED
+  "${LANELET2_EXTENSION_DIR}/lib/mgrs_projector.cpp"
+  "${LANELET2_EXTENSION_DIR}/lib/transverse_mercator_projector.cpp"
+  "${LANELET2_EXTENSION_DIR}/lib/autoware_osm_parser.cpp")
+target_include_directories(autoware_lanelet2_extension_projection PUBLIC
+  "${LANELET2_EXTENSION_DIR}/include")
+target_link_libraries(autoware_lanelet2_extension_projection PUBLIC autoware_lanelet2_projection)
+
+# autoware_geography_utils (autoware_core 1.10.0): projection and height on the projectors.
+set(GEOGRAPHY_UTILS_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_core/common/autoware_geography_utils")
+add_library(autoware_geography_utils STATIC
+  "${GEOGRAPHY_UTILS_DIR}/src/height.cpp"
+  "${GEOGRAPHY_UTILS_DIR}/src/lanelet2_projector.cpp"
+  "${GEOGRAPHY_UTILS_DIR}/src/projection.cpp")
+target_include_directories(autoware_geography_utils PUBLIC "${GEOGRAPHY_UTILS_DIR}/include")
+target_link_libraries(autoware_geography_utils PUBLIC
+  autoware_lanelet2_extension_projection autoware_map_msgs geographic_msgs hypha_rclcpp)
+autoware_test(autoware_geography_utils_upstream_test
+  SOURCES "${GEOGRAPHY_UTILS_DIR}/test/test_geography_utils.cpp"
+    "${GEOGRAPHY_UTILS_DIR}/test/test_height.cpp"
+    "${GEOGRAPHY_UTILS_DIR}/test/test_lanelet2_projector.cpp"
+    "${GEOGRAPHY_UTILS_DIR}/test/test_projection.cpp"
+  LIBS autoware_geography_utils)
+
+# --- GNSS: autoware_gnss_poser (autoware_core 1.10.0) ----------------------------------
+
+autoware_patched(autoware_gnss_poser
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/sensing/autoware_gnss_poser" GNSS_POSER_DIR)
+autoware_component(autoware_gnss_poser SOURCES "${GNSS_POSER_DIR}/src/gnss_poser_node.cpp")
+target_include_directories(autoware_gnss_poser PRIVATE "${GNSS_POSER_DIR}/src")
+target_link_libraries(autoware_gnss_poser PRIVATE autoware_geography_utils autoware_sensing_msgs)
+
+# The node on the bus: the map projection, a fix and the INS orientation in; the pose, its
+# covariance, the fixed flag and map -> gnss_base_link out.
+autoware_test(autoware_gnss_poser_node_test
+  SOURCES test/test_gnss_poser_node.cpp "${GNSS_POSER_DIR}/src/gnss_poser_node.cpp"
+  INCLUDES "${GNSS_POSER_DIR}/src"
+  LIBS autoware_geography_utils autoware_sensing_msgs)
+
+# --- Map: autoware_map_projection_loader (autoware_core 1.10.0) --------------------------
+
+find_package(yaml-cpp REQUIRED)
+set(COMPONENT_INTERFACE_SPECS_DIR
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/common/autoware_component_interface_specs")
+set(MAP_PROJECTION_LOADER_DIR
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/map/autoware_map_projection_loader")
+add_library(autoware_map_projection_loader_core STATIC
+  "${MAP_PROJECTION_LOADER_DIR}/src/map_projection_loader.cpp"
+  "${MAP_PROJECTION_LOADER_DIR}/src/load_info_from_lanelet2_map.cpp")
+target_include_directories(autoware_map_projection_loader_core PUBLIC
+  "${MAP_PROJECTION_LOADER_DIR}/include" "${COMPONENT_INTERFACE_SPECS_DIR}/include")
+target_link_libraries(autoware_map_projection_loader_core PUBLIC
+  autoware_lanelet2_extension_projection autoware_map_msgs hypha_rclcpp yaml-cpp::yaml-cpp)
+
+autoware_component(autoware_map_projection_loader
+  SOURCES "${MAP_PROJECTION_LOADER_DIR}/src/map_projection_loader_node.cpp")
+target_link_libraries(autoware_map_projection_loader PRIVATE autoware_map_projection_loader_core)
+
+autoware_test(autoware_map_projection_loader_yaml_upstream_test
+  SOURCES "${MAP_PROJECTION_LOADER_DIR}/test/test_load_info_from_yaml.cpp"
+  LIBS autoware_map_projection_loader_core GTest::gmock)
+autoware_test(autoware_map_projection_loader_lanelet2_upstream_test
+  SOURCES "${MAP_PROJECTION_LOADER_DIR}/test/test_load_info_from_lanelet2_map.cpp"
+  LIBS autoware_map_projection_loader_core GTest::gmock)
+
+# The node on the bus: the projection read from YAML, latched on /map/map_projector_info.
+autoware_test(autoware_map_projection_loader_node_test
+  SOURCES test/test_map_projection_loader_node.cpp
+    "${MAP_PROJECTION_LOADER_DIR}/src/map_projection_loader_node.cpp"
+  INCLUDES "${MAP_PROJECTION_LOADER_DIR}/src"
+  LIBS autoware_map_projection_loader_core)
+
 # --- Slice A end to end: the replay check of slice_a_replay.sh --------------------------
 
 # Compares the Slice A outputs of two recordings, and summarizes one; it reads MCAP with the
@@ -300,3 +536,148 @@ if(TARGET hypha::testing_mcap)
   target_link_libraries(autoware_slice_a_compare PRIVATE
     hypha::testing_mcap autoware_perception_msgs hypha_rclcpp)
 endif()
+
+# --- The Applanix INS: the driver's ROS outputs of a recorded GSOF 49 and 50 ---------------
+
+# The conversions of autoware/applanix's driver (applanix_driver_ros/conversions.cpp), from
+# its GSOF solution structs to the NavSatFix, GNSS/INS orientation and twist it publishes.
+set(APPLANIX_DRIVER_DIR "${AUTOWARE_UPSTREAM_DIR}/applanix/applanix_driver")
+add_library(autoware_applanix_conversions STATIC
+  "${APPLANIX_DRIVER_DIR}/src/applanix_driver_ros/conversions.cpp")
+target_include_directories(autoware_applanix_conversions PUBLIC "${APPLANIX_DRIVER_DIR}/include")
+target_include_directories(autoware_applanix_conversions SYSTEM PUBLIC ${GeographicLib_INCLUDE_DIRS})
+target_link_libraries(autoware_applanix_conversions PUBLIC
+  applanix_msgs autoware_sensing_msgs hypha_rclcpp ${GeographicLib_LIBRARIES})
+
+# The driver's outputs from a recording of its GSOF 49 and 50 (tools/).
+autoware_component(applanix_lvx_client_replay SOURCES tools/applanix_lvx_client_replay.cpp)
+target_link_libraries(applanix_lvx_client_replay PRIVATE autoware_applanix_conversions)
+
+# --- Localization start-up: the EKF from the first GNSS pose (tools/) --------------------
+autoware_component(gnss_pose_initializer SOURCES tools/gnss_pose_initializer.cpp)
+
+# --- Tracking (#114): Universe's autoware_euclidean_cluster (autoware_universe 0.53.2) ----
+
+# The voxel-grid based clustering of Autoware's rule-based detection: clusters with their
+# points (tier4_perception_msgs/DetectedObjectsWithFeature), which shape estimation reads.
+autoware_patched(autoware_universe_euclidean_cluster
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_universe/perception/autoware_euclidean_cluster"
+  UNIVERSE_CLUSTER_DIR)
+add_library(autoware_universe_euclidean_cluster_core STATIC
+  "${UNIVERSE_CLUSTER_DIR}/lib/confusable_cluster_merger.cpp"
+  "${UNIVERSE_CLUSTER_DIR}/lib/utils.cpp"
+  "${UNIVERSE_CLUSTER_DIR}/lib/voxel_grid_based_euclidean_cluster.cpp")
+target_include_directories(autoware_universe_euclidean_cluster_core PUBLIC
+  "${UNIVERSE_CLUSTER_DIR}/include"
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils/include")
+target_link_libraries(autoware_universe_euclidean_cluster_core PUBLIC
+  autoware_point_types autoware_pcl autoware_perception_msgs tier4_perception_msgs
+  autoware_utils_extra)
+
+autoware_component(autoware_universe_voxel_grid_based_euclidean_cluster
+  SOURCES "${UNIVERSE_CLUSTER_DIR}/src/voxel_grid_based_euclidean_cluster_node.cpp")
+target_link_libraries(autoware_universe_voxel_grid_based_euclidean_cluster PRIVATE
+  autoware_universe_euclidean_cluster_core)
+
+autoware_test(autoware_universe_voxel_grid_based_euclidean_cluster_upstream_test
+  SOURCES "${UNIVERSE_CLUSTER_DIR}/test/test_voxel_grid_based_euclidean_cluster.cpp"
+  LIBS autoware_universe_euclidean_cluster_core)
+
+# --- Tracking (#114): autoware_shape_estimation (autoware_universe 0.53.2) ----------------
+
+# The CPU estimator: L-shape boxes, convex hulls and cylinders by label, then filters and
+# correctors. Without CUDA upstream's CMake leaves the TensorRT estimator out, as here.
+find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+set(SHAPE_ESTIMATION_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_universe/perception/autoware_shape_estimation")
+file(GLOB SHAPE_ESTIMATION_SOURCES
+  "${SHAPE_ESTIMATION_DIR}/lib/*.cpp" "${SHAPE_ESTIMATION_DIR}/lib/*/*.cpp")
+add_library(autoware_shape_estimation_core STATIC ${SHAPE_ESTIMATION_SOURCES})
+target_include_directories(autoware_shape_estimation_core PUBLIC "${SHAPE_ESTIMATION_DIR}/include"
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils/include")
+target_include_directories(autoware_shape_estimation_core SYSTEM PUBLIC ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(autoware_shape_estimation_core PUBLIC
+  ${OpenCV_LIBS} autoware_pcl autoware_perception_msgs tier4_perception_msgs hypha_rclcpp)
+
+autoware_component(autoware_shape_estimation
+  SOURCES "${SHAPE_ESTIMATION_DIR}/src/shape_estimation_node.cpp")
+target_link_libraries(autoware_shape_estimation PRIVATE
+  autoware_shape_estimation_core autoware_utils_extra)
+
+autoware_test(autoware_shape_estimation_upstream_test
+  SOURCES "${SHAPE_ESTIMATION_DIR}/test/shape_estimation/test_shape_estimator.cpp"
+    "${SHAPE_ESTIMATION_DIR}/test/test_corrector_utils.cpp"
+  LIBS autoware_shape_estimation_core GTest::gtest_main)
+
+# --- Tracking (#114): autoware_detected_object_feature_remover (autoware_universe 0.53.2) --
+
+set(FEATURE_REMOVER_DIR
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_universe/perception/autoware_detected_object_feature_remover")
+add_library(autoware_detected_object_feature_remover_core STATIC
+  "${FEATURE_REMOVER_DIR}/lib/convert.cpp")
+target_include_directories(autoware_detected_object_feature_remover_core PUBLIC
+  "${FEATURE_REMOVER_DIR}/include")
+target_include_directories(autoware_detected_object_feature_remover_core SYSTEM PUBLIC
+  ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(autoware_detected_object_feature_remover_core PUBLIC
+  ${OpenCV_LIBS} autoware_pcl autoware_perception_msgs tier4_perception_msgs)
+
+autoware_component(autoware_detected_object_feature_remover
+  SOURCES "${FEATURE_REMOVER_DIR}/src/detected_object_feature_remover_node.cpp")
+target_link_libraries(autoware_detected_object_feature_remover PRIVATE
+  autoware_detected_object_feature_remover_core autoware_utils_extra)
+target_include_directories(autoware_detected_object_feature_remover PRIVATE
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils/include")
+
+autoware_test(autoware_detected_object_feature_remover_upstream_test
+  SOURCES "${FEATURE_REMOVER_DIR}/test/test_detected_object_feature_remover_node.cpp"
+  LIBS autoware_detected_object_feature_remover_core GTest::gtest_main)
+
+# --- Tracking (#114): autoware_multi_object_tracker (autoware_universe 0.53.2) ------------
+
+# muSSP (tier4/muSSP, pinned by Autoware 2.1.0): the min-cost-flow solver of the tracker's
+# data association.
+add_library(autoware_mussp STATIC
+  "${AUTOWARE_UPSTREAM_DIR}/muSSP/muSSP/Graph.cpp" "${AUTOWARE_UPSTREAM_DIR}/muSSP/muSSP/Node.cpp"
+  "${AUTOWARE_UPSTREAM_DIR}/muSSP/muSSP/Sink.cpp" "${AUTOWARE_UPSTREAM_DIR}/muSSP/muSSP/mussp.cpp")
+# Installed as <mussp/mussp.h>, as the tracker includes it.
+set(MUSSP_INCLUDE "${CMAKE_CURRENT_BINARY_DIR}/mussp_include")
+file(MAKE_DIRECTORY "${MUSSP_INCLUDE}")
+file(CREATE_LINK "${AUTOWARE_UPSTREAM_DIR}/muSSP/muSSP" "${MUSSP_INCLUDE}/mussp" SYMBOLIC)
+target_include_directories(autoware_mussp PUBLIC "${MUSSP_INCLUDE}")
+target_compile_features(autoware_mussp PUBLIC cxx_std_14)
+
+# autoware_utils_geometry's polygon utilities (autoware_utils 1.11.0), patched without the
+# PredictedObject overloads.
+autoware_patched(autoware_utils_geometry
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_geometry" UTILS_GEOMETRY_DIR)
+add_library(autoware_utils_geometry_polygon STATIC
+  "${UTILS_GEOMETRY_DIR}/src/geometry/boost_polygon_utils.cpp")
+target_include_directories(autoware_utils_geometry_polygon BEFORE PUBLIC
+  "${UTILS_GEOMETRY_DIR}/include")
+target_link_libraries(autoware_utils_geometry_polygon PUBLIC
+  hypha_rclcpp autoware_perception_msgs Boost::headers)
+
+autoware_patched(autoware_multi_object_tracker
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_universe/perception/autoware_multi_object_tracker"
+  TRACKER_DIR)
+file(GLOB_RECURSE TRACKER_LIB_SOURCES "${TRACKER_DIR}/lib/*.cpp")
+add_library(autoware_multi_object_tracker_core STATIC ${TRACKER_LIB_SOURCES}
+  "${TRACKER_DIR}/src/multi_object_tracker_core.cpp"
+  "${TRACKER_DIR}/src/debugger/debugger.cpp"
+  "${TRACKER_DIR}/src/debugger/debug_object.cpp"
+  "${TRACKER_DIR}/src/processor/processor.cpp"
+  "${TRACKER_DIR}/src/processor/input_manager.cpp")
+target_include_directories(autoware_multi_object_tracker_core PUBLIC
+  "${TRACKER_DIR}/include" "${TRACKER_DIR}/src")
+target_link_libraries(autoware_multi_object_tracker_core PUBLIC
+  autoware_mussp autoware_utils_geometry_polygon autoware_utils_extra
+  autoware_perception_msgs visualization_msgs hypha_rclcpp)
+
+autoware_component(autoware_multi_object_tracker
+  SOURCES "${TRACKER_DIR}/src/multi_object_tracker_node.cpp")
+target_link_libraries(autoware_multi_object_tracker PRIVATE autoware_multi_object_tracker_core)
+
+autoware_test(autoware_multi_object_tracker_upstream_test
+  SOURCES "${TRACKER_DIR}/test/test_vehicle_tracker.cpp"
+    "${TRACKER_DIR}/test/test_uuid_generator.cpp"
+  LIBS autoware_multi_object_tracker_core GTest::gtest_main)

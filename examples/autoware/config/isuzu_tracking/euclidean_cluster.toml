@@ -1,0 +1,22 @@
+# Universe's VoxelGridBasedEuclideanClusterNode (autoware_euclidean_cluster 0.53.2): the
+# values of autoware_launch 0.53.0's voxel_grid_based_euclidean_cluster.param.yaml that the
+# node reads (its low-height crop box is a node of its own there, not launched here). It
+# reads the ground filter's obstacles, as Slice A's clustering does; its clusters keep
+# their points for shape estimation.
+tolerance_m = 0.7
+voxel_leaf_size_m = 0.3
+min_points_per_voxel = 1
+min_points_per_cluster = 10
+max_voxels_per_cluster = 800
+large_cluster_voxel_count_threshold = 65
+large_cluster_max_points_per_voxel = 10
+use_height = false
+
+[ports.inputs.input]
+topic = "/perception/obstacle_segmentation/single_frame/pointcloud"
+
+[ports.outputs.output]
+topic = "/perception/object_recognition/detection/clustering/clusters"
+
+[ports.outputs."debug.clusters"]
+topic = "/perception/object_recognition/detection/clustering/debug/clusters"

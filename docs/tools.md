@@ -362,7 +362,9 @@ timezone offset; offsets are normalized to UTC. The reader uses the MCAP
 index to select the window. Recordings can also be searched by UTC in an MCAP
 viewer such as Foxglove Studio.
 
-For a system rerun, start the nodes with `HYPHA_USE_SIM_TIME=1` in their environment. With `--clock`,
+For a system rerun, start the nodes with `HYPHA_USE_SIM_TIME=1` in their environment;
+`HYPHA_USE_SIM_TIME=follow` lets a node follow `/clock` outside the lockstep, as with
+`ros2 bag play` (execution-model.md §11.2). With `--clock`,
 playback initializes `/clock` to the selected UTC start, advances it at each chunk
 boundary, and sets each message's UTC before publishing its payload. Recorded `/clock` payloads are omitted so they cannot replace that
 timeline. Select enough data before the incident to initialize application

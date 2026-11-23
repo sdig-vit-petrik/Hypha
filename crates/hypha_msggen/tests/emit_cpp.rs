@@ -91,6 +91,8 @@ fn std_msgs_header_exact_output() {
         "    return *this;\n",
         "  }\n",
         "\n",
+        "  bool operator==(const Header&) const = default;\n",
+        "\n",
         "  using Ptr = std::shared_ptr<Header>;\n",
         "  using ConstPtr = std::shared_ptr<const Header>;\n",
         "  using SharedPtr = std::shared_ptr<Header>;\n",

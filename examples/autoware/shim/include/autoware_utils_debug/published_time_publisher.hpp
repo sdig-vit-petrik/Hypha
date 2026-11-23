@@ -74,4 +74,9 @@ class PublishedTimePublisher
     std::map<const void*, PubPtr> pubs_;
 };
 
+/// Upstream's template over the node type, of which PublishedTimePublisher is the rclcpp::Node
+/// form. The shim's only node is rclcpp::Node, which autoware::agnocast_wrapper::Node names too.
+template <class NodeT>
+using BasicPublishedTimePublisher = PublishedTimePublisher;
+
 }  // namespace autoware_utils_debug
