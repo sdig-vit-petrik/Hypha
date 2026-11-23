@@ -171,7 +171,7 @@ fault.**
 
 | Feature | Question it answers | Where | Users |
 |---|---|---|---|
-| Message generation | How does an application get its message types? | `hypha_msggen`, `hypha_generate_messages()` | app, mrs |
+| Message generation | How does an application get its message types? | `hypha_msggen`, `hypha_generate_messages()`; every message compares with `==`, field by field | app, mrs, ex autoware |
 | Tools | How do I look at, record, replay, launch or bridge a system? | `hypha topic`, `hypha top`, `hypha record`, `hypha play`, `hypha convert`, `hypha launch`, `hypha param`, `hypha node`, `hypha foxglove`, `hypha_ros_bridge`, `hypha intercept` (`docs/tools.md`) | operators |
 | ROS 2 bags | How do I replay a ROS 2 bag on hypha? | `hypha convert <bag.db3> -o <run.mcap>`, then `hypha play` (`docs/tools.md`): CDR into ROS 1 serialization from `.msg` definitions, `--xyzirc` for Autoware's point layout | operators |
 | Fault injection | How do I change fields of a topic between a producer and its consumers? | `hypha intercept` (config file + latched state topic), driven from `hypha top`'s Intercept tab (`docs/tools.md`) | operators |
