@@ -6,7 +6,7 @@ in #47. Autoware 2.1.0: `autoware_core` 1.10.0, `autoware_universe` 0.53.2.
 
 | Slice | Pipeline | State |
 |---|---|---|
-| A, detection (Leo Drive Isuzu bus) | crop box → concatenate → ground filter → voxel downsample → euclidean cluster | `autoware_crop_box_filter`, the voxel grid filter of `autoware_downsample_filters`, `autoware_ground_filter`, both nodes of `autoware_euclidean_cluster_object_detector` and the concatenate-and-time-sync node of `autoware_pointcloud_preprocessor` ported; every node on synthetic inputs; ground filter → voxel downsample → clustering end to end on a recorded bag, deterministic (section "Slice A end to end"); the comparison against ROS 2 open |
+| A, detection (Leo Drive Isuzu bus) | crop box → concatenate → ground filter → euclidean cluster, a voxel downsample beside it | `autoware_crop_box_filter`, the voxel grid filter of `autoware_downsample_filters`, `autoware_ground_filter`, both nodes of `autoware_euclidean_cluster_object_detector` and the concatenate-and-time-sync node of `autoware_pointcloud_preprocessor` ported; every node on synthetic inputs; ground filter → clustering, with the voxel downsample beside it, end to end on a recorded bag, deterministic (section "Slice A end to end"); the comparison against ROS 2 open |
 | B, localization (Istanbul Open Dataset) | crop box → downsample → NDT → gyro odometer → EKF | not started |
 
 Each node first computes on synthetic inputs in tests, and then on a recorded bag, replayed
@@ -130,16 +130,23 @@ check both.
 `slice_a_replay.sh` replays the recorded concatenated lidar cloud of a ROS 2 bag through
 the last three nodes of Slice A:
 1. the ground filter;
-2. the voxel downsample;
-3. the voxel-grid based clustering of `autoware_core_perception`.
+2. the voxel-grid based clustering of `autoware_core_perception`, on the ground filter's
+   output;
+3. the voxel downsample, on the same output, beside the clustering.
 
 Each node runs as its own process, on simulated time, in the replay lockstep. The nodes
 take part with their callbacks (#72), so the player never runs ahead of them.
 `hypha record --sync` records the three outputs. The script replays twice, at different
 rates and chunk lengths, and `autoware_slice_a_compare` checks that the two recordings
 hold the same messages, byte for byte. The configurations are in `config/slice_a/`.
-They include the deployment ones and change only the topics that chain the voxel
-downsample between the ground filter and the clustering.
+They include the deployment ones and change only the topics that the clustering and the
+voxel downsample read.
+
+The clustering reads the obstacles at full resolution, as upstream's
+`voxel_grid_based_euclidean_cluster.launch.py` feeds it; it groups the points in
+`voxel_leaf_size` voxels (0.3 m) itself. Through the downsample's 1.5 m voxels it found
+0 / 4.6 / 11 objects per frame and no car: a car leaves fewer than `min_cluster_size`
+(10) voxel centroids within `tolerance` (0.7 m) of each other.
 
 The input is a bag of the Leo Drive Isuzu bus (#46), converted with `hypha convert`. The
 bags stay out of the repository while their licence is open. `/data/` is ignored, and
@@ -166,17 +173,59 @@ runs:
 
 | Run | Rate, chunk | Effective rate |
 |---|---|---|
-| A | `--rate max`, 100 ms | 10.5× real time, set by the ground filter |
+| A | `--rate max`, 100 ms | 8.6× real time, set by the clustering |
 | B | `--rate 2`, 50 ms | 2.0× |
 
 | Stage | Per frame (lowest / mean / highest) |
 |---|---|
 | ground filter | 15,219 / 18,675 / 27,566 points, from about 81,600 |
 | voxel downsample, 1.5 m voxels | 964 / 1,541 / 1,904 points |
-| clustering | 0 / 4.6 / 11 objects |
+| clustering | 94 / 152.4 / 207 objects |
 
 The comparison with Autoware on ROS 2, on the same input and configurations, is the
 next step of #47.
+
+## Watch Slice A in Foxglove
+
+```bash
+examples/autoware/launch.sh up --attach
+examples/autoware/launch.sh down     # stop
+```
+
+`launch.sh [up [--attach] | attach | down]` runs `hypha launch` (tmux 3.0 or newer) on
+[`launch/slice_a.toml`](launch/slice_a.toml): the three nodes of "Slice A end to end"
+with the same configurations, `hypha foxglove`, and `hypha play` looping
+`SLICE_A_INPUT` at real time, one tmux window each. The player keeps the replay
+lockstep with the nodes, so no frame is dropped; each loop sends `/clock` back, and the
+nodes exit 75 and start again at once. `launch.sh` puts the build's executables on
+`PATH` (`AUTOWARE_BUILD_DIR`, default `build/examples/autoware`), and `hypha` from
+`PATH` or else from `target/release`. `SLICE_A_INPUT` names the recording, by default
+the one the previous section makes. The player has no keys here (its stdin is `/dev/null`, #109): stop
+its window with `Ctrl-c` and run `hypha play` in a terminal of your own to pause or step.
+
+Open Foxglove, connect to `ws://localhost:8765` and import
+[`foxglove_layout.json`](foxglove_layout.json) (Layouts, Import from file). Its 3D panel
+follows `base_link`:
+
+| Layer | Topic | Shown as |
+|---|---|---|
+| lidar in | `/sensing/lidar/concatenated/pointcloud` | grey, translucent |
+| ground filter out | `/perception/obstacle_segmentation/single_frame/pointcloud` | orange |
+| voxel centroids | `/perception/obstacle_segmentation/pointcloud` | teal, hidden at first |
+| clusters | `/perception/object_recognition/debug/clusters` | upstream's six cluster colours |
+| boxes | `/studio_script/slice_a/boxes` | a box and `#i` label per cluster, in its colour |
+
+The objects carry only a centroid: the clustering fills no shape, size or orientation.
+The boxes come from the cluster points instead. Upstream writes the debug cloud cluster
+by cluster, cluster *i* in colour *i* mod 6, so a change of colour starts the next
+cluster and box *i* belongs to object *i*. A box is the smallest rectangle around the
+points in the ground plane, its yaw searched in 1° steps, from the lowest point to the
+highest. It is a display aid, not Autoware's shape estimation, which is not ported. Two
+user scripts in the layout make the boxes layer and `/studio_script/slice_a/object_count`. Beside the 3D panel are the points per
+frame of each stage, the objects per frame and `/diagnostics`, where the clustering
+reports `OK`, or `WARN` with a cluster above `max_cluster_size`. The recording's `/tf`
+holds the GNSS/INS tree (`ned`, `POS_REF`), which does not reach `base_link`; the layout
+hides its frames.
 
 ## The gap so far
 
