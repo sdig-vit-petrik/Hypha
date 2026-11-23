@@ -214,8 +214,12 @@ impl Player {
                 self.start_log_time_nanos = stats.message_start_time;
                 self.end_log_time_nanos = stats.message_end_time;
             }
-            for ch in &summary.channels {
-                process_channel(ch.1.as_ref());
+            // The summary keeps the channels in a hash map: by id, they come in the
+            // order the recording made them, the same in every process.
+            let mut channels: Vec<_> = summary.channels.iter().collect();
+            channels.sort_unstable_by_key(|(id, _)| **id);
+            for (_, ch) in channels {
+                process_channel(ch.as_ref());
             }
         } else {
             // Fallback: sequential scan
