@@ -5,9 +5,9 @@ From https://github.com/ros2/geometry2, branch `jazzy`, commit
 the EKF uses, at their upstream paths under `tf2/include/tf2/`:
 
 - `LinearMath/`: `Scalar.hpp`, `MinMax.hpp`, `QuadWord.hpp`, `Vector3.hpp`,
-  `Quaternion.hpp`, `Matrix3x3.hpp`, from Bullet;
+  `Quaternion.hpp`, `Matrix3x3.hpp`, `Transform.hpp`, from Bullet;
 - `time.hpp` (`tf2::TimePoint`, `TimePointZero`; the functions it declares are not
-  built), `exceptions.hpp` (`tf2::TransformException` and its kinds), and
+  built), `transform_datatypes.hpp` (`tf2::Stamped`), `exceptions.hpp` (`tf2::TransformException` and its kinds), and
   `visibility_control.h`, which they include.
 
 Licence: `LICENSE` in this directory (BSD 3-Clause, the repository's). The `LinearMath`

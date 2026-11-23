@@ -7,11 +7,14 @@
 /// Rotation::Quaternion (orocos_kdl frames.cpp), so a quaternion that is not quite unit
 /// rotates as it does in ROS.
 
+#include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/quaternion.hpp>
+#include <geometry_msgs/msg/transform.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/vector3.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <tf2/LinearMath/Quaternion.hpp>
+#include <tf2/LinearMath/Transform.hpp>
 #include <tf2/LinearMath/Vector3.hpp>
 
 namespace tf2 {
@@ -43,6 +46,43 @@ inline geometry_msgs::msg::Vector3 toMsg(const tf2::Vector3& in)
 inline void fromMsg(const geometry_msgs::msg::Vector3& in, tf2::Vector3& out)
 {
     out = tf2::Vector3(in.x, in.y, in.z);
+}
+
+inline geometry_msgs::msg::Transform toMsg(const tf2::Transform& in)
+{
+    geometry_msgs::msg::Transform out;
+    out.translation.x = in.getOrigin().getX();
+    out.translation.y = in.getOrigin().getY();
+    out.translation.z = in.getOrigin().getZ();
+    out.rotation = toMsg(in.getRotation());
+    return out;
+}
+
+inline void toMsg(const tf2::Transform& in, geometry_msgs::msg::Transform& out)
+{
+    out = toMsg(in);
+}
+
+inline void fromMsg(const geometry_msgs::msg::Transform& in, tf2::Transform& out)
+{
+    out.setOrigin(tf2::Vector3(in.translation.x, in.translation.y, in.translation.z));
+    out.setRotation(tf2::Quaternion(in.rotation.x, in.rotation.y, in.rotation.z, in.rotation.w));
+}
+
+inline void toMsg(const tf2::Transform& in, geometry_msgs::msg::Pose& out)
+{
+    out.position.x = in.getOrigin().getX();
+    out.position.y = in.getOrigin().getY();
+    out.position.z = in.getOrigin().getZ();
+    out.orientation = toMsg(in.getRotation());
+}
+
+inline void fromMsg(const geometry_msgs::msg::Pose& in, tf2::Transform& out)
+{
+    out.setOrigin(tf2::Vector3(in.position.x, in.position.y, in.position.z));
+    out.setRotation(
+        tf2::Quaternion(in.orientation.x, in.orientation.y, in.orientation.z, in.orientation.w)
+    );
 }
 
 /// @p t_in rotated by the rotation of @p transform; the translation does not apply to a

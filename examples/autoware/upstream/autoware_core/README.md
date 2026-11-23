@@ -21,6 +21,10 @@ Only the packages the hypha port compiles are copied, at their upstream paths:
 - `common/autoware_agnocast_wrapper`: `include/autoware/agnocast_wrapper/macros.hpp` and
   `package.xml`; the rest of the wrapper, as it builds without Agnocast, is the shim's
   (`../../shim/include/autoware/agnocast_wrapper/`).
+- `common/autoware_geography_utils`: `include/`, `src/`, `test/`, `package.xml`, `README.md`;
+  its projectors are Lanelet2's and `autoware_lanelet2_extension`'s (`../lanelet2/`,
+  `../autoware_lanelet2_extension/`).
+- `sensing/autoware_gnss_poser`: `src/`, `test/`, `config/`, `package.xml`, `README.md`.
 - `common/autoware_kalman_filter`: `include/`, `src/`, `test/`, `package.xml`, `README.md`.
 - `localization/autoware_localization_util`: the covariance ellipse the EKF uses
   (`covariance_ellipse.hpp`, `.cpp` and its unit test), `package.xml`, `README.md`.

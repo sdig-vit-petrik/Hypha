@@ -7,7 +7,7 @@ in #47. Autoware 2.1.0: `autoware_core` 1.10.0, `autoware_universe` 0.53.2.
 | Slice | Pipeline | State |
 |---|---|---|
 | A, detection (Leo Drive Isuzu bus) | crop box → concatenate → ground filter → voxel downsample → euclidean cluster | `autoware_crop_box_filter`, the voxel grid filter of `autoware_downsample_filters`, `autoware_ground_filter`, both nodes of `autoware_euclidean_cluster_object_detector` and the concatenate-and-time-sync node of `autoware_pointcloud_preprocessor` ported; every node on synthetic inputs, replay open |
-| B, localization (Istanbul Open Dataset) | crop box → downsample → NDT → gyro odometer → EKF | `autoware_ekf_localizer` and `autoware_gyro_odometer` ported, on synthetic inputs; the rest open. On the Isuzu bags, which have no map, GNSS and the Applanix INS feed the EKF in place of NDT (#110) |
+| B, localization (Istanbul Open Dataset) | crop box → downsample → NDT → gyro odometer → EKF | `autoware_ekf_localizer` and `autoware_gyro_odometer` ported, on synthetic inputs; the rest open. For the Isuzu bags, `autoware_gnss_poser` ported too, with `autoware_geography_utils` on Lanelet2's projection; on synthetic inputs. On the Isuzu bags, which have no map, GNSS and the Applanix INS feed the EKF in place of NDT (#110) |
 
 Each node first computes on synthetic inputs in tests; replay of the recorded data
 follows #46.
@@ -63,9 +63,9 @@ follows #46.
 | `PointCloud2_<Allocator>`, `PointField_<Allocator>` | the message itself: hypha messages use the standard allocator |
 | `autoware_vehicle_info_utils` | the ten vehicle parameters, required, and upstream's derived values and checks; the footprint functions (Boost.Geometry) are not offered |
 | `autoware_utils_geometry`: `calc_distance2d/3d`, `get_rpy`, `create_quaternion_from_rpy/yaw`, `create_point`, `pose2transform` | upstream's code on the vendored tf2 types; the distances for any point with `x`, `y`, `z`. `msg/covariance.hpp` is upstream's |
-| `tf2::Quaternion`, `Vector3`, `Matrix3x3`, `tf2::TimePointZero`, the tf2 exceptions | geometry2's headers, vendored (`upstream/geometry2`) |
-| `tf2::getYaw`, `tf2::getEulerYPR`, `tf2::toMsg`/`fromMsg` of a quaternion or vector, `tf2::doTransform` of a `Vector3` or `Vector3Stamped` (KDL's rotation of a quaternion) | tf2's formulas in the shim (`shim/include/tf2/utils.hpp`, `tf2_geometry_msgs/`); upstream's headers need tf2's conversion machinery and KDL |
-| `tf2_ros::Buffer`, `tf2_ros::TransformListener` | `hypha::TransformBuffer` on `/tf` and `/tf_static`; `lookupTransform` at `TimePointZero` is the latest common time, never waits, and throws the tf2 exception of the failure's kind |
+| `tf2::Quaternion`, `Vector3`, `Matrix3x3`, `Transform`, `tf2::Stamped`, `tf2::TimePointZero`, the tf2 exceptions | geometry2's headers, vendored (`upstream/geometry2`) |
+| `tf2::getYaw`, `tf2::getEulerYPR`, `tf2::toMsg`/`fromMsg` of a quaternion, vector, transform or pose, `tf2::doTransform` of a `Vector3` or `Vector3Stamped` (KDL's rotation of a quaternion) | tf2's formulas in the shim (`shim/include/tf2/utils.hpp`, `tf2_geometry_msgs/`); upstream's headers need tf2's conversion machinery and KDL |
+| `tf2::BufferCore`, `tf2_ros::Buffer` (a BufferCore with a clock), `tf2_ros::TransformListener` | `hypha::TransformBuffer` on `/tf` and `/tf_static`; `lookupTransform` at `TimePointZero` is the latest common time, never waits, and throws the tf2 exception of the failure's kind |
 | `tf2_ros::TransformBroadcaster` | a `tf2_msgs/TFMessage` publisher on `/tf` with the `tf` policy |
 | `autoware_agnocast_wrapper` | its build without Agnocast: upstream's `macros.hpp`; `Node`, `Service`, `Client`, `create_timer` and the tf2 types are the shim's |
 | `autoware_utils_logging::LoggerLevelConfigure` | the `~/config_logger` service, which refuses every request: hypha sets log levels from `[log]` in the parameter file only |
@@ -82,8 +82,9 @@ A generated message carries the members ROS generated C++ gives: `Ptr`/`ConstPtr
 
 ## How to run
 
-Against an installed SDK, with Eigen 3, GoogleTest and PCL 1.12 or newer (Ubuntu's
-`libpcl-dev`; `docker/Dockerfile` installs all three):
+Against an installed SDK, with Eigen 3, GoogleTest, PCL 1.12 or newer (Ubuntu's
+`libpcl-dev`, which brings Boost) and GeographicLib (`libgeographiclib-dev`);
+`docker/Dockerfile` installs all four:
 
 ```bash
 ./build.sh && cmake --install build --prefix /tmp/hypha-sdk
@@ -94,8 +95,9 @@ build/examples/autoware/autoware_crop_box_filter examples/autoware/config/crop_b
 
 `examples/check.sh` runs these tests; `./test.sh cpp` runs it against the installed SDK.
 
-On macOS the port builds natively with Apple clang and Homebrew's `pcl`, `googletest`
-and `eigen` (`brew install pcl googletest eigen`); CMake finds them through `PATH`.
+On macOS the port builds natively with Apple clang and Homebrew's `pcl`, `googletest`,
+`eigen` and `geographiclib` (`brew install pcl googletest eigen geographiclib`); CMake finds
+them through `PATH`.
 `examples/autoware` also configures on its own: `cmake -S examples/autoware -B
 build/autoware -DCMAKE_PREFIX_PATH=/tmp/hypha-sdk`. The ground filter's `grid.hpp` uses
 glibc's float constants `M_PIf`, `M_PI_2f` and `M_PI_4f`; where `<math.h>` lacks them, the
@@ -128,14 +130,17 @@ CMake file defines them with glibc's values, so the patches stay the same on bot
 | `autoware_ekf_localizer_node_test` | the upstream EKFLocalizerNode on the bus, on simulated time the test drives, with the deployment configuration: no estimate before the `trigger_node` service call and an initial pose, then odometry and `map → base_link` at that pose; WARN after 50 ticks without a pose, ERROR after 100; poses and twist at 1 m/s move the estimate (upstream's two integration scenarios and one of fusion) |
 | `autoware_gyro_odometer_upstream_test` | the upstream unit tests of `autoware_gyro_odometer`: the fusion of a vehicle twist and the IMU, and its diagnostics decision |
 | `autoware_gyro_odometer_node_test` | the upstream GyroOdometerNode on the bus, on simulated time the test drives, with the deployment topics: a completed pair on all four twist topics with its covariances, an IMU frame that cannot be resolved (no output, ERROR), an IMU mounted a quarter turn rotated into `base_link`, OK after a fusion (upstream's node scenarios) |
+| `autoware_geography_utils_upstream_test` | the upstream unit tests of `autoware_geography_utils` (21 cases): the MGRS, local Cartesian UTM, local Cartesian and transverse Mercator projectors forward and back, on the vendored Lanelet2 and extension projectors, and the vertical datums; the two cases that need the EGM2008 geoid dataset skip without it, as upstream's do |
+| `autoware_gnss_poser_node_test` | the upstream GNSSPoser on the bus, with the deployment configuration: a fixed fix projected about a local Cartesian map origin (x and y as GeographicLib's, z the altitude above the origin's), with the INS heading, the fix's variances and the INS errors squared, and `map → gnss_base_link`; a fix without a fix flagged and dropped; an antenna mounted 1 m ahead of `base_link` (upstream's node scenarios, with exact values) |
 | `autoware_rclcpp_shim_test` | the shim's names, time conversion, QoS check, timers and services: a call through a callback, two clients that each take only their own response, a request that does not decode, the service names |
 
 Upstream integration tests spin several nodes on an executor thread, with tf2_ros
 broadcasters and parameter overrides, which the shim does not offer; they are not built.
 The crop box's (`test_crop_box_filter_integration.cpp`) is vendored as the reference case
-for #59, and so are the EKF's (`test_ekf_localizer_node_integration.cpp`) and the gyro
-odometer's (`test_gyro_odometer_node.cpp`), whose scenarios the node tests run on the
-bus; the others, the euclidean cluster's `test_nodes.cpp` and the concatenate node's
+for #59, and so are the EKF's (`test_ekf_localizer_node_integration.cpp`), the gyro
+odometer's (`test_gyro_odometer_node.cpp`) and the GNSS poser's two
+(`test_gnss_poser_node.cpp`, `test_gnss_poser_node_characterization.cpp`), whose
+scenarios the node tests run on the bus; the others, the euclidean cluster's `test_nodes.cpp` and the concatenate node's
 `test_concatenate_node_characterization.cpp` among them, are not copied.
 
 The two cluster nodes differ on a cluster above `max_cluster_size`, as upstream does:
@@ -159,6 +164,8 @@ What the patches change, per package. It is the input to #56 and, for messages, 
 | `autoware_pointcloud_preprocessor` | five unused `message_filters` includes removed; `test_concatenate_node_unit.cpp` reads its parameters from a TOML file, not `parameter_overrides` | the shim offers neither; its parameters come from the parameter file |
 | `autoware_ekf_localizer` | `stamp.sec`/`nanosec` → `secs`/`nsecs` in `ekf_localizer.cpp` | ROS 1 time fields (#45) |
 | `autoware_gyro_odometer` | `stamp.sec`/`nanosec` → `secs`/`nsecs` in the unit test | ROS 1 time fields (#45) |
+| `autoware_gnss_poser` | `stamp.sec`/`nanosec` → `secs`/`nsecs` in the static transform lookup | ROS 1 time fields (#45) |
+| `autoware_gnss_poser` | `#include <numeric>` added | an upstream omission: `std::reduce` comes through other headers only with libstdc++ |
 | `autoware_localization_util` | `stamp.sec`/`nanosec` → `secs`/`nsecs` in the covariance ellipse test | ROS 1 time fields (#45) |
 | `pcl_conversions` | two unused `message_filters` includes removed | as above |
 | `point_cloud_msg_wrapper` | `#include <algorithm>` added | an upstream omission |

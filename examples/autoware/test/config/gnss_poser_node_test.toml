@@ -1,0 +1,3 @@
+# autoware_gnss_poser_node_test: the node on the bus, with the deployment parameters and
+# topics of ../../config/gnss_poser.toml.
+include = ["../../config/gnss_poser.toml"]

@@ -41,7 +41,14 @@ hypha_generate_messages(PACKAGE autoware_internal_msgs
 hypha_generate_messages(PACKAGE autoware_sensing_msgs
   MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_msgs/autoware_sensing_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
-  DEPENDS std_msgs)
+  DEPENDS std_msgs geometry_msgs)
+hypha_generate_messages(PACKAGE geographic_msgs
+  MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/geographic_info/geographic_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}")
+hypha_generate_messages(PACKAGE autoware_map_msgs
+  MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/autoware_map_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}"
+  DEPENDS geographic_msgs)
 # The shim's service envelope, and the services the ported nodes offer.
 hypha_generate_messages(PACKAGE hypha_rclcpp_msgs
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/hypha_rclcpp_msgs/msg"
@@ -398,3 +405,67 @@ autoware_test(autoware_gyro_odometer_node_test
   SOURCES test/test_gyro_odometer_node.cpp "${GYRO_ODOMETER_DIR}/src/gyro_odometer_node.cpp"
   LIBS autoware_gyro_odometer_core
   ENV HYPHA_USE_SIM_TIME=1)
+
+# --- GNSS: Lanelet2's projection, autoware_lanelet2_extension's projectors --------------
+
+# GeographicLib does the projections; Lanelet2 wraps it, header-only Boost and Eigen.
+# Debian and Ubuntu ship its find module there, Homebrew a package configuration; both set
+# GeographicLib_LIBRARIES and GeographicLib_INCLUDE_DIRS.
+list(APPEND CMAKE_MODULE_PATH /usr/share/cmake/geographiclib)
+find_package(GeographicLib REQUIRED)
+find_package(Boost REQUIRED)
+
+# Lanelet2 1.2.3: the UTM and local Cartesian projectors and the headers they include.
+set(LANELET2_DIR "${AUTOWARE_UPSTREAM_DIR}/lanelet2")
+add_library(autoware_lanelet2_projection STATIC
+  "${LANELET2_DIR}/lanelet2_projection/src/UTM.cpp"
+  "${LANELET2_DIR}/lanelet2_projection/src/LocalCartesian.cpp")
+target_include_directories(autoware_lanelet2_projection SYSTEM PUBLIC
+  "${LANELET2_DIR}/lanelet2_core/include"
+  "${LANELET2_DIR}/lanelet2_io/include"
+  "${LANELET2_DIR}/lanelet2_projection/include")
+target_link_libraries(autoware_lanelet2_projection PUBLIC
+  ${GeographicLib_LIBRARIES} Boost::headers Eigen3::Eigen)
+target_include_directories(autoware_lanelet2_projection SYSTEM PUBLIC ${GeographicLib_INCLUDE_DIRS})
+target_compile_features(autoware_lanelet2_projection PUBLIC cxx_std_23)
+
+# autoware_lanelet2_extension 1.3.0: the MGRS and transverse Mercator projectors.
+set(LANELET2_EXTENSION_DIR
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_lanelet2_extension/autoware_lanelet2_extension")
+add_library(autoware_lanelet2_extension_projection STATIC
+  "${LANELET2_EXTENSION_DIR}/lib/mgrs_projector.cpp"
+  "${LANELET2_EXTENSION_DIR}/lib/transverse_mercator_projector.cpp")
+target_include_directories(autoware_lanelet2_extension_projection PUBLIC
+  "${LANELET2_EXTENSION_DIR}/include")
+target_link_libraries(autoware_lanelet2_extension_projection PUBLIC autoware_lanelet2_projection)
+
+# autoware_geography_utils (autoware_core 1.10.0): projection and height on the projectors.
+set(GEOGRAPHY_UTILS_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_core/common/autoware_geography_utils")
+add_library(autoware_geography_utils STATIC
+  "${GEOGRAPHY_UTILS_DIR}/src/height.cpp"
+  "${GEOGRAPHY_UTILS_DIR}/src/lanelet2_projector.cpp"
+  "${GEOGRAPHY_UTILS_DIR}/src/projection.cpp")
+target_include_directories(autoware_geography_utils PUBLIC "${GEOGRAPHY_UTILS_DIR}/include")
+target_link_libraries(autoware_geography_utils PUBLIC
+  autoware_lanelet2_extension_projection autoware_map_msgs geographic_msgs hypha_rclcpp)
+autoware_test(autoware_geography_utils_upstream_test
+  SOURCES "${GEOGRAPHY_UTILS_DIR}/test/test_geography_utils.cpp"
+    "${GEOGRAPHY_UTILS_DIR}/test/test_height.cpp"
+    "${GEOGRAPHY_UTILS_DIR}/test/test_lanelet2_projector.cpp"
+    "${GEOGRAPHY_UTILS_DIR}/test/test_projection.cpp"
+  LIBS autoware_geography_utils)
+
+# --- GNSS: autoware_gnss_poser (autoware_core 1.10.0) ----------------------------------
+
+autoware_patched(autoware_gnss_poser
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/sensing/autoware_gnss_poser" GNSS_POSER_DIR)
+autoware_component(autoware_gnss_poser SOURCES "${GNSS_POSER_DIR}/src/gnss_poser_node.cpp")
+target_include_directories(autoware_gnss_poser PRIVATE "${GNSS_POSER_DIR}/src")
+target_link_libraries(autoware_gnss_poser PRIVATE autoware_geography_utils autoware_sensing_msgs)
+
+# The node on the bus: the map projection, a fix and the INS orientation in; the pose, its
+# covariance, the fixed flag and map -> gnss_base_link out.
+autoware_test(autoware_gnss_poser_node_test
+  SOURCES test/test_gnss_poser_node.cpp "${GNSS_POSER_DIR}/src/gnss_poser_node.cpp"
+  INCLUDES "${GNSS_POSER_DIR}/src"
+  LIBS autoware_geography_utils autoware_sensing_msgs)

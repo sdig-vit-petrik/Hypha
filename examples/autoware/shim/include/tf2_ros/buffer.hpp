@@ -1,9 +1,10 @@
 #pragma once
 
 /// @file
-/// tf2_ros::Buffer and tf2_ros::TransformListener on hypha::TransformBuffer (`/tf`,
-/// `/tf_static`). The listener creates the hypha buffer on its node and hands it to the
-/// Buffer; a lookup before that, or one that fails, throws the tf2 exception of its kind.
+/// tf2::BufferCore, tf2_ros::Buffer and tf2_ros::TransformListener on hypha::TransformBuffer
+/// (`/tf`, `/tf_static`). As in ROS, the Buffer is a BufferCore with a clock, and the
+/// listener feeds a BufferCore: it creates the hypha buffer on its node and hands it over.
+/// A lookup before that, or one that fails, throws the tf2 exception of its kind.
 /// A lookup never waits: a timeout is refused (hypha#91, decision (b)).
 
 #include <hypha/transform_buffer.h>
@@ -18,19 +19,18 @@
 #include <string>
 
 namespace tf2_ros {
-
 class TransformListener;
+}  // namespace tf2_ros
 
-class Buffer
+namespace tf2 {
+
+class BufferCore
 {
   public:
-    /// The clock is the framework clock, as every clock of the shim.
-    explicit Buffer(const rclcpp::Clock::SharedPtr& /*clock*/)
-    {
-    }
+    BufferCore() = default;
 
-    Buffer(const Buffer&) = delete;
-    Buffer& operator=(const Buffer&) = delete;
+    BufferCore(const BufferCore&) = delete;
+    BufferCore& operator=(const BufferCore&) = delete;
 
     /// The transform from @p source coordinates into @p target at @p time;
     /// tf2::TimePointZero is the latest time the chain has in common.
@@ -45,14 +45,10 @@ class Buffer
     ) const
     {
         if (timeout != tf2::Duration::zero()) {
-            throw std::invalid_argument(
-                "tf2_ros::Buffer: a lookup never waits on hypha; give no timeout"
-            );
+            throw std::invalid_argument("tf2: a lookup never waits on hypha; give no timeout");
         }
         if (!this->transforms_) {
-            throw tf2::TransformException(
-                "tf2_ros::Buffer: no TransformListener feeds this buffer yet"
-            );
+            throw tf2::TransformException("tf2: no TransformListener feeds this buffer yet");
         }
         const auto found =
             time == tf2::TimePointZero
@@ -63,8 +59,8 @@ class Buffer
         if (found) {
             return *found;
         }
-        const std::string what = "tf2_ros::Buffer: " + source + " to " + target + ": "
-                               + std::string(hypha::name(found.error()));
+        const std::string what =
+            "tf2: " + source + " to " + target + ": " + std::string(hypha::name(found.error()));
         switch (found.error()) {
             case hypha::TransformError::InvalidFrame:
             case hypha::TransformError::UnknownFrame:
@@ -79,9 +75,22 @@ class Buffer
     }
 
   private:
-    friend class TransformListener;
+    friend class tf2_ros::TransformListener;
 
     std::unique_ptr<hypha::TransformBuffer> transforms_;
+};
+
+}  // namespace tf2
+
+namespace tf2_ros {
+
+/// A BufferCore with a clock; the clock is the framework clock, as every clock of the shim.
+class Buffer : public tf2::BufferCore
+{
+  public:
+    explicit Buffer(const rclcpp::Clock::SharedPtr& /*clock*/)
+    {
+    }
 };
 
 /// Subscribes `/tf` and `/tf_static` on @p node for @p buffer. A spin thread is never
@@ -89,7 +98,7 @@ class Buffer
 class TransformListener
 {
   public:
-    TransformListener(Buffer& buffer, rclcpp::Node& node, bool /*spin_thread*/ = true)
+    TransformListener(tf2::BufferCore& buffer, rclcpp::Node& node, bool /*spin_thread*/ = true)
     {
         if (buffer.transforms_) {
             throw std::invalid_argument("tf2_ros::TransformListener: the buffer has one already");

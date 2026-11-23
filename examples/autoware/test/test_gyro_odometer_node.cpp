@@ -6,6 +6,9 @@
 /// a completed fusion that reports OK, and an IMU mounted a quarter turn. Each sample is
 /// served before the next is sent, so the node sees them in the scenario's order.
 
+#include <hypha/transform_buffer.h>
+#include <hypha_msgs/rosgraph_msgs/Clock.h>
+
 #include "gyro_odometer_node.hpp"
 
 #include <autoware_utils_geometry/msg/covariance.hpp>
@@ -13,8 +16,6 @@
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <geometry_msgs/msg/twist_with_covariance_stamped.hpp>
 #include <gtest/gtest.h>
-#include <hypha/transform_buffer.h>
-#include <hypha_msgs/rosgraph_msgs/Clock.h>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 
@@ -40,31 +41,36 @@ class GyroOdometerNodeTest : public ::testing::Test
   protected:
     void SetUp() override
     {
-        this->gyro_ = std::make_shared<autoware::gyro_odometer::GyroOdometerNode>(
-            rclcpp::NodeOptions{}
-        );
+        this->gyro_ =
+            std::make_shared<autoware::gyro_odometer::GyroOdometerNode>(rclcpp::NodeOptions{});
         this->harness_ = rclcpp::Node::make_shared("gyro_test_harness");
         hypha::Node& bus = this->harness_->hypha_node();
         this->clock_ = bus.advertise<rosgraph_msgs::Clock>(hypha::Topic{"/clock"});
-        this->vehicleTwist_ =
-            bus.advertise<TwistCov>(hypha::Topic{"/sensing/vehicle_velocity_converter/twist_with_covariance"});
+        this->vehicleTwist_ = bus.advertise<TwistCov>(
+            hypha::Topic{"/sensing/vehicle_velocity_converter/twist_with_covariance"}
+        );
         this->imu_ = bus.advertise<Imu>(hypha::Topic{"/sensing/imu/imu_data"});
         this->tfStatic_.emplace(bus);
         const std::string ns = "/localization/twist_estimator/";
         this->subscriptions_.push_back(bus.subscribe<Twist>(
-            hypha::Topic{ns + "gyro_twist_raw"},
-            [this](const Twist::ConstPtr& m) { this->twistRaw_ = *m; }
+            hypha::Topic{ns + "gyro_twist_raw"}, [this](const Twist::ConstPtr& m) {
+                this->twistRaw_ = *m;
+            }
         ));
-        this->subscriptions_.push_back(bus.subscribe<Twist>(
-            hypha::Topic{ns + "gyro_twist"}, [this](const Twist::ConstPtr& m) { this->twist_ = *m; }
+        this->subscriptions_.push_back(
+            bus.subscribe<Twist>(hypha::Topic{ns + "gyro_twist"}, [this](const Twist::ConstPtr& m) {
+                this->twist_ = *m;
+            })
+        );
+        this->covSubscriptions_.push_back(bus.subscribe<TwistCov>(
+            hypha::Topic{ns + "twist_with_covariance_raw"}, [this](const TwistCov::ConstPtr& m) {
+                this->twistCovRaw_ = *m;
+            }
         ));
         this->covSubscriptions_.push_back(bus.subscribe<TwistCov>(
-            hypha::Topic{ns + "twist_with_covariance_raw"},
-            [this](const TwistCov::ConstPtr& m) { this->twistCovRaw_ = *m; }
-        ));
-        this->covSubscriptions_.push_back(bus.subscribe<TwistCov>(
-            hypha::Topic{ns + "twist_with_covariance"},
-            [this](const TwistCov::ConstPtr& m) { this->twistCov_ = *m; }
+            hypha::Topic{ns + "twist_with_covariance"}, [this](const TwistCov::ConstPtr& m) {
+                this->twistCov_ = *m;
+            }
         ));
         this->diagnosticsIn_ = bus.subscribe<diagnostic_msgs::msg::DiagnosticArray>(
             hypha::Topic{"/diagnostics"},
@@ -113,7 +119,15 @@ class GyroOdometerNodeTest : public ::testing::Test
         this->turn();
     }
 
-    void sendImu(const std::string& frame, double wx, double wy, double wz, double cxx, double cyy, double czz)
+    void sendImu(
+        const std::string& frame,
+        double             wx,
+        double             wy,
+        double             wz,
+        double             cxx,
+        double             cyy,
+        double             czz
+    )
     {
         Imu imu;
         imu.header.stamp = this->stamp();
@@ -136,7 +150,7 @@ class GyroOdometerNodeTest : public ::testing::Test
         return this->level_;
     }
 
-    static inline int64_t nowNanos_{100'000'000'000};
+    static inline int64_t                                      nowNanos_{100'000'000'000};
     std::shared_ptr<autoware::gyro_odometer::GyroOdometerNode> gyro_;
     rclcpp::Node::SharedPtr                                    harness_;
     hypha::Publisher<rosgraph_msgs::Clock>                     clock_;

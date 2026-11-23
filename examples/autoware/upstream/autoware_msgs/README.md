@@ -10,7 +10,11 @@ Only the messages the ported nodes publish, unchanged, each package with its
 
 - `autoware_perception_msgs`: `DetectedObjects`, `DetectedObject`,
   `DetectedObjectKinematics`, `ObjectClassification` and `Shape`;
-- `autoware_sensing_msgs`: `ConcatenatedPointCloudInfo` and `SourcePointCloudInfo`.
+- `autoware_sensing_msgs`: `ConcatenatedPointCloudInfo`, `SourcePointCloudInfo`,
+  `GnssInsOrientationStamped` and `GnssInsOrientation`.
+
+`autoware_map_msgs/MapProjectorInfo` is rewritten in ROS 1 syntax, in
+`../../msg/autoware_map_msgs/`.
 
 Their ROS 2 definitions are valid ROS 1 syntax, so hypha generates them as they are
 (`hypha_generate_messages`, `../../CMakeLists.txt`).
