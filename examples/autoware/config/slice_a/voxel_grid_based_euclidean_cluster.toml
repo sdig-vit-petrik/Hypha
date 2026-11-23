@@ -1,0 +1,8 @@
+# Slice A, stage 2 of 2: the clustering of autoware_core_perception on the ground filter's
+# obstacles, at full resolution, as upstream's voxel_grid_based_euclidean_cluster.launch.py
+# feeds it; it groups the points in voxel_leaf_size voxels itself. The values of
+# ../voxel_grid_based_euclidean_cluster.toml, Autoware's deployment topics included.
+include = ["../voxel_grid_based_euclidean_cluster.toml"]
+
+[ports.inputs.input]
+topic = "/perception/obstacle_segmentation/single_frame/pointcloud"

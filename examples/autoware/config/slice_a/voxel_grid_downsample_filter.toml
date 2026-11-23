@@ -1,0 +1,10 @@
+# Slice A, beside stage 2: the voxel downsample on the ground filter's obstacles. The
+# clustering does not read it: 1.5 m voxels leave a car too few points to make a cluster.
+# The values of ../voxel_grid_downsample_filter.toml on the obstacle segmentation topics.
+include = ["../voxel_grid_downsample_filter.toml"]
+
+[ports.inputs.input]
+topic = "/perception/obstacle_segmentation/single_frame/pointcloud"
+
+[ports.outputs.output]
+topic = "/perception/obstacle_segmentation/pointcloud"

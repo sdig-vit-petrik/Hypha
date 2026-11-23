@@ -5,8 +5,18 @@ use std::process::Command;
 
 const HYPHA: &str = env!("CARGO_BIN_EXE_hypha");
 
-const TOOLS: [&str; 9] =
-    ["topic", "top", "node", "record", "play", "intercept", "foxglove", "launch", "param"];
+const TOOLS: [&str; 10] = [
+    "topic",
+    "top",
+    "node",
+    "record",
+    "play",
+    "convert",
+    "intercept",
+    "foxglove",
+    "launch",
+    "param",
+];
 
 #[test]
 #[allow(clippy::expect_used)]

@@ -53,7 +53,9 @@ impl<'bus> RecorderSession<'bus> {
     /// Finalizes the recording and returns its recorder.
     #[must_use]
     pub fn finish(mut self) -> Recorder {
-        self.recorder.finish();
+        if let Err(error) = self.recorder.finish() {
+            eprintln!("hypha record: {error}");
+        }
         self.recorder
     }
 

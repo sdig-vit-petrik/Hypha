@@ -1,0 +1,212 @@
+{
+  "configById": {
+    "3D!slice-a": {
+      "cameraState": {
+        "perspective": true,
+        "distance": 70,
+        "phi": 50,
+        "thetaOffset": 90,
+        "targetOffset": [
+          10,
+          0,
+          0
+        ],
+        "target": [
+          0,
+          0,
+          0
+        ],
+        "targetOrientation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "fovy": 45,
+        "near": 0.1,
+        "far": 5000
+      },
+      "followTf": "base_link",
+      "followMode": "follow-position",
+      "scene": {
+        "backgroundColor": "#20242c",
+        "transforms": {
+          "showLabel": false,
+          "axisScale": 0.6,
+          "enablePreloading": false
+        }
+      },
+      "transforms": {
+        "frame:ned": {
+          "visible": false
+        },
+        "frame:POS_REF": {
+          "visible": false
+        }
+      },
+      "topics": {
+        "/sensing/lidar/concatenated/pointcloud": {
+          "visible": true,
+          "pointSize": 1.5,
+          "pointShape": "circle",
+          "decayTime": 0,
+          "colorMode": "flat",
+          "flatColor": "#9aa3b566"
+        },
+        "/perception/obstacle_segmentation/single_frame/pointcloud": {
+          "visible": true,
+          "pointSize": 2,
+          "pointShape": "circle",
+          "decayTime": 0,
+          "colorMode": "flat",
+          "flatColor": "#ff9f1c"
+        },
+        "/perception/obstacle_segmentation/pointcloud": {
+          "visible": false,
+          "pointSize": 7,
+          "pointShape": "circle",
+          "decayTime": 0,
+          "colorMode": "flat",
+          "flatColor": "#2ec4b6"
+        },
+        "/perception/object_recognition/debug/clusters": {
+          "visible": true,
+          "pointSize": 3,
+          "pointShape": "circle",
+          "decayTime": 0,
+          "colorMode": "rgb",
+          "colorField": "rgb"
+        },
+        "/studio_script/slice_a/boxes": {
+          "visible": true
+        }
+      },
+      "layers": {
+        "slice-a-grid": {
+          "visible": true,
+          "frameLocked": true,
+          "label": "Grid, 5 m",
+          "instanceId": "slice-a-grid",
+          "layerId": "foxglove.Grid",
+          "frameId": "base_link",
+          "size": 120,
+          "divisions": 24,
+          "lineWidth": 1,
+          "color": "#3c4454",
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "order": 1
+        }
+      }
+    },
+    "Plot!slice-a-ground": {
+      "title": "Ground filter: points per frame",
+      "paths": [
+        {
+          "value": "/sensing/lidar/concatenated/pointcloud.width",
+          "label": "lidar in",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        },
+        {
+          "value": "/perception/obstacle_segmentation/single_frame/pointcloud.width",
+          "label": "non-ground out",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        }
+      ],
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 20
+    },
+    "Plot!slice-a-clusters": {
+      "title": "Downsample and clustering: points per frame",
+      "paths": [
+        {
+          "value": "/perception/obstacle_segmentation/pointcloud.width",
+          "label": "voxel centroids",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        },
+        {
+          "value": "/perception/object_recognition/debug/clusters.width",
+          "label": "clustered points",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        }
+      ],
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 20
+    },
+    "Plot!slice-a-objects": {
+      "title": "Objects per frame",
+      "paths": [
+        {
+          "value": "/studio_script/slice_a/object_count.count",
+          "label": "objects",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        }
+      ],
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 20
+    },
+    "RawMessages!slice-a-diagnostics": {
+      "topicPath": "/diagnostics",
+      "diffEnabled": false
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {
+    "slice-a-boxes": {
+      "name": "slice_a_boxes",
+      "sourceCode": "// Slice A: a bounding box per cluster of /perception/object_recognition/debug/clusters.\n// The clustering's objects carry only a centroid, so the boxes come from the cluster\n// points. Upstream writes each cluster's points in a row, cluster i in colour i % 6, so a\n// change of colour starts the next cluster and box i belongs to object i. A box is the\n// smallest rectangle around the points in the ground plane (yaw searched in 1\u00b0 steps),\n// from the lowest point to the highest.\nimport {\n  CubePrimitive,\n  LinePrimitive,\n  LineType,\n  SceneUpdate,\n  TextPrimitive,\n} from \"@foxglove/schemas\";\n\nexport const inputs = [\"/perception/object_recognition/debug/clusters\"];\nexport const output = \"/studio_script/slice_a/boxes\";\n\ntype PointCloud2 = {\n  header: { stamp: { sec: number; nsec: number }; frame_id: string };\n  width: number;\n  height: number;\n  point_step: number;\n  is_bigendian: boolean;\n  fields: { name: string; offset: number }[];\n  data: Uint8Array;\n};\ntype Cluster = { rgb: number; x: number[]; y: number[]; z: number[] };\ntype Box = { x: number; y: number; z: number; yaw: number; dx: number; dy: number; dz: number };\n\n// A box at least this thick on each axis, in metres, so a flat cluster stays visible.\nconst MIN_EXTENT = 0.1;\n\nfunction clustersOf(cloud: PointCloud2): Cluster[] {\n  const offset = (name: string): number => {\n    const field = cloud.fields.find((f) => f.name === name);\n    if (field === undefined) {\n      throw new Error(`the cloud has no field '${name}'`);\n    }\n    return field.offset;\n  };\n  const [ox, oy, oz, orgb] = [\"x\", \"y\", \"z\", \"rgb\"].map(offset);\n  const view = new DataView(cloud.data.buffer, cloud.data.byteOffset, cloud.data.byteLength);\n  const little = !cloud.is_bigendian;\n  const clusters: Cluster[] = [];\n  for (let i = 0; i < cloud.width * cloud.height; i++) {\n    const base = i * cloud.point_step;\n    const rgb = view.getUint32(base + orgb, little);\n    let cluster = clusters[clusters.length - 1];\n    if (cluster === undefined || cluster.rgb !== rgb) {\n      cluster = { rgb, x: [], y: [], z: [] };\n      clusters.push(cluster);\n    }\n    cluster.x.push(view.getFloat32(base + ox, little));\n    cluster.y.push(view.getFloat32(base + oy, little));\n    cluster.z.push(view.getFloat32(base + oz, little));\n  }\n  return clusters;\n}\n\nfunction boxOf(cluster: Cluster): Box {\n  const { x, y, z } = cluster;\n  let best = { area: Infinity, yaw: 0, u0: 0, u1: 0, v0: 0, v1: 0 };\n  for (let degrees = 0; degrees < 90; degrees++) {\n    const yaw = (degrees * Math.PI) / 180;\n    const c = Math.cos(yaw);\n    const s = Math.sin(yaw);\n    let u0 = Infinity;\n    let u1 = -Infinity;\n    let v0 = Infinity;\n    let v1 = -Infinity;\n    for (let i = 0; i < x.length; i++) {\n      const u = x[i] * c + y[i] * s;\n      const v = -x[i] * s + y[i] * c;\n      u0 = Math.min(u0, u);\n      u1 = Math.max(u1, u);\n      v0 = Math.min(v0, v);\n      v1 = Math.max(v1, v);\n    }\n    const area = (u1 - u0) * (v1 - v0);\n    if (area < best.area) {\n      best = { area, yaw, u0, u1, v0, v1 };\n    }\n  }\n  const c = Math.cos(best.yaw);\n  const s = Math.sin(best.yaw);\n  const u = (best.u0 + best.u1) / 2;\n  const v = (best.v0 + best.v1) / 2;\n  let z0 = Infinity;\n  let z1 = -Infinity;\n  for (const height of z) {\n    z0 = Math.min(z0, height);\n    z1 = Math.max(z1, height);\n  }\n  return {\n    x: u * c - v * s,\n    y: u * s + v * c,\n    z: (z0 + z1) / 2,\n    yaw: best.yaw,\n    dx: Math.max(best.u1 - best.u0, MIN_EXTENT),\n    dy: Math.max(best.v1 - best.v0, MIN_EXTENT),\n    dz: Math.max(z1 - z0, MIN_EXTENT),\n  };\n}\n\n// The 8 corners of a unit box, corner i at the sign bits of i, and its 12 edges: the\n// pairs of corners that differ in one bit.\nconst CORNERS = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({\n  x: i & 1 ? 0.5 : -0.5,\n  y: i & 2 ? 0.5 : -0.5,\n  z: i & 4 ? 0.5 : -0.5,\n}));\nconst EDGES = [0, 1, 2, 3, 4, 5, 6, 7].flatMap((i) =>\n  [1, 2, 4].filter((bit) => (i & bit) === 0).flatMap((bit) => [i, i | bit]),\n);\n\nexport default function script(event: { message: PointCloud2 }): SceneUpdate {\n  const { header } = event.message;\n  const cubes: CubePrimitive[] = [];\n  const lines: LinePrimitive[] = [];\n  const texts: TextPrimitive[] = [];\n  clustersOf(event.message).forEach((cluster, index) => {\n    const box = boxOf(cluster);\n    const pose = {\n      position: { x: box.x, y: box.y, z: box.z },\n      orientation: { x: 0, y: 0, z: Math.sin(box.yaw / 2), w: Math.cos(box.yaw / 2) },\n    };\n    const r = ((cluster.rgb >> 16) & 0xff) / 255;\n    const g = ((cluster.rgb >> 8) & 0xff) / 255;\n    const b = (cluster.rgb & 0xff) / 255;\n    cubes.push({\n      pose,\n      size: { x: box.dx, y: box.dy, z: box.dz },\n      color: { r, g, b, a: 0.2 },\n    });\n    lines.push({\n      type: 2 as LineType, // LINE_LIST\n      pose,\n      thickness: 2,\n      scale_invariant: true,\n      points: CORNERS.map((p) => ({ x: p.x * box.dx, y: p.y * box.dy, z: p.z * box.dz })),\n      color: { r, g, b, a: 1 },\n      colors: [],\n      indices: EDGES,\n    });\n    texts.push({\n      pose: { position: { x: box.x, y: box.y, z: box.z + box.dz / 2 + 0.6 }, orientation: pose.orientation },\n      billboard: true,\n      font_size: 14,\n      scale_invariant: true,\n      color: { r: 1, g: 1, b: 1, a: 1 },\n      text: `#${index}`,\n    });\n  });\n  return {\n    deletions: [],\n    entities: [\n      {\n        timestamp: header.stamp,\n        frame_id: header.frame_id,\n        id: \"slice_a_boxes\",\n        lifetime: { sec: 0, nsec: 0 },\n        frame_locked: false,\n        metadata: [],\n        arrows: [],\n        cubes,\n        spheres: [],\n        cylinders: [],\n        lines,\n        triangles: [],\n        texts,\n        models: [],\n      },\n    ],\n  };\n}\n"
+    },
+    "slice-a-object-count": {
+      "name": "slice_a_object_count",
+      "sourceCode": "// Slice A: the number of detected objects in each frame, for the plot.\nexport const inputs = [\"/perception/object_recognition/detection/objects\"];\nexport const output = \"/studio_script/slice_a/object_count\";\n\ntype Output = { count: number };\n\nexport default function script(event: { message: { objects: unknown[] } }): Output {\n  return { count: event.message.objects.length };\n}\n"
+    }
+  },
+  "playbackConfig": {
+    "speed": 1
+  },
+  "layout": {
+    "first": "3D!slice-a",
+    "second": {
+      "first": "Plot!slice-a-ground",
+      "second": {
+        "first": "Plot!slice-a-clusters",
+        "second": {
+          "first": "Plot!slice-a-objects",
+          "second": "RawMessages!slice-a-diagnostics",
+          "direction": "column"
+        },
+        "direction": "column",
+        "splitPercentage": 33
+      },
+      "direction": "column",
+      "splitPercentage": 25
+    },
+    "direction": "row",
+    "splitPercentage": 68
+  }
+}

@@ -88,12 +88,22 @@ function(autoware_component program)
 endfunction()
 
 # autoware_test(<name> SOURCES <file>... [INCLUDES <dir>...]): one GoogleTest program.
+# Each test runs in a bus domain of its own, autoware_<n>, so tests that ctest runs in
+# parallel share neither node names nor topics. A domain name has at most 32
+# characters, so it is numbered, not named after the test.
 function(autoware_test name)
   cmake_parse_arguments(ARG "" "" "SOURCES;INCLUDES;LIBS" ${ARGN})
   add_executable(${name} ${ARG_SOURCES})
   target_include_directories(${name} PRIVATE ${ARG_INCLUDES})
   target_link_libraries(${name} PRIVATE hypha_rclcpp GTest::gtest ${ARG_LIBS})
   add_test(NAME ${name} COMMAND ${name} WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  get_property(count GLOBAL PROPERTY AUTOWARE_TEST_COUNT)
+  if(NOT count)
+    set(count 0)
+  endif()
+  math(EXPR count "${count} + 1")
+  set_property(GLOBAL PROPERTY AUTOWARE_TEST_COUNT ${count})
+  set_tests_properties(${name} PROPERTIES ENVIRONMENT "HYPHA_DOMAIN=autoware_${count}")
 endfunction()
 
 # --- Slice A: autoware_crop_box_filter (autoware_core 1.10.0) --------------------------
@@ -280,3 +290,13 @@ autoware_test(autoware_concatenate_and_time_sync_node_test
   SOURCES test/test_concatenate_and_time_sync_node.cpp
     "${CONCATENATE_DIR}/concatenate_and_time_sync_node.cpp"
   LIBS autoware_concatenate_core)
+
+# --- Slice A end to end: the replay check of slice_a_replay.sh --------------------------
+
+# Compares the Slice A outputs of two recordings, and summarizes one; it reads MCAP with the
+# test-only reader of the SDK.
+if(TARGET hypha::testing_mcap)
+  add_executable(autoware_slice_a_compare tools/slice_a_compare.cpp)
+  target_link_libraries(autoware_slice_a_compare PRIVATE
+    hypha::testing_mcap autoware_perception_msgs hypha_rclcpp)
+endif()
