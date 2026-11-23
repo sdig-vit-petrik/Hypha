@@ -1,6 +1,11 @@
 //! The transform buffer of a plain node through the C ABI.
 #![expect(clippy::expect_used, reason = "a failed test setup stops the test with its message")]
-#![expect(clippy::float_cmp, reason = "the translations compared are exact binary sums")]
+
+/// The bit patterns of `values`: the translations compared are exact binary sums, so they
+/// are compared exactly, and no float comparison is needed.
+fn bits<const N: usize>(values: [f64; N]) -> [u64; N] {
+    values.map(f64::to_bits)
+}
 
 mod common;
 use crate::common::replay::{SERIAL, create_waitset, run_for, run_status, send_payload};
@@ -219,8 +224,8 @@ fn a_lookup_between_two_dynamic_stamps_interpolates() {
     rig.send_dynamic("world", "base", 3 * SECOND, [2.0, 4.0, 0.0]);
     rig.settle();
     let transform = found(rig.buffer, "world", "base", Some(2 * SECOND));
-    assert_eq!(transform.translation, [1.0, 2.0, 0.0]);
-    assert_eq!(transform.rotation_xyzw, [0.0, 0.0, 0.0, 1.0]);
+    assert_eq!(bits(transform.translation), bits([1.0, 2.0, 0.0]));
+    assert_eq!(bits(transform.rotation_xyzw), bits([0.0, 0.0, 0.0, 1.0]));
     assert_eq!(transform.stamp_nanos, 2 * SECOND);
     let named = found(rig.buffer, "/world", "/base", Some(2 * SECOND));
     assert_eq!(named, transform, "one leading '/' is dropped");
@@ -234,7 +239,7 @@ fn a_chain_through_a_static_and_a_dynamic_transform_composes() {
     rig.send_dynamic("world", "base", SECOND, [1.0, 0.0, 0.0]);
     rig.settle();
     let transform = found(rig.buffer, "world", "camera", Some(SECOND));
-    assert_eq!(transform.translation, [1.0, 0.0, 0.5]);
+    assert_eq!(bits(transform.translation), bits([1.0, 0.0, 0.5]));
     assert_eq!(transform.stamp_nanos, SECOND);
 }
 
@@ -259,7 +264,7 @@ fn a_static_transform_latched_before_the_buffer_existed_is_found_after_the_node_
     let waitset = unsafe { create_waitset(node) };
     run_for(waitset, SETTLE_NANOS);
     let transform = found(buffer, "base", "lidar", None);
-    assert_eq!(transform.translation, [0.0, 0.2, 0.0]);
+    assert_eq!(bits(transform.translation), bits([0.0, 0.2, 0.0]));
     assert_eq!(transform.stamp_nanos, 0, "an all-static chain holds at time 0");
 
     // SAFETY: every handle is live and released once.
@@ -282,11 +287,11 @@ fn lookup_latest_takes_the_latest_time_common_to_the_chain() {
     rig.settle();
     let chain = found(rig.buffer, "world", "tool", None);
     assert_eq!(chain.stamp_nanos, 3 * SECOND, "the newest time both dynamic hops hold");
-    assert_eq!(chain.translation, [3.0, 1.0, 1.0]);
+    assert_eq!(bits(chain.translation), bits([3.0, 1.0, 1.0]));
     let all_static = found(rig.buffer, "arm", "tool", None);
     assert_eq!(all_static.stamp_nanos, 0);
     let identity = found(rig.buffer, "nowhere", "nowhere", None);
-    assert_eq!(identity.translation, [0.0; 3], "equal names give the identity");
+    assert_eq!(bits(identity.translation), bits([0.0; 3]), "equal names give the identity");
 }
 
 #[test]
@@ -364,7 +369,10 @@ fn a_message_that_does_not_decode_fails_no_run() {
     assert_eq!(run_status(rig.waitset, SETTLE_NANOS), HyphaStatus::Ok as i32);
     rig.send_dynamic("world", "base", SECOND, [1.0, 0.0, 0.0]);
     rig.settle();
-    assert_eq!(found(rig.buffer, "world", "base", Some(SECOND)).translation, [1.0, 0.0, 0.0]);
+    assert_eq!(
+        bits(found(rig.buffer, "world", "base", Some(SECOND)).translation),
+        bits([1.0, 0.0, 0.0])
+    );
 }
 
 /// The handles a lookup thread and the test share, live until both threads joined.
@@ -607,5 +615,8 @@ fn under_simulated_time_every_received_sample_is_ingested() {
     rig.send_dynamic("world", "base", 5 * SECOND, [9.0, 0.0, 0.0]);
     rig.settle();
     assert_eq!(found(rig.buffer, "world", "base", None).stamp_nanos, 5 * SECOND);
-    assert_eq!(found(rig.buffer, "world", "base", Some(SECOND / 2)).translation, [0.0; 3]);
+    assert_eq!(
+        bits(found(rig.buffer, "world", "base", Some(SECOND / 2)).translation),
+        bits([0.0; 3])
+    );
 }

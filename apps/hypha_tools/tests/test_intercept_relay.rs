@@ -109,7 +109,7 @@ fn undecodable_payload_is_forwarded_and_counted() {
     assert_eq!(published(relay.on_frame(HASH_A, &truncated, &mut scratch)), truncated);
     let state = relay.snapshot();
     assert_eq!(state.patch_failed, 1);
-    assert!(!state.last_error.is_empty());
+    assert!(!state.last_error.is_empty(), "the relay reports no error");
 }
 
 #[test]

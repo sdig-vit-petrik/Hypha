@@ -135,7 +135,7 @@ fn own_sources(config: &Path, code: &[PathBuf]) -> Vec<String> {
 fn examples_have_no_use_sim_time_key() {
     let mut configs = Vec::new();
     files(&examples_dir(), &["toml"], &mut configs);
-    assert!(!configs.is_empty());
+    assert!(!configs.is_empty(), "no example configuration found");
     for path in configs {
         let text = read(&path);
         let keyed = text.lines().any(|line| line.trim_start().starts_with("use_sim_time"));

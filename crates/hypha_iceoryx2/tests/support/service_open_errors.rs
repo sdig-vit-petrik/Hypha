@@ -58,5 +58,6 @@ fn an_exhausted_half_created_service_says_how_to_recover() {
     assert!(advice.contains("looks half-created or its metadata under"), "{advice}");
     assert!(advice.contains("/services is damaged"), "{advice}");
     assert!(advice.contains("restart its publisher or run ./clean-shm.sh"), "{advice}");
-    assert!(half_created_advice(false).is_empty());
+    let found = half_created_advice(false);
+    assert!(found.is_empty(), "{found:?}");
 }
