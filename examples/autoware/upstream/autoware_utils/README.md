@@ -13,12 +13,17 @@ Only these files, unchanged:
   `autoware_utils_debug/src/time_keeper.cpp`, the processing-time tree;
 - `autoware_utils_diagnostics/include/autoware_utils_diagnostics/diagnostics_interface.hpp`,
   the header-only diagnostics publisher of the clustering, on the shim's `rclcpp`;
+- `autoware_utils_geometry/include/autoware_utils_geometry/msg/covariance.hpp`, the
+  covariance indices of the EKF;
 - of the `autoware_utils` umbrella package, the three forwarding headers the
   concatenate node includes: `ros/debug_publisher.hpp`, `ros/diagnostics_interface.hpp`
   and `system/stop_watch.hpp`, each a `using namespace` of the split package.
 
 The ROS-bound utilities the ported nodes use (`autoware_utils_debug`'s debug and
 published-time publishers, `autoware_utils_tf`'s transform listener) are the shim's,
-in `../../shim/include/`, on hypha endpoints and `hypha::TransformBuffer`; so is the one
-function of `autoware_utils_geometry` the ground filter uses (`calc_distance3d`), whose
-upstream header brings the planning messages, tf2 and Boost.Geometry.
+in `../../shim/include/`, on hypha endpoints and `hypha::TransformBuffer`; so are the
+functions of `autoware_utils_geometry/geometry.hpp` the ported nodes use (the distances,
+`get_rpy`, `create_quaternion_from_rpy`, `create_point`, `pose2transform`), copied from
+upstream's code, whose header brings the planning messages and Boost.Geometry; the
+logger level service of `autoware_utils_logging` is the shim's too, as hypha sets log
+levels from the parameter file only.

@@ -14,15 +14,18 @@
 ///   never change, so a set-parameters callback is kept and never called.
 /// - Callbacks run on the thread of `rclcpp::spin`, as with a single-threaded executor.
 
+#include <hypha/backend/ros1_codec.h>
 #include <hypha/hypha.h>
 #include <hypha/message_stamp.h>
 #include <hypha_log/hypha_log.h>
+#include <hypha_rclcpp_msgs/ServiceCall.h>
 
 #include <builtin_interfaces/msg/time.hpp>
 
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <optional>
@@ -316,6 +319,15 @@ class SensorDataQoS : public QoS
     }
 };
 
+/// rclcpp's service default: keep last 10, reliable, volatile.
+class ServicesQoS : public QoS
+{
+  public:
+    ServicesQoS() : QoS(10)
+    {
+    }
+};
+
 /// Accepted and without effect: no QoS parameter is declared, so nothing overrides one.
 class QosOverridingOptions
 {
@@ -334,9 +346,32 @@ struct PublisherOptions
     bool hypha_optional_topic{false};
 };
 
+/// Callbacks run on the one thread of `rclcpp::spin`, as in a single-threaded executor, so
+/// a group changes nothing: every group is mutually exclusive with every other one.
+enum class CallbackGroupType { MutuallyExclusive, Reentrant };
+
+class CallbackGroup
+{
+  public:
+    using SharedPtr = std::shared_ptr<CallbackGroup>;
+
+    explicit CallbackGroup(CallbackGroupType type) : type_(type)
+    {
+    }
+
+    CallbackGroupType type() const
+    {
+        return this->type_;
+    }
+
+  private:
+    CallbackGroupType type_;
+};
+
 struct SubscriptionOptions
 {
-    QosOverridingOptions qos_overriding_options{};
+    QosOverridingOptions     qos_overriding_options{};
+    CallbackGroup::SharedPtr callback_group{};
 };
 
 // ---------------------------------------------------------------------------------------
@@ -475,6 +510,8 @@ class Publisher
   public:
     using SharedPtr = std::shared_ptr<Publisher>;
     using ConstSharedPtr = std::shared_ptr<const Publisher>;
+    /// rclcpp's name of the message type; a hypha message is its own ROS type.
+    using ROSMessageType = M;
 
     explicit Publisher(hypha::Publisher<M> publisher) : publisher_(std::move(publisher))
     {
@@ -544,6 +581,257 @@ class Subscription
 
   private:
     hypha::Subscriber<M> subscriber_;
+};
+
+// ---------------------------------------------------------------------------------------
+// Services
+//
+// hypha has no RPC (docs/cpp-api.md §8): a service `<name>` is two topics of
+// hypha_rclcpp_msgs/ServiceCall, `<name>/request` and `<name>/response`. A request carries
+// its client's identity and a sequence number, and a client takes only the responses that
+// carry both. The server answers each request in its callback, on the spin thread.
+
+namespace detail {
+
+/// The topic prefix of service @p name of the node @p rosNodeName: an absolute name as it
+/// is, `~/x` as `/<node>/x`, and a relative `x` as the parameter `services.x` when the
+/// file sets it, else `/x` (a root namespace name, as ROS resolves it).
+std::string serviceName(const std::string& rosNodeName, const std::string& name);
+
+/// A client identity no other client of the domain has: the hypha node, the process and a
+/// count of the clients of the process.
+std::string clientIdentity(const std::string& hyphaNodeName);
+
+}  // namespace detail
+
+template <class S>
+class Service
+{
+  public:
+    using SharedPtr = std::shared_ptr<Service>;
+    using Request = typename S::Request;
+    using Response = typename S::Response;
+    using Handler = std::function<void(std::shared_ptr<Request>, std::shared_ptr<Response>)>;
+
+    Service(hypha::Node& node, std::string name, Handler handler)
+        : name_(std::move(name))
+        , handler_(std::move(handler))
+        , responses_(node.advertise<hypha_rclcpp_msgs::ServiceCall>(
+              hypha::Topic{this->name_ + "/response"}
+          ))
+        , requests_(node.subscribe<hypha_rclcpp_msgs::ServiceCall>(
+              hypha::Topic{this->name_ + "/request"},
+              [this](const hypha_rclcpp_msgs::ServiceCall::ConstPtr& call) {
+                  this->serve(*call);
+              }
+          ))
+    {
+    }
+
+    Service(const Service&) = delete;
+    Service& operator=(const Service&) = delete;
+
+    const char* get_service_name() const
+    {
+        return this->name_.c_str();
+    }
+
+  private:
+    /// Answers @p call. A request that does not decode is answered unhandled, so its
+    /// client fails at once instead of waiting.
+    void serve(const hypha_rclcpp_msgs::ServiceCall& call)
+    {
+        hypha_rclcpp_msgs::ServiceCall answer;
+        answer.caller = call.caller;
+        answer.id = call.id;
+        auto request = std::make_shared<Request>();
+        if (hypha::codec::decode(call.payload, *request)) {
+            auto response = std::make_shared<Response>();
+            this->handler_(request, response);
+            answer.handled = true;
+            answer.payload = hypha::codec::encode(*response);
+        } else {
+            HYPHA_LOG_ERROR(
+                "[rclcpp] service '{}': a request from '{}' does not decode as {}",
+                this->name_,
+                call.caller,
+                Request::TYPE_NAME
+            );
+            answer.handled = false;
+        }
+        if (!this->responses_.publish(answer)) {
+            detail::reportPublishFailure(
+                this->responses_.topic(), this->responses_.lastPublishStatus()
+            );
+        }
+    }
+
+    std::string                                       name_;
+    Handler                                           handler_;
+    hypha::Publisher<hypha_rclcpp_msgs::ServiceCall>  responses_;
+    hypha::Subscriber<hypha_rclcpp_msgs::ServiceCall> requests_;
+};
+
+template <class S>
+class Client
+{
+  public:
+    using SharedPtr = std::shared_ptr<Client>;
+    using Request = typename S::Request;
+    using Response = typename S::Response;
+    using SharedRequest = std::shared_ptr<Request>;
+    using SharedResponse = std::shared_ptr<Response>;
+    using Future = std::future<SharedResponse>;
+    using SharedFuture = std::shared_future<SharedResponse>;
+
+    struct FutureAndRequestId
+    {
+        Future  future;
+        int64_t request_id;
+
+        SharedResponse get()
+        {
+            return this->future.get();
+        }
+    };
+
+    Client(hypha::Node& node, std::string name, std::string identity)
+        : name_(std::move(name))
+        , identity_(std::move(identity))
+        , requests_(
+              node.advertise<hypha_rclcpp_msgs::ServiceCall>(hypha::Topic{this->name_ + "/request"})
+          )
+        , responses_(node.subscribe<hypha_rclcpp_msgs::ServiceCall>(
+              hypha::Topic{this->name_ + "/response"},
+              [this](const hypha_rclcpp_msgs::ServiceCall::ConstPtr& call) {
+                  this->receive(*call);
+              }
+          ))
+    {
+    }
+
+    Client(const Client&) = delete;
+    Client& operator=(const Client&) = delete;
+
+    /// True when a server reads the request topic. A count the transport cannot give is
+    /// not ready.
+    bool service_is_ready() const
+    {
+        return this->requests_.subscriberCount().value_or(0) > 0;
+    }
+
+    const char* get_service_name() const
+    {
+        return this->name_.c_str();
+    }
+
+    /// Sends @p request. The future is set when the response arrives on the spin thread;
+    /// it holds an exception when the server could not read the request or the response
+    /// does not decode. @throws std::runtime_error when the request cannot be published.
+    FutureAndRequestId async_send_request(SharedRequest request)
+    {
+        auto [id, future] = this->send(*request, {});
+        return FutureAndRequestId{std::move(future), static_cast<int64_t>(id)};
+    }
+
+    /// As above; @p callback gets the future on the spin thread once it is set.
+    template <class Callback>
+    SharedFuture async_send_request(SharedRequest request, Callback&& callback)
+    {
+        auto [id, future] = this->send(
+            *request, std::function<void(SharedFuture)>(std::forward<Callback>(callback))
+        );
+        SharedFuture shared = future.share();
+        this->pending_.at(id).future = shared;
+        return shared;
+    }
+
+    /// Forgets the requests still waiting; their futures are never set.
+    size_t prune_pending_requests()
+    {
+        const size_t count = this->pending_.size();
+        this->pending_.clear();
+        return count;
+    }
+
+    bool remove_pending_request(int64_t requestId)
+    {
+        return this->pending_.erase(static_cast<uint64_t>(requestId)) > 0;
+    }
+
+  private:
+    struct Pending
+    {
+        std::promise<SharedResponse> promise;
+        /// The future a callback request handed out, passed to its callback.
+        SharedFuture                      future;
+        std::function<void(SharedFuture)> callback;
+    };
+
+    std::pair<uint64_t, Future>
+    send(const Request& request, std::function<void(SharedFuture)> callback)
+    {
+        const uint64_t                 id = ++this->nextId_;
+        hypha_rclcpp_msgs::ServiceCall call;
+        call.caller = this->identity_;
+        call.id = id;
+        call.payload = hypha::codec::encode(request);
+        Pending pending;
+        Future  future = pending.promise.get_future();
+        pending.callback = std::move(callback);
+        if (!this->requests_.publish(call)) {
+            throw std::runtime_error(
+                "rclcpp: service '" + this->name_ + "': the request could not be published: "
+                + std::string(this->requests_.lastPublishStatus().name())
+            );
+        }
+        this->pending_.emplace(id, std::move(pending));
+        return {id, std::move(future)};
+    }
+
+    void receive(const hypha_rclcpp_msgs::ServiceCall& call)
+    {
+        if (call.caller != this->identity_) {
+            return;
+        }
+        const auto found = this->pending_.find(call.id);
+        if (found == this->pending_.end()) {
+            return;
+        }
+        Pending pending = std::move(found->second);
+        this->pending_.erase(found);
+        auto response = std::make_shared<Response>();
+        if (!call.handled) {
+            pending.promise.set_exception(
+                std::make_exception_ptr(
+                    std::runtime_error(
+                        "rclcpp: service '" + this->name_ + "' could not read the request"
+                    )
+                )
+            );
+        } else if (!hypha::codec::decode(call.payload, *response)) {
+            pending.promise.set_exception(
+                std::make_exception_ptr(
+                    std::runtime_error(
+                        "rclcpp: service '" + this->name_ + "': the response does not decode as "
+                        + std::string(Response::TYPE_NAME)
+                    )
+                )
+            );
+        } else {
+            pending.promise.set_value(std::move(response));
+        }
+        if (pending.callback) {
+            pending.callback(pending.future);
+        }
+    }
+
+    std::string                                       name_;
+    std::string                                       identity_;
+    hypha::Publisher<hypha_rclcpp_msgs::ServiceCall>  requests_;
+    hypha::Subscriber<hypha_rclcpp_msgs::ServiceCall> responses_;
+    uint64_t                                          nextId_{0};
+    std::map<uint64_t, Pending>                       pending_;
 };
 
 class Node : public std::enable_shared_from_this<Node>
@@ -720,6 +1008,47 @@ class Node : public std::enable_shared_from_this<Node>
         return std::make_shared<Subscription<M>>(
             this->hyphaNode_->subscribe<M>(detail::portName(name), std::move(adapted))
         );
+    }
+
+    /// A server of service @p name (detail::serviceName). The callback takes the request
+    /// (`std::shared_ptr<const Request>` or `std::shared_ptr<Request>`) and the response
+    /// to fill; it runs on the spin thread. QoS and group change nothing.
+    template <class S, class Callback>
+    typename Service<S>::SharedPtr create_service(
+        const std::string& name,
+        Callback&&         callback,
+        const QoS&         qos = ServicesQoS(),
+        const CallbackGroup::SharedPtr& /*group*/ = nullptr
+    )
+    {
+        (void)detail::checkedDepth<hypha_rclcpp_msgs::ServiceCall>(name, qos);
+        return std::make_shared<Service<S>>(
+            *this->hyphaNode_,
+            detail::serviceName(this->name_, name),
+            typename Service<S>::Handler(std::forward<Callback>(callback))
+        );
+    }
+
+    /// A client of service @p name (detail::serviceName). QoS and group change nothing.
+    template <class S>
+    typename Client<S>::SharedPtr create_client(
+        const std::string& name,
+        const QoS&         qos = ServicesQoS(),
+        const CallbackGroup::SharedPtr& /*group*/ = nullptr
+    )
+    {
+        (void)detail::checkedDepth<hypha_rclcpp_msgs::ServiceCall>(name, qos);
+        return std::make_shared<Client<S>>(
+            *this->hyphaNode_,
+            detail::serviceName(this->name_, name),
+            detail::clientIdentity(detail::hyphaNodeName(this->name_))
+        );
+    }
+
+    /// A group of callbacks; see CallbackGroup.
+    CallbackGroup::SharedPtr create_callback_group(CallbackGroupType type)
+    {
+        return std::make_shared<CallbackGroup>(type);
     }
 
     /// Shim only: the hypha node under this one, for the shim's TF and debug helpers.

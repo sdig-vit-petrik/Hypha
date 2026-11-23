@@ -18,6 +18,9 @@ Only the packages the hypha port compiles are copied, at their upstream paths:
   tests (`test_euclidean_cluster.cpp`, `test_voxel_grid_based_euclidean_cluster.cpp`,
   `test_ros_conversions.cpp`), `config/`, `package.xml`, `README.md`.
 - `common/autoware_point_types`: `include/autoware/point_types/types.hpp`.
+- `common/autoware_agnocast_wrapper`: `include/autoware/agnocast_wrapper/macros.hpp` and
+  `package.xml`; the rest of the wrapper, as it builds without Agnocast, is the shim's
+  (`../../shim/include/autoware/agnocast_wrapper/`).
 
 The files are unchanged. The edits the port needs are in `../patches/`, one file per
 package; the build applies them to a copy in the build directory.

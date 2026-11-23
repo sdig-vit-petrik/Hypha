@@ -1,6 +1,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
+#include <unistd.h>
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
@@ -143,6 +145,26 @@ std::string resolveParameterFile(const NodeOptions& options)
 void reportPublishFailure(const std::string& topic, hypha::Status status)
 {
     HYPHA_LOG_ERROR_THROTTLE(1.0, "[rclcpp] publish on '{}' failed: {}", topic, status.name());
+}
+
+std::string serviceName(const std::string& rosNodeName, const std::string& name)
+{
+    if (name.empty()) {
+        throw std::invalid_argument("rclcpp: a service needs a name");
+    }
+    if (name.starts_with('/')) {
+        return name;
+    }
+    if (name.starts_with("~/")) {
+        return "/" + rosNodeName + name.substr(1);
+    }
+    return hypha::config().optional<std::string>("services." + portName(name), "/" + name);
+}
+
+std::string clientIdentity(const std::string& hyphaNodeName)
+{
+    static std::atomic<uint64_t> clients{0};
+    return hyphaNodeName + "/" + std::to_string(::getpid()) + "/" + std::to_string(++clients);
 }
 
 }  // namespace detail

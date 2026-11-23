@@ -49,6 +49,9 @@ follows #46.
 | `get_subscription_count` | `subscriberCount()`; a count the transport cannot give reads as 1 |
 | `now()`, `get_clock()` | framework time, simulated under `HYPHA_USE_SIM_TIME` |
 | `RCLCPP_*`, `RCLCPP_*_STREAM`, `RCLCPP_*_THROTTLE`, `RCLCPP_*_STREAM_THROTTLE` | `HYPHA_LOG_*` with the logger name in front; throttled in host time |
+| `create_service`, `create_client` | two topics of `hypha_rclcpp_msgs/ServiceCall`, `<name>/request` and `<name>/response` (hypha has no RPC, [cpp-api.md](../../docs/cpp-api.md) §8): a request carries its client's identity and a sequence number, the server answers in its callback on the spin thread, and a client takes only its own responses. A name resolves as ROS resolves it in the root namespace: absolute as it is, `~/x` as `/<node>/x`, a relative `x` as the parameter `services.x` when the file sets it, else `/x`. A request that does not decode is answered unhandled, and the client's future holds an exception |
+| `Client::async_send_request` (with or without a callback), `service_is_ready`, `prune_pending_requests` | the future is set on the spin thread when the response arrives; ready means a server reads the request topic. `wait_for_service` and a blocking call are not offered |
+| `create_callback_group`, `CallbackGroup` | kept, without effect: every callback runs on the one spin thread |
 | `rclcpp::spin(node)` | `node.run()` on the calling thread: a single-threaded executor |
 | `rclcpp::spin_some(node)` | `node.runFor()` with the shortest limit: one dispatch turn, the due timers and the queued samples, never a wait; a failed run throws |
 | `rcl_clock_type_t`, `RCL_ROS_TIME` | rcl's enum at global scope; every kind means framework time |
@@ -59,7 +62,13 @@ follows #46.
 | `fmt::format` with a literal format | `std::format` |
 | `PointCloud2_<Allocator>`, `PointField_<Allocator>` | the message itself: hypha messages use the standard allocator |
 | `autoware_vehicle_info_utils` | the ten vehicle parameters, required, and upstream's derived values and checks; the footprint functions (Boost.Geometry) are not offered |
-| `autoware_utils_geometry::calc_distance2d/3d` | the same distances, for any point with `x`, `y`, `z` |
+| `autoware_utils_geometry`: `calc_distance2d/3d`, `get_rpy`, `create_quaternion_from_rpy/yaw`, `create_point`, `pose2transform` | upstream's code on the vendored tf2 types; the distances for any point with `x`, `y`, `z`. `msg/covariance.hpp` is upstream's |
+| `tf2::Quaternion`, `Vector3`, `Matrix3x3`, `tf2::TimePointZero`, the tf2 exceptions | geometry2's headers, vendored (`upstream/geometry2`) |
+| `tf2::getYaw`, `tf2::getEulerYPR`, `tf2::toMsg`/`fromMsg` of a quaternion or vector | tf2's formulas in the shim (`shim/include/tf2/utils.hpp`, `tf2_geometry_msgs/`); upstream's headers need tf2's conversion machinery and KDL |
+| `tf2_ros::Buffer`, `tf2_ros::TransformListener` | `hypha::TransformBuffer` on `/tf` and `/tf_static`; `lookupTransform` at `TimePointZero` is the latest common time, never waits, and throws the tf2 exception of the failure's kind |
+| `tf2_ros::TransformBroadcaster` | a `tf2_msgs/TFMessage` publisher on `/tf` with the `tf` policy |
+| `autoware_agnocast_wrapper` | its build without Agnocast: upstream's `macros.hpp`; `Node`, `Service`, `Client`, `create_timer` and the tf2 types are the shim's |
+| `autoware_utils_logging::LoggerLevelConfigure` | the `~/config_logger` service, which refuses every request: hypha sets log levels from `[log]` in the parameter file only |
 | `managed_transform_buffer::ManagedTransformBuffer` | `hypha::TransformBuffer`; `getTransform` never waits (#91) and ignores its timeout. A static transform holds for all time; one not in the buffer yet is an empty result with a throttled warning, and the concatenate node drops that source and reports it, where upstream waits up to the timeout |
 | `autoware_utils_tf::TransformListener` | `hypha::TransformBuffer`; before spin, a lookup with a timeout runs the process's callbacks in 10 ms slices until the transform arrives or the timeout passes |
 | `autoware_utils_debug::DebugPublisher` | optional ports `<node>.debug.<name>`: wired in the TOML file or disabled |
@@ -112,7 +121,7 @@ CMake file defines them with glibc's values, so the patches stay the same on bot
 | `autoware_concatenation_diagnostics_upstream_test` | the upstream unit test (11 cases): the diagnostic status of a concatenation: all topics, a missing topic or transform, an empty cloud, a late cloud, the advanced reference window |
 | `autoware_concatenate_node_unit_upstream_test` | the upstream node unit test (9 cases): the twist and odometry queues, motion compensation, the collector's info, the concatenation with non-finite points, a cloud that times out, three clouds at once; a node per case, its parameters from a TOML file |
 | `autoware_concatenate_and_time_sync_node_test` | the upstream node on the bus: two lidars' mounts from `/tf_static`, the vehicle's twist on the deeper `twist` policy, two clouds into one in `base_link` with the newer cloud motion-compensated 0.5 m ahead, the info and the synchronized clouds, an OK diagnostic; and a missing lidar after `timeout_sec`, through the collector's timer created in a callback (#90): its source `TIMEOUT` and an ERROR diagnostic |
-| `autoware_rclcpp_shim_test` | the shim's names, time conversion, QoS check and timers |
+| `autoware_rclcpp_shim_test` | the shim's names, time conversion, QoS check, timers and services: a call through a callback, two clients that each take only their own response, a request that does not decode, the service names |
 
 Upstream integration tests spin several nodes on an executor thread, with tf2_ros
 broadcasters and parameter overrides, which the shim does not offer; they are not built.

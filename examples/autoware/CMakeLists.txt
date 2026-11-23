@@ -41,6 +41,20 @@ hypha_generate_messages(PACKAGE autoware_sensing_msgs
   MSG_DIR "${AUTOWARE_UPSTREAM_DIR}/autoware_msgs/autoware_sensing_msgs/msg"
   OUT_DIR "${AUTOWARE_MSG_OUT}"
   DEPENDS std_msgs)
+# The shim's service envelope, and the services the ported nodes offer.
+hypha_generate_messages(PACKAGE hypha_rclcpp_msgs
+  MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/hypha_rclcpp_msgs/msg"
+  OUT_DIR "${AUTOWARE_MSG_OUT}")
+# In examples/, the MRS port generates std_srvs first, from the same SetBool definition;
+# one target serves both.
+if(NOT TARGET std_srvs)
+  hypha_generate_messages(PACKAGE std_srvs
+    SRV_DIR "${AUTOWARE_UPSTREAM_DIR}/common_interfaces/std_srvs/srv"
+    OUT_DIR "${AUTOWARE_MSG_OUT}")
+endif()
+hypha_generate_messages(PACKAGE logging_demo
+  SRV_DIR "${AUTOWARE_UPSTREAM_DIR}/demos/logging_demo/srv"
+  OUT_DIR "${AUTOWARE_MSG_OUT}")
 
 # autoware_patched(<package> <upstream dir> <out var>): a copy of the upstream package in
 # the build directory with upstream/patches/<package>.patch applied. The vendored files
@@ -71,9 +85,13 @@ target_include_directories(hypha_rclcpp PUBLIC
   "${AUTOWARE_MSG_OUT}/hypha_msgs"
   "${AUTOWARE_UPSTREAM_DIR}/common_interfaces/sensor_msgs/include"
   "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_system/include"
-  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_diagnostics/include")
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_diagnostics/include"
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_geometry/include"
+  "${AUTOWARE_UPSTREAM_DIR}/autoware_core/common/autoware_agnocast_wrapper/include"
+  "${AUTOWARE_UPSTREAM_DIR}/geometry2/tf2/include")
 target_link_libraries(hypha_rclcpp PUBLIC
-  hypha::sdk autoware_internal_debug_msgs autoware_internal_msgs Eigen3::Eigen)
+  hypha::sdk autoware_internal_debug_msgs autoware_internal_msgs hypha_rclcpp_msgs std_srvs
+  logging_demo Eigen3::Eigen)
 target_compile_features(hypha_rclcpp PUBLIC cxx_std_23)
 
 add_library(hypha_rclcpp_component_main OBJECT shim/src/component_main.cpp)

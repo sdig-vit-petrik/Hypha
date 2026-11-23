@@ -12,6 +12,13 @@
     namespace msg = ::package;                                                                     \
     }
 
+/// Declares `<package>::srv` as a name of `<package>`: `std_srvs::srv::SetBool` is the
+/// generated `std_srvs::SetBool`, with its `Request` and `Response`.
+#define HYPHA_RCLCPP_SRV_NAMESPACE(package)                                                        \
+    namespace package {                                                                            \
+    namespace srv = ::package;                                                                     \
+    }
+
 /// Declares `<package>::<Name>_<Allocator>`, the allocator template ROS generated C++ puts
 /// under every message, as `<package>::<Name>`: hypha messages use the standard allocator.
 #define HYPHA_RCLCPP_MSG_ALLOCATOR_TEMPLATE(package, Name)                                         \
