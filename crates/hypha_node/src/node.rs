@@ -326,6 +326,13 @@ pub fn node_create(
     if use_sim_time {
         crate::replay_restart::rejoin(&node)?;
     }
+    // A node that follows /clock can take part in the replay with its cycles or its plain
+    // callbacks: it is visible on /clock_progress before any topic of its own, so a
+    // downstream node knows it as an upstream from its first output.
+    let follows_clock = use_sim_time && !hypha_core::port::is_cli_node_name(&node.name);
+    if follows_clock {
+        crate::node_progress::ensure_publisher(&node).map_err(Error::from_status)?;
+    }
     hypha_sys::signal::install();
     Ok(Arc::new(node))
 }

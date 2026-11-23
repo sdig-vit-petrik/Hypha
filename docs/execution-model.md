@@ -898,7 +898,8 @@ replays identically on any host, at any `--rate` and `--chunk`:
   a cycle: `runNode` restarts the process (section 11.1).
 - **Who takes part.** A `WaitSet` with at least one plain subscription or plain timer,
   of a node that follows `/clock`, is not a CLI tool (`_hyphacli_<tool>`) and drives no
-  clock. A process put on simulated time from code (`enableSimTime`) has no player to
+  clock. Such a node opens its `/clock_progress` publisher when it is created, so a
+  downstream node knows it as an upstream before its first output (#106). A process put on simulated time from code (`enableSimTime`) has no player to
   pace it, and its callbacks run as samples arrive, as before.
 - **Limits.** Cycles and plain callbacks of one `WaitSet` each keep their own time
   order, not one between them: state a cycle step shares with a callback of the same

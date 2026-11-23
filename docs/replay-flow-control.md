@@ -233,6 +233,12 @@ but not reported, the start barrier keeps waiting, so a recorder that announces 
 first report is not missed. The wait ends at `--settle` after the start, so a silent publisher delays
 the start by that long and never fails the run.
 
+A node that follows `/clock` (`HYPHA_USE_SIM_TIME`) opens its `/clock_progress` publisher when it is
+created, after a restarted process has rejoined, unless it is a CLI tool (#106). It is therefore an
+upstream of its downstream nodes before any topic of its own exists. A node on simulated time that
+never takes part, such as a bridge, is such a silent publisher: it delays the start by `--settle` at
+most.
+
 A node that joins after the start, for example after a restart, becomes a participant at its first
 progress message. The player then waits for it from the next chunk on.
 
