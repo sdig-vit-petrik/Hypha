@@ -88,13 +88,18 @@ pub(crate) fn lend_frame_or_gap(
 }
 
 /// Advance `counter` and return the number of the frame that takes it.
+///
+/// A compare-exchange loop, not `fetch_update`: newer Rust deprecates that name, and its
+/// successor `try_update` is newer than the minimum supported Rust.
 pub(crate) fn take_sequence(counter: &AtomicU64) -> u64 {
-    let previous = counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            Some(hypha_wire::integrity::next_sequence(current))
-        })
-        .unwrap_or_default();
-    hypha_wire::integrity::next_sequence(previous)
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = hypha_wire::integrity::next_sequence(current);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 impl HyphaLoan {
