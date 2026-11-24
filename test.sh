@@ -16,8 +16,11 @@ fi
 suite="${1:-all}"
 
 ./build.sh --tests "${clean[@]}"
-# Once is enough: every test process runs in a bus domain of its own.
-./clean-shm.sh --force
+# Every test process runs in a bus domain of its own under the test root t_, so the
+# domains of the runs that ended are all there is to clear: a system running on this
+# host, and the tests of another run, keep theirs.
+./scripts/test-clean-shm.sh
+./clean-shm.sh --domain t_
 
 if [[ "$suite" == all || "$suite" == rust ]]; then
   cargo clippy --locked --workspace --all-targets -- -D warnings

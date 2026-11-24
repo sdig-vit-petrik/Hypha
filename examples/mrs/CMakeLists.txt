@@ -55,13 +55,14 @@ foreach(def ${MRS_MSG_DEFS})
 endforeach()
 file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/test_include/all_mrs_msgs.h" CONTENT "${MRS_ALL_MSGS}")
 
-# mrs_check(<name> SOURCES <file>... [LIBS <target>...]): one check executable, one CTest test.
+# mrs_check(<name> SOURCES <file>... [LIBS <target>...]): one check executable, one CTest
+# test in a bus domain of its own.
 function(mrs_check name)
   cmake_parse_arguments(ARG "" "" "SOURCES;LIBS" ${ARGN})
   add_executable(mrs_${name} ${ARG_SOURCES})
   target_include_directories(mrs_${name} PRIVATE test "${CMAKE_CURRENT_BINARY_DIR}/test_include")
   target_link_libraries(mrs_${name} PRIVATE mrs_includes ${ARG_LIBS})
-  add_test(NAME mrs_${name} COMMAND mrs_${name})
+  hypha_add_test(mrs_${name})
 endfunction()
 
 mrs_check(messages_compile SOURCES test/messages_compile.cpp)

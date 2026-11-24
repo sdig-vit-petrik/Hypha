@@ -69,7 +69,7 @@ if(SCAN_CYCLE_TESTS AND TARGET GTest::gtest_main)
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_definitions(${target} PRIVATE
       SCAN_CYCLE_TEST_CONFIG="${SCAN_CYCLE_TEST_CONFIG}")
-    add_test(NAME ${target} COMMAND ${target})
+    hypha_add_test(${target})
   endforeach()
   set_tests_properties(scan_cycle_bus_test PROPERTIES LABELS "needs-iceoryx2" TIMEOUT 120)
 endif()

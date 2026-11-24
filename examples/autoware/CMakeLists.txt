@@ -131,22 +131,17 @@ endfunction()
 
 # autoware_test(<name> SOURCES <file>... [INCLUDES <dir>...] [LIBS <lib>...]
 #               [ENV <VAR=value>...]): one GoogleTest program.
-# Each test runs in a bus domain of its own, autoware_<n>, so tests that ctest runs in
-# parallel share neither node names nor topics. A domain name has at most 32
-# characters, so it is numbered, not named after the test.
+# Each test runs in a bus domain of its own (hypha_add_test), so tests that ctest runs in
+# parallel share neither node names nor topics.
 function(autoware_test name)
   cmake_parse_arguments(ARG "" "" "SOURCES;INCLUDES;LIBS;ENV" ${ARGN})
   add_executable(${name} ${ARG_SOURCES})
   target_include_directories(${name} PRIVATE ${ARG_INCLUDES})
   target_link_libraries(${name} PRIVATE hypha_rclcpp GTest::gtest ${ARG_LIBS})
-  add_test(NAME ${name} COMMAND ${name} WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  get_property(count GLOBAL PROPERTY AUTOWARE_TEST_COUNT)
-  if(NOT count)
-    set(count 0)
+  hypha_add_test(${name} WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  if(ARG_ENV)
+    set_tests_properties(${name} PROPERTIES ENVIRONMENT "${ARG_ENV}")
   endif()
-  math(EXPR count "${count} + 1")
-  set_property(GLOBAL PROPERTY AUTOWARE_TEST_COUNT ${count})
-  set_tests_properties(${name} PROPERTIES ENVIRONMENT "HYPHA_DOMAIN=autoware_${count};${ARG_ENV}")
 endfunction()
 
 # --- Slice A: autoware_crop_box_filter (autoware_core 1.10.0) --------------------------

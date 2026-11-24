@@ -89,8 +89,9 @@ bool advanceTo(
 
 TEST(ScanCycleBus, TheCommandFollowsTheSpeedThroughSilenceAndRecovery)
 {
-    // A domain of its own: the test never meets a system that runs on this host.
-    const std::string domain = "scan_cycle_test_" + std::to_string(::getpid());
+    // A domain of its own under the test root: the test never meets a system that runs
+    // on this host, and `clean-shm.sh --domain t_` removes it once the test ended.
+    const std::string domain = "t_" + std::to_string(::getpid()) + "_scan";
     ASSERT_EQ(::setenv("HYPHA_DOMAIN", domain.c_str(), 1), 0);
     ASSERT_TRUE(hypha::enableSimTime(Time::fromNanos(kStart)));
     std::vector<Received> received;
