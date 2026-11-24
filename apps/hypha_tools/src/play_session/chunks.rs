@@ -6,7 +6,7 @@ use std::time::Instant;
 
 impl Session<'_> {
     /// Closes one chunk: waits for the schedule to reach its end, then sends `/clock` for
-    /// it and waits for the participants.
+    /// it and, in the lockstep, waits for the participants.
     pub(super) fn close_chunk(&mut self, boundary: u64) -> Result<Flow, String> {
         // Without `/clock` there is no barrier, and a chunk closes as soon as its data is out.
         if self.clock.is_some() {
@@ -93,9 +93,10 @@ impl Session<'_> {
 
     /// Closes the chunk before `item` when its topic already fills the smallest subscriber
     /// queue, so that no subscriber loses samples within one chunk. The chunk closes at the
-    /// item's time, as a grid boundary does. Without `/clock` nothing is split.
+    /// item's time, as a grid boundary does. Without `/clock`, or without the lockstep
+    /// that would wait for it, nothing is split.
     fn split_full_chunk(&mut self, item: &PlaybackItem<'_>) -> Result<Flow, String> {
-        if self.clock.is_none() {
+        if !self.in_lockstep() {
             return Ok(Flow::Go);
         }
         let sent = self.in_chunk.get(item.topic).copied().unwrap_or(0);
