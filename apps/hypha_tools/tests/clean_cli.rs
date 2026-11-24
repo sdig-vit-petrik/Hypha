@@ -32,7 +32,7 @@ fn run(arguments: &[&str], domain: Option<&str>) -> (Option<i32>, String, String
 }
 
 #[test]
-fn it_says_what_it_removed_and_exits_0_then_2_when_nothing_is_left() {
+fn it_says_what_it_removed_and_exits_0_also_when_nothing_is_left() {
     let prefix = format!("t_{}_kr_", std::process::id());
     let dead = format!("{prefix}1_x");
     let file = touch(&dead);
@@ -46,7 +46,7 @@ fn it_says_what_it_removed_and_exits_0_then_2_when_nothing_is_left() {
     assert!(!file.exists());
 
     let (code, stdout, _) = run(&["--domain", &prefix], None);
-    assert_eq!(code, Some(2), "stdout: {stdout}");
+    assert_eq!(code, Some(0), "stdout: {stdout}");
     assert!(
         stdout.contains(&format!("nothing to remove of the domains under '{prefix}'")),
         "{stdout}"
@@ -54,7 +54,7 @@ fn it_says_what_it_removed_and_exits_0_then_2_when_nothing_is_left() {
 }
 
 #[test]
-fn it_says_why_it_kept_a_domain_and_exits_3() {
+fn it_says_why_it_kept_a_domain_and_exits_2() {
     let pid = std::process::id();
     let prefix = format!("t_{pid}_kk_");
     let running = format!("{prefix}{pid}_x");
@@ -62,7 +62,7 @@ fn it_says_why_it_kept_a_domain_and_exits_3() {
 
     let (code, stdout, stderr) = run(&["--domain", &prefix], None);
     let _ = std::fs::remove_file(&file);
-    assert_eq!(code, Some(3), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
     assert!(
         stdout
             .contains(&format!("hypha clean: kept domain {running}: its run, pid {pid}, is alive")),

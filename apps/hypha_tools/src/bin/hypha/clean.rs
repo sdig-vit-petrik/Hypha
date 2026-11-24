@@ -12,7 +12,7 @@ use std::process::ExitCode;
     after_help = "Without --domain it cleans the domain of HYPHA_DOMAIN, the domain \"none\" when \
                   unset.\n\nA domain is kept while one of its nodes lives, or, under --domain, while \
                   the process whose id follows the prefix lives (a test domain is t_<pid>_...).\n\n\
-                  Exit codes: 0 removed, 1 failed, 2 nothing to remove, 3 kept a domain in use."
+                  Exit codes: 0 nothing is left that could be removed, 1 failed, 2 kept a domain in use."
 )]
 struct Cli {
     /// Clean every domain whose name starts with this prefix.
@@ -23,10 +23,9 @@ struct Cli {
 /// The exit code of each outcome.
 fn exit_code(outcome: CleanOutcome) -> ExitCode {
     match outcome {
-        CleanOutcome::Removed => ExitCode::SUCCESS,
+        CleanOutcome::Removed | CleanOutcome::NothingToDo => ExitCode::SUCCESS,
         CleanOutcome::Failed => ExitCode::FAILURE,
-        CleanOutcome::NothingToDo => ExitCode::from(2),
-        CleanOutcome::Kept => ExitCode::from(3),
+        CleanOutcome::Kept => ExitCode::from(2),
     }
 }
 

@@ -651,10 +651,12 @@ hypha clean: kept domain t_5120_1: node sensor_driver of pid 5133 is alive
 hypha clean: of the domains under 't_', removed 1, kept 1, failed 0
 ```
 
-Exit codes: 0 removed every domain it covered, 1 failed (a command line it refuses, a
-resource it could not read or remove), 2 nothing to remove, 3 kept a domain in use
-(and may have removed others). A script that only needs to know about failures runs
-`hypha clean --domain t_ || [ "$?" -ne 1 ]`, as `test.sh` and `examples/check.sh` do.
+Exit codes: 0 when nothing is left that could be removed (it removed every domain it
+covered, or there was nothing to remove), 2 when it kept a domain in use (it may have
+removed others), 1 on a failure (a command line it refuses, a resource it could not
+read or remove). The printed lines tell a removal from nothing to remove. A caller
+decides what a kept domain means for it: `test.sh` and `examples/check.sh` accept 2,
+since a kept test domain belongs to another run that still lives, and fail on 1.
 `hypha clean` without `--domain` never touches another domain, even one whose name
 starts with this one.
 

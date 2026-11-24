@@ -63,12 +63,17 @@ cmake --build "$BUILD_DIR" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _
 
 # Every test runs in a bus domain of its own under the test root t_ (hypha_add_test); the
 # domains of the runs that ended go, a system running on this host keeps its own. The
-# SDK's hypha clears them (on PATH without --prefix); exit 1 is a failure, 2 and 3 not.
+# SDK's hypha clears them (on PATH without --prefix).
 HYPHA_TOOL="hypha"
 if [[ -n "$PREFIX" ]]; then
   HYPHA_TOOL="$PREFIX/bin/hypha"
 fi
-"$HYPHA_TOOL" clean --domain t_ || [ "$?" -ne 1 ]
+clean_status=0
+"$HYPHA_TOOL" clean --domain t_ || clean_status=$?
+case "$clean_status" in
+  0 | 2) ;; # 2: it kept the test domain of another run that still lives
+  *) exit "$clean_status" ;;
+esac
 
 echo -e "\n-> The MRS flights: unit checks, then every scenario"
 # Each flight in a test domain of its own, t_<pid of this gate>_<n>.
