@@ -80,7 +80,7 @@ fn a_queued_input_without_a_new_sample_within_its_limit_is_usable() {
     assert_eq!(capture.samples.len(), 1);
     capture.capture_on(&history, queued, host(60));
     assert_eq!(capture.verdict, InputVerdict::Usable);
-    assert!(capture.samples.is_empty());
+    assert!(capture.samples.is_empty(), "{:?}", capture.samples);
     assert!(!capture.stale());
     capture.capture_on(&history, queued, host(10 + LIMIT + 1));
     assert_eq!(capture.verdict, InputVerdict::Stale);
@@ -118,7 +118,7 @@ fn a_latest_input_reports_usable_only_with_a_held_sample() {
     // The history keeps one sample: a newer one, stamped after the next cuts, evicts it.
     history.push(&[2], 500, 500);
     capture.capture_on(&history, latest, replay(40));
-    assert!(capture.samples.is_empty());
+    assert!(capture.samples.is_empty(), "{:?}", capture.samples);
     assert_eq!(capture.verdict, InputVerdict::Usable, "the held sample is 30 ns old");
     assert_eq!(capture.age_nanos, 30);
     assert!(capture.held().is_some());

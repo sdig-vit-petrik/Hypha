@@ -98,15 +98,19 @@ RUN set -eux; \
     rm -f "${file}" "${file}.sha384"; \
     chisel version
 
-# The C++ libraries: GoogleTest builds the C++ tests, Eigen the MRS example that test.sh
-# flies; PCL, GeographicLib, pugixml, yaml-cpp and Boost's filesystem and serialization
-# build the Autoware port (examples/autoware).
+# The C++ libraries: GoogleTest builds the C++ tests (GoogleMock the map projection
+# loader's, a separate package on Debian), Eigen the MRS example that test.sh
+# flies; PCL, GeographicLib, pugixml, yaml-cpp, OpenCV (shape estimation; only
+# libopencv-dev ships its CMake config) and Boost's filesystem and serialization build the
+# Autoware port (examples/autoware).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libboost-filesystem-dev \
         libboost-serialization-dev \
         libeigen3-dev \
         libgeographiclib-dev \
+        libgmock-dev \
         libgtest-dev \
+        libopencv-dev \
         libpcl-dev \
         libpugixml-dev \
         libyaml-cpp-dev \

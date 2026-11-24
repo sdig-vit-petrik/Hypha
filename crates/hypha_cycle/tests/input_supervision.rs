@@ -263,7 +263,7 @@ fn a_queued_port_is_stale_by_its_newest_sample() {
     tick(&mut runtime, 250, 250).expect("iteration");
     let capture = runtime.binding_capture(0).expect("capture");
     assert_eq!(capture.verdict, InputVerdict::Usable);
-    assert!(capture.samples.is_empty());
+    assert!(capture.samples.is_empty(), "{:?}", capture.samples);
     assert_eq!(faults(&runtime, 0), 0);
     tick(&mut runtime, 251, 251).expect("iteration");
     assert_eq!(faults(&runtime, 0), FAULT_STALE);

@@ -147,7 +147,7 @@ impl Refused {
     unsafe fn record_a_reason(&self) {
         // SAFETY: live by the caller; its `WaitSet` does not run.
         assert_eq!(unsafe { hypha_cycle_commit(self.unscheduled) }, HyphaStatus::InvalidArgument);
-        assert!(!last_error().is_empty());
+        assert!(!last_error().is_empty(), "the refusal leaves no error message");
     }
 
     /// Each call returns `InvalidState` and changes nothing.
