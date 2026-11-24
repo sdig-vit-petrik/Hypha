@@ -33,10 +33,15 @@ are built at run time uses `hypha::Cycle` ([cpp-api.md](cpp-api.md) §5.5).
 ## 1. When to use this guide
 
 Use it for one ROS 1 C++ node that subscribes, computes and publishes, with or
-without timers, parameters and services. The procedure ends in a `CycleNode`. An
-event-driven node that handles each message as it arrives is ported to a plain
-`hypha::Node` instead: see
-[section 10](#10-porting-an-event-driven-node-to-a-plain-hyphanode).
+without timers, parameters and services. The procedure ends in a `CycleNode`:
+
+- A node whose work runs from a timer becomes a **rate cycle** (`rate_hz`).
+- A node whose work runs on each sample of one input becomes a **triggered cycle**:
+  `setTrigger(port)` on that input's `Arrivals` port, one step per sample at the
+  sample's time ([Step 2](#step-2-design-the-cycle)).
+- A plain `hypha::Node` is only for a node whose callbacks publish on more than one
+  input, a node that owns worker threads, and a shim of a ROS client library: see
+  [section 10](#10-porting-an-event-driven-node-to-a-plain-hyphanode).
 
 Do not use it, and ask the user first, when the node needs one of the items in
 [section 7](#7-stop-and-ask). hypha has no equivalent for them.
@@ -152,13 +157,15 @@ If the table has an item of section 7, stop and ask.
 
 ### Step 2: Design the cycle
 
-Map the inventory to one cycle for each timer rate. A node with one timer has
-one cycle. One process has one `CycleNode`; a second rate is a composed
-`hypha::Cycle` with its own name.
+Map the inventory to one cycle for each timer rate or for its one event input. A node
+with one timer has one rate cycle. A node with no timer, whose work runs in the callback
+of one subscription, has one triggered cycle on that input. One process has one
+`CycleNode`; a second rate is a composed `hypha::Cycle` with its own name.
 
 | ROS 1 | hypha cycle |
 |---|---|
 | Timer callback that computes and publishes | The `step()` method of the cycle node, at `rate_hz` under `[cycle]` in the TOML file. |
+| The one subscription whose callback computes and publishes, in a node with no timer | A `hypha::Arrivals<T>` member made the trigger with `setTrigger(port)` in `setup()`, and no `rate_hz`. `step()` runs once for each sample, which `samples()` holds alone; it calls the original callback with it. |
 | Subscription whose callback only stores the latest value | A `hypha::Latest<T>` member. |
 | Subscription whose callback does work for each message (counts, integrates, buffers, filters) | A `hypha::Arrivals<T>` member. The step calls the original callback once for each sample, in order. |
 | Publisher | A `hypha::Output<T>` member. Call `send(message)`. |
@@ -177,12 +184,26 @@ That is correct for a callback that only stores a value. A callback with an
 effect for each message (a counter, an integrator, a queue) must use an
 `Arrivals` port, or it runs too often.
 
-A node with no timer, whose whole work is in one subscription callback, also
-becomes a cycle node: use an `Arrivals` port and choose `rate_hz` above the input
-rate. Use a plain callback subscriber ([cpp-api.md](cpp-api.md) §5.2) only
-when a latency below one cycle period is a requirement. Write that reason in
-the change description. A node of that kind is ported to a plain `hypha::Node`
-as [section 10](#10-porting-an-event-driven-node-to-a-plain-hyphanode) shows.
+**A triggered cycle** ([execution-model.md](execution-model.md) §6.6,
+[cpp-api.md](cpp-api.md) §5.4, "Triggered cycles"). The reference is
+[examples/mrs/managers/estimation_manager.cpp](../examples/mrs/managers/estimation_manager.cpp):
+
+- The trigger port, `hypha::Arrivals<nav_msgs::Odometry> ground_truth`, is made the
+  trigger in `setup()` with `this->setTrigger(this->ground_truth)`. Its table in
+  `examples/mrs/config/estimation_manager.toml` has a `silence_ms` (100), and no
+  `[cycle]` table sets `rate_hz`: a rate and a trigger exclude each other.
+- The trigger needs a `silence_ms`, also when the port is `unsupervised`; `start()`
+  fails without one. Carry the old timeout of the input when the node had one, else
+  the longest gap the input may have.
+- When no trigger sample came for `silence_ms`, one **fallback step** runs with
+  `samples().empty()` and the port `stale()`, and repeats every `silence_ms`. Handle it
+  in `step()`: `estimation_manager` publishes no estimate and logs the input as stale.
+- A step at the trigger's send time T sees every other input cut before T on simulated
+  time, and its outputs carry T. The other subscriptions become `Latest` or `Arrivals`
+  ports as in the table above, and a TF listener a `hypha::Transforms` port.
+
+A node with two inputs whose callbacks each publish is not one triggered cycle: it
+stays a plain node (section 10).
 
 **Check:** each subscription has one input port, and each publication has one
 output port.
@@ -550,7 +571,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(condition, false, ...)`: writes when the condition becomes true |
 | `tf2_ros::TransformBroadcaster` | Output on `/tf` of type `tf2_msgs::TFMessage` |
 | `tf2_ros::StaticTransformBroadcaster` | An `Output<tf2_msgs::TFMessage>` declared with `latched` and `topic = "/tf_static"` in its ports table |
-| `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment; `follow` for `ros2 bag play`'s behaviour, outside the replay lockstep |
+| `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment; `follow` for `ros2 bag play`'s behaviour, outside the replay lockstep, for one node; `HYPHA_REPLAY_LOCKSTEP=0` for the player and every node of a launch |
 | rosbag record / play | `hypha record` / `hypha play` (`apps/`) |
 | roslaunch | `hypha launch` |
 | roscore | None. Nodes find each other through shared memory |
@@ -673,7 +694,8 @@ hypha has no equivalent for these. Stop and ask the user before you continue:
   request topic and a reply topic, and the caller a state over steps.
 - Missing or stale input with no rule in the ROS node. Ask which output is
   safe.
-- A per-message latency requirement below one cycle period.
+- A per-message latency requirement that a triggered step does not meet on the
+  target. Measure it first.
 - A logic change that you think is necessary. Report it, do not make it.
 
 Every item in this list is also a gap report: see section 8.
@@ -766,17 +788,30 @@ Step 3 (TOML) and Step 4 (build) apply unchanged. The rules of
 
 ### 10.1 Which target
 
-Use a plain `hypha::Node` when the node handles each message in its callback, has
-one timer or a few, keeps its own worker threads, or needs a latency below one
-cycle period. `Node::run()` calls every callback on the calling thread.
-Use a `CycleNode` when the node computes at one rate over a frozen capture of its
-inputs and needs the verdict of each input (`usable()`, `stale()`, `~/state`). A
-plain node has none of them: freshness is judged for cycle inputs only
-([cpp-api.md](cpp-api.md) §5.1), `runNode` is not used, so the node publishes no
-`~/state` and `~/introspection` and refuses no unread parameter key
-([cpp-api.md](cpp-api.md) §2). The model is in
-[execution-model.md](execution-model.md) §3 and §4. Write the reason for a plain
-node in the change description.
+| The ROS node | Target |
+|---|---|
+| Its work runs from a timer | A rate `CycleNode` (Step 2) |
+| Its work runs on each sample of one input | A triggered `CycleNode`: `setTrigger(port)` (Step 2) |
+| Its callbacks publish on more than one input | A plain `hypha::Node` |
+| It owns worker threads | A plain `hypha::Node` |
+| It is a shim of a ROS client library (#59) | A plain `hypha::Node` |
+
+What a triggered cycle adds over a plain node, and what it costs:
+
+| A triggered cycle adds | It costs |
+|---|---|
+| A verdict for each input (`stale()`, `Latest::usable()`), and `~/state` rows under `runNode` | A `silence_ms` for each supervised input, the trigger's included |
+| Outputs held until the step succeeds: a failed step publishes nothing ([execution-model.md](execution-model.md) §6.1) | A fallback step to handle when the trigger is silent |
+| Replay order: under simulated time the step runs at the sample's time, with the other inputs cut before it, and waits for its upstream nodes (§6.6) | One decode of each sample into its port before the step, and a payload copy in the input's history (§6.2) |
+| `~/introspection` and the refusal of an unread parameter key, from `runNode` | On host time, a trigger older than its `silence_ms` runs no step and counts in `age_rejections_total` |
+
+A plain `hypha::Node` has none of the first column: freshness is judged for cycle
+inputs only ([cpp-api.md](cpp-api.md) §5.1), and without `runNode` the node publishes
+no `~/state` and `~/introspection` and refuses no unread parameter key
+([cpp-api.md](cpp-api.md) §2). `Node::run()` calls every callback on the calling
+thread, and each `publish()` goes out at once. The model is in
+[execution-model.md](execution-model.md) §3, §4 and §11.3. Write the reason for a
+plain node in the change description.
 
 ### 10.2 Literal topic or port name
 

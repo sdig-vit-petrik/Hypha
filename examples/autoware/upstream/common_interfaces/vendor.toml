@@ -1,0 +1,16 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/ros2/common_interfaces"
+ref = "jazzy"
+commit = "a941f14bb318d8d904505ed935ccbb97f24a70a4"
+
+# Path here = path upstream, for the files whose paths differ.
+[renamed]
+"LICENSE" = "sensor_msgs/LICENSE"
+
+# Path here = SHA-256 of the file.
+[files]
+"LICENSE" = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+"sensor_msgs/include/sensor_msgs/impl/point_cloud2_iterator.hpp" = "01c422b43a5bee9e38ae23d6240e1949389492ca77472b5f2505740f301eb7da"
+"sensor_msgs/include/sensor_msgs/point_cloud2_iterator.hpp" = "d886e8d7edf7e7efa39c897180d84696122ac234edf1e60158c8aff2d57665bb"
+"std_srvs/srv/SetBool.srv" = "a36d99cd5f0467a58a5b06b1443e9ffc0fcb59977190def5ef677fd16f05a664"

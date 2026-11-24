@@ -1,6 +1,7 @@
 # autoware_ekf_localizer: the edits of the hypha port, applied to a copy of
-# upstream/autoware_core/localization/autoware_ekf_localizer by the build (patch -p1). Every
-# edit is also marked '// hypha port:' with its reason.
+# upstream/autoware_core/localization/autoware_ekf_localizer by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
+diff -ruN a/src/ekf_localizer.cpp b/src/ekf_localizer.cpp
 --- a/src/ekf_localizer.cpp
 +++ b/src/ekf_localizer.cpp
 @@ -558,7 +558,8 @@

@@ -1,6 +1,6 @@
 # autoware_euclidean_cluster_object_detector: the edits of the hypha port, applied to a copy of
-# upstream/autoware_core/perception/autoware_euclidean_cluster_object_detector by the build
-# (patch -p1). Every edit is also marked '// hypha port:' with its reason.
+# upstream/autoware_core/perception/autoware_euclidean_cluster_object_detector by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
 diff -ruN a/test/test_ros_conversions.cpp b/test/test_ros_conversions.cpp
 --- a/test/test_ros_conversions.cpp
 +++ b/test/test_ros_conversions.cpp

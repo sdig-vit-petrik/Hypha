@@ -1,0 +1,10 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/ros-perception/perception_pcl"
+ref = "jazzy"
+commit = "c5e7e72d20cbbc164e9d940f75ae2a6ae5bbf41a"
+
+# Path here = SHA-256 of the file.
+[files]
+"pcl_conversions/include/pcl_conversions/pcl_conversions.h" = "8565cd22ca2930169b7a16e7fccda2e8568cbef1687432e45a7c4ac67b19cb7c"
+"pcl_conversions/package.xml" = "517d44aba8595da4098259762a1dca4f08ce1ff51b9bd98dcac32b03ffd0a614"

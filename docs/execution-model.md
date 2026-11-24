@@ -848,7 +848,8 @@ A replay is faithful when no sample it should have read was lost. A loss is one
 of two things: a transport overflow, which shows as a sequence gap, or a history
 eviction that a cursor had not read. A step that has a new loss on an
 input (queued or latest) fails, and the `WaitSet` run that holds it fails with
-`SequenceGap`. The node logs `replay not faithful: N samples lost on <topic>` at
+`SequenceGap`; outside the lockstep (section 11.2) the loss is counted and warned of,
+and the run goes on. The node logs `replay not faithful: N samples lost on <topic>` at
 error level, at most once per topic per second, and a repeated loss is summed
 into the next line. The binding's losses also count in its `overrun_total`.
 While a latest binding in host time counts neither its transport gaps nor its history
@@ -885,7 +886,12 @@ as their samples arrive. Its timers still fire against `/clock`, once per clock 
 (no burst), so a player's `--chunk` shorter than the timer's period keeps its rate, and a
 `/clock` that goes back restarts it as any node (section 11.1). It
 is for nodes in a feedback loop that cannot replay in lockstep yet (#103); its replays
-are not identical from run to run. Its plain subscriptions and plain
+are not identical from run to run. Its replay cycles run one step per deadline but hold
+no deadline for an upstream node, and a replay input that lost samples is logged as a
+warning instead of failing the run. `HYPHA_REPLAY_LOCKSTEP=0` puts every node of a
+launch that `HYPHA_USE_SIM_TIME=1` puts in the lockstep in this mode, beside an
+open-loop player: a ROS-style playback whose result depends on the host and its load
+(`replay-flow-control.md` §4.6). In the lockstep, the plain subscriptions and plain
 timers become events, and a `WaitSet` runs them in time order, so a callback node
 replays identically on any host, at any `--rate` and `--chunk`:
 
@@ -929,6 +935,170 @@ replays identically on any host, at any `--rate` and `--chunk`:
   they are older than the last event. The node names it once: `hypha: '<name>'
   publishes on [...] but takes no part in the replay`. A worker thread that publishes
   outside its node's callbacks is outside the order the same way.
+
+### 11.3 Design note: one execution model for cycles and plain callbacks (#136)
+
+Status: investigation, 2026-11-24. Nothing here is implemented. The items marked
+**Owner decision** are open.
+
+A `WaitSet` runs two kinds of registration: cycles, and plain callbacks (subscriptions
+and `Node::timer`). #136 asks whether both should run on one scheduler, with three
+mappings:
+
+1. a subscription callback becomes a triggered step with one unsupervised `Arrivals`
+   input;
+2. `Node::timer` becomes a rate step with no input;
+3. a publish from a callback goes through the step's held outputs.
+
+**Recommendation.** Use one scheduler core, and keep two step shapes. Merge the parts
+that decide *when* something runs: the time order, admission against the upstream
+nodes, the progress frontier, rewind, slicing and the loop rule. Keep the parts that
+decide *what a step sees and sends* separate: a callback gets one zero-copy sample and
+publishes at once, and a cycle gets a frozen capture with held outputs. Mapping 1 is
+adopted for scheduling only, mapping 2 in part, and mapping 3 is rejected. The reasons,
+row by row, follow.
+
+#### The table of #136, against the code on this branch
+
+| Row | Cycle | Plain callback | State now |
+|---|---|---|---|
+| Input freshness, stagnation, `~/state` rows | `hypha_cycle` judges each binding at capture; `node_state.rs` reads `HyphaCycleBindingView` | none: `Target::Subscription` carries no limit, and `node_state.rs` reads cycle bindings only | **Still two.** Different by design today; see step 6. |
+| Feedback loop in lockstep | a rate cycle waits for each upstream at `D - 1 ns` (`replay.rs` `run_replay`, `UpstreamHold::settle`) and is the loop's delay element | `callback_events.rs` `settle_upstream` and `admitted`: a sample at `t` waits for every upstream at `t`, a timer for `t - 1 ns`; a loop holds until `--timeout` | **Still two.** #103 (state inputs) is the fix. Step 5 places it in the shared core. |
+| Outputs on failure | held loans, sent after the step succeeds (`image.rs` `emission_reserve`, `emission_commit`; §6.1) | `loan.rs` `loan_send`: each publish goes out at once | **Two by intent**; mapping 3 is rejected below. |
+| Follow mode, `/clock` jumping several periods | `dispatch.rs` `grid_due` runs every deadline; since #102 a follow node holds no deadline (it has no `/clock_progress` input) and warns of a lost input instead of failing (`tick.rs` `replay_losses`) | `dispatch.rs` `fire_due_timers`, non-grid branch: a plain timer fires once per turn and counts the missed periods (§11.2) | **Still two. Owner decision A.** |
+| Rewind in follow mode | `ClockRewound` from the timer check (`grid_due`, `triggered.rs`) | none without a timer | **Closed by #130.** `sim_clock.rs` `drain_sim_clock` refuses a backward `/clock` for every node on simulated time whatever its `WaitSet` holds, so there is now one rewind rule. The per-timer checks remain for clocks set from code (`setSimTime`). |
+| Order between the two in one `WaitSet` | `dispatch.rs` `on_timers`: every due callback event runs first (`run_callback_events`), then the cycle steps (`fire_due_timers`) | | **Still two orders.** The progress report is already one: `sim_clock.rs` `progress_frontier` takes the minimum of both. Step 1 merges the orders. |
+
+Two further facts from the issue, checked:
+
+- `detail::NodeReport` (`application_node.h`) attaches a 1 s `Node::timer` for
+  `~/state`. Under lockstep `decide_participation` (`callback_events.rs`) therefore
+  makes every `runNode` `CycleNode` a plain-callback participant. This is true. The
+  housekeeping timer only lowers the progress frontier to its next second, but the
+  coupling is accidental. Step 2 removes it.
+- Each replay rule is written twice. Cycles: `replay.rs` (grid steps with an
+  `UpstreamHold` per cycle) and `triggered.rs` (with `TriggerSchedule`). Callbacks:
+  `callback_events.rs`, with one `UpstreamHold` per `WaitSet`. True. The slow-callback
+  threshold is one constant (`configuration.rs` `CALLBACK_WARN_NANOS`) for both; #128
+  tracks a budget per registration (#135 was closed as its duplicate).
+
+#### What each mapping would cost
+
+**Mapping 1: a subscription callback as a triggered step.** This holds for the
+scheduling, not for the delivery.
+
+- A trigger must have a positive silence limit. `registration.rs` refuses one without:
+  "its trigger input needs a positive silence limit". On host time a trigger older
+  than the limit runs no step and is counted in `age_rejections_total` (§6.6, rule 3),
+  and a trigger that stays silent runs fallback steps. A callback has none of these.
+  It runs for every sample, however old, and never without one. An "unsupervised
+  trigger" would be a third trigger kind with its own rules, not a reuse of the
+  existing one.
+- A cycle source copies every payload into its history (`source.rs` `drain`, §6.2: "not
+  zero-copy end to end"). A raw callback gets a span over shared memory (§10.3). The
+  large-payload example, the recorder, `hypha foxglove` and the bridges depend on that.
+- A step decodes its ports before the call and builds an image (`tick.rs`
+  `cycle_timer_tick`). A callback decodes one sample. The per-sample cost of the
+  callback path, measured by `benches/dispatch.rs` (`dispatch/publish_to_callback`),
+  would grow. This must be measured before it is accepted.
+- Registration rules differ. A timer may be created from a callback during a run on
+  host time (`node.h` `timer`), and a callback may detach its own registration
+  (§10.2). A cycle is fixed at `cycle_commit` and cannot be created during a run.
+- The C ABI need not change: `hypha_waitset_attach` (`HYPHA_ATTACH_SUBSCRIPTION`,
+  `HYPHA_ATTACH_TIMER`) and the timer calls (`hypha_waitset_timer_cancel`, `_reset`,
+  `_state`) could keep
+  their shape over a new representation. Cancel and reset have no cycle equivalent,
+  though, so they would need new runtime code anyway.
+
+What is worth taking from mapping 1 is the *event*. A callback sample and a trigger
+sample are both an event at the sample's framework send time, admitted by the same
+upstream rule (`t`, against `t - 1 ns` for a step). They can share one queue, one
+admission check and one frontier.
+
+**Mapping 2: `Node::timer` as a rate step with no input.** In the lockstep this is
+already true in effect: `callback_events.rs` runs each period at its deadline, as a
+grid step runs. It differs only in follow mode and on host time. There a plain timer
+fires once per turn with a missed count, as a ROS timer does, and a cycle does the same
+on host time. What remains is owner decision A. Cancel, reset and creation from a
+callback stay specific to `Node::timer`.
+
+**Mapping 3: publishes through held outputs.** Rejected.
+
+- A plain publisher is not bound to a registration. Any callback may publish on any
+  publisher, and the rclcpp shim's `create_publisher` and the roscpp shim of #58 hand
+  out publishers that every callback and timer shares (the Autoware
+  `tf2_ros::TransformBroadcaster`, the services carried over topics in `rclcpp.hpp`). Held
+  outputs would need every publisher bound to every step, each with a per-step send
+  limit (default 1, §6.1) and loans reserved for it. A callback that publishes N
+  messages, or on several topics, would then need limits that the shims cannot know.
+- A worker thread publishes outside any step (`ros1-migration-guide.md` §10.5), and so
+  does a tool (`hypha topic pub`, `hypha play`). Publish-at-once must stay, so there
+  would be two publish paths anyway.
+- Publish-at-once is the semantics that ROS code ported through the shims expects. A
+  request sent in a callback is on the bus before the callback returns.
+- Held outputs give all-or-nothing only per step, and §6.3 already says sends are not
+  atomic across outputs. For a callback the gain would be small.
+
+#### Related issues
+
+- **#103 (state inputs).** In the shared core, "a state input does not bound the
+  node's report" is a property of the input that the admission rule reads, defined
+  once for callbacks and for the inputs of triggered steps. The declaration stays
+  necessary: under mapping 3 rejected, nothing knows which callbacks publish. #103
+  should land on the shared admission code (step 5), not on `callback_events.rs` alone.
+- **#99 (`runUntil`).** Independent. It checks a predicate after each dispatch turn,
+  and a turn is the same unit under one core.
+- **#83 (claiming a `WaitSet` by compare-and-swap).** Independent, and simpler with one
+  dispatch path to guard. Its cost on `benches/dispatch.rs` is measured there, not here.
+
+#### Steps toward one scheduler core
+
+Each step is one issue, keeps the C ABI and the C++ facade unchanged, and must not slow
+`dispatch/publish_to_callback` beyond its noise.
+
+1. **One event queue per `WaitSet` under simulated time.** Grid deadlines, trigger
+   samples, callback samples and timer periods go into one time order: time, then a
+   step or timer before a sample, then registration order. This replaces the two orders
+   of `on_timers`. Proof: a `WaitSet` with a cycle and a callback that share state
+   replays identically at two `--chunk` and two `--rate` values, and the "Limits"
+   sentence of §11.2 is deleted.
+2. **Framework housekeeping takes no part.** `NodeReport`'s timer, and any other
+   framework registration, is excluded from `decide_participation`. Proof: a `runNode`
+   `CycleNode` with no plain callback reports the same progress with and without the
+   report timer.
+3. **One upstream hold per `WaitSet`.** The `UpstreamHold` of each cycle (`replay.rs`)
+   and the one in `callback_events.rs` become one, with the limit `t` for a sample and
+   `t - 1 ns` for a step or timer. Proof: `replay_upstream.rs` and `replay_callbacks.rs`
+   pass unchanged, together with a mixed chain of a cycle node feeding a callback node.
+4. **One loss rule.** A lost replay input of a callback (`callback_events.rs`
+   `fill_heads`) and of a step (`tick.rs` `report_replay_fidelity`) go through one
+   function, warned of outside the lockstep since #102. Proof: the tests of
+   `replay_open_loop.rs` plus a lost callback sample in follow mode.
+5. **#103 on the shared core.** State inputs and the loop rule are defined once. Proof:
+   #103's own tests, plus a loop of one callback node and one rate cycle.
+6. **Opt-in supervision for a plain subscription (owner decision B).** `silence_ms`
+   in a subscription's port table gives a `~/state` row, judged at each delivery and
+   at the run's wake-up. Proof: a stale plain input turns `~/state` to `DEGRADED` and
+   back, and a subscription without the key reports nothing, as today.
+7. **The follow-mode timer rule (owner decision A).** Proof: a test of the rule chosen,
+   at `--chunk` smaller and larger than the period.
+
+Steps 1, 3 and 4 remove the duplicated replay code. Steps 2, 5, 6 and 7 settle rows
+of the table. Delivery and publish stay two shapes, and that is recorded here as
+intended.
+
+#### Owner decisions
+
+- **A. A plain timer in follow mode when `/clock` jumps several periods.** Either it
+  runs once with a missed count, as ROS does and as it does today, or it runs every
+  period, as a replay cycle does. The first keeps ROS behaviour for the ported nodes;
+  the second makes follow mode one rule.
+- **B. Supervision for plain subscriptions.** Either opt-in per port (step 6), or none,
+  and an event-driven node that needs verdicts becomes a triggered cycle (#138). The
+  migration guide follows the choice.
+- **C. Whether to take the steps at all, and when.** The table's real gaps are rows 2
+  and 6 (loops and order). #103 alone closes row 2 for the Autoware loop, and steps 1
+  and 3 are the bulk of the work.
 
 ## 12. One subscriber, one delivery style
 

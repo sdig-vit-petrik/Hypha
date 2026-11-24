@@ -1,0 +1,15 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://gitlab.com/ApexAI/point_cloud_msg_wrapper"
+ref = "master"
+commit = "0a62affd736fc39744467ff3a68d7e1f6c3d1bb5"
+
+# Path here = SHA-256 of the file.
+[files]
+"LICENSE" = "1ea33e313e99fe7dc1dce94c022a3568883fa06fea9ec5a11451b5e47febc67c"
+"include/point_cloud_msg_wrapper/default_field_generators.hpp" = "5c2e94072f5d61bba29cd72f03427dd21eb978e759666fba4e61852316b8a689"
+"include/point_cloud_msg_wrapper/field_generators.hpp" = "11a4ce8a3c5232f50524f8c23c49ec73e2eb914fa7527bd9f535c3f5039c59ee"
+"include/point_cloud_msg_wrapper/field_properties.hpp" = "10f852847d1a90790c643831873722d3ea535549ef04f8e076879fdfc0355de4"
+"include/point_cloud_msg_wrapper/point_cloud_msg_wrapper.hpp" = "964813d25f190a1982559af08132405b2642c85e5dfe2250ad48cf4a80f07153"
+"include/point_cloud_msg_wrapper/type_traits.hpp" = "175d4b1e1d8c8b1396b3bc793f25ff894e9f1f5b140bd458159bfaaa8ad48abe"
+"include/point_cloud_msg_wrapper/visibility_control.hpp" = "a89e0a9dd9d28809eb10a550369cd4b441ba253ac9862f0874d66ddee035e385"
