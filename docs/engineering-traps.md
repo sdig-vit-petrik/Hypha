@@ -277,6 +277,13 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   message once and writes it once into the loan, and copies fixed-size numeric arrays
   (`float64[36]`) as one block, so the build refuses a big-endian target. The checked
   writer still throws `StreamOverrunException` on a buffer that is too small.
+- **A field or constant name is a ROS 1 name.** It is a letter followed by letters,
+  digits or `_` (`[A-Za-z][A-Za-z0-9_]*`, genmsg's rule); any other name, such as `a-b`
+  or `2x`, fails generation with file, line and the name. Text after a field name is
+  refused, not folded into the name: a ROS 2 default value such as `float64 x 1.0` fails
+  as unexpected text after field `x`, so a port must drop it (ROS 2 syntax is #45). The
+  tools refuse such a definition from the bus the same way. Keywords are legal names;
+  the emitters rename them (`class_`, `r#type`).
 - **A definition expands to at most 65 536 nested messages.** Shared types make a
   definition a diamond: 64 levels of two fields are 2^63 paths. Resolution refuses a
   definition past `MAX_EXPANDED_MESSAGES` (the root, plus each message field's count
