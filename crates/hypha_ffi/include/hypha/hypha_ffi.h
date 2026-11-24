@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 5
+#define HYPHA_ABI_REVISION 6
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -1387,6 +1387,8 @@ HyphaStatus hypha_last_error(char *out,
 // writable bytes, valid until the loan is sent or dropped; both are null on any other
 // status. The caller owns the loan and releases it with `hypha_loan_send` or
 // `hypha_loan_drop`. A null `publisher`, `out` or `out_payload` is `InvalidArgument`.
+// `InvalidState` once the node that made the publisher was destroyed
+// (`hypha_node_destroy`): nothing is sent on a node that has left the bus.
 //
 // # Safety
 // `publisher` must come from `hypha_publish_with_qos`. `out` and `out_payload` each
@@ -1401,6 +1403,7 @@ HyphaStatus hypha_publisher_loan_frame(struct HyphaPublisher *publisher,
 // The framework send time is `framework_sent_nanos` when it is zero or more, else
 // framework time on the calling thread: the time of the cycle step or the replayed
 // callback that sends, else the framework clock. A null `loan` returns `InvalidArgument`.
+// `InvalidState`, and nothing sent, once the publisher's node was destroyed.
 //
 // # Safety
 // `loan` must come from `hypha_publisher_loan_frame` and must not be used afterwards.

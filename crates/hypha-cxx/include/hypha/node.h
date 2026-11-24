@@ -142,19 +142,22 @@ inline void requestStop()
 /// }   // the bus is released here
 /// @endcode
 ///
-/// A second Node in the same process shares the session.
+/// Every Node of a process shares one session, which the last of them leaves when it is
+/// destroyed, whatever order they were made in (#97). A default-constructed Node joins
+/// nothing and does not count. A Publisher of a session that has left sends nothing:
+/// publish() returns false with lastPublishStatus() InvalidState.
 class Node
 {
   public:
-    /// A handle that owns no session; its members use the process session when one exists.
+    /// A handle that joins no session; its members use the process session when one exists.
     Node() = default;
 
-    /// Leaves the bus when this node created the session. Leaving destroys every cycle of
-    /// the session; endpoints and ports must not outlive their Node.
+    /// Leaves the bus when this is the last Node that joined the session. Leaving destroys
+    /// every cycle of the session; its publishers then refuse to send.
     ~Node()
     {
-        if (this->ownsSession_) {
-            backend::shutdown();
+        if (this->joined_) {
+            backend::leave();
         }
     }
 
@@ -168,13 +171,13 @@ class Node
     }
 
     /// A name is `[a-z][a-z0-9_]`, at most 64 characters; the `node.name` key of
-    /// @p parameterFile overrides it. A second Node keeps the first name.
+    /// @p parameterFile overrides it. A second Node joins the session and keeps the
+    /// first name.
     /// @throws std::runtime_error when the node cannot be created.
     Node(const std::string& name, const std::string& parameterFile)
     {
-        bool         created = false;
-        const Status status = backend::init(name, parameterFile, &created);
-        this->ownsSession_ = created;
+        const Status status = backend::init(name, parameterFile);
+        this->joined_ = status == Status::Ok;
         if (status != Status::Ok) {
             throw std::runtime_error(detail::failureText("node '" + name + "' creation", status));
         }
@@ -270,7 +273,7 @@ class Node
     }
 
   private:
-    bool ownsSession_{false};
+    bool joined_{false};
 };
 
 }  // namespace hypha
