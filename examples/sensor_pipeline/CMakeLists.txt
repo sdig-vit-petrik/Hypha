@@ -50,7 +50,7 @@ if(DEFINED HYPHA_BUILD_TESTS AND NOT HYPHA_BUILD_TESTS)
   set(SENSOR_PIPELINE_REPLAY_TEST OFF)
 endif()
 if(SENSOR_PIPELINE_REPLAY_TEST AND TARGET hypha::hypha AND TARGET sensor_pipeline_compare)
-  add_test(NAME sensor_pipeline_replay_check
+  hypha_add_test(sensor_pipeline_replay_check
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/replay_check.sh"
       --hypha "$<TARGET_FILE:hypha::hypha>"
       --processor "$<TARGET_FILE:hypha_cloud_processor>"

@@ -140,7 +140,8 @@ process, not to one node:
   change: two domains can each carry `/odom_speed`. The value is `[a-z][a-z0-9_]`, at
   most 32 characters. An invalid value, also one that is not UTF-8, refuses the first
   call that needs the transport and names the variable; it never falls back to no
-  domain. `./clean-shm.sh` wipes every domain.
+  domain. `./clean-shm.sh` wipes every domain; `./clean-shm.sh --domain <prefix>`
+  only the domains named `<prefix>*` that no live process uses.
 - **Restart when time goes back.** A timer or cycle of a `WaitSet` that sees simulated
   time go back ends its run with `ClockRewound`; the process exits 75 (C++ `runNode`)
   and its supervisor starts it again, `hypha launch` with `HYPHA_REJOIN_AFTER_NANOS`

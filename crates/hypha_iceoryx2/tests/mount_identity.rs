@@ -8,7 +8,7 @@ use hypha_iceoryx2::domain::DOMAIN_VARIABLE;
 
 #[test]
 fn a_different_shm_marker_refuses_the_node() {
-    let domain = format!("mount_{}", std::process::id());
+    let domain = format!("t_{}_mount", std::process::id());
     let marker = format!("iox2-{domain}-hypha_mount_id");
     let shm = std::path::Path::new("/dev/shm").join(&marker);
     let meta = std::path::Path::new("/tmp/iceoryx2").join(&marker);

@@ -69,7 +69,7 @@ Against an installed SDK, with Eigen 3:
 ```bash
 ./build.sh && cmake --install build --prefix /tmp/hypha-sdk
 cmake -S examples -B build/examples -DCMAKE_PREFIX_PATH=/tmp/hypha-sdk && cmake --build build/examples --parallel
-./clean-shm.sh --force && examples/mrs/run.sh build/examples/mrs --checks
+examples/mrs/run.sh build/examples/mrs --checks
 ```
 
 `run.sh <bin-dir> [scenario] [--checks]` starts the simulator with the participants
@@ -81,6 +81,9 @@ within 0.1 m for 1 s), `goto_outside_safety_area` (takeoff, then `control_manage
 to `[100, 0, 2, 0]` must answer `success = false`). Logs go to `<bin-dir>/logs/`.
 `examples/check.sh` runs the checks and every scenario above; `./test.sh cpp` runs it
 against the installed SDK, so the MRS flights are part of hypha's regular suite.
+A flight runs in the caller's `HYPHA_DOMAIN`; `examples/check.sh` flies each scenario in
+a test domain of its own, `t_<pid of the gate>_<n>`, so it never meets a system running
+on the host.
 
 ## Fly it from the keyboard
 

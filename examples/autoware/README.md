@@ -101,7 +101,7 @@ libraries (`libgeographiclib-dev`, `libpugixml-dev`, `libyaml-cpp-dev`,
 ```bash
 ./build.sh && cmake --install build --prefix /tmp/hypha-sdk
 cmake -S examples -B build/examples -DCMAKE_PREFIX_PATH=/tmp/hypha-sdk && cmake --build build/examples --parallel
-./clean-shm.sh --force && ctest --test-dir build/examples/autoware --output-on-failure
+ctest --test-dir build/examples/autoware --output-on-failure
 build/examples/autoware/autoware_crop_box_filter examples/autoware/config/crop_box_filter.toml
 ```
 

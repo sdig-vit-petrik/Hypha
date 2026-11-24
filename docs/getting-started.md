@@ -15,7 +15,10 @@ name. The CMake build directory holds a link with the versioned name:
 on macOS (install name `@rpath/libhypha_ffi.<revision>.dylib`).
 
 Run the tests with `./test.sh` (clippy, Rust tests, ctest, installed SDK checks),
-and the style checks with `./check.sh`.
+and the style checks with `./check.sh`. Every test runs in a bus domain of its own
+under the test root `t_`, so the gate runs beside a hypha system on the same host;
+`test.sh` removes only the test domains that no live process uses
+(`./clean-shm.sh --domain t_`).
 
 For `sccache`, set `RUSTC_WRAPPER=sccache` and `CMAKE_CXX_COMPILER_LAUNCHER=sccache`
 in your environment.
@@ -39,6 +42,20 @@ cmake --build build/consumer
 
 The install prefix holds only the versioned library. Rebuild every consumer against
 an install whose library revision differs from the one the consumer was built with.
+
+A test that uses the bus registers with `hypha_add_test()`, which the SDK installs beside
+`hypha_generate_messages()`. It runs the test in a bus domain of its own,
+`t_<pid of ctest>_<n>`, so parallel tests, the tests of another build tree and a system
+running on the host never share a node name, topic or `/clock`:
+
+```cmake
+enable_testing()
+add_executable(my_node_test test/my_node_test.cpp)
+target_link_libraries(my_node_test PRIVATE hypha::sdk GTest::gtest_main)
+hypha_add_test(my_node_test)
+# A script or a command line: COMMAND, and WORKING_DIRECTORY as for add_test().
+hypha_add_test(my_flight COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/fly.sh" my_node_test)
+```
 
 The [examples](../examples/README.md) are runnable nodes, such as `speed`. The [apps](../apps/README.md) are `hypha topic` and the other
 CLI tools. The CMake options `HYPHA_BUILD_APPS` and `HYPHA_BUILD_EXAMPLES` (both
@@ -66,8 +83,9 @@ owning process is alive but stuck, or a dead node whose name does not
 return, needs the manual wipe:
 
 ```sh
-./clean-shm.sh           # refuses if a process still holds the segment
-./clean-shm.sh --force   # kills the holders first
+./clean-shm.sh --domain t_   # the test domains nobody uses; kills nothing
+./clean-shm.sh               # every domain; refuses if a process still holds a segment
+./clean-shm.sh --force       # every domain; kills the holders first
 ```
 
 ## Writing your own node
