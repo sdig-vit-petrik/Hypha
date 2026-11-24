@@ -181,6 +181,7 @@ struct WorkerCounters
     std::atomic<uint64_t> notConnected{0};
     std::atomic<uint64_t> beforeBuffer{0};
     std::atomic<uint64_t> afterBuffer{0};
+    std::atomic<uint64_t> refused{0};
 };
 
 void countLookupFailure(WorkerCounters& counters, hypha::TransformError error)
@@ -201,6 +202,9 @@ void countLookupFailure(WorkerCounters& counters, hypha::TransformError error)
         case hypha::TransformError::AfterBuffer:
             counters.afterBuffer.fetch_add(1U, std::memory_order_relaxed);
             return;
+        case hypha::TransformError::Refused:
+            counters.refused.fetch_add(1U, std::memory_order_relaxed);
+            return;
     }
 }
 
@@ -217,6 +221,8 @@ const char* transformErrorName(hypha::TransformError error)
             return "BeforeBuffer";
         case hypha::TransformError::AfterBuffer:
             return "AfterBuffer";
+        case hypha::TransformError::Refused:
+            return "Refused";
     }
     return "unknown";
 }
@@ -538,7 +544,7 @@ class Reporter
         const char* staticText = statics ? "found" : transformErrorName(statics.error());
         std::printf(
             "%s t=%.3f tf static_%s_%s=%s lookup_failed invalid_frame=%llu unknown_frame=%llu "
-            "not_connected=%llu before_buffer=%llu after_buffer=%llu\n",
+            "not_connected=%llu before_buffer=%llu after_buffer=%llu refused=%llu\n",
             kind,
             seconds,
             this->settings_.staticCheck[0].c_str(),
@@ -548,7 +554,8 @@ class Reporter
             load(this->counters_.unknownFrame),
             load(this->counters_.notConnected),
             load(this->counters_.beforeBuffer),
-            load(this->counters_.afterBuffer)
+            load(this->counters_.afterBuffer),
+            load(this->counters_.refused)
         );
         std::fflush(stdout);
     }

@@ -68,6 +68,9 @@ class BufferCore
             case hypha::TransformError::BeforeBuffer:
             case hypha::TransformError::AfterBuffer:
                 throw tf2::ExtrapolationException(what);
+            case hypha::TransformError::Refused:
+                // The producer sent an invalid transform: not a lookup to retry later.
+                throw tf2::InvalidArgumentException(what);
         }
         throw tf2::TransformException(what);
     }

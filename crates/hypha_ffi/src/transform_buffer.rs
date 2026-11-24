@@ -10,8 +10,8 @@ use crate::status::try_guard;
 use crate::waitset::configuration::share_node;
 use hypha_node::qos::{HyphaQos, read_declaration};
 use hypha_node::safe::{
-    HyphaNode, HyphaTransformBuffer, TransformLookup, transform_buffer_create,
-    transform_buffer_destroy, transform_buffer_lookup,
+    HyphaNode, HyphaSentTransform, HyphaTransformBuffer, TransformLookup, transform_buffer_create,
+    transform_buffer_destroy, transform_buffer_lookup, transform_check,
 };
 use hypha_node::status::HyphaStatus;
 use hypha_node::{HYPHA_TF_FOUND, HyphaTransform};
@@ -142,6 +142,42 @@ pub unsafe extern "C" fn hypha_transform_buffer_destroy(
         transform_buffer_destroy(handle)?;
         // SAFETY: from `Box::into_raw` in the create; unused by the caller after `Ok`.
         drop(unsafe { take_box(buffer) });
+        Ok(())
+    })
+}
+
+/// Check one transform before it is sent with the check every transform buffer and TF
+/// input applies on ingest: `child` in `parent`, UTF-8 of the given lengths, borrowed
+/// for the call, with `*transform` read for the call; `is_static` nonzero for a
+/// `/tf_static` transform, whose stamp is not read. Needs no node and keeps nothing.
+///
+/// `Ok`: every buffer accepts it, unless it gives the child a second parent or closes a
+/// cycle, which only a buffer that holds the other transforms can see.
+/// `InvalidArgument`: a null pointer, non-UTF-8 text, an empty frame name, a stamp that
+/// is no time (`stamp_nsecs` of 1 000 000 000 or more), a translation or rotation that is
+/// not finite, or a rotation that is not a unit quaternion. The reason, naming both
+/// frames, is then the calling thread's `hypha_last_error`; nothing is logged.
+///
+/// # Safety
+/// `parent` holds `parent_len` bytes and `child` holds `child_len` bytes, or each is
+/// null; `transform` is null or points to one initialized `HyphaSentTransform`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hypha_transform_check(
+    parent: *const c_char,
+    parent_len: usize,
+    child: *const c_char,
+    child_len: usize,
+    transform: *const HyphaSentTransform,
+    is_static: u32,
+) -> HyphaStatus {
+    try_guard(|| {
+        // SAFETY: the parent holds `parent_len` bytes or is null, by the contract.
+        let parent = unsafe { borrow_str(parent, parent_len) }?;
+        // SAFETY: the child holds `child_len` bytes or is null, by the contract.
+        let child = unsafe { borrow_str(child, child_len) }?;
+        // SAFETY: `transform` is null or initialized by the contract; null is refused.
+        let transform = unsafe { read_in(transform) }?;
+        transform_check(parent, child, &transform, is_static != 0)?;
         Ok(())
     })
 }

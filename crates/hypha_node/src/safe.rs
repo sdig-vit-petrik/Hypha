@@ -43,11 +43,11 @@ pub use crate::subscriber::{
     SubscriberSettings, subscribe_typed, subscriber_counters, subscriber_publisher_count,
     subscriber_receive, subscriber_topic,
 };
-pub use crate::transforms::TransformLookup;
 pub use crate::transforms::buffer::{
     HyphaTransformBuffer, transform_buffer_create, transform_buffer_destroy,
     transform_buffer_lookup,
 };
+pub use crate::transforms::{HyphaSentTransform, TransformLookup, transform_check};
 pub use crate::waitset::registrations::waitset_attach_foreign;
 pub use crate::waitset::{
     CallbackAction, DeliveryHandler, ForeignCallbacks, HYPHA_RUN_REASON_DEADLINE,

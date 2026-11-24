@@ -79,6 +79,7 @@ T hypha_topic_validate_public_name
 T hypha_transform_buffer_create
 T hypha_transform_buffer_destroy
 T hypha_transform_buffer_lookup
+T hypha_transform_check
 T hypha_waitset_attach
 T hypha_waitset_detach
 T hypha_waitset_request_failure

@@ -107,7 +107,7 @@ once more at exit with `final` in place of `report`:
 report t=<s> imu received=<n> missing=<n> sequence_gap=<n> invalid_frame=<n> corrupt_payload=<n> schema_mismatch=<n> invalid_timestamp=<n> loan_budget=<n> loan_held=<n> loan_refused=<n>
 report t=<s> cloud received=<n> missing=<n> ... (the same fields)
 report t=<s> node timer_missed=<n> handover_dropped=<n> processed=<n> published=<n> publish_failed=<n> bad_cloud=<n>
-report t=<s> tf static_base_link_lidar=<found|error> lookup_failed invalid_frame=<n> unknown_frame=<n> not_connected=<n> before_buffer=<n> after_buffer=<n>
+report t=<s> tf static_base_link_lidar=<found|error> lookup_failed invalid_frame=<n> unknown_frame=<n> not_connected=<n> before_buffer=<n> after_buffer=<n> refused=<n>
 ```
 
 - `t` is framework time, `hypha::now()`: host UTC live, the replayed `/clock` under
@@ -231,7 +231,7 @@ hypha play: effective rate 1.00x: 4.500 s of data in 4.501 s; set by --rate 1.00
 final t=1795038799.029 imu received=796 missing=0 sequence_gap=0 ...
 final t=1795038799.029 cloud received=39 missing=0 sequence_gap=0 ...
 final t=1795038799.029 node timer_missed=0 handover_dropped=0 processed=39 published=39 publish_failed=0 bad_cloud=0
-final t=1795038799.029 tf static_base_link_lidar=found lookup_failed invalid_frame=0 unknown_frame=0 not_connected=0 before_buffer=0 after_buffer=0
+final t=1795038799.029 tf static_base_link_lidar=found lookup_failed invalid_frame=0 unknown_frame=0 not_connected=0 before_buffer=0 after_buffer=0 refused=0
 compare: 39 messages of /cloud_processor/centroid match by stamp; largest difference 0 m, tolerance 1e-09 m
 replay_check: slow: hypha play --clock --rate 1 --nodes hypha_record cloud_processor
 hypha play: effective rate 0.32x: 4.500 s of data in 14.047 s; set by 'cloud_processor' (last to answer 0 of 46 chunks, 13.540 s of waiting, 96% of the wall time)

@@ -551,6 +551,19 @@ static ROWS: &[Row] = rows! {
     hypha_transform_buffer_destroy => |_live| {
         assert_eq!(unsafe { hypha_transform_buffer_destroy(null_mut()) }, HyphaStatus::Ok);
     }
+    hypha_transform_check => |_live| {
+        let name = "a".as_ptr().cast();
+        let sent = HyphaSentTransform { rotation_xyzw: [0.0, 0.0, 0.0, 1.0], ..HyphaSentTransform::default() };
+        // SAFETY: a null parent with a length is refused before anything is read.
+        let no_parent = unsafe { hypha_transform_check(null(), 1, name, 1, &raw const sent, 0) };
+        assert_eq!(no_parent, INVALID);
+        // SAFETY: a null child with a length is refused before anything is read.
+        let no_child = unsafe { hypha_transform_check(name, 1, null(), 1, &raw const sent, 0) };
+        assert_eq!(no_child, INVALID);
+        // SAFETY: a null transform is refused before it is read.
+        let no_transform = unsafe { hypha_transform_check(name, 1, "b".as_ptr().cast(), 1, null(), 0) };
+        assert_eq!(no_transform, INVALID);
+    }
     hypha_node_default_waitset => |live| {
         assert_eq!(unsafe { hypha_node_default_waitset(null_mut(), &mut null_mut()) }, INVALID);
         assert_eq!(unsafe { hypha_node_default_waitset(live.node, null_mut()) }, INVALID);

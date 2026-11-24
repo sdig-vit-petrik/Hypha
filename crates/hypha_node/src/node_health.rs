@@ -1,5 +1,7 @@
 //! Execution counters of one node, counted by every `WaitSet` on it.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use hypha_runtime::ExecutionCounters;
 
 use crate::waitset::{HYPHA_ACTION_FAIL, HyphaCallbackResult, status_from_code};
@@ -10,6 +12,10 @@ use crate::waitset::{HYPHA_ACTION_FAIL, HyphaCallbackResult, status_from_code};
 #[derive(Debug, Default)]
 pub(crate) struct ExecutionHealth {
     counters: ExecutionCounters,
+    /// Transforms that a TF buffer or TF input of the node refused, since the node began.
+    tf_refused: AtomicU64,
+    /// Messages on a TF topic of the node that did not decode, since the node began.
+    tf_undecodable: AtomicU64,
 }
 
 impl ExecutionHealth {
@@ -38,6 +44,22 @@ impl ExecutionHealth {
     pub(crate) fn callback_counts(&self) -> (u64, u64, u64) {
         let snapshot = self.counters.snapshot();
         (snapshot.callbacks_invoked, snapshot.callback_failures, snapshot.slow_callbacks)
+    }
+
+    /// Count one transform a TF buffer or TF input of the node refused.
+    pub(crate) fn count_tf_refused(&self) {
+        self.tf_refused.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count one message on a TF topic of the node that did not decode.
+    pub(crate) fn count_tf_undecodable(&self) {
+        self.tf_undecodable.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Emit the `tf.*` metrics, in the order the metrics ABI documents.
+    pub(crate) fn emit_tf_metrics(&self, emit: &mut dyn FnMut(&str, u64)) {
+        emit("tf.refused", self.tf_refused.load(Ordering::Relaxed));
+        emit("tf.undecodable", self.tf_undecodable.load(Ordering::Relaxed));
     }
 
     /// Emit the `node.*` metrics, in the order the metrics ABI documents.

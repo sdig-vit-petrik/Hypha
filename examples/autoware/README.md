@@ -77,7 +77,7 @@ in lockstep (#46, #72).
 | `canTransform`, `lookupTransform` at an `rclcpp::Time` | as the tf2 lookups above; a timeout is accepted and never waited for |
 | `tf2::doTransform` of a `Pose`, `tf2::fromMsg` of a `Pose` or `Transform` into a `tf2::Transform` or an Eigen affine, `tf2::transformCovariance` | tf2_geometry_msgs' and tf2_eigen's formulas, on the vendored tf2 types |
 | `autoware_utils_debug::BasicDebugPublisher<NodeT>`, `BasicPublishedTimePublisher<NodeT>` | the debug and published-time publishers; the shim's only node is `rclcpp::Node` |
-| `tf2_ros::TransformBroadcaster` | a `tf2_msgs/TFMessage` publisher on `/tf` with the `tf` policy |
+| `tf2_ros::TransformBroadcaster` | `hypha::TransformBroadcaster` on `/tf` with the `tf` policy: a transform every buffer would refuse (NaN, not a unit quaternion) is not sent, but logged and counted as a failed publish (#123). A lookup of `tf2_ros::Buffer` on a frame whose transform was refused throws `tf2::InvalidArgumentException` |
 | `autoware_agnocast_wrapper` | its build without Agnocast: upstream's `macros.hpp`; `Node`, `Service`, `Client`, `create_timer` and the tf2 types are the shim's |
 | `autoware_utils_logging::LoggerLevelConfigure` | the `~/config_logger` service, which refuses every request: hypha sets log levels from `[log]` in the parameter file only |
 | `managed_transform_buffer::ManagedTransformBuffer` | `hypha::TransformBuffer`; `getTransform` never waits (#91) and ignores its timeout. A static transform holds for all time; one not in the buffer yet is an empty result with a throttled warning, and the concatenate node drops that source and reports it, where upstream waits up to the timeout |

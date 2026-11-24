@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 3
+#define HYPHA_ABI_REVISION 4
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -29,6 +29,12 @@
 
 // The time is newer than the newest sample of a transform on the chain.
 #define HYPHA_TF_AFTER_BUFFER 5
+
+// The lookup failed on a frame whose newest transform the buffer refused (not finite,
+// not a unit quaternion, a stamp that is no time, a second parent): its producer is
+// broken, not late. It replaces `UNKNOWN_FRAME`, `NOT_CONNECTED` and `AFTER_BUFFER`
+// while that frame's newest transform is a refused one.
+#define HYPHA_TF_REFUSED 6
 
 // Freshness verdict: no sample admitted since the binding was created.
 #define HYPHA_CYCLE_VERDICT_NEVER_ARRIVED 0
@@ -163,7 +169,9 @@ enum HyphaStatus
   HYPHA_STATUS_TIMEOUT = 18,
   // Operation invoked in invalid state.
   HYPHA_STATUS_INVALID_STATE = 20,
-  // Simulated time went back under a replay or triggered cycle; a running cycle never rewinds.
+  // A `/clock` sample went below the node's last one: a run of a `WaitSet` on simulated
+  // time ends with it, whatever it dispatches (cycles, plain timers, plain
+  // subscriptions); a command-line tool's node is exempt. The process restarts.
   HYPHA_STATUS_CLOCK_REWOUND = 22,
   // The application asked for its run to fail (`hypha_waitset_request_failure`).
   HYPHA_STATUS_APPLICATION_FAILED = 23,
@@ -789,6 +797,19 @@ typedef struct HyphaSubscriberCounters {
   // `loan.refused`: owning receives refused because the budget was full.
   uint64_t loan_refused;
 } HyphaSubscriberCounters;
+
+// A transform a sender checks before it sends it: where the child sits in the parent,
+// at a ROS stamp.
+typedef struct HyphaSentTransform {
+  // The child origin in the parent frame.
+  double translation[3];
+  // The child orientation in the parent frame, `[x, y, z, w]`.
+  double rotation_xyzw[4];
+  // The header stamp, seconds part.
+  uint32_t stamp_secs;
+  // The header stamp, nanoseconds part; a time needs it below 1 000 000 000.
+  uint32_t stamp_nsecs;
+} HyphaSentTransform;
 
 // Identity joined from the subscription topic and the frame header.
 typedef struct HyphaSampleIdentity {
@@ -1792,6 +1813,28 @@ HyphaStatus hypha_transform_buffer_lookup(const struct HyphaTransformBuffer *buf
 // `buffer` is null or a live handle from `hypha_transform_buffer_create`, not used
 // after an `Ok`.
 HyphaStatus hypha_transform_buffer_destroy(struct HyphaTransformBuffer *buffer);
+
+// Check one transform before it is sent with the check every transform buffer and TF
+// input applies on ingest: `child` in `parent`, UTF-8 of the given lengths, borrowed
+// for the call, with `*transform` read for the call; `is_static` nonzero for a
+// `/tf_static` transform, whose stamp is not read. Needs no node and keeps nothing.
+//
+// `Ok`: every buffer accepts it, unless it gives the child a second parent or closes a
+// cycle, which only a buffer that holds the other transforms can see.
+// `InvalidArgument`: a null pointer, non-UTF-8 text, an empty frame name, a stamp that
+// is no time (`stamp_nsecs` of 1 000 000 000 or more), a translation or rotation that is
+// not finite, or a rotation that is not a unit quaternion. The reason, naming both
+// frames, is then the calling thread's `hypha_last_error`; nothing is logged.
+//
+// # Safety
+// `parent` holds `parent_len` bytes and `child` holds `child_len` bytes, or each is
+// null; `transform` is null or points to one initialized `HyphaSentTransform`.
+HyphaStatus hypha_transform_check(const char *parent,
+                                  size_t parent_len,
+                                  const char *child,
+                                  size_t child_len,
+                                  const struct HyphaSentTransform *transform,
+                                  uint32_t is_static);
 
 // Return this node's `WaitSet`, creating it on first use.
 //

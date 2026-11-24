@@ -85,8 +85,8 @@ pub use subscriber::{
 };
 pub use transforms::{
     HYPHA_DEFAULT_TF_CACHE_NANOS, HYPHA_TF_AFTER_BUFFER, HYPHA_TF_BEFORE_BUFFER, HYPHA_TF_FOUND,
-    HYPHA_TF_INVALID_FRAME, HYPHA_TF_NOT_CONNECTED, HYPHA_TF_UNKNOWN_FRAME, HyphaTransform,
-    buffer::HyphaTransformBuffer,
+    HYPHA_TF_INVALID_FRAME, HYPHA_TF_NOT_CONNECTED, HYPHA_TF_REFUSED, HYPHA_TF_UNKNOWN_FRAME,
+    HyphaSentTransform, HyphaTransform, buffer::HyphaTransformBuffer,
 };
 
 /// The guard of `mutex`, taken as it is when a holder panicked.

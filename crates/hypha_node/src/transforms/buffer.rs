@@ -71,7 +71,8 @@ pub fn transform_buffer_create(
     if refused {
         return Err(Error::InvalidArgument);
     }
-    let state = Arc::new(Mutex::new(TfState::new(Duration::from_nanos(cache_nanos))));
+    let health = Arc::clone(&node.health);
+    let state = Arc::new(Mutex::new(TfState::new(Duration::from_nanos(cache_nanos), health)));
     let topics = [tf, tf_static];
     let attachments =
         with_default_waitset(node, |set| attach_both(set, node, topics, request, &state))??;

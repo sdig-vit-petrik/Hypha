@@ -861,9 +861,11 @@ the row messages; the row rules and counters in `hypha/introspection.h`. Its C A
 ## 10. Coordinate frame transforms (TF)
 
 TF is a convention on ordinary topics: `/tf` and `/tf_static` carry
-`tf2_msgs/TFMessage`. A broadcaster is a publisher or an `Output` of that type, and
-`hypha::StaticTransformBroadcaster` (section 10.2) is one for the static topic;
-`examples/mrs/managers/transform_manager.cpp` sends both by hand.
+`tf2_msgs/TFMessage`. `hypha::TransformBroadcaster` and
+`hypha::StaticTransformBroadcaster` (section 10.2) send on them and refuse a transform
+that every buffer would refuse; a publisher or an `Output` of that type sends without
+the check, as `examples/mrs/managers/transform_manager.cpp` does, and the buffers
+still refuse what is invalid.
 
 - Dynamic transforms go to `/tf` when they change; transforms that share a stamp go
   in one message.
@@ -886,7 +888,7 @@ const auto found = this->tf.lookupLatest("map", "base_link");  // in step(): bas
 
 Buffer, clock steps, losses: [execution-model.md](execution-model.md) §6.7.
 
-### 10.2 Looking transforms up in a plain node, and sending static ones
+### 10.2 Looking transforms up in a plain node, and sending transforms
 
 A node without a cycle reads TF with a `hypha::TransformBuffer` from
 `<hypha/transform_buffer.h>`, which `hypha/hypha.h` does not include either. The run of
@@ -904,6 +906,10 @@ if (stamp.has_value()) {
 }
 const auto latest = tf.lookupLatest("map", "base_link");
 
+hypha::TransformBroadcaster broadcaster{node};          // /tf, the tf policy
+if (!broadcaster.send(mapToBase)) {                      // a NaN pose is refused, not sent
+    HYPHA_LOG_ERROR("{}", broadcaster.lastRefusal());    // names the frames and the reason
+}
 hypha::StaticTransformBroadcaster statics{node};        // latched /tf_static
 const bool sent = statics.send(baseToLidar);            // keeps it, resends the whole set
 ```
@@ -926,12 +932,31 @@ const bool sent = statics.send(baseToLidar);            // keeps it, resends the
 - A `/tf_static` sample latched before the buffer existed is found once the node has
   run. A refused destroy (the node runs on another thread) is logged, not thrown, and
   the buffer stays attached until the node is destroyed.
-- `StaticTransformBroadcaster` keeps every transform sent through it, by child frame (a
-  later one replaces the earlier in place), and publishes one message with the whole set
-  on each `send()`: one `TransformStamped` or a `std::vector` of them. `send()` returns
-  what `Publisher::publish` returns, and `lastPublishStatus()` says why not. It is an
-  endpoint of one thread at a time. Several broadcasters may share `/tf_static`; each
-  sends its own set.
+- **A refused transform (#123).** A lookup that fails on a frame whose newest
+  transform the buffer refused (not finite, not a unit quaternion, a stamp that is no
+  time, a second parent) returns `TransformError::Refused` in place of `UnknownFrame`,
+  `NotConnected` or `AfterBuffer`: the producer is broken, not late. The frame is the
+  target, the source or a frame above either; a later transform of that frame that the
+  buffer keeps clears it. The buffer's error log line, at most once a second, names the
+  reason, and the node metrics `tf.refused` and `tf.undecodable` count every refused
+  transform and every message that does not decode, for good. `Transforms` answers the
+  same.
+- **Both broadcasters check what they send.** `send()` checks each transform with the
+  check every buffer applies on ingest (`hypha_transform_check`, below the C ABI): an
+  empty frame name, a stamp that is no time (`nsecs` of a second or more; not read for a
+  static transform), a value that is not finite, a rotation that is not a unit
+  quaternion. A refused send sends and keeps nothing of its message, returns false,
+  `lastPublishStatus()` is `InvalidArgument` and `lastRefusal()` names the child, the
+  parent and the reason (`hypha: transform refused: 'base_link' in 'map': ...`). A second
+  parent or a cycle needs the other transforms, so only a buffer refuses those. Any
+  other false is the publish's, as `Publisher::publish`, with `lastRefusal()` empty.
+- `TransformBroadcaster` publishes each `send()` (one `TransformStamped` or a
+  `std::vector` as one message) on `/tf` with the `tf` policy; an empty vector sends
+  nothing and returns true. `StaticTransformBroadcaster` keeps every transform sent
+  through it, by child frame (a later one replaces the earlier in place), and publishes
+  one latched message with the whole set on each `send()`. Each is an endpoint of one
+  thread at a time. Several static broadcasters may share `/tf_static`; each sends its
+  own set.
 
 ## 11. Logging
 
