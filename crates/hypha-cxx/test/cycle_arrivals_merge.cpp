@@ -2,10 +2,10 @@
 
 #include "hypha/cycle_node.h"
 #include "hypha/testing.h"
-#include <hypha_msgs/std_msgs/Float64.h>
-#include <hypha_msgs/std_msgs/Int64.h>
 
 #include <gtest/gtest.h>
+#include <std_msgs/Float64.h>
+#include <std_msgs/Int64.h>
 
 #include <cstdint>
 #include <optional>

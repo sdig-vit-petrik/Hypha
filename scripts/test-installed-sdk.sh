@@ -41,6 +41,47 @@ cmake -S test/package_consumer -B "${WORK_DIR}/consumer" \
 cmake --build "${WORK_DIR}/consumer"
 "${WORK_DIR}/consumer/hypha_package_consumer"
 
+# Message headers sit at their ROS 1 path, <package>/<Name>.h, with no prefix.
+echo "==> Checking the installed message header layout..."
+for header in include/std_msgs/Header.h include/hypha_msgs/NodeState.h include/hypha_msgs/ros_time.h; do
+  if [ ! -f "${PREFIX}/${header}" ]; then
+    echo "ERROR: installed ${header} is missing." >&2
+    exit 1
+  fi
+done
+if [ -e "${PREFIX}/include/hypha_msgs/std_msgs" ]; then
+  echo "ERROR: message headers are still installed under the hypha_msgs/ prefix." >&2
+  exit 1
+fi
+
+# The SDK owns the directory of each standard package: an application that declares
+# std_msgs from a directory of its own is refused at configure time.
+echo "==> Checking that a second declaration of a standard package is refused..."
+readonly REDECLARE_DIR="${WORK_DIR}/redeclare-src"
+mkdir -p "${REDECLARE_DIR}/std_msgs"
+printf 'float64 data\n' >"${REDECLARE_DIR}/std_msgs/Float64.msg"
+cat >"${REDECLARE_DIR}/CMakeLists.txt" <<'EOF_REDECLARE'
+cmake_minimum_required(VERSION 3.20)
+project(hypha_redeclare LANGUAGES CXX)
+find_package(hypha CONFIG REQUIRED)
+hypha_generate_messages(PACKAGE std_msgs MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/std_msgs")
+EOF_REDECLARE
+set +e
+redeclare_output="$(cmake -S "${REDECLARE_DIR}" -B "${WORK_DIR}/redeclare" \
+  -DCMAKE_PREFIX_PATH="${PREFIX}" 2>&1)"
+redeclare_status=$?
+set -e
+if [ "${redeclare_status}" -eq 0 ]; then
+  echo "ERROR: a second declaration of std_msgs was accepted." >&2
+  exit 1
+fi
+# CMake wraps a long message, so the lines are joined before the match.
+if ! tr -s '[:space:]' ' ' <<<"${redeclare_output}" | grep -q "package 'std_msgs' is declared twice"; then
+  echo "ERROR: the second declaration of std_msgs failed for another reason:" >&2
+  echo "${redeclare_output}" >&2
+  exit 1
+fi
+
 # An installed tool is a target too: hypha::topic runs the prefix's hypha topic.
 echo "==> Running hypha::topic from the installed package..."
 mkdir -p "${WORK_DIR}/tools"

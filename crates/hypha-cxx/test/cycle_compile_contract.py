@@ -16,8 +16,8 @@ def main() -> int:
 
     common = r"""#include <hypha/hypha.h>
 #include <hypha/cycle_node.h>
-#include <hypha_msgs/std_msgs/Float64.h>
-#include <hypha_msgs/std_msgs/String.h>
+#include <std_msgs/Float64.h>
+#include <std_msgs/String.h>
 #include <deque>
 #include <expected>
 #include <optional>

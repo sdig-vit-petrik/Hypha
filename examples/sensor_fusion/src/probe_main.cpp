@@ -5,8 +5,9 @@
 // <ms> is the time since the probe started.
 
 #include <hypha/hypha.h>
-#include <hypha_msgs/std_msgs/Float64.h>
-#include <hypha_msgs/std_msgs/UInt8.h>
+
+#include <std_msgs/Float64.h>
+#include <std_msgs/UInt8.h>
 
 #include <cstdint>
 #include <cstdio>

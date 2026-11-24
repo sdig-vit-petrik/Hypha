@@ -1,6 +1,7 @@
 #include <hypha/hypha.h>
 #include <hypha/hypha_ffi.h>
-#include <hypha_msgs/consumer_msgs/Reading.h>
+
+#include <consumer_msgs/Reading.h>
 
 int main()
 {

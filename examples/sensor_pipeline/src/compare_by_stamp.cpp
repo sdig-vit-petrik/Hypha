@@ -16,8 +16,9 @@
 
 #include <hypha/hypha.h>
 #include <hypha/testing/mcap_replay.h>
-#include <hypha_msgs/geometry_msgs/PointStamped.h>
-#include <hypha_msgs/sensor_msgs/PointCloud2.h>
+
+#include <geometry_msgs/PointStamped.h>
+#include <sensor_msgs/PointCloud2.h>
 
 #include <algorithm>
 #include <cmath>

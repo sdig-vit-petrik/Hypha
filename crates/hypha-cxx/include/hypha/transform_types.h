@@ -6,7 +6,8 @@
 #include "hypha/hypha_ffi.h"
 #include "hypha/message_stamp.h"
 #include "hypha_base/time.h"
-#include <hypha_msgs/geometry_msgs/TransformStamped.h>
+
+#include <geometry_msgs/TransformStamped.h>
 
 #include <cstdint>
 #include <expected>

@@ -7,7 +7,6 @@
 /// served before the next is sent, so the node sees them in the scenario's order.
 
 #include <hypha/transform_buffer.h>
-#include <hypha_msgs/rosgraph_msgs/Clock.h>
 
 #include "gyro_odometer_node.hpp"
 
@@ -17,6 +16,7 @@
 #include <geometry_msgs/msg/twist_with_covariance_stamped.hpp>
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
+#include <rosgraph_msgs/Clock.h>
 #include <sensor_msgs/msg/imu.hpp>
 
 #include <memory>

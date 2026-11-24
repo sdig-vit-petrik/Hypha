@@ -1,13 +1,13 @@
 #include "hypha/cycle_node.h"
 #include "hypha/hypha.h"
 #include "hypha/testing.h"
-#include <hypha_msgs/std_msgs/Float64.h>
 
 #include "introspection_text.h"
 #include "test_types.h"
 
 #include <gtest/gtest.h>
 #include <ros/serialization.h>
+#include <std_msgs/Float64.h>
 
 #include <atomic>
 #include <chrono>

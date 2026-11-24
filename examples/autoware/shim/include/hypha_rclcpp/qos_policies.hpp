@@ -8,8 +8,9 @@
 /// `default`: start the nodes first.
 
 #include <hypha/qos.h>
-#include <hypha_msgs/geometry_msgs/TwistWithCovarianceStamped.h>
-#include <hypha_msgs/nav_msgs/Odometry.h>
+
+#include <geometry_msgs/TwistWithCovarianceStamped.h>
+#include <nav_msgs/Odometry.h>
 
 namespace hypha_rclcpp::policies {
 
