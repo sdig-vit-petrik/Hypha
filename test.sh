@@ -18,9 +18,14 @@ suite="${1:-all}"
 ./build.sh --tests "${clean[@]}"
 # Every test process runs in a bus domain of its own under the test root t_, so the
 # domains of the runs that ended are all there is to clear: a system running on this
-# host, and the tests of another run, keep theirs.
-./scripts/test-clean-shm.sh
-./clean-shm.sh --domain t_
+# host, and the tests of another run, keep theirs. The build uses no bus, so the
+# hypha it just built clears them.
+clean_status=0
+target/release/hypha clean --domain t_ || clean_status=$?
+case "$clean_status" in
+  0 | 2) ;; # 2: it kept the test domain of another run that still lives
+  *) exit "$clean_status" ;;
+esac
 
 if [[ "$suite" == all || "$suite" == rust ]]; then
   cargo clippy --locked --workspace --all-targets -- -D warnings

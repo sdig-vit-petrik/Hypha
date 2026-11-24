@@ -9,7 +9,7 @@
 # The domain is t_<pid of ctest>_<n>: the test root t_, the run, and the number of
 # the test in this project. It is set when the test starts, so a test's ENVIRONMENT
 # property cannot replace it, and it has at most 2 + 7 + 1 + 5 of the 32 characters
-# a domain may have. `clean-shm.sh --domain t_` removes the domains of the runs that
+# a domain may have. `hypha clean --domain t_` removes the domains of the runs that
 # ended.
 #
 #   hypha_add_test(my_node_test)

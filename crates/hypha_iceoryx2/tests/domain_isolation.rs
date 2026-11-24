@@ -118,7 +118,7 @@ fn domain_child() {
     assert!(passed, "the child role '{role}' failed");
 }
 
-/// A domain of this test run under the test root, which `clean-shm.sh --domain t_` clears.
+/// A domain of this test run under the test root, which `hypha clean --domain t_` clears.
 fn test_domain(side: &str) -> String {
     format!("t_{}_{side}", std::process::id())
 }

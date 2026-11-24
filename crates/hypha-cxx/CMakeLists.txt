@@ -214,7 +214,7 @@ if(HYPHA_BUILD_TESTS)
   target_link_libraries(framework_stamp_peer PRIVATE hypha)
 
   # A replay participant that a backward seek restarts. The Rust test
-  # apps/hypha_tools/tests/play_restart.rs runs it under hypha_play.
+  # apps/hypha_tools/tests/play_restart.rs runs it under hypha play.
   add_executable(replay_restart_peer test/replay_restart_peer.cpp)
   target_link_libraries(replay_restart_peer PRIVATE hypha)
 

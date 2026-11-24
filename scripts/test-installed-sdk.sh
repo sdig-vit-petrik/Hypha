@@ -100,6 +100,42 @@ CMAKE
 cmake -S "${WORK_DIR}/tools" -B "${WORK_DIR}/tools/build" -DCMAKE_PREFIX_PATH="${PREFIX}"
 cmake --build "${WORK_DIR}/tools/build"
 
+# The short names: hy is hypha, and every tool `hypha --help` lists has its link
+# hy<tool>; no old hypha_<tool> link is installed.
+echo "==> Checking the installed short names hy and hy<tool>..."
+for tool in $("${PREFIX}/bin/hypha" --help | sed -n '/^Tools:$/,/^$/s/^  \([a-z]*\) .*/\1/p'); do
+  if [ ! -L "${PREFIX}/bin/hy${tool}" ]; then
+    echo "ERROR: the installed link hy${tool} is missing." >&2
+    exit 1
+  fi
+done
+old_links="$(find "${PREFIX}/bin" -type l -name 'hypha_*' -print)"
+if [ -n "${old_links}" ]; then
+  echo "ERROR: old tool links are installed: ${old_links}" >&2
+  exit 1
+fi
+readonly SHORT_DOMAIN="t_$$_sdk_hy"
+HYPHA_DOMAIN="${SHORT_DOMAIN}" "${PREFIX}/bin/hy" topic list --timeout 0.2
+HYPHA_DOMAIN="${SHORT_DOMAIN}" "${PREFIX}/bin/hytopic" list --timeout 0.2
+"${PREFIX}/bin/hy" clean --domain "${SHORT_DOMAIN}"
+
+# The installed hypha clean removes a domain nobody uses, then has nothing to remove.
+echo "==> Running the installed hypha clean on a scratch test domain..."
+readonly CLEAN_DOMAIN="t_$$_sdk_clean"
+readonly CLEAN_FILE="/tmp/iceoryx2/iox2-${CLEAN_DOMAIN}-x.event"
+mkdir -p /tmp/iceoryx2
+: >"${CLEAN_FILE}"
+"${PREFIX}/bin/hypha" clean --domain "${CLEAN_DOMAIN}"
+if [ -e "${CLEAN_FILE}" ]; then
+  echo "ERROR: the installed hypha clean left ${CLEAN_FILE}." >&2
+  exit 1
+fi
+clean_output="$("${PREFIX}/bin/hypha" clean --domain "${CLEAN_DOMAIN}")"
+if [[ "${clean_output}" != *"nothing to remove"* ]]; then
+  echo "ERROR: a second hypha clean did not report nothing to remove: ${clean_output}" >&2
+  exit 1
+fi
+
 # The installed package finds Threads itself. A consumer that links only
 # hypha::sdk must build and run without naming a Threads target.
 echo "==> Building and running a consumer that links only hypha::sdk..."

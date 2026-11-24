@@ -1,5 +1,7 @@
 #pragma once
 
+#include "hypha_base/short_namespace.h"
+
 #include <chrono>
 #include <cmath>
 #include <cstdint>

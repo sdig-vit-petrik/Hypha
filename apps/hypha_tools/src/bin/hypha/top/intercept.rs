@@ -944,7 +944,7 @@ impl InterceptView {
     /// and changes nothing; a file that does not parse is never overwritten.
     fn mutate(&mut self, change: impl FnOnce(&mut InterceptConfig) -> Result<(), String>) {
         let Some(backend) = self.backend() else {
-            "no hypha_intercept backend is running".clone_into(&mut self.message);
+            "no hypha intercept backend is running".clone_into(&mut self.message);
             return;
         };
         let applied = backend.applied_revision;

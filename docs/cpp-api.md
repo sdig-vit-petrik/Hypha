@@ -11,6 +11,14 @@ besides (section 10.1), `hypha::TransformBuffer` and `hypha::StaticTransformBroa
 `<hypha/transform_buffer.h>` (section 10.2), and the step harness `<hypha/testing.h>`
 (section 5.4).
 
+`hy` is a second name of the namespace `hypha`: `hy::Node`, `hy::Duration` and
+`hy::now()` are `hypha::Node`, `hypha::Duration` and `hypha::now()`. It is a namespace
+alias, not a namespace of its own, so types, lookup, specializations (`hypha::QosOf`)
+and compiler messages keep the name `hypha`. `<hypha/hypha.h>` and the `hypha_base/`
+headers declare it (`hypha_base/short_namespace.h`). It takes the global name `hy`: a
+program with a global `hy` of its own defines `HYPHA_NO_SHORT_NAMESPACE` before it
+includes a hypha header. This guide and hypha's own code write `hypha::`.
+
 | Task                                                                  | Section | Example                                                                                              |
 | --------------------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------- |
 | A node that steps over its inputs at a rate                           | 1, 5.4  | `examples/speed`, `examples/scan_cycle`                                                          |
@@ -1111,5 +1119,6 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hyph
 | `hypha/config.h`                                                       | `config()`, `ConfigView`, `ConfigList`, `ConfigContext`, `ParameterError`; it includes `constraints.h` (`constraints`)                                                                                                 |
 | `hypha/introspection.h`, `hypha/metrics.h`                           | `introspect`, `nodeState`, `recordConfig`; `metrics`, `metric`                                                                                                                             |
 | `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h` | `Duration`, `Time`, literals; `now`, `steadyNow`, simulated time; `toRosTime`, `fromRosTime`                                                                                             |
+| `hypha_base/short_namespace.h`                                     | the alias `hy` of `hypha`; `HYPHA_NO_SHORT_NAMESPACE` leaves it out                                                                                                                      |
 | `hypha_log/hypha_log.h`                                                | The `HYPHA_LOG_*` macros                                                                                                                                                                           |
 | `hypha/hypha_ffi.h`                                                    | The C ABI below them all: [interface-specification.md](interface-specification.md)                                                                                                                    |

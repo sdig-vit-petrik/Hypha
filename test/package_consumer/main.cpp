@@ -2,6 +2,7 @@
 #include <hypha/hypha_ffi.h>
 
 #include "ros2_style.h"
+#include "short_namespace.h"
 
 #include <consumer_msgs/Reading.h>
 
@@ -24,7 +25,7 @@ int main()
         std::make_shared<consumer_msgs::Reading>(reading);
     const bool ros1NamesUsable = shared->value == 1.5;
 
-    const bool consumerOk =
-        validClock && nestedTypeUsable && ros1NamesUsable && ros2StyleTypesUsable();
+    const bool consumerOk = validClock && nestedTypeUsable && ros1NamesUsable
+                         && ros2StyleTypesUsable() && shortNamespaceUsable() && ownGlobalHyUsable();
     return consumerOk ? 0 : 1;
 }

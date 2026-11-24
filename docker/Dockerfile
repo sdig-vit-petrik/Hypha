@@ -34,7 +34,7 @@ RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
     && echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
 
 # lsof lets clean-shm.sh find the processes that still hold shared memory;
-# tmux runs hypha_launch sessions; patch applies the Autoware port's edits. The
+# tmux runs hypha launch sessions; patch applies the Autoware port's edits. The
 # examples' libraries come in a layer of their own below, after Rust, so a new one
 # does not rebuild the toolchain.
 RUN apt-get update && apt-get install -y --no-install-recommends \

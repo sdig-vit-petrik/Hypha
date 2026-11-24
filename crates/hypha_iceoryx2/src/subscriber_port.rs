@@ -105,7 +105,7 @@ fn subscriber_create_port_error(cause: SubscriberCreateError) -> PortError {
         Error::ExceedsMaxSupportedSubscribers => PortError::ResourceLimit,
         Error::BufferSizeExceedsMaxSupportedBufferSizeOfService => {
             log::error!(target: "hypha/transport", "hypha_iceoryx2: {cause}: a stale shared-memory segment or a different hypha \
-                     build created this service; run `./clean-shm.sh`");
+                     build created this service; run `hypha clean` with the domain stopped");
             PortError::QosMismatch
         }
         Error::HistoryRequestExceedsHistorySizeOfService
