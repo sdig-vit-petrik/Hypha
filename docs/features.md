@@ -48,6 +48,7 @@ Usage below counts files outside tests in the first application built on hypha (
 | Feature | Question it answers | API | Users |
 |---|---|---|---|
 | Node | How does a process join the bus? | `hypha::Node`, `node.h`, `hypha_node_create`, `hypha_node_destroy`, `hypha_node_name`, `hypha_node_ok`, `hypha_node_shutdown`, `hypha_node_default_waitset` | app 12, mrs 7, ex 11 |
+| Short namespace | How do I write less than `hypha::` in C++? | `hy::` (`hy::Node`, `hy::now()`): the namespace alias `namespace hy = hypha;` in `hypha_base/short_namespace.h`, which `<hypha/hypha.h>` and the `hypha_base/` headers include; `HYPHA_NO_SHORT_NAMESPACE` before the first hypha include leaves it out for a program with a global `hy` of its own | app |
 | Application lifecycle | How does a node run construction, setup, start and the run in order? | `hypha::ApplicationNode`, `hypha::runNode` (extra arguments go to the application's constructor), `application_node.h`, `status.h` | app 9, mrs 7, ex 4 |
 | Node report | What is this node, and are its inputs healthy? | Every `runNode` application publishes its manifest latched on `~/introspection` and its state on `~/state` once a second. `hypha::nodeState()`, `hypha_node_state` | all applications |
 | Undecodable input sample | What happens to a cycle input sample that does not decode? | It is counted (`RequiredInput.undecodable`), logged at most once per 10 s, and judged as never sent; the step and the run go on. `hypha_cycle_image_reject_sample`, `HyphaCycleSampleView.sequence` | all applications |

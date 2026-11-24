@@ -25,5 +25,7 @@ hypha_generate_messages(PACKAGE consumer_msgs
 hypha_generate_ros2_headers(consumer_ros2_headers
   PACKAGES std_msgs geometry_msgs consumer_msgs)
 
-add_executable(hypha_package_consumer main.cpp ros2_style.cpp)
+# short_namespace.cpp uses only hy::, own_global_hy.cpp opts out of it beside a hy of its own.
+add_executable(hypha_package_consumer main.cpp ros2_style.cpp short_namespace.cpp
+  own_global_hy.cpp)
 target_link_libraries(hypha_package_consumer PRIVATE hypha::sdk consumer_msgs consumer_ros2_headers)
