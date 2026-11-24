@@ -276,7 +276,7 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
                             DataCallback::Foreign(Some(foreign.adopt()))
                         }
                     };
-                    Ok((id, Target::Subscription { subscriber, callback, head: None }))
+                    Ok((id, Target::Subscription { subscriber, callback }))
                 }
                 Err(status) => {
                     // A refused attach claims nothing.

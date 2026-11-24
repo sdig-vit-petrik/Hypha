@@ -47,16 +47,6 @@ impl UpstreamHold {
                 subscribers.push(subscriber);
             }
         }
-        self.settle_subscribers(subscribers, node)
-    }
-
-    /// As [`UpstreamHold::settle`], for the publishers of `subscribers`: the plain
-    /// subscriptions of a `WaitSet` whose callbacks take part in the replay.
-    pub(crate) fn settle_subscribers<'s>(
-        &mut self,
-        subscribers: impl IntoIterator<Item = &'s HyphaSubscriber>,
-        node: &HyphaNode,
-    ) -> Result<Limit, Error> {
         self.input_ids.clear();
         for subscriber in subscribers {
             subscriber.port.publisher_node_ids(&mut self.input_ids);

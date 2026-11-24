@@ -810,7 +810,7 @@ inputs only ([cpp-api.md](cpp-api.md) §5.1), and without `runNode` the node pub
 no `~/state` and `~/introspection` and refuses no unread parameter key
 ([cpp-api.md](cpp-api.md) §2). `Node::run()` calls every callback on the calling
 thread, and each `publish()` goes out at once. The model is in
-[execution-model.md](execution-model.md) §3, §4 and §11.3. Write the reason for a
+[execution-model.md](execution-model.md) §3, §4 and §11.2. Write the reason for a
 plain node in the change description.
 
 ### 10.2 Literal topic or port name
@@ -1030,20 +1030,18 @@ runs the node on simulated time from a recorded fixture of 98296 bytes with `hyp
 --clock` and `hypha record --sync`, and makes three checks:
 
 - **Loss.** The node prints `missingSequences()` and `metrics()` of each subscriber. A
-  replay reports `missing=0`, also in slow mode (`[slow] enabled = true`): the player
-  waits for the stalled node instead of overrunning its queues. Live, slow mode shows a
-  growing count.
-- **Timer misses.** The node prints `Timer::missedCount()`. In a replay its timer runs
-  every period at its deadline and misses none; live, the stalls show as misses.
+  replay at `--rate 1` reports `missing=0`; slow mode (`[slow] enabled = true`) shows a
+  growing count, live and in a replay, since nothing waits for a plain node.
+- **Timer misses.** The node prints `Timer::missedCount()`; the stalls of slow mode
+  show as misses.
 - **Comparison by stamp.** `sensor_pipeline_compare` reads two recordings with the test
   MCAP reader and pairs the outputs by `header.stamp`: two runs of the node, or a run and
   the ROS node's golden output.
 
-A plain node on simulated time takes part in the replay (#72): its callbacks run in
-time order at their events' times, and the player waits for it
-([execution-model.md](execution-model.md) §11.2). Two replays of the recipe are
-identical, and the slow run sets the replay's rate instead of losing samples. A worker
-thread the node starts is outside that order.
+A plain node on simulated time takes no part in the replay lockstep (#153): its
+callbacks run as their samples arrive, and the player does not wait for it
+([execution-model.md](execution-model.md) §11.2). Its replays are not identical from
+run to run; a node that needs a deterministic replay is built from cycles.
 
 
 ### 10.9 The exit code of a custom `main`

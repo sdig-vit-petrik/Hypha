@@ -293,11 +293,10 @@ Reference: `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h`,
   time or on its own simulated clock. It joins before the run next waits; on a
   simulated clock the node does not own, `Node::timer()` throws. Reference:
   `hypha/node.h` (`Timer`, `TimerStatus`).
-- In a replay, a node that follows `/clock` runs its subscription and timer callbacks
-  in time order, each at its event's time: inside the callback `hypha::now()` and the
-  stamp of every message it publishes are the sample's send time or the timer's
-  deadline, and a timer runs every period (execution-model.md §11.2, #72). A worker
-  thread the node starts is outside that order.
+- In a replay, a plain subscription or timer callback takes no part in the lockstep:
+  it runs as its sample arrives, `hypha::now()` is the clock, and a timer fires once
+  per turn with its missed count (execution-model.md §11.2, #153). Only cycles are
+  held, ordered and reported.
 - Seconds as a `double` must be finite: `Duration::fromSeconds`, `Time::fromSeconds`
   and `Duration * double` throw `std::invalid_argument` for NaN or infinite input
   (a compile error in a constant expression), and clamp finite input outside the int64
