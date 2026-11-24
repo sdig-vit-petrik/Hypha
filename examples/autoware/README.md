@@ -15,8 +15,9 @@ in lockstep (#46, #72).
 
 ## How it is built
 
-- `upstream/<repository>/`: vendored sources, unchanged, with their `LICENSE` and the
-  commit they come from (`README.md` in each).
+- `upstream/<repository>/`: vendored sources, unchanged, with their `LICENSE`.
+  `README.md` says which files and why, `vendor.toml` the repository's URL, tag or branch
+  and commit, and every copied file with its SHA-256 (section "Vendoring and patches").
 - `upstream/patches/<package>.patch`: the whole edit of the port to one package. The
   build copies the package into the build directory and applies its patch
   (`patch -p1`); every edit is also marked `// hypha port:` with its reason. A patch
@@ -31,6 +32,37 @@ in lockstep (#46, #72).
   definitions that are valid ROS 1 syntax, vendored unchanged (`upstream/autoware_msgs/`).
 - `config/`: one TOML file per process, holding exactly the keys the node declares.
   A missing key or an unread one is refused with exit 78.
+
+## Vendoring and patches
+
+`tools/port.py` (Python standard library, `git`, `diff` and `patch`) holds the porting
+workflow:
+
+```bash
+# Offline: every vendored file against its SHA-256, no file the manifest leaves out,
+# and every patch applies (patch --dry-run, the build's flags). ./check.sh runs it.
+python3 -I examples/autoware/tools/port.py verify
+
+# Fetch the manifest's commit (git fetch --depth 1) and write its listed files again,
+# with their hashes; --add takes more files or directories at their upstream paths,
+# --from a mirror or a local clone in place of the manifest's URL.
+python3 -I examples/autoware/tools/port.py vendor autoware_universe
+python3 -I examples/autoware/tools/port.py vendor autoware_core --add <upstream path>
+
+# Edit a package: a patched copy outside the build directory, then the patch written back
+# against the vendored files, with the patch header.
+python3 -I examples/autoware/tools/port.py edit autoware_gnss_poser /tmp/gnss_poser
+python3 -I examples/autoware/tools/port.py diff autoware_gnss_poser /tmp/gnss_poser
+```
+
+A new repository starts with a `vendor.toml` holding `url`, `commit` and, when there is
+one, `ref`; `vendor --add` fills `[files]`. A file whose path here differs from its path
+upstream is listed in `[renamed]` (`common_interfaces/LICENSE`). A package without a patch
+names its directory once: `edit <package> <dir> --source upstream/<repository>/<path>`, and
+`diff` with the same `--source`; afterwards the patch header names it. To drop a file,
+delete it and its `[files]` line. The patch lines depend on the `diff` that writes them
+(Apple's and GNU's group hunks differently); a patch applies the same edits either way.
+`tools/test_port.py` tests the tool on a temporary tree; `./check.sh` runs it.
 
 ## The shim
 

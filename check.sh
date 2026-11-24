@@ -12,6 +12,9 @@ cd "$(dirname "$0")"
 # reference names a test in the tree.
 python3 -I scripts/traceability.py render --verify
 python3 -I scripts/test_traceability.py
+# examples/autoware: the vendored files against their manifests, and every patch applies.
+python3 -I examples/autoware/tools/port.py verify
+python3 -I examples/autoware/tools/test_port.py
 ./scripts/check-features.sh
 git ls-files '*.sh' | xargs shellcheck --severity=warning --external-sources
 
