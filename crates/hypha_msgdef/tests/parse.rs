@@ -1,5 +1,6 @@
 //! Integration tests for `hypha_msgdef::parse`.
 
+use hypha_msgdef::definition::parse_definition;
 use hypha_msgdef::parse::{ParseError, parse_message};
 use hypha_msgdef::spec::{Constant, Field, FieldType, MessageSpec, Multiplicity, TypeName};
 
@@ -230,6 +231,84 @@ fn empty_constant_name_is_an_error() {
     let expected = Err(ParseError::EmptyName { line: 2 });
 
     assert_eq!(parse_message(own_type(), text), expected);
+}
+
+#[test]
+fn a_ros2_default_value_after_a_field_name_is_refused() {
+    let result = parse_message(own_type(), "uint32 seq\nfloat64 x 1.0\n");
+    let expected =
+        ParseError::TrailingText { line: 2, name: String::from("x"), text: String::from("1.0") };
+
+    assert_eq!(result, Err(expected.clone()));
+    assert_eq!(
+        expected.to_string(),
+        "line 2: unexpected `1.0` after field `x`; a default value is ROS 2 syntax, which is not supported"
+    );
+}
+
+#[test]
+fn a_second_word_after_a_field_name_is_refused() {
+    let expected =
+        ParseError::TrailingText { line: 1, name: String::from("x"), text: String::from("y") };
+
+    assert_eq!(parse_message(own_type(), "int32 x y # comment\n"), Err(expected));
+}
+
+#[test]
+fn a_field_name_that_is_not_an_identifier_is_refused() {
+    for name in ["a-b", "2x", "_x", "x.y", "é"] {
+        let text = format!("uint32 seq\nint32 {name}\n");
+        let expected = ParseError::InvalidName { line: 2, text: String::from(name) };
+        assert_eq!(parse_message(own_type(), &text), Err(expected), "name {name}");
+    }
+    assert_eq!(
+        ParseError::InvalidName { line: 2, text: String::from("a-b") }.to_string(),
+        "line 2: field or constant name `a-b` is not a letter followed by letters, digits or `_`"
+    );
+}
+
+#[test]
+fn a_constant_name_that_is_not_an_identifier_is_refused() {
+    for name in ["2X", "A-B", "A B"] {
+        let text = format!("int32 {name}=1\n");
+        let expected = ParseError::InvalidName { line: 1, text: String::from(name) };
+        assert_eq!(parse_message(own_type(), &text), Err(expected), "name {name}");
+    }
+}
+
+#[test]
+fn names_with_digits_and_underscores_are_accepted() {
+    let text = "int32 MAX_2 = 7\nfloat64 x\nint32 point2d_a__b_\nuint8[3] Rgb_8\nstring class\n";
+    let expected = MessageSpec {
+        type_name: own_type(),
+        constants: vec![constant(FieldType::Int32, "MAX_2", "7")],
+        fields: vec![
+            field(FieldType::Float64, Multiplicity::Unit, "x"),
+            field(FieldType::Int32, Multiplicity::Unit, "point2d_a__b_"),
+            field(FieldType::UInt8, Multiplicity::Fixed(3), "Rgb_8"),
+            field(FieldType::Text, Multiplicity::Unit, "class"),
+        ],
+    };
+
+    assert_eq!(parse_message(own_type(), text), Ok(expected));
+}
+
+#[test]
+fn a_definition_from_the_bus_with_a_bad_field_name_is_refused() {
+    let text = "uint32 seq\n\
+                other_pkg/Inner inner\n\
+                ================================================================================\n\
+                MSG: other_pkg/Inner\n\
+                float64 x 1.0\n";
+    let error = parse_definition(&own_type(), text).map(|_| ()).map_err(|error| error.to_string());
+
+    assert_eq!(
+        error,
+        Err(String::from(
+            "section `other_pkg/Inner` is not a valid message: line 1: unexpected `1.0` after \
+             field `x`; a default value is ROS 2 syntax, which is not supported"
+        ))
+    );
 }
 
 #[test]
