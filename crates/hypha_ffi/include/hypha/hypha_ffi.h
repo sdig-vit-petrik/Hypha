@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 4
+#define HYPHA_ABI_REVISION 6
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -336,9 +336,9 @@ typedef struct HyphaLoan HyphaLoan;
 // A session on the bus. Opaque to the caller.
 //
 // `hypha_node_create` reads `HYPHA_USE_SIM_TIME`: `1` or `true` puts the node on
-// simulated time, in the replay lockstep; `follow` puts it on simulated time outside the
-// lockstep, as a ROS node follows `ros2 bag play`; `0`, `false` or an unset variable
-// leaves it off, and any other value is `InvalidArgument`. A refused parameter file or `[log]` table is `InvalidArgument`,
+// simulated time, in the replay lockstep unless `HYPHA_REPLAY_LOCKSTEP=0` turns it off;
+// `0`, `false` or an unset variable leaves it off, and any other value is
+// `InvalidArgument`. A refused parameter file or `[log]` table is `InvalidArgument`,
 // or `InvalidState` for a sink lock another process holds or a second, different `[log]`
 // table. Each `WaitSet` on the node co-owns it, so the node outlives it whatever order
 // (or thread) the caller destroys them in.
@@ -371,8 +371,9 @@ typedef struct HyphaTransformBuffer HyphaTransformBuffer;
 // attach a timer whose wake needs no native attachment, which joins the dispatch before
 // the next wait; and cancel, reset or read a timer. Any other attach, a second run, and
 // a call that creates, configures or destroys a cycle or an input source return
-// `InvalidState`. A run must not start while another thread is inside a call on this
-// `WaitSet`: that is a caller error with no status.
+// `InvalidState`. Each call and each run claims the `WaitSet` for the calling thread,
+// so a run or a call that another thread starts while one is inside a call returns
+// `InvalidState` too (#83).
 typedef struct HyphaWaitSet HyphaWaitSet;
 
 // The settings of a cycle that drives `/clock` for a simulator.
@@ -1386,6 +1387,8 @@ HyphaStatus hypha_last_error(char *out,
 // writable bytes, valid until the loan is sent or dropped; both are null on any other
 // status. The caller owns the loan and releases it with `hypha_loan_send` or
 // `hypha_loan_drop`. A null `publisher`, `out` or `out_payload` is `InvalidArgument`.
+// `InvalidState` once the node that made the publisher was destroyed
+// (`hypha_node_destroy`): nothing is sent on a node that has left the bus.
 //
 // # Safety
 // `publisher` must come from `hypha_publish_with_qos`. `out` and `out_payload` each
@@ -1400,6 +1403,7 @@ HyphaStatus hypha_publisher_loan_frame(struct HyphaPublisher *publisher,
 // The framework send time is `framework_sent_nanos` when it is zero or more, else
 // framework time on the calling thread: the time of the cycle step or the replayed
 // callback that sends, else the framework clock. A null `loan` returns `InvalidArgument`.
+// `InvalidState`, and nothing sent, once the publisher's node was destroyed.
 //
 // # Safety
 // `loan` must come from `hypha_publisher_loan_frame` and must not be used afterwards.

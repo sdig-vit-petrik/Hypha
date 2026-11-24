@@ -1,6 +1,6 @@
 //! A node on simulated time never rewinds in place (#130): a `/clock` sample lower than
 //! the last one the node applied ends its `WaitSet` run with `ClockRewound`, whatever is
-//! attached, in the lockstep and in follow mode (`HYPHA_USE_SIM_TIME=follow`).
+//! attached, in the lockstep and in an open-loop playback (`HYPHA_REPLAY_LOCKSTEP=0`).
 #![allow(clippy::expect_used, reason = "a test fails on a refused setup step")]
 
 use std::time::Duration;
@@ -17,8 +17,8 @@ const SECOND: u64 = 1_000_000_000;
 /// One run: long enough for the `WaitSet` to read a `/clock` sample already queued.
 const TURN: Duration = Duration::from_millis(50);
 
-/// A node on simulated time in `mode`, whose `WaitSet` holds one subscription and
-/// nothing else, and a second node that publishes `/clock`.
+/// A node on simulated time, in the lockstep or not, whose `WaitSet` holds one
+/// subscription and nothing else, and a second node that publishes `/clock`.
 struct Rig {
     // The node is leaked: a test process runs one test and ends with it.
     waitset: WaitSet<'static>,
@@ -27,11 +27,13 @@ struct Rig {
 }
 
 impl Rig {
-    fn new(label: &str, mode: &str) -> Self {
-        hypha_testkit::set_env("HYPHA_USE_SIM_TIME", mode);
+    fn new(label: &str, lockstep: &str) -> Self {
+        hypha_testkit::set_env("HYPHA_USE_SIM_TIME", "1");
+        hypha_testkit::set_env("HYPHA_REPLAY_LOCKSTEP", lockstep);
         let node: &'static BusNode =
             Box::leak(Box::new(BusNode::new(&unique_name(label)).expect("node")));
         hypha_testkit::remove_env("HYPHA_USE_SIM_TIME");
+        hypha_testkit::remove_env("HYPHA_REPLAY_LOCKSTEP");
         let clock_node = BusNode::new(&unique_name("clock")).expect("clock node");
         let clock = clock_node
             .publish_raw_configured(
@@ -78,8 +80,8 @@ fn assert_rewound(result: &hypha_node::sdk::RunResult) {
 }
 
 #[test]
-fn a_follow_node_with_only_a_subscription_ends_its_run_on_a_backward_clock() {
-    let mut rig = Rig::new("follow_rewind", "follow");
+fn an_open_loop_node_with_only_a_subscription_ends_its_run_on_a_backward_clock() {
+    let mut rig = Rig::new("open_loop_rewind", "0");
     rig.clock(100 * SECOND);
     let first = rig.run();
     assert!(first.ok(), "{:?}", first.err());

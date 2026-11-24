@@ -88,6 +88,7 @@ fn attach_both(
     request: &QosRequest,
     state: &Arc<Mutex<TfState>>,
 ) -> Result<[HyphaAttachmentId; 2], Error> {
+    let _claim = set.shared.claim()?;
     if set.is_running() {
         return Err(Error::InvalidState);
     }
@@ -153,6 +154,7 @@ pub fn transform_buffer_destroy(buffer: &HyphaTransformBuffer) -> Result<(), Err
         WaitSetSlot::Absent | WaitSetSlot::Closed => return Ok(()),
         WaitSetSlot::Lent => return Err(Error::InvalidState),
     };
+    let _claim = set.shared.claim()?;
     let [dynamic, fixed] = buffer.attachments;
     waitset_detach(set, dynamic)?;
     waitset_detach(set, fixed)

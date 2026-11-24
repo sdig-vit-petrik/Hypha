@@ -324,12 +324,15 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   native stop, the failure flag), which the C entry reaches through the raw handle
   without a reference to the `!Sync` `WaitSet`, and the run borrows the `RefCell` fields
   (`native`, `registrations`, `cycles`, `input_sources`) for its length. Every other
-  C entry that names a `WaitSet` or a cycle asks `WaitSetShared::runs_on_another_thread`
-  first (`hypha_ffi` `waitset_here`) and returns `InvalidState` there, so a thread
-  other than the run's never forms `&HyphaWaitSet` once the run is on. The check and the
-  borrow are two steps: a call admitted just before another thread starts a run still
-  holds the `WaitSet` beside that run. The C contract forbids it (one thread at a time
-  outside a run) and no status reports it. The cycle snapshots are read
+  C entry that names a `WaitSet` or a cycle claims it first (`WaitSetShared::claim`,
+  through `hypha_ffi` `waitset_here`, whose result holds the claim until the call
+  returns) and returns `InvalidState` when another thread holds it; a run claims it for
+  its whole length (`waitset_run`). The claim is one compare-and-swap of an owner token,
+  so of a call and a run that start at once exactly one gets the `WaitSet` (#83); a
+  call from a callback of the run is inside the run's claim. A thread other than the
+  holder never forms `&HyphaWaitSet`. A Rust path that reaches a `WaitSet` without a C
+  entry (the transform buffer of a plain node, an input source's destroy) claims it
+  itself. The cycle snapshots are read
   through the C handle's `Arc<CycleSnapshots>` alone. A configuration call on the
   run's own thread checks `running` first, then `try_borrow_mut`, and reports
   `InvalidState` instead of panicking when a borrow is live. Do not add a field a
@@ -429,7 +432,7 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   (`node_progress::epoch`). Only then is the clock value compared.
 - **Time going back restarts; nothing rewinds in place.** A timer or cycle that sees
   simulated time go back, and a node on simulated time that reads a `/clock` lower than
-  its last one, whatever it holds and in follow mode too (#130), end the run with
+  its last one, whatever it holds and in the open loop too (#130), end the run with
   `ClockRewound`, `runNode` exits 75, and `hypha launch` starts the process again. Do not add rewind handling: the old
   in-place rewind (abandoned samples, re-reads, re-anchored fallbacks) was the main
   source of replay bugs. The restarted process must not open a port before every old

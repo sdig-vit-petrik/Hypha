@@ -233,8 +233,12 @@ subscriber or a triggered cycle; every publisher notifies. Latch it for late sta
 
 ### 2.3 Cleaning up
 
-The `Node` that created the session leaves the bus in its destructor and destroys every
-cycle of the session; one that shares the session destroys nothing (`hypha/node.h`).
+Every `Node` of a process joins one session, and the last one destroyed leaves the bus
+and destroys every cycle of the session, whatever order the `Node`s were made in (#97);
+a default-constructed `Node` joins nothing and does not count (`hypha/node.h`). A
+publisher of a session that has left sends nothing: `publish()` returns false with
+`lastPublishStatus()` `InvalidState`, as the C ABI's loan and send do once the node was
+destroyed.
 A start-up error throws from `Node`, `advertise`, `subscribe` or `timer`, naming the port
 or topic and status (`hypha: ports.outputs.command failed: NotAvailable`). Bad bus data
 is counted, logged at a bounded rate and dropped, never fatal. No exception crosses the

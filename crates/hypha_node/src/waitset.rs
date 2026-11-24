@@ -36,8 +36,8 @@ pub use timer_control::{
 
 use std::cell::{Ref, RefCell, RefMut};
 use std::os::raw::c_void;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
 use hypha_core::dispatch::{BatchStep, BatchTurn, DispatchLimits};
@@ -83,8 +83,9 @@ pub struct HyphaDelivery {
 /// attach a timer whose wake needs no native attachment, which joins the dispatch before
 /// the next wait; and cancel, reset or read a timer. Any other attach, a second run, and
 /// a call that creates, configures or destroys a cycle or an input source return
-/// `InvalidState`. A run must not start while another thread is inside a call on this
-/// `WaitSet`: that is a caller error with no status.
+/// `InvalidState`. Each call and each run claims the `WaitSet` for the calling thread,
+/// so a run or a call that another thread starts while one is inside a call returns
+/// `InvalidState` too (#83).
 pub struct HyphaWaitSet {
     /// The node this `WaitSet` serves and co-owns: its destruction drops the `WaitSet` first.
     node: Arc<HyphaNode>,
@@ -174,9 +175,39 @@ pub struct WaitSetShared {
     /// Set by [`WaitSetShared::request_failure`] from any thread: the current or next run
     /// ends as failed with [`HyphaStatus::ApplicationFailed`]. The run that reports it clears it.
     failure: std::sync::atomic::AtomicBool,
-    /// The thread that owns the current run, `None` between runs. A call from any other
-    /// thread during the run is refused ([`WaitSetShared::runs_on_another_thread`]).
-    run_owner: std::sync::Mutex<Option<ThreadId>>,
+    /// The claim token of the thread inside a call or a run on this `WaitSet`, 0 when
+    /// none is ([`WaitSetShared::claim`]).
+    owner: AtomicU64,
+}
+
+/// The source of the claim tokens; each thread takes one, never 0, on its first claim.
+static NEXT_CLAIM_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    static CLAIM_TOKEN: u64 = NEXT_CLAIM_TOKEN.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The calling thread's claim token.
+fn claim_token() -> u64 {
+    CLAIM_TOKEN.with(|token| *token)
+}
+
+/// The claim of a `WaitSet` by the calling thread for one call or one run, released when
+/// it drops. A claim inside a claim of the same thread, such as a callback's call during
+/// the run, holds nothing more and releases nothing.
+#[must_use = "the claim holds the WaitSet until it drops"]
+pub struct WaitSetClaim<'a> {
+    shared: &'a WaitSetShared,
+    /// Whether this claim took the `WaitSet`, so its drop gives it back.
+    took: bool,
+}
+
+impl Drop for WaitSetClaim<'_> {
+    fn drop(&mut self) {
+        if self.took {
+            self.shared.owner.store(0, Ordering::Release);
+        }
+    }
 }
 
 // `hypha_waitset_request_stop` and `hypha_waitset_request_failure` reach this from
@@ -193,28 +224,31 @@ impl WaitSetShared {
             running: hypha_runtime::RunState::default(),
             stop,
             failure: std::sync::atomic::AtomicBool::new(false),
-            run_owner: std::sync::Mutex::new(None),
+            owner: AtomicU64::new(0),
         }
     }
 
-    /// Whether the `WaitSet` runs on a thread other than the calling one, so a C call
-    /// that only the run's own thread may make is refused with `InvalidState` before it
-    /// forms a reference to the `WaitSet`. Any thread may call it.
-    #[must_use]
-    pub fn runs_on_another_thread(&self) -> bool {
-        if !self.running.is_running() {
-            return false;
+    /// Claim the `WaitSet` for the calling thread until the claim drops: one
+    /// compare-and-swap of the owner, so of two threads that start a call or a run at once
+    /// exactly one gets it. A C call claims before it forms a reference to the `WaitSet`,
+    /// and a run claims for its whole length. Any thread may call it.
+    ///
+    /// # Errors
+    /// `InvalidState` while another thread is inside a call or a run on this `WaitSet`;
+    /// nothing is claimed then.
+    pub fn claim(&self) -> Result<WaitSetClaim<'_>, Error> {
+        let token = claim_token();
+        match self.owner.compare_exchange(0, token, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => Ok(WaitSetClaim { shared: self, took: true }),
+            Err(held) if held == token => Ok(WaitSetClaim { shared: self, took: false }),
+            Err(_) => Err(Error::InvalidState),
         }
-        self.run_owner() != Some(std::thread::current().id())
     }
 
-    pub(crate) fn run_owner(&self) -> Option<ThreadId> {
-        *self.run_owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Record `owner` as the thread of the current run, `None` once it ends.
-    pub(crate) fn set_run_owner(&self, owner: Option<ThreadId>) {
-        *self.run_owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = owner;
+    /// Whether a run is in progress on the calling thread: the run holds the claim for its
+    /// whole length, so a call from one of its callbacks is the only one that sees it.
+    pub(crate) fn runs_on_this_thread(&self) -> bool {
+        self.running.is_running() && self.owner.load(Ordering::Acquire) == claim_token()
     }
 
     /// Whether the application asked for the run to fail. Any thread may read it.
