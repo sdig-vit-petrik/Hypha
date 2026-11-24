@@ -62,8 +62,9 @@ Usage below counts files outside tests in the first application built on hypha (
 ### 3.2 Callback endpoints
 
 Kept beside cycles (decided 2026-11-08). Rule: **a cycle when the node's work is a step
-over its inputs at a rate or per trigger; a callback when each message must be handled
-as it arrives, below one cycle period, or by a tool.**
+over its inputs at a rate, or on each sample of one input (a triggered cycle, #138); a
+callback when the node's callbacks publish on more than one input, when it owns worker
+threads, or in a tool or a shim of a ROS client library.**
 
 | Feature | Question it answers | API | Users |
 |---|---|---|---|
