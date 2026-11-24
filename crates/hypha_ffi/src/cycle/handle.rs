@@ -3,7 +3,7 @@
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use crate::waitset::access::waitset_here;
+use crate::waitset::access::{ClaimedWaitSet, waitset_here};
 use hypha_node::safe::{CycleId, CycleSnapshots, HyphaWaitSet};
 use hypha_node::status::HyphaStatus;
 
@@ -93,11 +93,12 @@ impl CycleTarget {
         Ok(Self { waitset, id })
     }
 
-    /// The `WaitSet` of the cycle and its id. `InvalidState` while it runs on another thread.
+    /// The `WaitSet` of the cycle, claimed for the call, and its id. `InvalidState` while
+    /// another thread is inside a call or a run on it.
     ///
     /// # Safety
     /// The handle this target was read from must still be live for `'a`.
-    pub(crate) unsafe fn waitset<'a>(self) -> Result<(&'a HyphaWaitSet, CycleId), HyphaStatus> {
+    pub(crate) unsafe fn waitset<'a>(self) -> Result<(ClaimedWaitSet<'a>, CycleId), HyphaStatus> {
         // SAFETY: the `WaitSet` outlives its cycles' handles; the rest is the caller's.
         let set = unsafe { waitset_here(self.waitset) }?;
         Ok((set, self.id))

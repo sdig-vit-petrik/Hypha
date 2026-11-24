@@ -35,7 +35,7 @@ pub unsafe extern "C" fn hypha_waitset_timer_cancel(
         Ok(set) => set,
         Err(status) => return status,
     };
-    status_of(waitset_timer_cancel(set, timer))
+    status_of(waitset_timer_cancel(&set, timer))
 }
 
 /// Reset a plain timer: its next call comes one period after now on the clock it was
@@ -58,7 +58,7 @@ pub unsafe extern "C" fn hypha_waitset_timer_reset(
         Ok(set) => set,
         Err(status) => return status,
     };
-    status_of(waitset_timer_reset(set, timer))
+    status_of(waitset_timer_reset(&set, timer))
 }
 
 /// Write the state of a plain timer to `out`, read at the call (see `HyphaTimerState`).
@@ -85,7 +85,7 @@ pub unsafe extern "C" fn hypha_waitset_timer_state(
         Ok(set) => set,
         Err(status) => return status,
     };
-    match waitset_timer_state(set, timer) {
+    match waitset_timer_state(&set, timer) {
         Ok(state) => {
             // SAFETY: `out` is non-null by the check above and writable by the contract.
             unsafe { out.write(state) };

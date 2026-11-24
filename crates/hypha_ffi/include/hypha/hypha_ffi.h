@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 4
+#define HYPHA_ABI_REVISION 5
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -371,8 +371,9 @@ typedef struct HyphaTransformBuffer HyphaTransformBuffer;
 // attach a timer whose wake needs no native attachment, which joins the dispatch before
 // the next wait; and cancel, reset or read a timer. Any other attach, a second run, and
 // a call that creates, configures or destroys a cycle or an input source return
-// `InvalidState`. A run must not start while another thread is inside a call on this
-// `WaitSet`: that is a caller error with no status.
+// `InvalidState`. Each call and each run claims the `WaitSet` for the calling thread,
+// so a run or a call that another thread starts while one is inside a call returns
+// `InvalidState` too (#83).
 typedef struct HyphaWaitSet HyphaWaitSet;
 
 // The settings of a cycle that drives `/clock` for a simulator.

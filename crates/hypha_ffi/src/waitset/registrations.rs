@@ -41,7 +41,7 @@ pub unsafe extern "C" fn hypha_waitset_attach(
     // `Arc`; the registration takes one more owner, which a refused attach drops.
     // SAFETY: the `WaitSet` is live by the caller's contract.
     let reach = || unsafe { waitset_here(waitset) }.map_err(|_| Error::InvalidState);
-    let attached = waitset_attach_foreign::<CCallbacks>(reach, &supplied, |subscriber| unsafe {
+    let attached = waitset_attach_foreign::<CCallbacks, _>(reach, &supplied, |subscriber| unsafe {
         Arc::increment_strong_count(subscriber);
         Arc::from_raw(subscriber.cast_const())
     });
@@ -72,5 +72,5 @@ pub unsafe extern "C" fn hypha_waitset_detach(
         Ok(set) => set,
         Err(status) => return status,
     };
-    hypha_node::status::status_of(waitset_detach(set, attachment))
+    hypha_node::status::status_of(waitset_detach(&set, attachment))
 }

@@ -86,7 +86,7 @@ modes it covers.
 | AoU-15 | The work of a safety function runs on its own `WaitSet` and thread, or in its own process, with no callback of lower integrity beside it. |
 | AoU-20 | A thread of a safety function does not log to a sink that can block, or its log level keeps the hot path silent. |
 | AoU-21 | A callback subscription whose data a safety function needs has a check of its own that the data keeps arriving (a cycle input with `silence_ms`, or a watchdog): hypha does not detect a sample left unread by a lost notification. |
-| AoU-22 | A `WaitSet` is used by one thread at a time: between runs by any thread, during a run by the thread that runs it and, from other threads, only by the calls the C header allows during a run. A run never starts while another thread is inside a call on that `WaitSet` (FM-37). |
+| AoU-22 | A `WaitSet` is used by one thread at a time: between runs by any thread, during a run by the thread that runs it and, from other threads, only by the calls the C header allows during a run. A call or a run that breaks this is refused with `InvalidState` and changes nothing (FM-37, #83); the application treats that status from a `WaitSet` call as a fault of its own threading. |
 
 ### 4.4 End-to-end protection
 
