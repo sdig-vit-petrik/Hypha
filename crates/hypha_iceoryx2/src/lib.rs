@@ -11,7 +11,7 @@
 //! The segment in `/dev/shm/iox2_*` survives a process that stops without
 //! cleanup. A [`PortError::Backend`](hypha_core::port::PortError::Backend) with
 //! code 2 directly after a capacity or iceoryx2 version change is almost always a
-//! stale segment: run `./clean-shm.sh` with no node running.
+//! stale segment: run `hypha clean` with the domain stopped.
 //!
 //! Containers must share `/dev/shm` and `/tmp/iceoryx2` and the same numeric UID
 //! and GID; sharing only one path is not a supported deployment.
@@ -39,7 +39,7 @@
 //! | 38 | a send that could not establish a connection to a subscriber | a subscriber that went away mid-send |
 //! | 39 | a send that reached some subscribers but not all | a subscriber that cannot take the data |
 //! | 40 | a send that failed inside iceoryx2 | an internal iceoryx2 failure |
-//! | 41 | the dead run of the node's own name could not be reclaimed, so the node did not start | a crashed run that still holds the name's ports; `./clean-shm.sh` with the domain stopped |
+//! | 41 | the dead run of the node's own name could not be reclaimed, so the node did not start | a crashed run that still holds the name's ports; `hypha clean` with the domain stopped |
 //!
 //! Every publisher notifies its topic's event service after each successful
 //! send. A wildcard subscriber has no event service and is polled. This crate
@@ -83,6 +83,7 @@ mod discovery;
 pub mod domain;
 mod endpoint;
 mod header;
+pub mod host_resources;
 mod latch;
 mod notification;
 mod preflight;

@@ -655,7 +655,7 @@ or 1.
 - **One `[log]` table for each process.** A second node in the same process
   with a different table fails with `InvalidState`.
 - **Stale shared memory after a crash** can look like a code fault. Run
-  `./clean-shm.sh` before you look for a bug.
+  `hypha clean` with the domain stopped before you look for a bug.
 - **A backward seek or a loop of `hypha play --clock` restarts the node.** A node
   that reads a `/clock` lower than its last one ends the run with `ClockRewound`, with
   or without a timer and in the open loop too, as does a cycle that sees simulated time go
@@ -732,7 +732,7 @@ Rules:
   with one comment that names the report.
 - **Prove a defect.** Give the smallest command or test that shows it, the
   output you saw and the output that the documentation states. Clear
-  stale shared memory with `./clean-shm.sh` in the hypha repository first, so
+  stale shared memory with `hypha clean` (the domain stopped) first, so
   that an environment fault is not reported as a defect.
 
 Write each item in this form, in your report to the developer:

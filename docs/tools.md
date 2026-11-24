@@ -1,8 +1,8 @@
 # Command-line tools
 
-Ten tools ship with hypha, as one executable: `hypha <tool>` with the tools
-`topic`, `top`, `node`, `record`, `play`, `convert`, `intercept`, `foxglove`, `launch`
-and `param`; `hypha --help` lists them. The installation also links each old name
+Eleven tools ship with hypha, as one executable: `hypha <tool>` with the tools
+`topic`, `top`, `node`, `record`, `play`, `convert`, `intercept`, `foxglove`, `launch`,
+`param` and `clean`; `hypha --help` lists them. The installation also links each old name
 (`hypha_topic`, `hypha_play`, ..., `hypha_foxglove_bridge` for `hypha foxglove`)
 to `hypha`, and a start under such a name runs that tool, so `hypha_play --input
 run.mcap` and `hypha play --input run.mcap` are the same command. Messages name
@@ -11,7 +11,8 @@ executables of their own.
 
 The tools are ordinary bus nodes: each one joins the
 bus through the framework, and none of them reaches around it to the transport.
-`hypha convert` and `hypha param` work on files and do not join the bus.
+`hypha convert` and `hypha param` work on files and do not join the bus, and
+`hypha clean` removes a domain's resources without joining it.
 
 `hypha top`, `hypha topic`, `hypha node` and `hypha record` without `--sync` join
 as CLI tool nodes, `_hyphacli_<tool>`: any number of each runs at once in one
@@ -615,6 +616,50 @@ file by hand, so its comments and key order stay as written.
 There is no live parameter server — parameters are read at node start-up.
 
 ---
+
+### `hypha clean` — remove the shared memory of domains nobody uses
+
+```text
+hypha clean --domain <prefix>   every domain whose name starts with <prefix>
+hypha clean                     the domain of HYPHA_DOMAIN, the domain "none" when unset
+```
+
+A process that ends without its cleanup, after a crash or a kill, leaves its domain's
+iceoryx2 resources behind, and a segment made by another hypha build or with other
+limits fails the next open (`docs/engineering-traps.md`). `hypha clean` removes every
+resource of a domain nobody uses: the shared-memory segments (`/dev/shm` on Linux, the
+objects that `/tmp/iox2*.shm_state` names on macOS) and the services, node files,
+sockets and schema files under `/tmp/iceoryx2`. It matches names inside the per-node
+directories `nodes/<id>/`, which several domains share, and removes such a directory
+only once it is empty. It kills nothing.
+
+It keeps a domain while one of its nodes lives, as iceoryx2's node monitor reports it:
+the lock a live process holds on its node's monitor file, which the kernel releases when
+the process ends. A node of another user, or one whose files are inconsistent, also
+keeps its domain. Under `--domain`, it also keeps a domain while its run lives: the
+process whose id follows the prefix in the domain's name, so a test domain `t_<pid>_<n>`
+stays between the tests of a running suite. A process that holds a resource without a
+node of the domain is not seen. A node in the middle of its start is not yet listed, so
+a clean of a domain that is starting can remove what that node just created.
+
+It prints a line for each domain it removed (with its count of resources), each it
+kept and why, and each resource it could not remove, then a summary line:
+
+```text
+hypha clean: removed domain t_4711_3 (21 resources)
+hypha clean: kept domain t_5120_1: node sensor_driver of pid 5133 is alive
+hypha clean: of the domains under 't_', removed 1, kept 1, failed 0
+```
+
+Exit codes: 0 removed every domain it covered, 1 failed (a command line it refuses, a
+resource it could not read or remove), 2 nothing to remove, 3 kept a domain in use
+(and may have removed others). A script that only needs to know about failures runs
+`hypha clean --domain t_ || [ "$?" -ne 1 ]`, as `test.sh` and `examples/check.sh` do.
+`hypha clean` without `--domain` never touches another domain, even one whose name
+starts with this one.
+
+To wipe every domain of the host, and to kill the processes that still hold a resource,
+the repository keeps `./clean-shm.sh [--force]`, which needs `lsof`.
 
 ## Testing communication
 

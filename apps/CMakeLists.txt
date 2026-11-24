@@ -10,6 +10,7 @@ set(HYPHA_APP_BINARIES
 
 # The old tool names. Each is a link to `hypha`, which runs the tool its name names.
 set(HYPHA_TOOL_LINKS
+    hypha_clean
     hypha_foxglove_bridge
     hypha_intercept
     hypha_launch

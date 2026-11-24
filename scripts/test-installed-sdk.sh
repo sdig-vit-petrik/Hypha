@@ -94,6 +94,24 @@ CMAKE
 cmake -S "${WORK_DIR}/tools" -B "${WORK_DIR}/tools/build" -DCMAKE_PREFIX_PATH="${PREFIX}"
 cmake --build "${WORK_DIR}/tools/build"
 
+# The installed hypha clean removes a domain nobody uses, then has nothing to remove (2).
+echo "==> Running the installed hypha clean on a scratch test domain..."
+readonly CLEAN_DOMAIN="t_$$_sdk_clean"
+readonly CLEAN_FILE="/tmp/iceoryx2/iox2-${CLEAN_DOMAIN}-x.event"
+mkdir -p /tmp/iceoryx2
+: >"${CLEAN_FILE}"
+"${PREFIX}/bin/hypha" clean --domain "${CLEAN_DOMAIN}"
+if [ -e "${CLEAN_FILE}" ]; then
+  echo "ERROR: the installed hypha clean left ${CLEAN_FILE}." >&2
+  exit 1
+fi
+clean_status=0
+"${PREFIX}/bin/hypha" clean --domain "${CLEAN_DOMAIN}" >/dev/null || clean_status=$?
+if [ "${clean_status}" -ne 2 ]; then
+  echo "ERROR: a second hypha clean exited ${clean_status}, not 2 (nothing to remove)." >&2
+  exit 1
+fi
+
 # The installed package finds Threads itself. A consumer that links only
 # hypha::sdk must build and run without naming a Threads target.
 echo "==> Building and running a consumer that links only hypha::sdk..."

@@ -29,8 +29,8 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   creator stamps its policy on the service, so every creator creates the same service
   whatever the start order. A subscriber sets only `buffer_size` (unset: the service's
   `max_depth`, 32 for `default`), and a larger one is refused with `ResourceLimit`.
-  A stale segment keeps old limits and fails the open; run `./clean-shm.sh` after changing a value
-  or upgrading hypha.
+  A stale segment keeps old limits and fails the open; run `hypha clean` with the domain stopped
+  (`./clean-shm.sh` for every domain of the host) after changing a value or upgrading hypha.
 - **A growable publisher keeps bookkeeping of 8 bytes per pool sample for each of 32 segments,
   and reserves its pool at its first slot size.** iceoryx2's `PowerOfTwo` allocation sizes its
   bookkeeping for every segment it could create: the publisher's reference counters and segment
@@ -91,10 +91,12 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   `transport.rs::reclaim_dead_nodes`). A dead application node of another name
   stays listed, so the tools show the crash, and keeps its ports: a topic whose
   slots it holds stays full until the node restarts or the domain is wiped.
-  This does not remove the need for `./clean-shm.sh`: a segment whose owning
+  This does not remove the need for `hypha clean`: a segment whose owning
   process is still alive but wedged is not `Dead`, a node iceoryx2 reports as
   `Inaccessible` is left untouched, and a dead node whose name never returns is
-  never reclaimed. All need the manual wipe.
+  never reclaimed. A dead node is removed by `hypha clean` of its stopped domain;
+  a wedged process keeps its domain in use until it is stopped (or
+  `./clean-shm.sh --force` kills it).
   A dead CLI tool node is reclaimed by any node creation in the domain, not only
   in the process that kills it. A test that kills one and inspects the registry
   can therefore be reaped early by another process's node creation in its domain,
@@ -355,7 +357,7 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
     count is the output's `perStep()`, set at bind. A publisher with fewer loans is refused
     with `ResourceLimit`, because its shortfall would look like a full pool.
   - iceoryx2 reserves the loan count in each publisher's own data segment, so
-    raising it changes the segment size. Run `./clean-shm.sh` after changing it.
+    raising it changes the segment size. Run `hypha clean` with the domain stopped after changing it.
   - The sequence number is assigned at dispatch, not at reserve. A reserved message
     that is never sent therefore leaves no gap. A message dropped for lack of a loan
     still takes its number, so the subscriber counts it as a loss.
@@ -391,7 +393,7 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   `scripts/private-domain.sh`, which gives it the domain
   `t_<nextest pid>_<slot>`: no two running tests share one. The
   next test in a slot reclaims only the dead CLI tool nodes of the one before;
-  `test.sh` runs `./clean-shm.sh --domain t_` before the suite, which removes the
+  `test.sh` runs `hypha clean --domain t_` before the suite, which removes the
   test domains of the runs that ended and nothing else. The C++ test
   main (`crates/hypha-cxx/test/test_main.cpp`) gives each gtest shard process,
   which ctest runs in parallel, the domain `t_<pid>` and a

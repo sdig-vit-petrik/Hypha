@@ -62,8 +62,13 @@ cmake -S examples -B "$BUILD_DIR" $CMAKE_ARGS
 cmake --build "$BUILD_DIR" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 
 # Every test runs in a bus domain of its own under the test root t_ (hypha_add_test); the
-# domains of the runs that ended go, a system running on this host keeps its own.
-./clean-shm.sh --domain t_
+# domains of the runs that ended go, a system running on this host keeps its own. The
+# SDK's hypha clears them (on PATH without --prefix); exit 1 is a failure, 2 and 3 not.
+HYPHA_TOOL="hypha"
+if [[ -n "$PREFIX" ]]; then
+  HYPHA_TOOL="$PREFIX/bin/hypha"
+fi
+"$HYPHA_TOOL" clean --domain t_ || [ "$?" -ne 1 ]
 
 echo -e "\n-> The MRS flights: unit checks, then every scenario"
 # Each flight in a test domain of its own, t_<pid of this gate>_<n>.

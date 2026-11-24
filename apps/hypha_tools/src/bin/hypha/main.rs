@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+mod clean;
 mod cli;
 mod convert;
 mod foxglove;
@@ -34,7 +35,7 @@ struct Tool {
 }
 
 /// Every tool, in the order `hypha --help` lists them.
-const TOOLS: [Tool; 10] = [
+const TOOLS: [Tool; 11] = [
     Tool {
         subcommand: "topic",
         linked_name: "hypha_topic",
@@ -94,6 +95,12 @@ const TOOLS: [Tool; 10] = [
         linked_name: "hypha_param",
         main: param::main,
         summary: "inspect a TOML parameter file",
+    },
+    Tool {
+        subcommand: "clean",
+        linked_name: "hypha_clean",
+        main: clean::main,
+        summary: "remove the shared memory of bus domains nobody uses",
     },
 ];
 

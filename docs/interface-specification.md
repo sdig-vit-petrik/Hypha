@@ -143,8 +143,9 @@ process, not to one node:
   change: two domains can each carry `/odom_speed`. The value is `[a-z][a-z0-9_]`, at
   most 32 characters. An invalid value, also one that is not UTF-8, refuses the first
   call that needs the transport and names the variable; it never falls back to no
-  domain. `./clean-shm.sh` wipes every domain; `./clean-shm.sh --domain <prefix>`
-  only the domains named `<prefix>*` that no live process uses.
+  domain. `hypha clean --domain <prefix>` removes the domains named `<prefix>*` that
+  no live node uses, `hypha clean` the domain of `HYPHA_DOMAIN`; `./clean-shm.sh` in
+  the repository wipes every domain of the host.
 - **Restart when time goes back.** A timer or cycle of a `WaitSet` that sees simulated
   time go back, and a `WaitSet` of a node on simulated time (lockstep or follow, not a CLI
   tool) that reads a `/clock` lower than the node's last one, end the run with `ClockRewound`; the process exits 75 (C++ `runNode`)
@@ -287,7 +288,7 @@ The domain also turns iceoryx2's dead-node cleanup off: `global.node.cleanup-dea
 `false` whatever a host file sets. A node that starts reclaims the nodes iceoryx2 reports as dead
 that have its own name, the runs a crash or a kill ended, and every dead CLI tool node
 (`_hyphacli_<tool>`). The dead node of an application stays listed as dead until then, so the
-tools show it, and keeps its ports; `./clean-shm.sh` wipes a stopped domain.
+tools show it, and keeps its ports; `hypha clean` removes a stopped domain.
 No host `iceoryx2.toml` is read, in `./config/`, the user directory or the system directory. The
 root path, the prefix and the timeouts are iceoryx2's defaults, or the prefix `HYPHA_DOMAIN` selects,
 in every process, whatever the working directory.
@@ -313,7 +314,7 @@ reserve nothing.
 A framework topic (`/clock`, `/clock_progress`) holds at most 32 publishers,
 32 subscribers and 64 nodes; every node that subscribes `/clock` or reports on
 `/clock_progress` counts. Any other topic holds the limits of its policy. After a change of
-these values run `./clean-shm.sh`: a stale segment keeps its old limits.
+these values run `hypha clean` with the domain stopped: a stale segment keeps its old limits.
 
 A wildcard subscriber attaches only to a publish-subscribe service that already exists.
 It never creates one, it never follows a request-response service of the same name,
