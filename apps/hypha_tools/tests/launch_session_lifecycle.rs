@@ -290,3 +290,34 @@ fn units_get_the_callers_environment_when_the_server_already_runs() {
     let scrollback = server.scrollback("fleet", "env");
     assert!(scrollback.contains(&format!("mark={expected}=")), "{scrollback}");
 }
+
+/// A unit runs in a background process group of its window, so `hypha play` there cannot
+/// read the terminal. It takes no keys and draws no progress line, and a key typed in the
+/// window does not stop the replay: the player reaches the end of the recording (#109).
+#[test]
+fn a_key_typed_in_a_player_units_window_does_not_stall_the_replay() {
+    let server = PrivateServer::new("player_key");
+    let recording = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/sensor_pipeline/fixture/sensor_inputs.mcap"
+    );
+    let domain = format!("t_{}_player_key", std::process::id());
+    let path = write_units_file(
+        "player_key",
+        &format!(
+            "[[units]]\nname = \"player\"\nexec = \"{LAUNCHER}\"\nargs = [\"play\", \"--input\", \"{recording}\"]\n[units.env]\nHYPHA_DOMAIN = \"{domain}\"\n"
+        ),
+    );
+    up(&server, &path, "fleet").unwrap();
+    wait_until(Duration::from_secs(20), "the replay's start", || {
+        server.scrollback("fleet", "player").contains("Playing back")
+    });
+    server.run(&["send-keys", "-t", "=fleet:=player", " "]);
+    wait_until(Duration::from_secs(60), "the end of the recording", || {
+        server.pane_field("fleet", "player", "#{pane_dead}") == "1"
+    });
+    assert_eq!(server.pane_field("fleet", "player", "#{pane_dead_status}"), "0");
+    let scrollback = server.scrollback("fleet", "player");
+    assert!(!scrollback.contains("Controls:"), "the player took the terminal: {scrollback}");
+    assert!(!scrollback.contains("[PLAYING]"), "the player drew a progress line: {scrollback}");
+}

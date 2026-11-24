@@ -38,10 +38,12 @@ impl Default for TerminalController {
 }
 
 impl TerminalController {
-    /// Initializes terminal controller and enters raw mode if stdout is an interactive TTY.
+    /// Initializes the controller. It is interactive, and enters raw mode, when stdin and
+    /// stdout are terminals and this process may read the terminal (see [`owns_terminal`]).
     #[must_use]
     pub fn new() -> Self {
-        let is_interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+        let is_interactive =
+            io::stdin().is_terminal() && io::stdout().is_terminal() && owns_terminal();
         let mut controller = Self { is_interactive, raw_mode_enabled: false };
         if is_interactive {
             controller.enable_raw();
@@ -49,7 +51,7 @@ impl TerminalController {
         controller
     }
 
-    /// Whether standard input/output is an interactive terminal.
+    /// Whether standard input/output is a terminal this process took keys from at its start.
     #[must_use]
     pub fn is_interactive(&self) -> bool {
         self.is_interactive
@@ -74,7 +76,8 @@ impl TerminalController {
 
     /// Polls for a key event without blocking.
     pub fn poll_key(&mut self) -> KeyAction {
-        if !self.raw_mode_enabled {
+        // Asked each time: a shell can move the process to the background after its start.
+        if !self.raw_mode_enabled || !owns_terminal() {
             return KeyAction::None;
         }
 
@@ -199,6 +202,15 @@ impl Drop for TerminalController {
     fn drop(&mut self) {
         self.disable_raw();
     }
+}
+
+/// Whether this process's group is the foreground group of the terminal on stdin.
+///
+/// Only that group can read the terminal. In any other group (a unit of `hypha launch`, a
+/// shell's background job) a read fails or stops the process, and crossterm's poll repeats
+/// a failed read without limit, so the keys must not be polled at all.
+fn owns_terminal() -> bool {
+    nix::unistd::tcgetpgrp(io::stdin()).is_ok_and(|foreground| foreground == nix::unistd::getpgrp())
 }
 
 fn format_duration(total_sec: f64) -> String {

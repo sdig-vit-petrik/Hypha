@@ -391,7 +391,10 @@ Observers, such as a recorder or the bridge, are not waited for. A message sent
 before one connects is lost to it.
 
 Interactive keys while playing: pause (`<Space>`), step one chunk (`<s>`), speed
-up and slow down (`<+>` and `<->`), restart (`<r>`), quit (`<q>`).
+up and slow down (`<+>` and `<->`), restart (`<r>`), quit (`<q>`). The keys and the
+progress line need a terminal on stdin and stdout that the player may read: it must be
+in the terminal's foreground process group. As a shell's background job or a
+`hypha launch` unit the player takes no keys and prints plain lines.
 
 ### `hypha convert` — a ROS 2 bag into a recording
 
@@ -552,8 +555,9 @@ node running.
 - **A node that calls `setsid` or `setpgid` leaves its process group**, and
   the supervisor's group signals do not reach it.
 - **A node does not own the terminal.** It runs in a background process group of
-  its window, so a read from the terminal stops it with SIGTTIN. Output is not
-  affected.
+  its window, so it gets no keys: a read from the terminal stops it with SIGTTIN,
+  or fails with `EIO` when the node ignores or blocks that signal. Output is not
+  affected. `hypha play` as a unit sees this, takes no keys and prints plain lines.
 
 #### Measured cost
 
