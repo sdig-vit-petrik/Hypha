@@ -27,22 +27,9 @@ hypha_generate_messages(PACKAGE mrs_msgs
   OUT_DIR "${MRS_MSG_OUT}"
   DEPENDS std_msgs geometry_msgs sensor_msgs nav_msgs)
 
-# Upstream code includes <mrs_msgs/UavState.h> and <geometry_msgs/Pose.h>: the package
-# directories, generated and installed, go on the include path one level below hypha_msgs/.
-get_target_property(MRS_SDK_INCLUDES hypha::sdk INTERFACE_INCLUDE_DIRECTORIES)
-set(MRS_SDK_MSG_INCLUDES "")
-foreach(dir ${MRS_SDK_INCLUDES})
-  string(REGEX REPLACE "^\\$<BUILD_INTERFACE:(.*)>$" "\\1" dir "${dir}")
-  string(REGEX REPLACE "^\\$<INSTALL_INTERFACE:.*>$" "" dir "${dir}")
-  if(dir AND IS_DIRECTORY "${dir}/hypha_msgs")
-    list(APPEND MRS_SDK_MSG_INCLUDES "${dir}/hypha_msgs")
-  endif()
-endforeach()
-if(NOT MRS_SDK_MSG_INCLUDES)
-  message(FATAL_ERROR "examples/mrs: no hypha_msgs directory on the hypha::sdk include path")
-endif()
+# Upstream code includes <mrs_msgs/UavState.h> and <geometry_msgs/Pose.h>, the paths the
+# message targets and hypha::sdk put on the include path.
 add_library(mrs_includes INTERFACE)
-target_include_directories(mrs_includes INTERFACE "${MRS_MSG_OUT}/hypha_msgs" ${MRS_SDK_MSG_INCLUDES})
 target_link_libraries(mrs_includes INTERFACE mrs_msgs mrs_bridge std_srvs hypha::sdk Eigen3::Eigen)
 target_compile_features(mrs_includes INTERFACE cxx_std_23)
 

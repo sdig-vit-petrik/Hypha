@@ -1,7 +1,8 @@
 /// Frozen speed readings with explicit missing/stale verdicts and cycle outputs.
 #include <hypha/hypha.h>
-#include <hypha_msgs/std_msgs/Bool.h>
-#include <hypha_msgs/std_msgs/Float64.h>
+
+#include <std_msgs/Bool.h>
+#include <std_msgs/Float64.h>
 
 #include <cmath>
 

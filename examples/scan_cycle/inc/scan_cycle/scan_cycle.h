@@ -7,10 +7,11 @@
 /// - setpoint: Latest, optionalTopic and advisory. Not usable means the fallback setpoint.
 
 #include <hypha/hypha.h>
-#include <hypha_msgs/geometry_msgs/TwistStamped.h>
-#include <hypha_msgs/std_msgs/Float64.h>
 
 #include "scan_cycle/command_law.h"
+
+#include <geometry_msgs/TwistStamped.h>
+#include <std_msgs/Float64.h>
 
 #include <cmath>
 #include <cstdint>

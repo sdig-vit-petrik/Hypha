@@ -3,7 +3,8 @@
 /// Stops after the last message. It never goes back: a backward seek restarts the
 /// participants of a replay instead (hypha play).
 #include <hypha/hypha.h>
-#include <hypha_msgs/rosgraph_msgs/Clock.h>
+
+#include <rosgraph_msgs/Clock.h>
 
 #include <cstdint>
 #include <cstdio>

@@ -1,6 +1,7 @@
 /// Periodic publication on the node executor also serves schema requests.
 #include <hypha/hypha.h>
-#include <hypha_msgs/std_msgs/Float64.h>
+
+#include <std_msgs/Float64.h>
 
 HYPHA_LOG_MODULE_INIT("speed_source")
 

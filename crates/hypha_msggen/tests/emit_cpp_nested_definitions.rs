@@ -67,3 +67,18 @@ fn message_with_nested_type_includes_nested_message_sections() {
     let output = emit_message(&specs, &outer, "md5").expect("message emits");
     assert!(output.contains("MSG: geometry_msgs/Point"));
 }
+
+#[test]
+#[allow(clippy::expect_used)]
+fn service_header_includes_its_halves_at_the_package_path() {
+    let service =
+        parse_service(TypeName::new("demo_msgs", "Scale"), "float64 k\n---\nfloat64 out\n")
+            .expect("service parses");
+    let mut specs = SpecSet::new();
+    specs.insert(service.request.clone());
+    specs.insert(service.response.clone());
+    let identity = service_identity(&specs, &service).expect("identity resolves");
+    let output = emit_service(&specs, &service, &identity).expect("service emits");
+    assert!(output.service.contains("#include <demo_msgs/ScaleRequest.h>\n"));
+    assert!(output.service.contains("#include <demo_msgs/ScaleResponse.h>\n"));
+}

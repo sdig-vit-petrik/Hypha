@@ -1,11 +1,10 @@
 // The checked conversion to the RosTime wire type. A split that wraps a negative or a
 // too-large time writes a plausible but wrong stamp, so the conversion refuses those values.
 
-#include <hypha_msgs/std_msgs/Header.h>
-
 #include "test_types.h"
 
 #include <gtest/gtest.h>
+#include <std_msgs/Header.h>
 
 #include <cstdint>
 #include <limits>

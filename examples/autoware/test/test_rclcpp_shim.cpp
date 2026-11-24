@@ -1,11 +1,11 @@
 /// @file
 /// The rclcpp shim: names, time, the QoS check, timers and services.
 
-#include <hypha_msgs/sensor_msgs/PointCloud2.h>
 #include <hypha_rclcpp_msgs/ServiceCall.h>
 
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/PointCloud2.h>
 #include <std_srvs/srv/set_bool.hpp>
 #include <tf2_ros/transform_broadcaster.hpp>
 
