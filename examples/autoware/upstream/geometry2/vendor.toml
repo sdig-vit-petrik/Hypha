@@ -1,0 +1,20 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/ros2/geometry2"
+ref = "jazzy"
+commit = "f702874b1c8535d6a038230ab2cda0ba5d521ebd"
+
+# Path here = SHA-256 of the file.
+[files]
+"LICENSE" = "1b1e5ebcad699924203feced7205a4bbdf4f153d34065a19a8a4e107cf1e154b"
+"tf2/include/tf2/LinearMath/Matrix3x3.hpp" = "d40543b6fc7f9afb9c8f930d7e0675afc4487a1d3c6fb87855f02bdf898ee3a5"
+"tf2/include/tf2/LinearMath/MinMax.hpp" = "568adcc8baab2d7494c0cd24661fcc5e7891892ea69041c4313305a5e143970a"
+"tf2/include/tf2/LinearMath/QuadWord.hpp" = "5b1bdb013dcb318a4ee962d528fea751abdb17d3deaa831794d1d8032034a231"
+"tf2/include/tf2/LinearMath/Quaternion.hpp" = "cf3fbf86b281f8c1965c3acc5f165061a0f31b2da4ef2d51613394186a1cfc60"
+"tf2/include/tf2/LinearMath/Scalar.hpp" = "4a623268710d7d58ab4e6edca3998ea19f22749c00563824094e02c401c780f1"
+"tf2/include/tf2/LinearMath/Transform.hpp" = "7f9b3ceda58e5a7704b8249872892c61d1bb3fed51ba5885884d63d50cc365c4"
+"tf2/include/tf2/LinearMath/Vector3.hpp" = "5473f8b7d1d7080e9c7d5ca3bdeb3c9ea24ec47b1169adefcd77a3c0efbf0af3"
+"tf2/include/tf2/exceptions.hpp" = "5989ff1843931dd877268701ee67f743b31286b189273175f94e623da671768b"
+"tf2/include/tf2/time.hpp" = "b3af5120a8edfb4b3b8be3b3ba3169d87a5fdc53a33bfbd55336051c91dce25f"
+"tf2/include/tf2/transform_datatypes.hpp" = "d0ea6ba5c30e4643b35db679794e063186c8f0d32e13b0e824214bbefa8aa756"
+"tf2/include/tf2/visibility_control.h" = "09d28d77e781dffed0b7d3c8c93eae6814bb3e299e19f7a0a440d5dab8a6c182"

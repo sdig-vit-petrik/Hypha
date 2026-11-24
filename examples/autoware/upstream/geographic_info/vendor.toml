@@ -1,0 +1,10 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/ros-geographic-info/geographic_info"
+ref = "jazzy"
+commit = "24806adc767414eb3a34a58aefeb648ee415b09a"
+
+# Path here = SHA-256 of the file.
+[files]
+"geographic_msgs/msg/GeoPoint.msg" = "5da33ee983077753c2616185cc9071c36e7de567e785fb86be79f2d4f4e47300"
+"geographic_msgs/package.xml" = "2a1ec28ec1c580002256afc5f657e300dd7c59b4b8912641c5065d5b8b92a2ac"

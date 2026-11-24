@@ -1,6 +1,7 @@
 # autoware_pointcloud_preprocessor: the edits of the hypha port, applied to a copy of
-# upstream/autoware_universe/sensing/autoware_pointcloud_preprocessor by the build
-# (patch -p1). Every edit is also marked '// hypha port:' with its reason.
+# upstream/autoware_universe/sensing/autoware_pointcloud_preprocessor by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
+diff -ruN a/include/autoware/pointcloud_preprocessor/concatenate_data/combine_cloud_handler.hpp b/include/autoware/pointcloud_preprocessor/concatenate_data/combine_cloud_handler.hpp
 --- a/include/autoware/pointcloud_preprocessor/concatenate_data/combine_cloud_handler.hpp
 +++ b/include/autoware/pointcloud_preprocessor/concatenate_data/combine_cloud_handler.hpp
 @@ -63,11 +63,12 @@
@@ -17,6 +18,7 @@
      }
    };
  
+diff -ruN a/include/autoware/pointcloud_preprocessor/concatenate_data/concatenate_and_time_sync_node.hpp b/include/autoware/pointcloud_preprocessor/concatenate_data/concatenate_and_time_sync_node.hpp
 --- a/include/autoware/pointcloud_preprocessor/concatenate_data/concatenate_and_time_sync_node.hpp
 +++ b/include/autoware/pointcloud_preprocessor/concatenate_data/concatenate_and_time_sync_node.hpp
 @@ -45,11 +45,7 @@
@@ -32,6 +34,7 @@
  
  namespace autoware::pointcloud_preprocessor
  {
+diff -ruN a/src/concatenate_data/combine_cloud_handler.cpp b/src/concatenate_data/combine_cloud_handler.cpp
 --- a/src/concatenate_data/combine_cloud_handler.cpp
 +++ b/src/concatenate_data/combine_cloud_handler.cpp
 @@ -213,14 +213,15 @@
@@ -56,6 +59,7 @@
  
    StrategyAdvancedConfig strategy_config(reference_timestamp_min_msg, reference_timestamp_max_msg);
    const auto serialized_config = strategy_config.serialize();
+diff -ruN a/src/concatenate_data/combine_cloud_handler_base.cpp b/src/concatenate_data/combine_cloud_handler_base.cpp
 --- a/src/concatenate_data/combine_cloud_handler_base.cpp
 +++ b/src/concatenate_data/combine_cloud_handler_base.cpp
 @@ -64,10 +64,10 @@
@@ -86,6 +90,7 @@
        break;
      }
      twist_queue_.pop_front();
+diff -ruN a/src/concatenate_data/time_utils.hpp b/src/concatenate_data/time_utils.hpp
 --- a/src/concatenate_data/time_utils.hpp
 +++ b/src/concatenate_data/time_utils.hpp
 @@ -23,14 +23,15 @@
@@ -144,6 +149,7 @@
  }
  
  }  // namespace autoware::pointcloud_preprocessor
+diff -ruN a/test/test_concatenate_node_unit.cpp b/test/test_concatenate_node_unit.cpp
 --- a/test/test_concatenate_node_unit.cpp
 +++ b/test/test_concatenate_node_unit.cpp
 @@ -51,22 +51,8 @@
@@ -182,6 +188,7 @@
    int ret = RUN_ALL_TESTS();
    rclcpp::shutdown();
    return ret;
+diff -ruN a/test/test_concatenation_info.cpp b/test/test_concatenation_info.cpp
 --- a/test/test_concatenation_info.cpp
 +++ b/test/test_concatenation_info.cpp
 @@ -29,6 +29,7 @@

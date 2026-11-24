@@ -1,6 +1,7 @@
 # autoware_gnss_poser: the edits of the hypha port, applied to a copy of
-# upstream/autoware_core/sensing/autoware_gnss_poser by the build (patch -p1). Every edit is
-# also marked '// hypha port:' with its reason.
+# upstream/autoware_core/sensing/autoware_gnss_poser by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
+diff -ruN a/src/gnss_poser_node.cpp b/src/gnss_poser_node.cpp
 --- a/src/gnss_poser_node.cpp
 +++ b/src/gnss_poser_node.cpp
 @@ -21,6 +21,8 @@

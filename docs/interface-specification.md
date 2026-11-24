@@ -121,7 +121,12 @@ process, not to one node:
   node reports no progress on `/clock_progress`, so no player or node waits for it, it
   waits for no other node's report, and its plain callbacks run as their samples
   arrive while its timers follow `/clock` (execution-model.md §11.2); `0`, `false` or
-  unset is host time, and any other value fails node creation. The first node of a
+  unset is host time, and any other value fails node creation.
+  `HYPHA_REPLAY_LOCKSTEP=0` (or `false`) turns the lockstep off for the whole launch: a
+  node that `1` or `true` puts in the lockstep follows `/clock` outside it, as with
+  `follow`, and `hypha play` waits for no node (replay-flow-control.md §4.6). `1`,
+  `true` or unset keep the lockstep, and any other value fails node creation, also on
+  host time. The first node of a
   process that starts on simulated time writes one `WARN` line, target `hypha`, after
   its `[log]` table is applied:
   `simulated time is on (HYPHA_USE_SIM_TIME): this node follows /clock`. The first

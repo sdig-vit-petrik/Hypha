@@ -1,9 +1,10 @@
 # autoware_universe_euclidean_cluster: the edits of the hypha port, applied to a copy of
-# upstream/autoware_universe/perception/autoware_euclidean_cluster by the build (patch -p1). Every edit is also
-# marked '// hypha port:' with its reason.
+# upstream/autoware_universe/perception/autoware_euclidean_cluster by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
+diff -ruN a/test/test_voxel_grid_based_euclidean_cluster.cpp b/test/test_voxel_grid_based_euclidean_cluster.cpp
 --- a/test/test_voxel_grid_based_euclidean_cluster.cpp
 +++ b/test/test_voxel_grid_based_euclidean_cluster.cpp
-@@ -15,7 +15,18 @@
+@@ -15,8 +15,19 @@
  #include "autoware/euclidean_cluster/voxel_grid_based_euclidean_cluster.hpp"
  
  #include <autoware/point_types/types.hpp>
@@ -11,7 +12,7 @@
 +// hypha port: std::experimental::randint is libstdc++'s only; a seeded <random> engine
 +// draws from the same closed range.
 +#include <random>
-+
+ 
 +namespace
 +{
 +int randint(int low, int high)
@@ -20,9 +21,10 @@
 +  return std::uniform_int_distribution<int>{low, high}(engine);
 +}
 +}  // namespace
- 
++
  #include <sensor_msgs/msg/point_cloud2.hpp>
  #include <sensor_msgs/point_cloud2_iterator.hpp>
+ #include <tier4_perception_msgs/msg/detected_objects_with_feature.hpp>
 @@ -53,8 +64,9 @@
    pointcloud.is_bigendian = false;
    pointcloud.is_dense = true;

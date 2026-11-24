@@ -1,6 +1,7 @@
 # autoware_multi_object_tracker: the edits of the hypha port, applied to a copy of
-# upstream/autoware_universe/perception/autoware_multi_object_tracker by the build (patch -p1). Every edit is also
-# marked '// hypha port:' with its reason.
+# upstream/autoware_universe/perception/autoware_multi_object_tracker by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
+diff -ruN a/include/autoware/multi_object_tracker/tracker/trackers/tracker_base.hpp b/include/autoware/multi_object_tracker/tracker/trackers/tracker_base.hpp
 --- a/include/autoware/multi_object_tracker/tracker/trackers/tracker_base.hpp
 +++ b/include/autoware/multi_object_tracker/tracker/trackers/tracker_base.hpp
 @@ -37,6 +37,9 @@
@@ -13,30 +14,7 @@
  #include <string>
  #include <vector>
  
---- a/src/debugger/debug_object.hpp
-+++ b/src/debugger/debug_object.hpp
-@@ -24,6 +24,9 @@
- #include <visualization_msgs/msg/marker_array.hpp>
- 
- #include <boost/uuid/uuid.hpp>
-+// hypha port: boost::hash needs <boost/container_hash/hash.hpp>, which older Boost brought
-+// with the uuid headers.
-+#include <boost/container_hash/hash.hpp>
- #include <boost/uuid/uuid_hash.hpp>
- 
- #include <list>
---- a/src/debugger/debugger.cpp
-+++ b/src/debugger/debugger.cpp
-@@ -180,7 +180,8 @@
-       diagnostic_msgs::msg::DiagnosticStatus::OK};
-   }
- 
--  const uint8_t max_level = std::max(delay_result.level, extrapolation_result.level);
-+  // hypha port: a ROS 1 DiagnosticStatus level is a byte, int8, where ROS 2's is uint8 (#45).
-+  const auto max_level = std::max(delay_result.level, extrapolation_result.level);
- 
-   if (max_level == diagnostic_msgs::msg::DiagnosticStatus::OK) {
-     return {"[OK] All timing parameters are within safe limits.", max_level};
+diff -ruN a/lib/tracker/motion_model/bicycle_motion_model.cpp b/lib/tracker/motion_model/bicycle_motion_model.cpp
 --- a/lib/tracker/motion_model/bicycle_motion_model.cpp
 +++ b/lib/tracker/motion_model/bicycle_motion_model.cpp
 @@ -720,7 +720,11 @@
@@ -52,3 +30,29 @@
  
    pose_cov[XYZRPY_COV_IDX::X_X] = M(0, 0);
    pose_cov[XYZRPY_COV_IDX::X_Y] = M(0, 1);
+diff -ruN a/src/debugger/debug_object.hpp b/src/debugger/debug_object.hpp
+--- a/src/debugger/debug_object.hpp
++++ b/src/debugger/debug_object.hpp
+@@ -24,6 +24,9 @@
+ #include <visualization_msgs/msg/marker_array.hpp>
+ 
+ #include <boost/uuid/uuid.hpp>
++// hypha port: boost::hash needs <boost/container_hash/hash.hpp>, which older Boost brought
++// with the uuid headers.
++#include <boost/container_hash/hash.hpp>
+ #include <boost/uuid/uuid_hash.hpp>
+ 
+ #include <list>
+diff -ruN a/src/debugger/debugger.cpp b/src/debugger/debugger.cpp
+--- a/src/debugger/debugger.cpp
++++ b/src/debugger/debugger.cpp
+@@ -180,7 +180,8 @@
+       diagnostic_msgs::msg::DiagnosticStatus::OK};
+   }
+ 
+-  const uint8_t max_level = std::max(delay_result.level, extrapolation_result.level);
++  // hypha port: a ROS 1 DiagnosticStatus level is a byte, int8, where ROS 2's is uint8 (#45).
++  const auto max_level = std::max(delay_result.level, extrapolation_result.level);
+ 
+   if (max_level == diagnostic_msgs::msg::DiagnosticStatus::OK) {
+     return {"[OK] All timing parameters are within safe limits.", max_level};

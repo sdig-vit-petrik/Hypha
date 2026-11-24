@@ -119,8 +119,13 @@ impl Session<'_> {
         }
     }
 
-    /// Sends `/clock` for `log_time` and waits for every participant to answer it.
+    /// Sends `/clock` for `log_time` and, in the lockstep, waits for every participant to
+    /// answer it. An open-loop playback sends it and goes on.
     pub(super) fn barrier(&mut self, log_time: u64) -> Result<Flow, String> {
+        if !self.in_lockstep() {
+            self.publish_clock_frame(log_time)?;
+            return Ok(Flow::Go);
+        }
         let sent_at = Instant::now();
         let floor = self.send_clock(log_time)?;
         self.await_acks(log_time, floor, sent_at)

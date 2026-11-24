@@ -62,8 +62,9 @@ Usage below counts files outside tests in the first application built on hypha (
 ### 3.2 Callback endpoints
 
 Kept beside cycles (decided 2026-11-08). Rule: **a cycle when the node's work is a step
-over its inputs at a rate or per trigger; a callback when each message must be handled
-as it arrives, below one cycle period, or by a tool.**
+over its inputs at a rate, or on each sample of one input (a triggered cycle, #138); a
+callback when the node's callbacks publish on more than one input, when it owns worker
+threads, or in a tool or a shim of a ROS client library.**
 
 | Feature | Question it answers | API | Users |
 |---|---|---|---|
@@ -171,6 +172,7 @@ fault.**
 |---|---|---|---|
 | Replay flow control | How does a replay wait for its nodes? | `/clock_progress` | tools |
 | Restart on a backward seek | How does a node start over when time goes back? | exit 75 and `hypha launch` (`HYPHA_REJOIN_AFTER_NANOS`), `HYPHA_STATUS_CLOCK_REWOUND` | tools, all nodes |
+| Open-loop playback | Can a replay run without waiting for its nodes, as `ros2 bag play` does? | `HYPHA_REPLAY_LOCKSTEP=0` (or `false`), read by `hypha play` and every node | none yet (#102) |
 
 ### 3.11 Messages and tools
 
@@ -206,6 +208,7 @@ that move bytes of any type; a new application use needs the owner's approval.
 | Two threads on one `WaitSet` | Detected (#83): every call and every run claims the `WaitSet` with one compare-and-swap of an owner token and releases it when it returns, so the second of two threads gets `InvalidState` (FM-37, AoU-22). No new API: the claim is below the C ABI, and the existing calls answer. The run-owner mutex it replaces is gone. | done |
 | Transform lookups that wait | No (#91, 2026-11-22). A lookup never waits: the buffer fills only while the node runs, on the run's thread, so a waiting callback would block the node's other callbacks and, under replay, the clock it waits for. A node that must have the transform holds its message and retries in a later callback (what `tf2_ros::MessageFilter` does); a ported node's shim does that, not the core. | decided |
 | Time going back | Only the restart design: a timer or cycle that sees simulated time go back, and a node that reads a `/clock` lower than its last one (#130), end the run with `ClockRewound` and the process restarts. A host clock step back is not a rewind and restarts nothing. The in-place handling is gone (`TriggerSchedule::rewind`, `pending_rewind`, `CycleTime::rewound`, the TF buffer's `clear_dynamic`). FSR-37 says so. | done |
+| Open-loop playback | Yes, as an opt-out for a whole launch (#102, owner 2026-11-22): `HYPHA_REPLAY_LOCKSTEP=0` turns the lockstep off for the player and every node, where `HYPHA_USE_SIM_TIME=follow` takes one node out of it and leaves the player waiting for the rest. The player sends `/clock` and the data on the `--rate` schedule, reads no report and refuses `--rate max`; a node follows `/clock` as in follow mode, and a lost replay input is warned of, not failed. A rewind still restarts every node (FSR-37). Not deterministic, and documented so (`replay-flow-control.md` §4.6). It removes nothing: the lockstep stays the default. | done |
 | Plain callbacks in a replay | Yes (#72, 2026-11-22). On a node that follows `/clock`, each sample of a plain subscription and each period of a plain timer is an event at its time, run in time order with framework time at the event, held for the upstream nodes and reported as the `WaitSet`'s progress, as a triggered cycle's steps are (`execution-model.md` §11.2). A plain timer then runs every period, with no missed one, and a publish without a stamp carries framework time on its thread. A CLI tool's node and a clock driver's never take part; a process clock set from code is unchanged. | done |
 | Low-level APIs | Section 3.12. The C++ `WaitSet`, the lazy `publish(builder)` with `skipWhenNoSubscribers`, `publishedCount`/`suppressedCount`, `creationStatus`, `waitForSubscribers`, the subscriber `health()`/`metrics()`, `describe()`/`domain()` (`introspect()` answers them), `Node::hasCycles`, `Cycle::release`, `Cycle::setArrivalBudget`, `_hz`, `Duration::fromChrono` and `toString` are gone: no user outside tests. | done |
 | Reporting channels | The node state is hypha's: the library judges the required inputs (`hypha_node_state`), and `runNode` publishes `~/state` and `~/introspection`. hypha renders no manifest text: an application lays out and logs the manifest table from `started(Node&)`. Introspection answers "what is this node made of", the state "are its inputs healthy", metrics "how many of X", cycle and binding health the counters of one cycle. Left: merge the counters that two channels both report. | done (2026-11-12) |

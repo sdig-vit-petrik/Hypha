@@ -1,0 +1,10 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/ros2/unique_identifier_msgs"
+ref = "jazzy"
+commit = "901599ee92c2ee949f42a5c5d821c92b3e515d69"
+
+# Path here = SHA-256 of the file.
+[files]
+"LICENSE" = "7519e06b59f0f95cce60868686174422abf04cce419453477d77255b58d434d8"
+"msg/UUID.msg" = "2777f29769eb0958dfd86a6c1bd15af95ecb48a8b935513abefa6f1dd807e143"
