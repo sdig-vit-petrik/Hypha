@@ -85,6 +85,19 @@ static ROWS: &[Row] = rows! {
             INVALID
         );
     }
+    hypha_config_ignore => |live| {
+        let key = "a".as_ptr().cast();
+        let reason = "b".as_ptr().cast();
+        // SAFETY: a null configuration is refused before either text is read.
+        let null_config = unsafe { hypha_config_ignore(null(), key, 1, reason, 1) };
+        assert_eq!(null_config, INVALID);
+        // SAFETY: a null key with a length is refused before it is read.
+        let null_key = unsafe { hypha_config_ignore(live.config, null(), 1, reason, 1) };
+        assert_eq!(null_key, INVALID);
+        // SAFETY: a null reason with a length is refused before it is read.
+        let null_reason = unsafe { hypha_config_ignore(live.config, key, 1, null(), 1) };
+        assert_eq!(null_reason, INVALID);
+    }
     hypha_config_resolve_key => |live| {
         let mut length = 0_usize;
         let name = "map";

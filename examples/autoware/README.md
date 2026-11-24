@@ -58,7 +58,7 @@ in lockstep (#46, #72).
 | `rclcpp::Time(stamp, clock_type)`, `Time +=`/`-=` a `Duration`, `Duration` arithmetic, `Duration` to a message duration | as rclcpp |
 | `rclcpp::Rate(hz).period()` | the period only: nodes time their work with timers, and no `sleep` is offered |
 | `declare_parameter<std::vector<T>>(name, default)` | a list read, as the overload without a type |
-| `diagnostic_updater::Updater`, `DiagnosticStatusWrapper` | the tasks run every period on a timer of the node, one `/diagnostics` array with a `<node>: <task>` status each; `summary`, `add`, `setHardwareID`, `setPeriod`, `force_update`. The `diagnostic_updater.period` parameter is not read |
+| `diagnostic_updater::Updater`, `DiagnosticStatusWrapper` | the tasks run every period on a timer of the node, one `/diagnostics` array with a `<node>: <task>` status each; `summary`, `add`, `setHardwareID`, `setPeriod`, `force_update`. The `diagnostic_updater.period` parameter is not read; a file that sets it lists it in `unused` (cpp-api.md §9) |
 | `rclcpp::spin(node)` | `node.run()` on the calling thread: a single-threaded executor |
 | `rclcpp::spin_some(node)` | `node.runFor()` with the shortest limit: one dispatch turn, the due timers and the queued samples, never a wait; a failed run throws |
 | `rcl_clock_type_t`, `RCL_ROS_TIME` | rcl's enum at global scope; every kind means framework time |

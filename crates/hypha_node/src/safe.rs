@@ -9,7 +9,7 @@ pub use crate::clock::{
     clock_now_nanos, clock_set_sim_time, clock_steady_now_nanos,
 };
 pub use crate::config::{
-    HyphaConfig, config_create, config_resolve_key, config_unread_keys, node_config,
+    HyphaConfig, config_create, config_ignore, config_resolve_key, config_unread_keys, node_config,
 };
 pub use crate::cycle::{
     CycleId, CycleSnapshots, CycleStepHandler, EmissionView, HyphaInputSource, ImageView,

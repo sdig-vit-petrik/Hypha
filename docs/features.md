@@ -133,6 +133,7 @@ fault.**
 | File names | Where is the file a parameter names? | `ConfigView::path()`, `hypha_config_resolve_key`: against the directory of the file that wrote the key | app 4 |
 | Port tables | Which topic does a port read or write? | `[ports.inputs.<name>]`, `[ports.outputs.<name>]`, `hypha_param_topic`, `hypha_topic_validate_public_name` | all |
 | Unread keys | Did the file set a key nobody reads? | `hypha_config_unread_keys` | all (at start) |
+| Keys not read on purpose | How do I keep a key that is set on purpose, but not read in this build or mode, without deleting it? | Code: `ConfigView::ignore(keyOrPrefix, reason)`, `hypha_config_ignore`. File: a top-level `unused = [...]`, whose every entry must be set. Both are manifest rows with `IntrospectedConfig::SOURCE_IGNORED` and the reason (#119) | ex autoware (file); tests (code) |
 | Configuration without a node | How does a tool read a file before it joins the bus? | `hypha_config_create`, `hypha_config_destroy`, `hypha_config_record_config` | tools |
 | Composition | How do files share values? | `include = [...]` | mrs |
 

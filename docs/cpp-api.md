@@ -801,13 +801,29 @@ for (const auto sensor : settings.list("sensors")) {
   may share a name. A plain entry, `speed = "/odom_speed"`, is `InvalidArgument`.
 - **Reserved names.** `node`, `ports` and `log` belong to the framework: `node.name`
   (section 2), the port tables, and `[log]` (section 11), whose keys the parameter
-  API does not return. Simulated time is `HYPHA_USE_SIM_TIME` only; a `use_sim_time`
+  API does not return. The top-level keys `include` (below) and `unused` are not
+  parameters either. Simulated time is `HYPHA_USE_SIM_TIME` only; a `use_sim_time`
   key is an ordinary key.
 - **Unread keys.** `unreadKeys()` lists, sorted, the keys under a view that nothing
   read (`node.name` excluded; a list field as `list[index].field`). `runNode` exits
   78 when one remains after `setup()` and cycle start; a custom `main()` checks
   `hypha::config().unreadKeys()` itself. A value code chooses goes into the manifest
   with `hypha::recordConfig(key, value)`.
+- **Keys set on purpose and not read (#119).** Two ways keep a key out of
+  `unreadKeys()` and the start-up check without deleting it; a typo beside them is
+  still refused. Each lands in the manifest (`~/introspection`) as a row with source
+  `SOURCE_IGNORED` whose value is the reason, and is logged once at info.
+  - Code: `cfg.ignore(keyOrPrefix, reason)` marks a key, a table or a list entry under
+    the view as read by a branch the code chose not to take
+    (`config().ignore("model_params", "no TensorRT in this build")`). A key the file
+    does not set is fine. An empty key or reason throws `ParameterError`.
+  - File: a top-level `unused = ["pose_measurement.pose_measure_uncertainty_time"]`
+    lists keys or tables a vendored file sets and this node does not read. Every
+    file of a composition may list its own. An entry the composed file does not set,
+    such as a typo, refuses the file at load, so the list cannot go stale.
+
+  The check is in the C ABI layer (`hypha_config_ignore`, and `hypha_config_unread_keys`
+  leaves ignored keys out), so every SDK gets it.
 - **Arrays of scalars.** `cfg.requiredArray<T>(key)` returns `std::vector<T>`; `cfg.requiredArray<T, N>(key)` returns `std::array<T, N>` and refuses any other length. `optionalArray<T>` and `optionalArray<T, N>` return a `std::optional` of the same, empty only when the key is absent. T is any type `required<T>` reads (bool, an integer, float, double, std::string), and each element gets the same conversion and range check. A key that is not an array, an element of the wrong type, an array of tables and a wrong length throw `ParameterError` for the `required*` and the `optional*` form alike, and the message names the key and, for an element, its index (`hypha: parameter 'voxel_weights[2]': expected a number, found "x"`; `hypha: parameter 'extrinsic_t': expected 3 elements, found 4`). An empty array is an empty vector, and a length error for N > 0. Reading an array marks the key as read, so `unreadKeys()` does not list it. An array inside an entry of a table list is refused like a nested list.
 - **Porting.** A ROS 1 list parameter, with the fixed-size form:
   [ros1-migration-guide.md](ros1-migration-guide.md#107-a-list-of-scalars-in-the-parameter-file).

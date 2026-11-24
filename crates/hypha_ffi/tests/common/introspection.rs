@@ -41,6 +41,7 @@ fn source_text(source: u8) -> &'static str {
         IntrospectedConfig::SOURCE_APPLICATION => "application",
         IntrospectedConfig::SOURCE_COMMAND_LINE => "command line",
         IntrospectedConfig::SOURCE_DEFAULT => "default",
+        IntrospectedConfig::SOURCE_IGNORED => "ignored",
         _ => "?",
     }
 }

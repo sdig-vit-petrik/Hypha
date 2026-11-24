@@ -3,7 +3,8 @@
 use crate::boundary::{borrow_str, handle_ref, require_non_null, take_box, write_out, write_text};
 use crate::status::try_guard;
 use hypha_node::safe::{
-    HyphaConfig, HyphaNode, config_create, config_resolve_key, config_unread_keys, node_config,
+    HyphaConfig, HyphaNode, config_create, config_ignore, config_resolve_key, config_unread_keys,
+    node_config,
 };
 use hypha_node::status::HyphaStatus;
 use std::os::raw::c_char;
@@ -55,7 +56,8 @@ pub unsafe extern "C" fn hypha_node_config(node: *const HyphaNode) -> *const Hyp
 }
 
 /// Write the unread keys of `config` under `prefix` (all for a zero `prefix_len`),
-/// joined by `'\n'`, to `out`; `node.name` is excluded. `TooLarge` when `out_capacity`
+/// joined by `'\n'`, to `out`; `node.name` and the keys `hypha_config_ignore` or the
+/// file's `unused` list ignore are excluded. `TooLarge` when `out_capacity`
 /// is too small; `out_len` then holds the byte length.
 ///
 /// # Safety
@@ -76,6 +78,39 @@ pub unsafe extern "C" fn hypha_config_unread_keys(
             if prefix_len == 0 { "" } else { unsafe { borrow_str(prefix, prefix_len) }? };
         let joined = config_unread_keys(handle, prefix_str);
         unsafe { write_text(&joined, out, out_capacity, out_len) }
+    })
+}
+
+/// Mark `key`, a key, a table or a list entry (`sensors[0].rate`), as set on purpose and
+/// not read, for `reason`: it and every key under it leave `hypha_config_unread_keys`, and
+/// it becomes a node manifest row with source `IntrospectedConfig::SOURCE_IGNORED` whose
+/// value is `reason`, logged once at info. A key `config` does not set is accepted; a
+/// second call for the same key keeps the first reason and returns `Ok`. Both texts are
+/// UTF-8, read for the call only and copied; nothing is returned to free.
+///
+/// `InvalidArgument`: a null `config`, a zero `key_len` or `reason_len`, a null text with
+/// a nonzero length, or text that is not UTF-8.
+///
+/// # Safety
+/// `config` is live or null. `key` holds `key_len` bytes and `reason` holds `reason_len`
+/// bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hypha_config_ignore(
+    config: *const HyphaConfig,
+    key: *const c_char,
+    key_len: usize,
+    reason: *const c_char,
+    reason_len: usize,
+) -> HyphaStatus {
+    try_guard(|| {
+        // SAFETY: the caller passes a live configuration or null, which is refused.
+        let handle = unsafe { handle_ref(config) }?;
+        // SAFETY: the caller passes `key_len` readable bytes at `key`.
+        let key = unsafe { borrow_str(key, key_len) }?;
+        // SAFETY: the caller passes `reason_len` readable bytes at `reason`.
+        let reason = unsafe { borrow_str(reason, reason_len) }?;
+        config_ignore(handle, key, reason)?;
+        Ok(())
     })
 }
 

@@ -270,7 +270,7 @@ pub fn node_create(
     config: Option<&crate::config::HyphaConfig>,
 ) -> Result<Arc<HyphaNode>, Error> {
     hypha_log::install();
-    let config = node_config(parameter_file, config)?;
+    let mut config = node_config(parameter_file, config)?;
     let parameters = &*config;
     let parameter_path = config.parameter_file.as_deref();
     let sim_time = sim_time_requested().map_err(|cause| report_invalid(&cause))?;
@@ -325,6 +325,13 @@ pub fn node_create(
             replaced.overridden.display()
         );
     }
+    // A key ignored in code is logged and recorded where it is ignored; one the file lists
+    // is written here, after the log commit.
+    for listed in parameters.ignored().iter().filter(|entry| entry.listed_in_file) {
+        log::info!(target: "hypha", "hypha: parameter '{}' is not read on purpose: {}", listed.key, listed.reason);
+        introspection.record_config(crate::config::ignored_row(&listed.key, &listed.reason));
+    }
+    config.node_introspection = Some(std::sync::Arc::clone(&introspection));
     // The first /clock value, not this zero, anchors the replay cycles. A later sim node
     // must not reset another node's time.
     let placeholder_needed = use_sim_time && !hypha_time::is_sim_time();

@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 2
+#define HYPHA_ABI_REVISION 3
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -953,7 +953,8 @@ void hypha_config_destroy(struct HyphaConfig *config);
 const struct HyphaConfig *hypha_node_config(const struct HyphaNode *node);
 
 // Write the unread keys of `config` under `prefix` (all for a zero `prefix_len`),
-// joined by `'\n'`, to `out`; `node.name` is excluded. `TooLarge` when `out_capacity`
+// joined by `'\n'`, to `out`; `node.name` and the keys `hypha_config_ignore` or the
+// file's `unused` list ignore are excluded. `TooLarge` when `out_capacity`
 // is too small; `out_len` then holds the byte length.
 //
 // # Safety
@@ -965,6 +966,25 @@ HyphaStatus hypha_config_unread_keys(const struct HyphaConfig *config,
                                      char *out,
                                      size_t out_capacity,
                                      size_t *out_len);
+
+// Mark `key`, a key, a table or a list entry (`sensors[0].rate`), as set on purpose and
+// not read, for `reason`: it and every key under it leave `hypha_config_unread_keys`, and
+// it becomes a node manifest row with source `IntrospectedConfig::SOURCE_IGNORED` whose
+// value is `reason`, logged once at info. A key `config` does not set is accepted; a
+// second call for the same key keeps the first reason and returns `Ok`. Both texts are
+// UTF-8, read for the call only and copied; nothing is returned to free.
+//
+// `InvalidArgument`: a null `config`, a zero `key_len` or `reason_len`, a null text with
+// a nonzero length, or text that is not UTF-8.
+//
+// # Safety
+// `config` is live or null. `key` holds `key_len` bytes and `reason` holds `reason_len`
+// bytes.
+HyphaStatus hypha_config_ignore(const struct HyphaConfig *config,
+                                const char *key,
+                                size_t key_len,
+                                const char *reason,
+                                size_t reason_len);
 
 // Resolve the file name that the text parameter `key` holds against the directory of
 // the file that wrote `key`, and write it to `out`. An absolute name, or any name when

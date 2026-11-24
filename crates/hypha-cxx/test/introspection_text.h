@@ -36,6 +36,8 @@ inline const char* sourceText(uint8_t source)
             return "command line";
         case hypha_msgs::IntrospectedConfig::SOURCE_DEFAULT:
             return "default";
+        case hypha_msgs::IntrospectedConfig::SOURCE_IGNORED:
+            return "ignored";
         default:
             return "?";
     }

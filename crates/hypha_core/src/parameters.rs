@@ -39,6 +39,68 @@ impl PartialEq for ReadSet {
 
 impl Eq for ReadSet {}
 
+/// A key or table that is set on purpose and not read, with the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IgnoredKey {
+    /// The dotted key, a table prefix, or a list entry (`sensors[0].rate`).
+    pub key: String,
+    /// Why nothing reads it.
+    pub reason: String,
+    /// True when a file's `unused` list named it; false when code ignored it.
+    pub listed_in_file: bool,
+}
+
+/// The ignored keys, in the order they were first ignored. Shared like [`ReadSet`].
+#[derive(Default)]
+struct IgnoreSet(Mutex<Vec<IgnoredKey>>);
+
+impl IgnoreSet {
+    /// Adds `entry` unless its key is already ignored; true when it was added.
+    fn insert(&self, entry: IgnoredKey) -> bool {
+        let mut entries = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if entries.iter().any(|known| known.key == entry.key) {
+            return false;
+        }
+        entries.push(entry);
+        true
+    }
+
+    fn snapshot(&self) -> Vec<IgnoredKey> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn covers(&self, key: &str) -> bool {
+        let entries = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        entries.iter().any(|entry| key_is_under(key, &entry.key))
+    }
+}
+
+impl Clone for IgnoreSet {
+    fn clone(&self) -> Self {
+        Self(Mutex::new(self.snapshot()))
+    }
+}
+
+impl PartialEq for IgnoreSet {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl fmt::Debug for IgnoreSet {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.snapshot(), out)
+    }
+}
+
+/// True when `key` is `prefix` or a dotted or indexed name under it.
+pub(crate) fn key_is_under(key: &str, prefix: &str) -> bool {
+    key == prefix
+        || key
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+}
+
 impl fmt::Debug for ReadSet {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
         let set = self.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -153,6 +215,8 @@ pub struct Parameters {
     overrides: Vec<ParameterOverride>,
     read_values: ReadSet,
     read_lists: ReadSet,
+    /// Boxed: a table list element holds a `Parameters`, and the set is empty there.
+    ignored: Box<IgnoreSet>,
 }
 
 impl Parameters {
@@ -274,11 +338,45 @@ impl Parameters {
         self.lists.keys().map(String::as_str).collect()
     }
 
-    /// Every configured key that has not been read yet, sorted.
+    /// Marks `key_or_prefix`, a key, a table or a list entry, as set on purpose and not
+    /// read, for `reason`: it and every key under it leave the unread keys. A key the
+    /// configuration does not set is accepted. True when it was not ignored before; a
+    /// second call for the same key keeps the first reason.
+    pub fn ignore(&self, key_or_prefix: &str, reason: &str) -> bool {
+        self.ignored.insert(IgnoredKey {
+            key: key_or_prefix.to_string(),
+            reason: reason.to_string(),
+            listed_in_file: false,
+        })
+    }
+
+    pub(crate) fn ignore_listed(&self, key_or_prefix: &str, file: &Path) -> bool {
+        self.ignored.insert(IgnoredKey {
+            key: key_or_prefix.to_string(),
+            reason: format!("listed in `unused` of {}", file.display()),
+            listed_in_file: true,
+        })
+    }
+
+    /// The ignored keys, file-listed ones first, then in the order code ignored them.
+    #[must_use]
+    pub fn ignored(&self) -> Vec<IgnoredKey> {
+        self.ignored.snapshot()
+    }
+
+    /// Every configured key that has not been read yet and is not ignored, sorted.
     ///
     /// `node.name` is excluded. Table list elements report each field as `list[index].field`.
     #[must_use]
     pub fn unread_keys(&self) -> Vec<String> {
+        let mut unread = self.unread_keys_inner(false);
+        unread.retain(|key| !self.ignored.covers(key));
+        unread
+    }
+
+    /// Every configured key while the loader builds the set, before anything reads it;
+    /// `node.name` is excluded.
+    pub(crate) fn configured_keys_at_load(&self) -> Vec<String> {
         self.unread_keys_inner(false)
     }
 
@@ -289,14 +387,7 @@ impl Parameters {
         if prefix.is_empty() {
             return all;
         }
-        all.into_iter()
-            .filter(|key| {
-                key == prefix
-                    || key
-                        .strip_prefix(prefix)
-                        .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
-            })
-            .collect()
+        all.into_iter().filter(|key| key_is_under(key, prefix)).collect()
     }
 
     fn unread_keys_inner(&self, in_list_element: bool) -> Vec<String> {
