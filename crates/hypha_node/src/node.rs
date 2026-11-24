@@ -36,9 +36,10 @@ pub struct HyphaNode {
     /// The replay progress publisher and what it reported last. Declared before `transport`.
     pub(crate) progress: std::sync::Mutex<crate::node_progress::NodeProgress>,
     pub(crate) uses_sim_time: bool,
-    /// On simulated time outside the replay lockstep (`HYPHA_USE_SIM_TIME=follow`): the
-    /// node reports no progress, so no player or node waits for it, and it holds no event
-    /// for another node's report.
+    /// On simulated time outside the replay lockstep (`HYPHA_USE_SIM_TIME=follow`, or
+    /// `HYPHA_REPLAY_LOCKSTEP=0`): the node reports no progress, so no player or node waits
+    /// for it, it holds no event for another node's report, and a replay input that lost
+    /// samples is warned of instead of failing the run.
     pub(crate) replay_follow: bool,
     /// Committed cycles of this node. A node with a clock driver runs no other cycle.
     pub(crate) committed_cycles: std::sync::atomic::AtomicUsize,
@@ -87,6 +88,40 @@ fn sim_time_requested() -> Result<SimTime, String> {
         }
     };
     parse_sim_time(&text)
+}
+
+/// The environment variable that turns the replay lockstep off for a whole launch: the
+/// player and every node read it (#102).
+const LOCKSTEP_VARIABLE: &str = "HYPHA_REPLAY_LOCKSTEP";
+
+/// Whether the environment keeps the replay lockstep: an unset variable, `1` or `true`
+/// keep it, `0` or `false` turn it off. Any other value is an error, as for
+/// `HYPHA_USE_SIM_TIME`.
+fn lockstep_requested() -> Result<bool, String> {
+    match std::env::var(LOCKSTEP_VARIABLE) {
+        Ok(text) => parse_lockstep(&text),
+        Err(std::env::VarError::NotPresent) => Ok(true),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err(format!("{LOCKSTEP_VARIABLE} is not readable text"))
+        }
+    }
+}
+
+fn parse_lockstep(text: &str) -> Result<bool, String> {
+    match text {
+        "1" | "true" => Ok(true),
+        "0" | "false" => Ok(false),
+        _ => Err(format!("{LOCKSTEP_VARIABLE} must be 1, true, 0 or false, not '{text}'")),
+    }
+}
+
+/// The clock the environment asks for, with the lockstep turned off when
+/// `HYPHA_REPLAY_LOCKSTEP` says so: a node on simulated time then follows `/clock`.
+fn sim_time_with_lockstep(sim_time: SimTime, lockstep: bool) -> SimTime {
+    match sim_time {
+        SimTime::Lockstep if !lockstep => SimTime::Follow,
+        other => other,
+    }
 }
 
 fn parse_sim_time(text: &str) -> Result<SimTime, String> {
@@ -261,8 +296,12 @@ pub fn node_name(node: &HyphaNode) -> &str {
 /// Create a node called `name`. `config` supplies the parameters; `parameter_file` must
 /// then name its file. Without `config` the node loads `parameter_file`, or no file.
 ///
+/// `HYPHA_REPLAY_LOCKSTEP=0` (or `false`) puts a node that `HYPHA_USE_SIM_TIME=1` puts in
+/// the replay lockstep outside it, as `follow` does: a ROS-style open-loop playback (#102).
+///
 /// # Errors
-/// `InvalidArgument` for an invalid name, file, parameter or `HYPHA_USE_SIM_TIME`;
+/// `InvalidArgument` for an invalid name, file, parameter, `HYPHA_USE_SIM_TIME` or
+/// `HYPHA_REPLAY_LOCKSTEP`;
 /// `InvalidState` for a name an alive node holds; the transport's error otherwise.
 pub fn node_create(
     name: &str,
@@ -273,7 +312,9 @@ pub fn node_create(
     let config = node_config(parameter_file, config)?;
     let parameters = &*config;
     let parameter_path = config.parameter_file.as_deref();
+    let lockstep = lockstep_requested().map_err(|cause| report_invalid(&cause))?;
     let sim_time = sim_time_requested().map_err(|cause| report_invalid(&cause))?;
+    let sim_time = sim_time_with_lockstep(sim_time, lockstep);
     let use_sim_time = sim_time != SimTime::Off;
     let replay_follow = sim_time == SimTime::Follow;
     let node_name = effective_node_name(name, parameters)?;
@@ -389,7 +430,7 @@ pub fn node_shutdown(node: &HyphaNode) {
 
 #[cfg(test)]
 mod sim_time_tests {
-    use super::{SimTime, parse_sim_time};
+    use super::{SimTime, parse_lockstep, parse_sim_time, sim_time_with_lockstep};
 
     #[test]
     fn follow_is_simulated_time_outside_the_lockstep_and_other_text_is_refused() {
@@ -400,5 +441,23 @@ mod sim_time_tests {
         assert_eq!(parse_sim_time("false"), Ok(SimTime::Off));
         assert!(parse_sim_time("Follow").is_err());
         assert!(parse_sim_time("yes").is_err());
+    }
+
+    #[test]
+    fn the_lockstep_is_on_unless_turned_off_and_other_text_is_refused() {
+        assert_eq!(parse_lockstep("1"), Ok(true));
+        assert_eq!(parse_lockstep("true"), Ok(true));
+        assert_eq!(parse_lockstep("0"), Ok(false));
+        assert_eq!(parse_lockstep("false"), Ok(false));
+        assert!(parse_lockstep("off").is_err());
+        assert!(parse_lockstep("").is_err());
+    }
+
+    #[test]
+    fn without_the_lockstep_a_node_on_simulated_time_follows_the_clock() {
+        assert_eq!(sim_time_with_lockstep(SimTime::Lockstep, false), SimTime::Follow);
+        assert_eq!(sim_time_with_lockstep(SimTime::Lockstep, true), SimTime::Lockstep);
+        assert_eq!(sim_time_with_lockstep(SimTime::Follow, true), SimTime::Follow);
+        assert_eq!(sim_time_with_lockstep(SimTime::Off, false), SimTime::Off);
     }
 }

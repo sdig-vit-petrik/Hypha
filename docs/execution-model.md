@@ -842,7 +842,8 @@ A replay is faithful when no sample it should have read was lost. A loss is one
 of two things: a transport overflow, which shows as a sequence gap, or a history
 eviction that a cursor had not read. A step that has a new loss on an
 input (queued or latest) fails, and the `WaitSet` run that holds it fails with
-`SequenceGap`. The node logs `replay not faithful: N samples lost on <topic>` at
+`SequenceGap`; outside the lockstep (section 11.2) the loss is counted and warned of,
+and the run goes on. The node logs `replay not faithful: N samples lost on <topic>` at
 error level, at most once per topic per second, and a repeated loss is summed
 into the next line. The binding's losses also count in its `overrun_total`.
 While a latest binding in host time counts neither its transport gaps nor its history
@@ -879,7 +880,12 @@ as their samples arrive. Its timers still fire against `/clock`, once per clock 
 (no burst), so a player's `--chunk` shorter than the timer's period keeps its rate, and a
 `/clock` that goes back restarts it as any node (section 11.1). It
 is for nodes in a feedback loop that cannot replay in lockstep yet (#103); its replays
-are not identical from run to run. Its plain subscriptions and plain
+are not identical from run to run. Its replay cycles run one step per deadline but hold
+no deadline for an upstream node, and a replay input that lost samples is logged as a
+warning instead of failing the run. `HYPHA_REPLAY_LOCKSTEP=0` puts every node of a
+launch that `HYPHA_USE_SIM_TIME=1` puts in the lockstep in this mode, beside an
+open-loop player: a ROS-style playback whose result depends on the host and its load
+(`replay-flow-control.md` §4.6). In the lockstep, the plain subscriptions and plain
 timers become events, and a `WaitSet` runs them in time order, so a callback node
 replays identically on any host, at any `--rate` and `--chunk`:
 

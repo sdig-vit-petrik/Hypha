@@ -24,8 +24,9 @@ One rule: **`/clock` never runs ahead of what every participant has finished.**
   order. Its output equals that of a replay at any other rate.
 - The player publishes every message of the recording; it never skips ahead of a slow node.
 - Nodes need no change. Live operation (no player) is unchanged.
-- Sync replaces open-loop replay; it is not a mode beside it: the open-loop path and
-  the compensations for it are removed.
+- Sync is the default replay. An open-loop playback like ROS's stays as an opt-out for a whole
+  launch, `HYPHA_REPLAY_LOCKSTEP=0` (4.6), for nodes that do not fit the lockstep yet; the old
+  compensations for open-loop replay are removed.
 
 Not goals: more throughput than the slowest participant allows (that is CPU work in the node), a
 network transport, and replay across hosts.
@@ -217,6 +218,33 @@ in `hypha_runtime::clock_barrier`; `hypha play` reaches them through `hypha::clo
 - **Loops.** A loop made only of triggered cycles has no delay element and fails with
   `Timeout`. The driver is the delay element: a command a participant stamps D is read by
   the driver's step at D + period.
+
+### 4.6 Open-loop playback (`HYPHA_REPLAY_LOCKSTEP=0`)
+
+`HYPHA_REPLAY_LOCKSTEP=0` (or `false`) turns the lockstep off for a playback like `ros2 bag play`:
+`/clock` and the data on the `--rate` schedule, with no feedback from the nodes (#102). `1`, `true`
+or an unset variable keep the lockstep; any other value refuses the player and fails node creation.
+The player and every node read it, so set it once for the whole launch.
+
+- **Player.** `hypha play --clock` publishes the data of each chunk on the `--rate` schedule and
+  `/clock` once at each chunk boundary. It reads no `/clock_progress`, runs no start barrier, waits
+  for no acknowledgement, sends no `/clock` again and splits no chunk for a subscriber queue. A
+  `--loop` or a restart sends the first `/clock` of the pass and goes on at once. `--rate max` is
+  refused, since nothing would pace the replay, and so are `--nodes`, `--settle` and `--timeout`.
+  `--chunk` sets how often `/clock` steps.
+- **Nodes.** A node started with `HYPHA_USE_SIM_TIME=1` follows `/clock` outside the lockstep, as
+  `HYPHA_USE_SIM_TIME=follow` does: it reports no progress, its plain callbacks run as their samples
+  arrive with framework time the clock, and a replay cycle runs one step per deadline but holds no
+  deadline for an upstream node. A replay input that lost samples (a queue overflow, a TF input
+  that dropped samples) is counted and logged as a warning, `replay not faithful: N samples lost on
+  <topic> ...; outside the replay lockstep the run goes on`, instead of failing the run. A node in
+  follow mode treats a loss the same way.
+- **Rewind.** A `/clock` that goes back still restarts every node (FSR-37, 4.4): it exits 75, and
+  its supervisor starts it again. The player does not wait for it, so a restarted node misses the
+  data that goes out while it starts.
+- **Determinism.** None: what a node sees depends on the host, the load and the start order, as in
+  a ROS playback. A slow node drops samples, and nothing stops the replay for it. A
+  `hypha record --sync` recorder is not waited for either; record without `--sync`.
 
 ## 5. Who participates
 
