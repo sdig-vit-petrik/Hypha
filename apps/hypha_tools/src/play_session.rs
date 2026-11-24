@@ -10,6 +10,7 @@ mod start;
 #[cfg(test)]
 #[allow(clippy::arithmetic_side_effects, clippy::expect_used, clippy::unwrap_used)]
 mod tests;
+mod waiting;
 
 use self::pace::Schedule;
 use crate::CLOCK_TOPIC;

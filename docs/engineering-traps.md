@@ -372,6 +372,16 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   adjacent pair remains in the history. Evicting those pairs restores the fast
   path; unordered histories keep the per-sample replay admission rules. A sample
   stamped exactly at a replay cut belongs to the next step.
+- **One subscriber does not read several publishers in send order.** iceoryx2 gives each
+  publisher its own queue, and a receive takes the first queue with data in the order of the
+  subscriber's connection slots; a slot freed by a publisher that left is reused by the next
+  one. Two samples of different publishers queued at one read come out in slot order, not in
+  the order they were sent. A test must not infer causality from that order: compare what the
+  samples carry, as `record_sync.rs` compares the send time a report answers (#92).
+- **A test stops a supervisor as an operator does.** `hypha launch unit` passes a SIGTERM on
+  to its node's process group and waits for it; a SIGKILL cannot be passed on, and on macOS
+  the node keeps running with parent 1. A test ends a supervisor with SIGTERM and a wait, and
+  sends SIGKILL only after the supervisor's own grace period (`play_restart.rs`, #92).
 - **A managed drain validates and copies each frame once.** Pass the parsed frame
   into history while the transport sample is borrowed. Calling `sample.bytes()`
   again takes another transport shared-state lock. Reuse one host timestamp for

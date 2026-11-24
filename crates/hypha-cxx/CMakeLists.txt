@@ -132,16 +132,17 @@ endif()
 install(DIRECTORY "${HYPHA_STANDARD_MSG_SOURCE_DIR}/"
   DESTINATION "${CMAKE_INSTALL_DATADIR}/hypha/msg")
 
-# The generated headers, one directory per standard package and nothing else of
-# the build tree: an application that builds hypha as a subproject generates its
-# own packages into the same directory. hypha_msgs/ merges with ros_time.h, which
+# The headers this build generated for each standard package, by name: never the
+# directory, which can hold files an older build left (#161), nor the rest of the
+# build tree, where an application that builds hypha as a subproject generates
+# its own packages. hypha_msgs/ merges with ros_time.h, which
 # install(DIRECTORY include/) placed at the same destination.
 file(GLOB HYPHA_STANDARD_PACKAGE_DIRS LIST_DIRECTORIES true RELATIVE
   "${HYPHA_STANDARD_MSG_SOURCE_DIR}" "${HYPHA_STANDARD_MSG_SOURCE_DIR}/*")
 foreach(package ${HYPHA_STANDARD_PACKAGE_DIRS})
   if(IS_DIRECTORY "${HYPHA_STANDARD_MSG_SOURCE_DIR}/${package}")
-    install(DIRECTORY "${HYPHA_MSGS_INCLUDE_DIR}/${package}"
-      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    get_target_property(package_headers ${package} HYPHA_GENERATED_HEADERS)
+    install(FILES ${package_headers} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${package})
   endif()
 endforeach()
 install(FILES "${HYPHA_MESSAGES_MODULE}"
@@ -216,6 +217,11 @@ if(HYPHA_BUILD_TESTS)
   # apps/hypha_tools/tests/play_restart.rs runs it under hypha play.
   add_executable(replay_restart_peer test/replay_restart_peer.cpp)
   target_link_libraries(replay_restart_peer PRIVATE hypha)
+
+  # A triggered cycle participant; two of them form a loop with no delay element. The Rust
+  # test apps/hypha_tools/tests/play_lockstep_waits.rs runs them under hypha_play.
+  add_executable(replay_loop_peer test/replay_loop_peer.cpp)
+  target_link_libraries(replay_loop_peer PRIVATE hypha)
 
   # The exit code of a real runNode process: 0 clean, 78 configuration, 70 runtime.
   add_executable(run_node_exit_code_node test/run_node_exit_code_node.cpp)

@@ -32,7 +32,7 @@ impl Session<'_> {
             }
             if started.elapsed() >= NAMED_START_TIMEOUT {
                 return Err(format!(
-                    "hypha play: {left} participant(s) still on /clock_progress {NAMED_START_TIMEOUT:?} after /clock went back; a backward seek restarts every participant (hypha_node::sdk::runNode does)"
+                    "{left} participant(s) still on /clock_progress {NAMED_START_TIMEOUT:?} after /clock went back; a backward seek restarts every participant (hypha_node::sdk::runNode does)"
                 ));
             }
             self.idle(CONTROL_POLL_INTERVAL)?;

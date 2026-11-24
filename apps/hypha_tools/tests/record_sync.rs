@@ -258,9 +258,16 @@ fn a_recording_holds_each_chunk_until_it_is_written() {
             output_options(),
         )
         .expect("an output publisher");
+    let placeholder = Responder::new(&bus, "placeholder");
     let mut responder = Responder::new(&bus, PARTICIPANT);
     let mut waitset = WaitSet::new(&bus).expect("the participant's executor");
     let mut reports = bus.subscribe_raw(PROGRESS_TOPIC, PROGRESS_DEPTH).expect("reports");
+    // A reader takes the queued reports of several publishers in the order of its
+    // connection slots, not of their sends (#92). Freeing the first slot gives the
+    // recorder's publisher the one read first, so no check below may lean on that order.
+    let _ = reports.try_receive().expect("a first receive");
+    drop(placeholder);
+    let _ = reports.try_receive().expect("a second receive");
     let input = recording_path("input_chunks");
     write_input(&input);
     let output_path = recording_path("output_chunks");
@@ -302,16 +309,21 @@ fn a_recording_holds_each_chunk_until_it_is_written() {
     );
 
     // The recorder acknowledges every chunk, the first included, only after the
-    // participant's answer to it.
+    // participant answered the same /clock sample: for each report of the recorder, the
+    // participant reported that clock or a later one for a sample sent at or after it.
+    // This is what the protocol promises; the order in which this reader received the
+    // two reports is not (see the slot comment above).
     for value in &served.values {
-        let node = seen
+        let acknowledged = seen
             .iter()
-            .position(|report| report.node == PARTICIPANT && report.clock_nanos == *value);
-        let recorder_at =
-            seen.iter().position(|report| report.node == RECORDER && report.clock_nanos == *value);
-        let node = node.expect("the participant reported the chunk");
-        let recorder_at = recorder_at.expect("the recorder reported the chunk");
-        assert!(recorder_at > node, "the recorder reports after the participant for {value}");
+            .find(|report| report.node == RECORDER && report.clock_nanos == *value)
+            .expect("the recorder reported the chunk");
+        let answered = seen.iter().any(|report| {
+            report.node == PARTICIPANT
+                && report.clock_nanos >= acknowledged.clock_nanos
+                && report.clock_sent_nanos >= acknowledged.clock_sent_nanos
+        });
+        assert!(answered, "the recorder acknowledged {value} before the participant answered it");
     }
     std::fs::remove_file(&output_path).expect("remove the recording");
     std::fs::remove_file(&input).expect("remove the input");
