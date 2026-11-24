@@ -389,7 +389,9 @@ package it ships (`std_msgs/`, `geometry_msgs/`, ..., `hypha_msgs/`). It writes
 it, because its own `ros/serialization.h` includes them. An application owns the
 directories of the packages it declares; `hypha_generate_messages()` refuses a
 second declaration of a package from another directory, a standard one included
-(`scripts/test-installed-sdk.sh`). The C++ namespace is the bare package
+(`scripts/test-installed-sdk.sh`). ROS 2 alias headers (`<package>/msg/<name>.hpp`)
+belong to the application that generates them with `hypha_generate_ros2_headers()`,
+standard packages included; hypha installs none. The C++ namespace is the bare package
 (`std_msgs::Header`), as in ROS, so a process cannot use hypha messages and a ROS
 installation's message headers together.
 
