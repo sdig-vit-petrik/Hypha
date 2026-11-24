@@ -171,6 +171,7 @@ fault.**
 | Feature | Question it answers | API | Users |
 |---|---|---|---|
 | Replay flow control | How does a replay wait for its nodes? | `/clock_progress` | tools |
+| Lockstep wait report | Which node is a lockstep replay waiting for, and why did it stop? | `hypha play`: a notice after 1 s of waiting, and an error that names every awaited node after `--timeout` without progress (`replay-flow-control.md` §6.1, #148) | tools |
 | Restart on a backward seek | How does a node start over when time goes back? | exit 75 and `hypha launch` (`HYPHA_REJOIN_AFTER_NANOS`), `HYPHA_STATUS_CLOCK_REWOUND` | tools, all nodes |
 | Open-loop playback | Can a replay run without waiting for its nodes, as `ros2 bag play` does? | `HYPHA_REPLAY_LOCKSTEP=0` (or `false`), read by `hypha play` and every node | none yet (#102) |
 

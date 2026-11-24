@@ -255,7 +255,9 @@ A participant is expected either by name or by count:
   has reported by then, the player warns and paces by `--rate` alone, without acknowledgements.
 - `--nodes <name>...` adds required nodes: the start barrier also waits for each named node to
   report, and fails after 30 s if one is missing. A node that reports without being named still
-  takes part. This suits scripted runs and CI.
+  takes part. This suits scripted runs and CI. After 1 s the player names each missing node, and
+  the error after 30 s names it again: `'<name>' runs but is not on /clock_progress` (a node with
+  no cycle on simulated time, which takes no part) or `no node '<name>' runs in this domain`.
 
 The player also counts the publishers connected to `/clock_progress`. While a publisher has connected
 but not reported, the start barrier keeps waiting, so a recorder that announces itself with its
@@ -271,12 +273,22 @@ progress message. The player then waits for it from the next chunk on.
 
 ## 6. Failure cases
 
-### 6.1 A participant stops reporting
+### 6.1 A participant stops reporting or does not advance
 
-When a participant reports nothing for `--timeout` (default 5 s wall time) while the player waits for
-it, the player stops with an error that names it and its last clock value, or says that it never
-reported. When several are silent, the one quiet longest is named. A replay that must be faithful does not continue quietly without one of its participants.
-There is no `--drop-dead`: a silent participant always stops the replay.
+The player never waits in silence (#148). A wait at the start barrier or for an acknowledgement
+that lasts longer than 1 s prints the nodes it waits for and the `/clock` value, again whenever
+that set changes:
+`hypha play: waiting for '<a>' (last clock <c> ns), '<b>' (never reported) to answer /clock <v> ns`.
+
+A participant whose reported clock does not rise for `--timeout` (default 5 s wall time) while the
+player waits for it stops the replay, whether it went quiet or keeps answering the resent `/clock`
+with a clock it never raises. The error names every node the player still waits for, each as
+`never reported`, `stopped reporting: its last clock was <c> ns` or `reports <c> ns but does not
+advance to <v> ns`, and ends with the advice that only cycle nodes take part in the lockstep and
+that a system the lockstep cannot run plays with `HYPHA_REPLAY_LOCKSTEP=0`. When every awaited node
+keeps reporting without advancing, they hold for each other's reports, and the error says so: a
+loop with no rate cycle as its delay element (6.4, 6.7). The player exits 1. A replay that must be
+faithful does not continue quietly without one of its participants; there is no `--drop-dead`.
 
 ### 6.2 A slow participant and the effective rate
 
@@ -343,8 +355,8 @@ turn.
 - **Partial reports** release the deadlines below them, so a node that holds its later deadlines
   does not block its downstream nodes.
 - **No timeout in the node.** A held deadline waits for as long as its upstream does not report. The
-  player's `--timeout` (5 s by default) is the one bound: it names the participant that stopped
-  reporting and ends the replay.
+  player's `--timeout` (5 s by default) is the one bound: it names the participants that do not
+  advance and ends the replay (6.1).
 - **Scope.** The hold covers the outputs of cycle steps. A plain callback's outputs carry the clock
   when it ran, and their publisher is no upstream (§5).
 - **Progress input.** It holds 64 reports between two drains and keeps the newest report of each
@@ -374,8 +386,8 @@ wait out.
   player does not wait for it: a plain callback node, or the ROS bridge. Naming one with `--nodes`
   fails the start after 30 s. Its replay is not deterministic; build the node from cycles, or play
   the launch in the open loop (4.6).
-- **A loop of triggered cycles has no delay element.** It holds until `--timeout`; a rate cycle or a
-  clock driver in the loop is the delay element.
+- **A loop of triggered cycles has no delay element.** It holds until `--timeout`, and the player
+  names its nodes as a loop (6.1); a rate cycle or a clock driver in the loop is the delay element.
 - **Inputs are drained at step time.** A chunk is split so that a topic's samples fit the smallest
   subscriber queue (4.3). A node whose input queue is still too small for one step fails with
   `replay not faithful` (6.6).
