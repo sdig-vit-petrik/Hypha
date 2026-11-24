@@ -69,6 +69,13 @@ impl Session<'_> {
             self.schedule.reanchor(start, Instant::now());
             return Ok(Flow::Go);
         }
+        // Open loop: the pass starts with its first /clock, and no node is waited for.
+        if !self.in_lockstep() {
+            self.publish_clock_frame(start)?;
+            self.replay_started.get_or_insert_with(Instant::now);
+            self.schedule.reanchor(start, Instant::now());
+            return Ok(Flow::Go);
+        }
         if self.restart_participants(start)? == Flow::Halt {
             return Ok(Flow::Halt);
         }

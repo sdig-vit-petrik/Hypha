@@ -365,7 +365,20 @@ viewer such as Foxglove Studio.
 
 For a system rerun, start the nodes with `HYPHA_USE_SIM_TIME=1` in their environment;
 `HYPHA_USE_SIM_TIME=follow` lets a node follow `/clock` outside the lockstep, as with
-`ros2 bag play` (execution-model.md §11.2). With `--clock`,
+`ros2 bag play` (execution-model.md §11.2).
+
+`HYPHA_REPLAY_LOCKSTEP=0` (or `false`), set for the player and every node of the
+launch, turns the lockstep off: an open-loop playback like `ros2 bag play`. With
+`--clock` the player prints `hypha play: open loop (HYPHA_REPLAY_LOCKSTEP=0): /clock
+and the data follow --rate, and no node is waited for`, publishes each chunk's data on
+the `--rate` schedule and `/clock` once at each boundary, and reads no
+`/clock_progress`: no start barrier, no acknowledgement, no resend, no chunk split for a
+subscriber queue, and no wait for a restart after `--loop`. `--rate max` is refused, as
+nothing would pace the replay, and so are `--nodes`, `--settle` and `--timeout`. The
+nodes follow `/clock` and warn of a lost sample instead of failing; a node still exits
+75 when `/clock` goes back. The result depends on the host and its load, as a ROS
+playback's does (`replay-flow-control.md`, section 4.6). Any other value than `1`,
+`true`, `0` or `false` refuses the start. With `--clock`,
 playback initializes `/clock` to the selected UTC start, advances it at each chunk
 boundary, and sets each message's UTC before publishing its payload. Recorded `/clock` payloads are omitted so they cannot replace that
 timeline. Select enough data before the incident to initialize application

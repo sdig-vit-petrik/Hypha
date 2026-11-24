@@ -30,6 +30,11 @@ fn node_with_parameters(code_name: &str, parameters: &str) -> Result<String, Str
     Ok(name)
 }
 
+/// A bus domain of this test process alone, so no other test or system shares it.
+fn test_domain(label: &str) -> String {
+    format!("t_{}_{label}", std::process::id())
+}
+
 #[allow(clippy::expect_used)]
 fn spawn_child(role: &str, name: &str, domain: Option<&str>) -> std::process::Child {
     let mut command = Command::new(std::env::current_exe().expect("test binary"));
@@ -110,9 +115,10 @@ fn release(mut holder: Holder) {
 #[allow(clippy::expect_used)]
 fn a_name_an_alive_node_of_another_process_holds_is_refused() {
     let name = unique_name("duplicate");
-    let holder = hold(&name, "left");
-    let same_domain = spawn_child("expect_refused", &name, Some("left")).wait().expect("exit");
-    let other_domain = spawn_child("expect_accepted", &name, Some("right")).wait().expect("exit");
+    let (left, right) = (test_domain("left"), test_domain("right"));
+    let holder = hold(&name, &left);
+    let same_domain = spawn_child("expect_refused", &name, Some(&left)).wait().expect("exit");
+    let other_domain = spawn_child("expect_accepted", &name, Some(&right)).wait().expect("exit");
     release(holder);
     assert!(same_domain.success(), "a duplicate name in one domain was accepted");
     assert!(other_domain.success(), "the same name in another domain was refused");
@@ -122,8 +128,9 @@ fn a_name_an_alive_node_of_another_process_holds_is_refused() {
 #[allow(clippy::expect_used)]
 fn any_number_of_processes_hold_one_cli_tool_name() {
     let name = format!("_hyphacli_{}", unique_name("tool"));
-    let holder = hold(&name, "left");
-    let second = spawn_child("expect_accepted", &name, Some("left")).wait().expect("exit");
+    let left = test_domain("left");
+    let holder = hold(&name, &left);
+    let second = spawn_child("expect_accepted", &name, Some(&left)).wait().expect("exit");
     release(holder);
     assert!(second.success(), "a second process of a CLI tool was refused");
 }

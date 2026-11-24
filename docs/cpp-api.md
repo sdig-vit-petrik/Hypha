@@ -445,7 +445,7 @@ and the `Node` leaves the bus. The exit codes (0, 2, 70, 75, 78):
 `hypha/application_node.h`; restarts: tools.md (`hypha launch`). A refused
 configuration is a `hypha::ConfigError` (a `ParameterError` among them): throw one
 from the constructor or `setup()` to exit 78; `failRun()` gives 70. A bad `node.name`,
-an invalid `[log]` table or a bad `HYPHA_USE_SIM_TIME` fails *node creation* and
+an invalid `[log]` table or a bad `HYPHA_USE_SIM_TIME` or `HYPHA_REPLAY_LOCKSTEP` fails *node creation* and
 gives 70. A program with its own `main` returns 75 itself after `ClockRewound` to be
 restarted (`replay-flow-control.md` §4.4). Derive timer- and callback-driven
 applications from `ApplicationNode` (`examples/sensor_fusion/src/fusion_main.cpp`),

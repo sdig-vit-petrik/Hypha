@@ -21,17 +21,23 @@ pub(crate) struct TfInput {
     dynamic: usize,
     fixed: usize,
     state: TfState,
+    /// When the last warning of dropped samples outside the lockstep was written.
+    drops_warned: Option<std::time::Instant>,
 }
+
+/// The shortest interval between two warnings of dropped TF samples.
+const DROP_WARNING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl TfInput {
     /// Insert every transform the step captured on both bindings. A sample that does not
-    /// decode fails the step with `InvalidFrame`. A `replay` step that had to drop samples
-    /// sent before its time fails with `SequenceGap`.
+    /// decode fails the step with `InvalidFrame`. A replay step (`losses` is `Some`) that
+    /// had to drop samples sent before its time fails with `SequenceGap` in the lockstep,
+    /// and warns of them outside it.
     pub(super) fn ingest(
         &mut self,
         cycle: &str,
         captures: &[BindingCapture],
-        replay: bool,
+        losses: Option<super::tick::Losses>,
     ) -> Result<(), Error> {
         let owner = TfOwner::Cycle(cycle);
         let mut pass = IngestPass::default();
@@ -39,10 +45,17 @@ impl TfInput {
             let Some(capture) = captures.get(index) else {
                 return Err(Error::InvalidState);
             };
-            if replay && capture.work_limit_drops > 0 {
-                let topic = if is_static { "/tf_static" } else { "/tf" };
-                log::error!(target: "hypha", "hypha: cycle '{cycle}' TF input dropped {} {topic} sample(s) sent before the step: more than {} are pending", capture.work_limit_drops, capture.samples.len());
-                return Err(Error::SequenceGap);
+            let topic = if is_static { "/tf_static" } else { "/tf" };
+            let (drops, pending) = (capture.work_limit_drops, capture.samples.len());
+            match losses {
+                Some(super::tick::Losses::Fail) if drops > 0 => {
+                    log::error!(target: "hypha", "hypha: cycle '{cycle}' TF input dropped {drops} {topic} sample(s) sent before the step: more than {pending} are pending");
+                    return Err(Error::SequenceGap);
+                }
+                Some(super::tick::Losses::Warn) if drops > 0 && self.drop_warning_due() => {
+                    log::warn!(target: "hypha", "hypha: cycle '{cycle}' TF input dropped {drops} {topic} sample(s) sent before the step: more than {pending} are pending; outside the replay lockstep the run goes on");
+                }
+                _ => {}
             }
             for sample in &capture.samples {
                 self.state.ingest(owner, &sample.payload, is_static, &mut pass)?;
@@ -50,6 +63,17 @@ impl TfInput {
         }
         self.state.finish(owner, pass);
         Ok(())
+    }
+
+    /// True when no warning of dropped samples went out in the last interval; starts one.
+    fn drop_warning_due(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        let due =
+            self.drops_warned.is_none_or(|last| now.duration_since(last) >= DROP_WARNING_INTERVAL);
+        if due {
+            self.drops_warned = Some(now);
+        }
+        due
     }
 }
 
@@ -110,6 +134,7 @@ pub fn cycle_bind_transforms(
         dynamic,
         fixed,
         state: TfState::new(Duration::from_nanos(cache_nanos)),
+        drops_warned: None,
     });
     Ok(index)
 }

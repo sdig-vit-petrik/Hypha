@@ -550,7 +550,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(condition, false, ...)`: writes when the condition becomes true |
 | `tf2_ros::TransformBroadcaster` | Output on `/tf` of type `tf2_msgs::TFMessage` |
 | `tf2_ros::StaticTransformBroadcaster` | An `Output<tf2_msgs::TFMessage>` declared with `latched` and `topic = "/tf_static"` in its ports table |
-| `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment; `follow` for `ros2 bag play`'s behaviour, outside the replay lockstep |
+| `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment; `follow` for `ros2 bag play`'s behaviour, outside the replay lockstep, for one node; `HYPHA_REPLAY_LOCKSTEP=0` for the player and every node of a launch |
 | rosbag record / play | `hypha record` / `hypha play` (`apps/`) |
 | roslaunch | `hypha launch` |
 | roscore | None. Nodes find each other through shared memory |
