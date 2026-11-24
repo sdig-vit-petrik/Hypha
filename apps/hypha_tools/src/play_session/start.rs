@@ -1,5 +1,6 @@
 //! The start of a pass: the start barrier that waits for the participants, once, and the first `/clock`.
 
+use super::waiting::{LOCKSTEP_ADVICE, WAIT_NOTICE, missing_reason};
 use super::{CLOCK_RESEND_INTERVAL, CONTROL_POLL_INTERVAL, Flow, Session};
 use crate::replay_bus;
 use crate::replay_sync::ChunkPlan;
@@ -11,6 +12,8 @@ impl Session<'_> {
     pub(super) fn discover(&mut self, log_time: u64) -> Result<Flow, String> {
         let started = Instant::now();
         let mut last_send = started;
+        // The named nodes still missing at the last notice: a notice repeats when they change.
+        let mut noticed: Option<Vec<String>> = None;
         loop {
             if self.stopping() {
                 return Ok(Flow::Halt);
@@ -38,17 +41,30 @@ impl Session<'_> {
                 }
                 StartState::Missing(missing) if self.rejoining => {
                     return Err(format!(
-                        "hypha play: {} did not rejoin within {NAMED_START_TIMEOUT:?} after /clock went back; a participant must restart itself (hypha_node::sdk::runNode does)",
+                        "{} did not rejoin within {NAMED_START_TIMEOUT:?} after /clock went back; a participant must restart itself (hypha_node::sdk::runNode does)",
                         missing.join(", ")
                     ));
                 }
                 StartState::Missing(missing) => {
                     return Err(format!(
-                        "hypha play: --nodes: {} reported no progress within {NAMED_START_TIMEOUT:?}",
-                        missing.join(", ")
+                        "--nodes: no progress report within {NAMED_START_TIMEOUT:?}: {}; {LOCKSTEP_ADVICE}",
+                        self.missing_reasons(&missing)?
                     ));
                 }
                 StartState::Waiting => {}
+            }
+            let missing: Vec<String> = named
+                .iter()
+                .filter(|node| self.participants.get(node).is_none())
+                .cloned()
+                .collect();
+            let due = now.saturating_duration_since(started) >= WAIT_NOTICE;
+            if due && !missing.is_empty() && noticed.as_ref() != Some(&missing) {
+                eprintln!(
+                    "hypha play: waiting for --nodes to report on /clock_progress: {}",
+                    self.missing_reasons(&missing)?
+                );
+                noticed = Some(missing);
             }
             if now.saturating_duration_since(last_send) >= CLOCK_RESEND_INTERVAL {
                 self.publish_clock_frame(log_time)?;
@@ -56,6 +72,19 @@ impl Session<'_> {
             }
             self.idle(CONTROL_POLL_INTERVAL)?;
         }
+    }
+
+    /// Why each of `missing` has not reported: a node of that name runs, or none does.
+    fn missing_reasons(&self, missing: &[String]) -> Result<String, String> {
+        let running = self.bus.list_nodes()?;
+        let reasons: Vec<String> = missing
+            .iter()
+            .map(|node| {
+                let runs = running.iter().any(|info| info.is_alive && &info.name == node);
+                missing_reason(node, runs)
+            })
+            .collect();
+        Ok(reasons.join(", "))
     }
 
     /// Starts a pass: anchors it on its first log time, and holds the data until every

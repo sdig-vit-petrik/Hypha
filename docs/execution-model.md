@@ -519,7 +519,7 @@ neither, or whose trigger has no positive silence limit is refused at start with
    comes. It reports at most the lowest clock its upstreams reported, and stays
    below its earliest pending trigger or fallback. A feedback loop made only of
    triggered cycles has no delay element: it holds for good, until the player's
-   `--timeout` or a stop ends it. A loop needs a delay element, a rate cycle or a clock driver, as an
+   `--timeout` ends it with an error that names the loop's nodes, or a stop does. A loop needs a delay element, a rate cycle or a clock driver, as an
    algebraic loop does in any block-diagram tool.
 
 ### 6.7 The TF input

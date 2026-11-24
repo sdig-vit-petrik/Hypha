@@ -218,6 +218,11 @@ if(HYPHA_BUILD_TESTS)
   add_executable(replay_restart_peer test/replay_restart_peer.cpp)
   target_link_libraries(replay_restart_peer PRIVATE hypha)
 
+  # A triggered cycle participant; two of them form a loop with no delay element. The Rust
+  # test apps/hypha_tools/tests/play_lockstep_waits.rs runs them under hypha_play.
+  add_executable(replay_loop_peer test/replay_loop_peer.cpp)
+  target_link_libraries(replay_loop_peer PRIVATE hypha)
+
   # The exit code of a real runNode process: 0 clean, 78 configuration, 70 runtime.
   add_executable(run_node_exit_code_node test/run_node_exit_code_node.cpp)
   target_link_libraries(run_node_exit_code_node PRIVATE hypha)

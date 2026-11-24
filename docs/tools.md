@@ -319,8 +319,10 @@ node that publishes progress, and a `hypha record --sync` recorder.
 `--settle <s>` (default 2) starts the replay once no new node has reported for
 that long. `--nodes <name>...` adds required nodes: the start also waits for each of
 them and fails after 30 s if one is missing. Nodes that report without being named
-take part too. A participant that reports nothing for
-`--timeout <s>` (default 5) stops the replay, and the error names it. `--rate`
+take part too. A wait longer than 1 s prints the nodes it waits for. A participant
+whose clock does not rise for `--timeout <s>` (default 5), quiet or not, stops the
+replay with exit 1, and the error names every awaited node and what it did
+(`replay-flow-control.md` §6.1). `--rate`
 paces each message on the wall clock; `max` waits only for the participants. A report
 wakes the player's wait at once (no fixed poll); an unanswered `/clock` is sent again
 every 200 ms.
