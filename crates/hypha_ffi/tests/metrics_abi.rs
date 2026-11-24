@@ -18,6 +18,7 @@ const NODE_NAMES: [&str; 7] = [
     "node.is_sim_time",
 ];
 const TRANSPORT_NAMES: [&str; 1] = ["transport.failed_notifications"];
+const TF_NAMES: [&str; 2] = ["tf.refused", "tf.undecodable"];
 const SCHEMA_NAMES: [&str; 3] =
     ["schema.invalid_records", "schema.unavailable_lookups", "schema.resource_limit_failures"];
 const LOG_NAMES: [&str; 3] = ["log.lines_written", "log.write_failures", "log.rejected_lines"];
@@ -30,12 +31,15 @@ fn expected(parts: &[&[&'static str]]) -> Vec<&'static str> {
 }
 
 #[test]
-fn node_metrics_list_node_schema_and_log_names_in_order() {
+fn node_metrics_list_node_tf_schema_and_log_names_in_order() {
     let node = create_node(&unique("metrics"));
 
     let list = node_metrics(node);
 
-    assert_eq!(names(&list), expected(&[&NODE_NAMES, &TRANSPORT_NAMES, &SCHEMA_NAMES, &LOG_NAMES]));
+    assert_eq!(
+        names(&list),
+        expected(&[&NODE_NAMES, &TRANSPORT_NAMES, &TF_NAMES, &SCHEMA_NAMES, &LOG_NAMES])
+    );
     unsafe { hypha_node_destroy(node) };
 }
 

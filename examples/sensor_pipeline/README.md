@@ -107,7 +107,7 @@ once more at exit with `final` in place of `report`:
 report t=<s> imu received=<n> missing=<n> sequence_gap=<n> invalid_frame=<n> corrupt_payload=<n> schema_mismatch=<n> invalid_timestamp=<n> loan_budget=<n> loan_held=<n> loan_refused=<n>
 report t=<s> cloud received=<n> missing=<n> ... (the same fields)
 report t=<s> node timer_missed=<n> handover_dropped=<n> processed=<n> published=<n> publish_failed=<n> bad_cloud=<n>
-report t=<s> tf static_base_link_lidar=<found|error> lookup_failed invalid_frame=<n> unknown_frame=<n> not_connected=<n> before_buffer=<n> after_buffer=<n>
+report t=<s> tf static_base_link_lidar=<found|error> lookup_failed invalid_frame=<n> unknown_frame=<n> not_connected=<n> before_buffer=<n> after_buffer=<n> refused=<n>
 ```
 
 - `t` is framework time, `hypha::now()`: host UTC live, the replayed `/clock` under
@@ -198,7 +198,9 @@ One replay, as the script runs it:
    `hypha play --input fixture/sensor_inputs.mcap --clock --rate 1 --settle 0.5 --nodes hypha_record --topics /imu /lidar/points /tf /tf_static`.
    `--clock` publishes `/clock` from the recording's time, and every replayed frame
    carries its recorded time; the payload, and so each header stamp, is replayed
-   unchanged. `--nodes hypha_record` makes the start wait for the recorder.
+   unchanged. `--nodes hypha_record` makes the start wait for the recorder, and the
+   player waits for it at every chunk. The processor is a plain callback node and is
+   not waited for (#153).
 4. SIGTERM to the processor, which prints its `final` lines, then SIGTERM to the
    recorder, which finishes its file.
 
@@ -210,10 +212,8 @@ The script then checks:
 - the two normal runs match: when neither lost a cloud, every centroid pairs by stamp
   (`sensor_pipeline_compare compare run_a.mcap run_b.mcap /cloud_processor/centroid
   1e-9`, the fixture's 39 on a quiet host); otherwise every centroid both runs published
-  is the same (`sensor_pipeline_compare common`). The processor has no cycle, so the
-  replay does not pace it, and a loaded host can make it drop a cloud (#72);
-- the slow run reports lost IMU samples, timer periods missed by its stalls, and clouds
-  dropped at the hand-over.
+  is the same (`sensor_pipeline_compare common`). The replay does not pace the
+  processor, so a loaded host can make the hand-over drop a cloud.
 
 It stops only the processes it started, uses its own domain `sp_<pid>`, and at the end
 removes only that domain's files in `/dev/shm` and `/tmp/iceoryx2`, after `lsof` shows
@@ -226,12 +226,9 @@ replay_check: run_a: hypha play --clock --rate 1 --nodes hypha_record
 hypha play: effective rate 1.00x: 4.500 s of data in 4.501 s; set by --rate 1.00x
 final t=1795038799.029 imu received=796 missing=0 sequence_gap=0 ...
 final t=1795038799.029 cloud received=39 missing=0 sequence_gap=0 ...
-final t=1795038799.029 node timer_missed=3590077588 handover_dropped=0 processed=39 published=39 publish_failed=0 bad_cloud=0
-final t=1795038799.029 tf static_base_link_lidar=found lookup_failed invalid_frame=0 unknown_frame=0 not_connected=0 before_buffer=0 after_buffer=0
+final t=1795038799.029 node timer_missed=0 handover_dropped=0 processed=39 published=39 publish_failed=0 bad_cloud=0
+final t=1795038799.029 tf static_base_link_lidar=found lookup_failed invalid_frame=0 unknown_frame=0 not_connected=0 before_buffer=0 after_buffer=0 refused=0
 compare: 39 messages of /cloud_processor/centroid match by stamp; largest difference 0 m, tolerance 1e-09 m
-final t=1795038798.929 imu received=400 missing=82 sequence_gap=0 ...
-final t=1795038798.929 node timer_missed=3590077593 handover_dropped=4 processed=4 published=4 publish_failed=0 bad_cloud=0
-replay_check: slow: imu missing 82, timer periods missed by the stalls 5, clouds dropped at the hand-over 4
 replay_check: passed
 ```
 
@@ -245,27 +242,19 @@ What the lines show:
   and publishes that topic latched. Live, a processor started after the source finds it the
   same way. The first report of a replay is written at the first `/clock`, before any
   data, and shows `static_base_link_lidar=UnknownFrame`.
-- **Loss.** The slow run's own counter: `imu ... missing=82`. A plain subscriber has no
-  step, so it does not fail the run as a cycle input does under simulated time
-  ([execution-model.md §11.1](../../docs/execution-model.md#111-cycles-on-simulated-time));
-  the node reports the loss and the check fails on it.
-- **Timer periods.** Under simulated time the first `/clock` moves the node's time from 0
-  to the fixture's start, and `missedCount()` counts that jump as missed periods: 3590077588
-  periods of 500 ms. Each run of this fixture counts the same jump, so the script takes
-  the slow run's count above the normal run's count: 5 periods.
+- **Loss.** None on a quiet host at `--rate 1`: the processor keeps up. Nothing waits
+  for it, so a stalled processor loses samples as it does live.
 - **QoS mismatch.** The wrong start order of the previous section, with the fixture.
 
-### What the replay does not do
+### What the replay paces
 
-The processor is a plain node, and a node without a cycle on simulated time sends no
-progress report, so the player does not wait for it
-([replay-flow-control.md §6.7](../../docs/replay-flow-control.md#67-limits)). The
-recorder is the one participant. The player therefore paces the inputs at `--rate 1`, on
-the wall clock, and the processor must keep up as it does live. The check asserts that it
-did: every cloud in, every centroid out, no IMU sample lost. A replay at `--rate max`
-would not wait for the processor. A cycle node on simulated time is a participant: it
-"replays faithfully at any `--rate` the host keeps up with"
-([tools.md](../../docs/tools.md#hypha-play--replay-a-recording)).
+Only the recorder. The processor follows `/clock` with plain callbacks, which take no
+part in the replay lockstep (#153): they run as their samples arrive, and the player
+does not wait for the processor
+([execution-model.md §11.2](../../docs/execution-model.md#112-plain-callbacks-in-a-replay)).
+Its two runs match when it keeps up, which `--rate 1` leaves room for; a node that
+needs a deterministic replay at any rate is built from cycles. A centroid carries its
+cloud's stamp, so the comparison by stamp holds.
 
 ### Compare against a ROS golden
 

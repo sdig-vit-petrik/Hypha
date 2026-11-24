@@ -108,7 +108,7 @@ fn read_ps(pids: &[i32]) -> BTreeMap<i32, Reading> {
         .args(["-o", "pid=,cputime=,rss=", "-p", &list.join(",")])
         .stderr(std::process::Stdio::null())
         .output();
-    output.map(|out| parse_ps(&String::from_utf8_lossy(&out.stdout))).unwrap_or_default()
+    output.map_or_default(|out| parse_ps(&String::from_utf8_lossy(&out.stdout)))
 }
 
 /// The `VmRSS` of a `/proc/<pid>/status` text, in bytes.

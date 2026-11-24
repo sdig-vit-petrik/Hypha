@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use hypha_core::introspection::ConfigRow;
+use hypha_core::introspection::{ConfigRow, ConfigSource, IntrospectionRegistry};
 use hypha_core::parameters::{ParamValue, Parameters};
 
 use crate::status::Error;
@@ -14,6 +14,8 @@ pub struct HyphaConfig {
     pub(crate) parameters: Arc<Parameters>,
     pub(crate) parameter_file: Option<std::path::PathBuf>,
     pub(crate) introspection_rows: Arc<std::sync::Mutex<Vec<ConfigRow>>>,
+    /// The manifest of the node this configuration belongs to; set on the node's copy.
+    pub(crate) node_introspection: Option<Arc<IntrospectionRegistry>>,
 }
 
 impl std::ops::Deref for HyphaConfig {
@@ -65,11 +67,45 @@ pub(crate) fn load_config(parameter_file: Option<&str>) -> Result<HyphaConfig, E
         parameters: Arc::new(parameters),
         parameter_file,
         introspection_rows: Arc::default(),
+        node_introspection: None,
     })
 }
 
+/// Marks `key_or_prefix`, a key, a table or a list entry, as set on purpose and not read,
+/// for `reason`: it and every key under it leave the unread keys, and it becomes an
+/// ignored row of the node manifest, logged once at info. A key `config` does not set
+/// is accepted; a second call for the same key keeps the first reason.
+///
+/// # Errors
+/// `InvalidArgument` for an empty key or an empty reason.
+pub fn config_ignore(config: &HyphaConfig, key_or_prefix: &str, reason: &str) -> Result<(), Error> {
+    if key_or_prefix.is_empty() || reason.is_empty() {
+        return Err(Error::InvalidArgument);
+    }
+    if !config.parameters.ignore(key_or_prefix, reason) {
+        return Ok(());
+    }
+    log::info!(target: "hypha", "hypha: parameter '{key_or_prefix}' is not read on purpose: {reason}");
+    let row = ignored_row(key_or_prefix, reason);
+    config.record_introspection_row(row.clone());
+    if let Some(introspection) = &config.node_introspection {
+        introspection.record_config(row);
+    }
+    Ok(())
+}
+
+/// The manifest row of an ignored key: its value is the reason.
+pub(crate) fn ignored_row(key: &str, reason: &str) -> ConfigRow {
+    ConfigRow {
+        key: key.to_owned(),
+        value: reason.to_owned(),
+        default: None,
+        source: ConfigSource::Ignored,
+    }
+}
+
 /// The unread keys of `config` under `prefix` (every key for an empty prefix),
-/// joined by `'\n'`. The framework key `node.name` is excluded.
+/// joined by `'\n'`. The framework key `node.name` and ignored keys are excluded.
 #[must_use]
 pub fn config_unread_keys(config: &HyphaConfig, prefix: &str) -> String {
     config.parameters.unread_keys_under(prefix).join("\n")

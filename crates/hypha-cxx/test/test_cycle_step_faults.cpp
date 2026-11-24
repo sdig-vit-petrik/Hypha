@@ -3,13 +3,13 @@
 
 #include "hypha/cycle_node.h"
 #include "hypha/hypha.h"
-#include <hypha_msgs/hypha_msgs/NodeState.h>
-#include <hypha_msgs/std_msgs/Bool.h>
-#include <hypha_msgs/std_msgs/Float64.h>
+#include <hypha_msgs/NodeState.h>
 
 #include "test_types.h"
 
 #include <gtest/gtest.h>
+#include <std_msgs/Bool.h>
+#include <std_msgs/Float64.h>
 
 #include <chrono>
 #include <cmath>

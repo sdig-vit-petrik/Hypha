@@ -3,11 +3,11 @@
 #                        [--compare <sensor_pipeline_compare>] [--fixture <inputs.mcap>]
 #                        [--work <directory>]
 #
-# Replays the recorded inputs into hypha_cloud_processor three times on simulated time,
-# from the build tree of ./build.sh, and records the output of each run:
+# Replays the recorded inputs into hypha_cloud_processor twice on simulated time, from
+# the build tree of ./build.sh, and records the output of each run. The processor is a
+# plain callback node, so it takes no part in the replay lockstep (#153): the player
+# waits for the recorder only, and the processor's callbacks run as their samples arrive.
 #   run_a, run_b  processor.toml: both outputs must match by header stamp
-#   slow          processor_slow.toml: the node must report lost IMU samples, missed
-#                 timer periods and clouds dropped at its hand-over queue
 # The run uses its own bus domain, sp_<pid>, and stops only the processes it started.
 # Exit 0 when every check passes, 1 otherwise.
 set -euo pipefail
@@ -55,7 +55,8 @@ output_topic="/cloud_processor/centroid"
 tolerance_m="1e-9"
 # The longest wait for a ready line, in seconds of host time. A bound, not a pace.
 start_limit_s=30
-domain="sp_$$"
+# A domain of its own under the test root, which `hypha clean --domain t_` clears.
+domain="t_$$_sp"
 export HYPHA_DOMAIN="${domain}"
 
 started_pids=()
@@ -152,7 +153,8 @@ replay_once() {
     started_pids+=("${record_pid}")
     wait_for_line "${record_pid}" "${record_out}" "Following"
 
-    # 3. The player, in the foreground: /clock, the inputs only, at the recorded pace.
+    # 3. The player, in the foreground: /clock, the inputs only, at the recorded pace, and
+    #    no faster than the recorder answers.
     echo "replay_check: ${run}: hypha play --clock --rate 1 --nodes hypha_record"
     "${hypha_bin}" play --input "${fixture}" --clock --rate 1 --settle 0.5 \
         --nodes hypha_record --topics "${input_topics[@]}" \
@@ -180,8 +182,8 @@ echo "replay_check: fixture ${fixture}: ${clouds} clouds; domain ${domain}; work
 failures=0
 
 # A normal run accounts for every cloud it received: processed or dropped at the hand-over,
-# and every processed cloud published. The node is not paced by the replay (it has no cycle,
-# #72), so a loaded host may make it drop; that is counted, never silent.
+# and every processed cloud published. The replay does not pace the node (#153), so a
+# loaded host may make the hand-over drop; that is counted.
 check_clean_run() {
     local run="$1"
     local out="${work_dir}/${run}.processor.out"
@@ -224,29 +226,6 @@ else
 fi
 if ! "${compare_bin}" "${comparison}" "${work_dir}/run_a.mcap" "${work_dir}/run_b.mcap" \
     "${output_topic}" "${tolerance_m}"; then
-    failures=$((failures + 1))
-fi
-
-# Slow mode: the overload must be visible in the node's own counters.
-replay_once slow "${config_dir}/processor_slow.toml"
-slow_out="${work_dir}/slow.processor.out"
-imu_missing="$(final_value "${slow_out}" imu missing)"
-# Under simulated time the first /clock jumps from 0 to the fixture's start, and the timer
-# counts that jump as missed periods: the same number in every run of this fixture. The
-# periods the stalls missed are what the slow run counts above the clean run.
-clean_missed="$(final_value "${work_dir}/run_a.processor.out" node timer_missed)"
-slow_missed="$(final_value "${slow_out}" node timer_missed)"
-timer_missed=$((slow_missed - clean_missed))
-dropped="$(final_value "${slow_out}" node handover_dropped)"
-echo "replay_check: slow: imu missing ${imu_missing}, timer periods missed by the stalls" \
-    "${timer_missed}, clouds dropped at the hand-over ${dropped}"
-overload_seen=true
-if [ "${imu_missing:-0}" -eq 0 ] || [ "${timer_missed}" -le 0 ] || [ "${dropped:-0}" -eq 0 ]; then
-    overload_seen=false
-fi
-if [ "${overload_seen}" != true ]; then
-    echo "replay_check: slow: imu missing ${imu_missing}, timer missed ${timer_missed}," \
-        "handover dropped ${dropped}: the overload is not visible" >&2
     failures=$((failures + 1))
 fi
 

@@ -1,0 +1,24 @@
+# autoware_shape_estimation (Universe 0.53.2): the values of upstream's
+# config/shape_estimation.param.yaml. model_params is the TensorRT estimator's, which the
+# CPU build leaves out with its code (no USE_CUDA), so the file lists it as unused. An
+# UNKNOWN cluster gets its convex hull.
+unused = ["model_params"]
+use_corrector = true
+use_filter = true
+use_vehicle_reference_yaw = false
+use_vehicle_reference_shape_size = false
+use_boost_bbox_optimizer = false
+fix_filtered_objects_label_to_unknown = true
+
+[model_params]
+use_ml_shape_estimator = false
+minimum_points = 16
+precision = "fp32"
+batch_size = 32
+build_only = false
+
+[ports.inputs.input]
+topic = "/perception/object_recognition/detection/clustering/clusters"
+
+[ports.outputs.objects]
+topic = "/perception/object_recognition/detection/clustering/objects_with_feature"

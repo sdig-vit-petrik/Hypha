@@ -49,7 +49,7 @@ Every call that can fail returns `HyphaStatus`:
 | 19 | — | Retired (`ServerUnavailable`, unused since application RPC was removed). No function returns it. |
 | 20 | `InvalidState` | The call is not valid in the current state: a configuration call during a run, a nested run, a cycle call after its commit, an emission reservation left open. |
 | 21 | — | Retired (`Stale`; the verdict `HYPHA_CYCLE_VERDICT_STALE` names a stale input). No function returns it. |
-| 22 | `ClockRewound` | Simulated time went back under a timer or cycle of a `WaitSet`: a backward seek. Nothing rewinds in place; `runNode` exits 75 and `hypha launch` restarts the process. |
+| 22 | `ClockRewound` | Simulated time went back under a timer or cycle of a `WaitSet`, or a node on simulated time read a `/clock` lower than its last one: a backward seek. Nothing rewinds in place; `runNode` exits 75 and `hypha launch` restarts the process. |
 | 23 | `ApplicationFailed` | The application asked for its run to fail (`hypha_waitset_request_failure`, C++ `failRun()`). The run report carries it with `HYPHA_RUN_REASON_RUNTIME_FAILED`. |
 
 `Panic` reports a foreign callback that threw; the C++ SDK catches the exception
@@ -116,7 +116,15 @@ Simulated time, the logging configuration and the stop request belong to the
 process, not to one node:
 
 - **Simulated time.** The environment variable `HYPHA_USE_SIM_TIME` alone puts a node
-  on simulated time; the parameter file has no switch for it. The first node of a
+  on simulated time; the parameter file has no switch for it. `1` or `true` is
+  simulated time; `0`, `false` or unset is host time, and any other value fails node
+  creation. `follow` is refused with a line that names `HYPHA_REPLAY_LOCKSTEP=0`.
+  `HYPHA_REPLAY_LOCKSTEP=0` (or `false`) turns the replay lockstep off for the whole
+  launch: a node on simulated time reports no progress on `/clock_progress`, so no
+  player or node waits for it, it waits for no other node's report, and its plain
+  callbacks run as their samples arrive while its timers follow `/clock`; `hypha play`
+  waits for no node (replay-flow-control.md §4.6). `1`, `true` or unset keep the
+  lockstep, and any other value fails node creation, also on host time. The first node of a
   process that starts on simulated time writes one `WARN` line, target `hypha`, after
   its `[log]` table is applied:
   `simulated time is on (HYPHA_USE_SIM_TIME): this node follows /clock`. The first
@@ -135,9 +143,12 @@ process, not to one node:
   change: two domains can each carry `/odom_speed`. The value is `[a-z][a-z0-9_]`, at
   most 32 characters. An invalid value, also one that is not UTF-8, refuses the first
   call that needs the transport and names the variable; it never falls back to no
-  domain. `./clean-shm.sh` wipes every domain.
+  domain. `hypha clean --domain <prefix>` removes the domains named `<prefix>*` that
+  no live node uses, `hypha clean` the domain of `HYPHA_DOMAIN`; `./clean-shm.sh` in
+  the repository wipes every domain of the host.
 - **Restart when time goes back.** A timer or cycle of a `WaitSet` that sees simulated
-  time go back ends its run with `ClockRewound`; the process exits 75 (C++ `runNode`)
+  time go back, and a `WaitSet` of a node on simulated time (lockstep or follow, not a CLI
+  tool) that reads a `/clock` lower than the node's last one, end the run with `ClockRewound`; the process exits 75 (C++ `runNode`)
   and its supervisor starts it again, `hypha launch` with `HYPHA_REJOIN_AFTER_NANOS`
   set. In the new process the first node created on simulated time waits for a `/clock`
   sample sent after that time, for at most 30 s (`Timeout`), and fails with
@@ -174,6 +185,14 @@ semantics and its `HYPHA_TF_*` results are those of a cycle's TF input
   (`InvalidState`, the handle stays live); a destroy from a callback of the run defers
   the detach to the end of the run. A destroy after `hypha_node_destroy` only frees the
   handle, which names its node weakly.
+- **Refusals and the sender's check (#123).** Every refused transform counts in the
+  node metric `tf.refused` and keeps its frame's refusal until a transform of that frame
+  is kept again; a lookup that would answer `HYPHA_TF_UNKNOWN_FRAME`,
+  `HYPHA_TF_NOT_CONNECTED` or `HYPHA_TF_AFTER_BUFFER` answers `HYPHA_TF_REFUSED` while a
+  frame on its chain holds one. `hypha_transform_check(parent, parent_len, child,
+  child_len, transform, is_static)` applies the same check to one `HyphaSentTransform`
+  before a send, needs no node, and records the reason for `hypha_last_error` on a
+  refusal (`InvalidArgument`); the C++ broadcasters call it.
 
 ## Clocks and send times
 
@@ -182,6 +201,7 @@ Two clocks drive the framework, and the split is deliberate:
 | Framework time (`/clock` under simulated time) | Host monotonic time |
 |---|---|
 | `hypha_waitset_attach` (timer kind) under simulated time | `hypha_waitset_attach` (timer kind) on host time |
+| `hypha_waitset_timer_reset` and `until_due_nanos` of a timer under simulated time | the same for a timer on host time |
 | | `hypha_waitset_run` limits |
 | | schema-lookup timeouts |
 | `node.last_sweep_end_nanos` metric | |
@@ -198,7 +218,8 @@ time of the send; a `WaitSet` delivery also reports the age it measured
 (`HyphaDelivery.transport_age_nanos`).
 The **framework send time** is simulated time on a sim-time node, wall time
 otherwise, or the value a replayer passed to `hypha_loan_send`. Every frame a cycle
-step sends carries the step's time. Values from different clock sources are not
+step sends carries the step's time: a send without a value reads framework time on the
+sending thread, which outside a step is the clock. Values from different clock sources are not
 comparable. On simulated time a replay cycle ages each input by the framework send
 time: a step at deadline `D` admits the samples sent before `D`, and their age is `D`
 minus the framework send time. Any other cycle ages inputs by the transport send time.
@@ -241,6 +262,7 @@ counted by `hypha_subscriber_missing_sequences`.
 |---|---|---|
 | Node execution | `node.callbacks_invoked`, `node.callback_failures`, `node.slow_callbacks`, `node.sweeps`, `node.last_sweep_end_nanos`, `node.last_callback_status`, `node.is_sim_time` | `hypha_node_metrics` with a node |
 | Transport (process-wide) | `transport.failed_notifications` | `hypha_node_metrics` with a node: sends of this process whose wake notification failed; their samples wait for the next notification of the topic |
+| Transforms | `tf.refused`, `tf.undecodable` | `hypha_node_metrics` with a node: transforms that a transform buffer or TF input of the node refused, and messages on their topics that did not decode, since the node began |
 | Schema | `schema.invalid_records`, `schema.unavailable_lookups`, `schema.resource_limit_failures` | `hypha_node_metrics` with a node |
 | Log (process-wide) | `log.lines_written`, `log.write_failures`, `log.rejected_lines` | `hypha_node_metrics`, with or without a node |
 | Subscriber | `integrity.invalid_frame`, `integrity.corrupt_payload`, `integrity.schema_mismatch`, `integrity.sequence_gap`, `integrity.invalid_timestamp`, `loan.budget`, `loan.held`, `loan.refused` | `RawSubscriber::metrics` (Rust SDK); `hypha_subscriber_counters` (C ABI, as a struct) |
@@ -266,7 +288,7 @@ The domain also turns iceoryx2's dead-node cleanup off: `global.node.cleanup-dea
 `false` whatever a host file sets. A node that starts reclaims the nodes iceoryx2 reports as dead
 that have its own name, the runs a crash or a kill ended, and every dead CLI tool node
 (`_hyphacli_<tool>`). The dead node of an application stays listed as dead until then, so the
-tools show it, and keeps its ports; `./clean-shm.sh` wipes a stopped domain.
+tools show it, and keeps its ports; `hypha clean` removes a stopped domain.
 No host `iceoryx2.toml` is read, in `./config/`, the user directory or the system directory. The
 root path, the prefix and the timeouts are iceoryx2's defaults, or the prefix `HYPHA_DOMAIN` selects,
 in every process, whatever the working directory.
@@ -292,7 +314,7 @@ reserve nothing.
 A framework topic (`/clock`, `/clock_progress`) holds at most 32 publishers,
 32 subscribers and 64 nodes; every node that subscribes `/clock` or reports on
 `/clock_progress` counts. Any other topic holds the limits of its policy. After a change of
-these values run `./clean-shm.sh`: a stale segment keeps its old limits.
+these values run `hypha clean` with the domain stopped: a stale segment keeps its old limits.
 
 A wildcard subscriber attaches only to a publish-subscribe service that already exists.
 It never creates one, it never follows a request-response service of the same name,
@@ -453,10 +475,26 @@ while no thread does. No mutex stays held across user processing.
 One thread runs one `WaitSet`. `hypha_waitset_request_stop` and
 `hypha_waitset_request_failure` are the calls another thread may make on a
 running `WaitSet`, and a stop that arrives before
-the run starts is recorded, so the next run returns at once. Any thread may also call
+the run starts is recorded, so the next run returns at once.
+
+Every other call that names a `WaitSet`, one of its cycles or input sources, and every
+run, claims the `WaitSet` for the calling thread first, with one compare-and-swap of
+its owner, and releases it when it returns; a run holds the claim for its whole length,
+and a call from one of its callbacks is inside that claim (#83). A run or a call that
+another thread starts while one holds the claim returns `InvalidState` and changes
+nothing, so two threads never use one `WaitSet` at once undetected: a run started while
+another thread is inside a call is a refused run, not undefined behaviour. Any thread may also call
 `hypha_transform_buffer_lookup` and `hypha_subscriber_counters` while a run goes on.
 
-Attachments freeze for the duration of a run. Create and attach every
-subscription and timer before the run starts; attaching during one is refused with
-`InvalidState`, and so is a detach from another thread. A callback's own detach is
-deferred to the end of the run (see `hypha_waitset_detach`).
+Attachments freeze for the duration of a run, with one exception. Create and attach
+every subscription and cycle before the run starts; attaching one during a run is
+refused with `InvalidState`, and so is any attach, detach or timer call from another
+thread. A callback's own detach is deferred to the end of the run (see
+`hypha_waitset_detach`). A callback may attach a timer (`HYPHA_ATTACH_TIMER`) when the
+node runs on host time or on its own simulated clock: the timer needs no native
+attachment, joins the dispatch before the run's next wait, and takes an id above every
+id the native set hands out. On a simulated clock driven from outside the node a timer
+is polled natively, so the attach is refused. A callback may also cancel, reset and read
+a timer (`hypha_waitset_timer_cancel`, `hypha_waitset_timer_reset`,
+`hypha_waitset_timer_state`); a cancel or reset holds back a call of that timer still
+due later in the same turn, and a reset takes effect before the next wait.

@@ -1,0 +1,152 @@
+# autoware_ground_filter: the edits of the hypha port, applied to a copy of
+# upstream/autoware_core/perception/autoware_ground_filter by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
+diff -ruN a/src/ground_filter.cpp b/src/ground_filter.cpp
+--- a/src/ground_filter.cpp
++++ b/src/ground_filter.cpp
+@@ -195,7 +195,8 @@
+         // this point is obstacle
+         out_no_ground_indices.indices.push_back(static_cast<int>(pt_idx));
+       } else if (
+-        abs(height) < global_slope_threshold && abs(height) < param_.non_ground_height_threshold) {
++        // hypha port: std::abs; an unqualified abs() can be C's int abs(int) (upstream bug).
++        std::abs(height) < global_slope_threshold && std::abs(height) < param_.non_ground_height_threshold) {
+         // this point is ground
+         ground_bin.addPoint(radius, height, pt_idx);
+         is_ground_found = true;
+@@ -250,7 +251,8 @@
+ 
+     // 3. local slope
+     const float delta_radius = radius - prev_cell.avg_radius_;
+-    if (abs(delta_z) < global_slope_max_ratio_ * delta_radius) {
++    // hypha port: std::abs; an unqualified abs() can be C's int abs(int) (upstream bug).
++    if (std::abs(delta_z) < global_slope_max_ratio_ * delta_radius) {
+       // this point is ground
+       ground_bin.addPoint(radius, height, pt_idx);
+       // go to the next point
+@@ -268,7 +270,8 @@
+       // go to the next point
+       continue;
+     }
+-    if (abs(delta_gnd_z) <= gnd_z_threshold) {
++    // hypha port: std::abs; an unqualified abs() can be C's int abs(int) (upstream bug).
++    if (std::abs(delta_gnd_z) <= gnd_z_threshold) {
+       // this point is ground
+       ground_bin.addPoint(radius, height, pt_idx);
+       // go to the next point
+@@ -307,21 +310,24 @@
+     // 3. local slope
+     const float delta_radius = radius - prev_cell.avg_radius_;
+     const float global_slope_threshold = global_slope_max_ratio_ * delta_radius;
+-    if (abs(delta_avg_z) < global_slope_threshold) {
++    // hypha port: std::abs; an unqualified abs() can be C's int abs(int) (upstream bug).
++    if (std::abs(delta_avg_z) < global_slope_threshold) {
+       // this point is ground
+       ground_bin.addPoint(radius, height, pt_idx);
+       // go to the next point
+       continue;
+     }
+     // 4. height from the estimated ground
+-    if (abs(delta_avg_z) < param_.non_ground_height_threshold) {
++    // hypha port: std::abs; an unqualified abs() can be C's int abs(int) (upstream bug).
++    if (std::abs(delta_avg_z) < param_.non_ground_height_threshold) {
+       // this point is ground
+       ground_bin.addPoint(radius, height, pt_idx);
+       // go to the next point
+       continue;
+     }
+     const float delta_max_z = height - prev_cell.max_height_;
+-    if (abs(delta_max_z) < param_.non_ground_height_threshold) {
++    // hypha port: std::abs; an unqualified abs() can be C's int abs(int) (upstream bug).
++    if (std::abs(delta_max_z) < param_.non_ground_height_threshold) {
+       // this point is ground
+       ground_bin.addPoint(radius, height, pt_idx);
+       // go to the next point
+@@ -368,7 +374,8 @@
+     // 3. the point is over discontinuous grid
+     const float delta_radius = radius - prev_cell.avg_radius_;
+     const float global_slope_threshold = global_slope_max_ratio_ * delta_radius;
+-    if (abs(delta_z) < global_slope_threshold) {
++    // hypha port: std::abs; an unqualified abs() can be C's int abs(int) (upstream bug).
++    if (std::abs(delta_z) < global_slope_threshold) {
+       // this point is ground
+       ground_bin.addPoint(radius, height, pt_idx);
+       // go to the next point
+diff -ruN a/src/ground_filter_node.cpp b/src/ground_filter_node.cpp
+--- a/src/ground_filter_node.cpp
++++ b/src/ground_filter_node.cpp
+@@ -187,31 +187,8 @@
+ void GroundFilterComponent::subscribe()
+ {
+   if (use_indices_) {
+-    // Subscribe to the input using a filter
+-    sub_input_filter_.subscribe(
+-      this, "input", rclcpp::SensorDataQoS().keep_last(max_queue_size_).get_rmw_qos_profile());
+-    sub_indices_filter_.subscribe(
+-      this, "indices", rclcpp::SensorDataQoS().keep_last(max_queue_size_).get_rmw_qos_profile());
+-
+-    if (approximate_sync_) {
+-      sync_input_indices_a_ = std::make_shared<
+-        message_filters::Synchronizer<message_filters::sync_policies::ApproximateTime<
+-          sensor_msgs::msg::PointCloud2, pcl_msgs::msg::PointIndices>>>(max_queue_size_);
+-      sync_input_indices_a_->connectInput(sub_input_filter_, sub_indices_filter_);
+-      sync_input_indices_a_->registerCallback(
+-        std::bind(
+-          &GroundFilterComponent::faster_input_indices_callback, this, std::placeholders::_1,
+-          std::placeholders::_2));
+-    } else {
+-      sync_input_indices_e_ =
+-        std::make_shared<message_filters::Synchronizer<message_filters::sync_policies::ExactTime<
+-          sensor_msgs::msg::PointCloud2, pcl_msgs::msg::PointIndices>>>(max_queue_size_);
+-      sync_input_indices_e_->connectInput(sub_input_filter_, sub_indices_filter_);
+-      sync_input_indices_e_->registerCallback(
+-        std::bind(
+-          &GroundFilterComponent::faster_input_indices_callback, this, std::placeholders::_1,
+-          std::placeholders::_2));
+-    }
++    // hypha port: the input/indices synchronizer is message_filters, which is not offered.
++    throw std::invalid_argument("ground filter: use_indices = true is not supported on hypha");
+   } else {
+     std::function<void(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)> cb = std::bind(
+       &GroundFilterComponent::faster_input_indices_callback, this, std::placeholders::_1,
+diff -ruN a/src/ground_filter_node.hpp b/src/ground_filter_node.hpp
+--- a/src/ground_filter_node.hpp
++++ b/src/ground_filter_node.hpp
+@@ -29,17 +29,7 @@
+ 
+ #include <boost/thread/mutex.hpp>
+ 
+-#if __has_include(<message_filters/subscriber.hpp>)
+-#include <message_filters/subscriber.hpp>
+-#include <message_filters/sync_policies/approximate_time.hpp>
+-#include <message_filters/sync_policies/exact_time.hpp>
+-#include <message_filters/synchronizer.hpp>
+-#else
+-#include <message_filters/subscriber.h>
+-#include <message_filters/sync_policies/approximate_time.h>
+-#include <message_filters/sync_policies/exact_time.h>
+-#include <message_filters/synchronizer.h>
+-#endif
++// hypha port: message_filters is not offered; use_indices = true is refused (subscribe()).
+ 
+ #include <memory>
+ #include <mutex>
+@@ -116,18 +106,10 @@
+     nullptr};
+   std::unique_ptr<autoware_utils_debug::DebugPublisher> debug_publisher_ptr_{nullptr};
+ 
+-  std::shared_ptr<message_filters::Synchronizer<message_filters::sync_policies::ApproximateTime<
+-    sensor_msgs::msg::PointCloud2, pcl_msgs::msg::PointIndices>>>
+-    sync_input_indices_a_;
+-  std::shared_ptr<message_filters::Synchronizer<message_filters::sync_policies::ExactTime<
+-    sensor_msgs::msg::PointCloud2, pcl_msgs::msg::PointIndices>>>
+-    sync_input_indices_e_;
+ 
+   std::mutex mutex_;
+   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_input_;
+   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_output_;
+-  message_filters::Subscriber<sensor_msgs::msg::PointCloud2> sub_input_filter_;
+-  message_filters::Subscriber<pcl_msgs::msg::PointIndices> sub_indices_filter_;
+   std::unique_ptr<autoware_utils_debug::PublishedTimePublisher> published_time_publisher_;
+ };
+ 

@@ -34,7 +34,7 @@ pub fn cycle_set_clock_driver(
     if refused {
         return Err(Error::InvalidArgument);
     }
-    let expected = registration.driver.take().map(|setup| setup.expected).unwrap_or_default();
+    let expected = registration.driver.take().map_or_default(|setup| setup.expected);
     registration.driver = Some(DriverSetup { options, expected });
     Ok(())
 }

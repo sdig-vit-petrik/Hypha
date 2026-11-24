@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(hypha VERSION 0.2.0 LANGUAGES C CXX)
+project(hypha VERSION 0.3.0 LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -54,9 +54,10 @@ endif()
 
 target_link_libraries(hypha INTERFACE hypha::ffi)
 
-# ROS 1 wire-compatible message headers. This package owns the whole
-# hypha_msgs/ include namespace: include/hypha_msgs/ros_time.h by hand, and the
-# headers crates/hypha_msgs generates into the build tree.
+# ROS 1 wire-compatible message headers, at their ROS 1 path <package>/<Name>.h.
+# This package owns the directory of each standard package: the headers
+# crates/hypha_msgs generates into the build tree, and in hypha_msgs/ also
+# include/hypha_msgs/ros_time.h by hand.
 set(HYPHA_MSGS_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated/include")
 # The headers appear during the build, so the link is for ordering only.
 target_link_libraries(hypha INTERFACE $<BUILD_INTERFACE:hypha_standard_messages>)
@@ -116,11 +117,6 @@ install(CODE "
 install(FILES "${HYPHA_FFI_HEADER_DIR}/hypha/hypha_ffi.h"
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hypha)
 
-# The generated half of the hypha_msgs/ namespace. It merges with the hand-written
-# half that install(DIRECTORY include/) placed at the same destination.
-install(DIRECTORY "${HYPHA_MSGS_INCLUDE_DIR}/hypha_msgs"
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-
 # The .msg sources the headers above were generated from, and the CMake
 # function that generates an application's own messages against them. An
 # application message that names std_msgs/Header needs the definition, not the
@@ -135,7 +131,26 @@ if(NOT IS_DIRECTORY "${HYPHA_STANDARD_MSG_SOURCE_DIR}")
 endif()
 install(DIRECTORY "${HYPHA_STANDARD_MSG_SOURCE_DIR}/"
   DESTINATION "${CMAKE_INSTALL_DATADIR}/hypha/msg")
+
+# The headers this build generated for each standard package, by name: never the
+# directory, which can hold files an older build left (#161), nor the rest of the
+# build tree, where an application that builds hypha as a subproject generates
+# its own packages. hypha_msgs/ merges with ros_time.h, which
+# install(DIRECTORY include/) placed at the same destination.
+file(GLOB HYPHA_STANDARD_PACKAGE_DIRS LIST_DIRECTORIES true RELATIVE
+  "${HYPHA_STANDARD_MSG_SOURCE_DIR}" "${HYPHA_STANDARD_MSG_SOURCE_DIR}/*")
+foreach(package ${HYPHA_STANDARD_PACKAGE_DIRS})
+  if(IS_DIRECTORY "${HYPHA_STANDARD_MSG_SOURCE_DIR}/${package}")
+    get_target_property(package_headers ${package} HYPHA_GENERATED_HEADERS)
+    install(FILES ${package_headers} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${package})
+  endif()
+endforeach()
 install(FILES "${HYPHA_MESSAGES_MODULE}"
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/hypha)
+
+# hypha_add_test(), which runs an application's test in a bus domain of its own.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/hyphaTesting.cmake")
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/hyphaTesting.cmake"
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/hypha)
 
 # The generator, so that hypha_generate_messages() works from an install prefix.
@@ -179,7 +194,7 @@ if(HYPHA_BUILD_TESTS)
 
   add_executable(test_hypha_c test/test_c_abi.c)
   target_link_libraries(test_hypha_c PRIVATE hypha::ffi)
-  add_test(NAME test_hypha_c COMMAND test_hypha_c)
+  hypha_add_test(test_hypha_c)
 
   add_executable(test_hypha_base
     base/test/test_main.cpp
@@ -189,7 +204,8 @@ if(HYPHA_BUILD_TESTS)
     base/test/test_time_saturation.cpp
   )
   target_link_libraries(test_hypha_base PRIVATE hypha GTest::gtest)
-  add_test(NAME test_hypha_base COMMAND test_hypha_base)
+  # Simulated time joins the bus, and base/test/test_main.cpp sets no domain.
+  hypha_add_test(test_hypha_base)
   hypha_gtest_report(test_hypha_base)
 
   # The C++ peer of the framework-stamp round trip. The Rust test in
@@ -198,9 +214,14 @@ if(HYPHA_BUILD_TESTS)
   target_link_libraries(framework_stamp_peer PRIVATE hypha)
 
   # A replay participant that a backward seek restarts. The Rust test
-  # apps/hypha_tools/tests/play_restart.rs runs it under hypha_play.
+  # apps/hypha_tools/tests/play_restart.rs runs it under hypha play.
   add_executable(replay_restart_peer test/replay_restart_peer.cpp)
   target_link_libraries(replay_restart_peer PRIVATE hypha)
+
+  # A triggered cycle participant; two of them form a loop with no delay element. The Rust
+  # test apps/hypha_tools/tests/play_lockstep_waits.rs runs them under hypha_play.
+  add_executable(replay_loop_peer test/replay_loop_peer.cpp)
+  target_link_libraries(replay_loop_peer PRIVATE hypha)
 
   # The exit code of a real runNode process: 0 clean, 78 configuration, 70 runtime.
   add_executable(run_node_exit_code_node test/run_node_exit_code_node.cpp)
@@ -208,15 +229,14 @@ if(HYPHA_BUILD_TESTS)
   foreach(exit_case IN ITEMS "missing;78" "unread;78" "throw;70" "clean;0")
     list(GET exit_case 0 case_name)
     list(GET exit_case 1 case_code)
-    add_test(NAME run_node_exit_code_${case_name}
+    hypha_add_test(run_node_exit_code_${case_name}
       COMMAND ${CMAKE_COMMAND}
         -DNODE=$<TARGET_FILE:run_node_exit_code_node>
         -DCASE=${case_name}
         -DEXPECTED=${case_code}
         -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/test/run_node_exit_code.cmake)
-    set_tests_properties(run_node_exit_code_${case_name} PROPERTIES LABELS "needs-iceoryx2"
-      ENVIRONMENT "HYPHA_DOMAIN=k8_exit_${case_name}")
+    set_tests_properties(run_node_exit_code_${case_name} PROPERTIES LABELS "needs-iceoryx2")
   endforeach()
 
   # A library with another ABI revision is refused before any startup call.
@@ -301,6 +321,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_ros1_codec_encode.cpp
     test/test_typed_schema_identity.cpp
     test/test_publish_receive_status.cpp
+    test/test_result_names.cpp
     test/test_callback_failure.cpp
     test/test_node_health.cpp
     test/test_metrics.cpp

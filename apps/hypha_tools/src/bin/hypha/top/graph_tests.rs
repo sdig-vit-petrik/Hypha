@@ -73,7 +73,7 @@ fn a_chain_has_edges_and_no_loop() {
     assert_eq!(graph.edges.len(), 1);
     assert_eq!((graph.edges[0].from, graph.edges[0].to), (0, 1));
     assert_eq!(graph.edges[0].label, "/x");
-    assert!(graph.loops.is_empty());
+    assert!(graph.loops.is_empty(), "{:?}", graph.loops);
     assert!(graph.vertices.iter().all(|vertex| vertex.level == LoopLevel::None));
 }
 
@@ -123,7 +123,7 @@ fn a_node_reading_its_own_output_is_a_self_loop() {
     let manifests = [one_cycle("echo", "/x", "/x", triggered_cycle("t", "/x"))];
     let graph = build(&facts(&manifests), std::iter::empty(), &options(View::Nodes));
     assert!(graph.vertices[0].self_loop);
-    assert!(graph.edges.is_empty());
+    assert!(graph.edges.is_empty(), "{:?}", graph.edges);
     assert_eq!(graph.loops[0].level, LoopLevel::Triggered);
 }
 

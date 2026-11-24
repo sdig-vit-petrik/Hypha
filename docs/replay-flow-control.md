@@ -24,18 +24,24 @@ One rule: **`/clock` never runs ahead of what every participant has finished.**
   order. Its output equals that of a replay at any other rate.
 - The player publishes every message of the recording; it never skips ahead of a slow node.
 - Nodes need no change. Live operation (no player) is unchanged.
-- Sync replaces open-loop replay; it is not a mode beside it: the open-loop path and
-  the compensations for it are removed.
+- **Two modes, one switch.** The lockstep is the default and is deterministic. The open loop, a
+  playback like `ros2 bag play`, is `HYPHA_REPLAY_LOCKSTEP=0`, set once for the whole launch (4.6).
+  Nothing in between: no node of a launch can leave the lockstep alone. The one rule: use the
+  lockstep; if the system cannot run in it, set the variable. The old compensations for open-loop
+  replay are removed.
 
 Not goals: more throughput than the slowest participant allows (that is CPU work in the node), a
 network transport, and replay across hosts.
 
 ## 3. Roles
 
-- **Participant**: a process whose output must be faithful. By default every node with a cycle on
-  simulated time. `hypha record --sync` makes the recorder one too.
+- **Participant**: a process whose output must be faithful: every node on simulated time with a
+  rate or triggered cycle, and `hypha record --sync`. Plain callbacks take no part (#153): they
+  run as their samples arrive, and a node with only plain callbacks is not waited for
+  (`execution-model.md` §11.2).
 - **Observer**: everything else (`hypha foxglove`, `hypha top`, `hypha topic`, and
-  `hypha record` without `--sync`). An observer samples and may lose data; it never slows the
+  `hypha record` without `--sync`). A CLI tool's node (`_hyphacli_<tool>`) never takes part, even
+  on simulated time. An observer samples and may lose data; it never slows the
   replay. Each followed topic has a queue of 8.
 - **Player**: `hypha play --clock`. It is the only source of time and the only place where
   pacing and loss are decided. One player per domain. It refuses to start while another process in
@@ -81,8 +87,8 @@ runtime publishes one `ReplayProgress` for the newest `/clock` sample it has rea
   when the same sample's clock has risen since the last report. A report is never skipped because
   the clock value equals an earlier one: a resend or a later pass reuses clock values, and a
   repeated value must still be answered.
-- **Only a replay `WaitSet` reports.** The `WaitSet` must hold a cycle on simulated time. It reports
-  after its timers, so the steps that the sample made due are published first. A sample ahead of the
+- **Only a replay `WaitSet` reports.** The `WaitSet` must hold a cycle on simulated time. It
+  reports after its timers, so the steps that the sample made due are published first. A sample ahead of the
   node's own time waits for a later turn. A run that stops or fails reports nothing.
 - **A node reports for all its `WaitSet`s.** When several `WaitSet`s of a node hold such cycles, the
   node sends the lowest clock they offer, and only once each has answered the same sample. A
@@ -140,8 +146,9 @@ key plays the rest of one chunk, sends its `/clock` and pauses again.
 **A backward seek restarts the participants.** No node rewinds in place. A pass that goes back runs
 in this order:
 
-1. The player sends the pass's first `/clock` value once. Each participant's replay and triggered
-   cycles see the clock go back and end the run with `ClockRewound`.
+1. The player sends the pass's first `/clock` value once. Each node on simulated time reads a
+   `/clock` lower than its last one and ends the run with `ClockRewound`, whatever its `WaitSet`
+   holds; a timer or cycle that sees the clock go back does the same.
 2. `hypha::runNode` (C++) destroys the node, so it leaves the bus, and exits 75. Its supervisor,
    `hypha launch` (or systemd with `RestartForceExitStatus=75`), starts it again at once; `hypha launch`
    sets `HYPHA_REJOIN_AFTER_NANOS` to its steady time when it saw the exit. A participant that no
@@ -160,8 +167,8 @@ Every old participant has left before any new one reads its first `/clock`, so n
 a sample of the old timeline. Determinism comes from the fresh start, not from bookkeeping inside a
 running cycle. A participant that does not restart itself (a Rust node, or a C++ program with its
 own `main`) ends its run with `ClockRewound`, and the player fails when it does not rejoin. A node
-on simulated time that has no replay or triggered cycle, such as a bridge, keeps running and follows
-the clock back.
+on simulated time that takes no part, such as a bridge or any node in the open loop (4.6), ends its
+run the same way (#130); only a CLI tool follows the clock back.
 
 A forward jump of `/clock` is not announced. Each period that the jump passes runs one step, in
 order, as a chunk is stepped. No node reads an announcement, so none can disagree about the gap. The
@@ -213,6 +220,32 @@ in `hypha_runtime::clock_barrier`; `hypha play` reaches them through `hypha::clo
   `Timeout`. The driver is the delay element: a command a participant stamps D is read by
   the driver's step at D + period.
 
+### 4.6 Open-loop playback (`HYPHA_REPLAY_LOCKSTEP=0`)
+
+`HYPHA_REPLAY_LOCKSTEP=0` (or `false`) turns the lockstep off for a playback like `ros2 bag play`:
+`/clock` and the data on the `--rate` schedule, with no feedback from the nodes (#102). `1`, `true`
+or an unset variable keep the lockstep; any other value refuses the player and fails node creation.
+The player and every node read it, so set it once for the whole launch.
+
+- **Player.** `hypha play --clock` publishes the data of each chunk on the `--rate` schedule and
+  `/clock` once at each chunk boundary. It reads no `/clock_progress`, runs no start barrier, waits
+  for no acknowledgement, sends no `/clock` again and splits no chunk for a subscriber queue. A
+  `--loop` or a restart sends the first `/clock` of the pass and goes on at once. `--rate max` is
+  refused, since nothing would pace the replay, and so are `--nodes`, `--settle` and `--timeout`.
+  `--chunk` sets how often `/clock` steps.
+- **Nodes.** A node started with `HYPHA_USE_SIM_TIME=1` follows `/clock` outside the lockstep: it
+  reports no progress, its plain callbacks run as their samples
+  arrive with framework time the clock, and a replay cycle runs one step per deadline but holds no
+  deadline for an upstream node. A replay input that lost samples (a queue overflow, a TF input
+  that dropped samples) is counted and logged as a warning, `replay not faithful: N samples lost on
+  <topic> ...; outside the replay lockstep the run goes on`, instead of failing the run.
+- **Rewind.** A `/clock` that goes back still restarts every node (FSR-37, 4.4): it exits 75, and
+  its supervisor starts it again. The player does not wait for it, so a restarted node misses the
+  data that goes out while it starts.
+- **Determinism.** None: what a node sees depends on the host, the load and the start order, as in
+  a ROS playback. A slow node drops samples, and nothing stops the replay for it. A
+  `hypha record --sync` recorder is not waited for either; record without `--sync`.
+
 ## 5. Who participates
 
 A participant is expected either by name or by count:
@@ -222,24 +255,40 @@ A participant is expected either by name or by count:
   has reported by then, the player warns and paces by `--rate` alone, without acknowledgements.
 - `--nodes <name>...` adds required nodes: the start barrier also waits for each named node to
   report, and fails after 30 s if one is missing. A node that reports without being named still
-  takes part. This suits scripted runs and CI.
+  takes part. This suits scripted runs and CI. After 1 s the player names each missing node, and
+  the error after 30 s names it again: `'<name>' runs but is not on /clock_progress` (a node with
+  no cycle on simulated time, which takes no part) or `no node '<name>' runs in this domain`.
 
 The player also counts the publishers connected to `/clock_progress`. While a publisher has connected
 but not reported, the start barrier keeps waiting, so a recorder that announces itself with its
 first report is not missed. The wait ends at `--settle` after the start, so a silent publisher delays
 the start by that long and never fails the run.
 
+A node opens its `/clock_progress` publisher when it commits its first cycle on simulated time. A
+node with only plain callbacks opens none: the player does not wait for it, and no cycle holds a
+deadline for it (#153).
+
 A node that joins after the start, for example after a restart, becomes a participant at its first
 progress message. The player then waits for it from the next chunk on.
 
 ## 6. Failure cases
 
-### 6.1 A participant stops reporting
+### 6.1 A participant stops reporting or does not advance
 
-When a participant reports nothing for `--timeout` (default 5 s wall time) while the player waits for
-it, the player stops with an error that names it and its last clock value, or says that it never
-reported. When several are silent, the one quiet longest is named. A replay that must be faithful does not continue quietly without one of its participants.
-There is no `--drop-dead`: a silent participant always stops the replay.
+The player never waits in silence (#148). A wait at the start barrier or for an acknowledgement
+that lasts longer than 1 s prints the nodes it waits for and the `/clock` value, again whenever
+that set changes:
+`hypha play: waiting for '<a>' (last clock <c> ns), '<b>' (never reported) to answer /clock <v> ns`.
+
+A participant whose reported clock does not rise for `--timeout` (default 5 s wall time) while the
+player waits for it stops the replay, whether it went quiet or keeps answering the resent `/clock`
+with a clock it never raises. The error names every node the player still waits for, each as
+`never reported`, `stopped reporting: its last clock was <c> ns` or `reports <c> ns but does not
+advance to <v> ns`, and ends with the advice that only cycle nodes take part in the lockstep and
+that a system the lockstep cannot run plays with `HYPHA_REPLAY_LOCKSTEP=0`. When every awaited node
+keeps reporting without advancing, they hold for each other's reports, and the error says so: a
+loop with no rate cycle as its delay element (6.4, 6.7). The player exits 1. A replay that must be
+faithful does not continue quietly without one of its participants; there is no `--drop-dead`.
 
 ### 6.2 A slow participant and the effective rate
 
@@ -306,10 +355,10 @@ turn.
 - **Partial reports** release the deadlines below them, so a node that holds its later deadlines
   does not block its downstream nodes.
 - **No timeout in the node.** A held deadline waits for as long as its upstream does not report. The
-  player's `--timeout` (5 s by default) is the one bound: it names the participant that stopped
-  reporting and ends the replay.
-- **Scope.** The hold covers the outputs of cycle steps. An output that a plain callback publishes is
-  not held.
+  player's `--timeout` (5 s by default) is the one bound: it names the participants that do not
+  advance and ends the replay (6.1).
+- **Scope.** The hold covers the outputs of cycle steps. A plain callback's outputs carry the clock
+  when it ran, and their publisher is no upstream (§5).
 - **Progress input.** It holds 64 reports between two drains and keeps the newest report of each
   upstream node. A missed report is logged as an error. The next report from that node replaces it.
 
@@ -333,10 +382,12 @@ history is shorter than one replay chunk`. An input whose first samples come aft
 These are the limits of the built replay. Each is a rule for how a replay is built, not a fault to
 wait out.
 
-- **Progress covers cycle steps only.** A node with no cycle on simulated time reports nothing, so
-  the player does not wait for it. With `--nodes` the start fails after 30 s.
-- **A callback that waits on simulated time stalls the replay.** For example, a sleep that follows
-  `/clock`. The player waits for the node's acknowledgement, so the run stops only at `--timeout`.
+- **Progress covers cycles only.** A node on simulated time without a cycle reports nothing, so the
+  player does not wait for it: a plain callback node, or the ROS bridge. Naming one with `--nodes`
+  fails the start after 30 s. Its replay is not deterministic; build the node from cycles, or play
+  the launch in the open loop (4.6).
+- **A loop of triggered cycles has no delay element.** It holds until `--timeout`, and the player
+  names its nodes as a loop (6.1); a rate cycle or a clock driver in the loop is the delay element.
 - **Inputs are drained at step time.** A chunk is split so that a topic's samples fit the smallest
   subscriber queue (4.3). A node whose input queue is still too small for one step fails with
   `replay not faithful` (6.6).

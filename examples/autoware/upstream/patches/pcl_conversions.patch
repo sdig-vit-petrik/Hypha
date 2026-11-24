@@ -1,0 +1,16 @@
+# pcl_conversions: the edits of the hypha port, applied to a copy of
+# upstream/perception_pcl/pcl_conversions by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
+diff -ruN a/include/pcl_conversions/pcl_conversions.h b/include/pcl_conversions/pcl_conversions.h
+--- a/include/pcl_conversions/pcl_conversions.h
++++ b/include/pcl_conversions/pcl_conversions.h
+@@ -41,8 +41,7 @@
+ #include <vector>
+ 
+ #include <rclcpp/rclcpp.hpp>
+-#include <message_filters/message_event.h>
+-#include <message_filters/message_traits.h>
++// hypha port: message_filters is not offered; this header uses none of it.
+ 
+ #include <pcl/conversions.h>
+ 

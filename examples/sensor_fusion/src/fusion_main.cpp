@@ -4,8 +4,9 @@
 
 #include <hypha/cycle_runtime.h>
 #include <hypha/hypha.h>
-#include <hypha_msgs/std_msgs/Float64.h>
-#include <hypha_msgs/std_msgs/UInt8.h>
+
+#include <std_msgs/Float64.h>
+#include <std_msgs/UInt8.h>
 
 #include <cmath>
 #include <cstdint>

@@ -51,8 +51,8 @@ sample came from. Thus samples that arrive after a restart, but before the
 next poll finds the new URI, keep the old identity.
 
 Every topic that the bridge publishes on the hypha bus retains its schema
-record, so readers in other processes, such as `hypha_topic echo` and
-`hypha_record`, can resolve the definition of a bridged topic. A ROS md5 is
+record, so readers in other processes, such as `hypha topic echo` and
+`hypha record`, can resolve the definition of a bridged topic. A ROS md5 is
 32 lower-case hexadecimal digits; a manifest's `ros_md5` is lower-cased when
 it is read.
 
@@ -98,7 +98,7 @@ This test needs ROS 1 Noetic and is not part of CI.
    `http://localhost:11311`.
 2. Start the bridge without `--config`.
 3. Start an hypha subscriber on a topic that the bag publishes, for example
-   with `hypha_topic echo /legacy/text`.
+   with `hypha topic echo /legacy/text`.
 4. Confirm that the bridge discovers the matching ROS publisher and forwards
    the body to hypha.
 5. Publish a value from ROS 1:

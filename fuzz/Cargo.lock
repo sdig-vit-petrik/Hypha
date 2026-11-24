@@ -654,6 +654,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fallible-iterator"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
+
+[[package]]
+name = "fallible-streaming-iterator"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
+
+[[package]]
 name = "fancy-regex"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -800,6 +812,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashlink"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
+dependencies = [
+ "hashbrown",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -835,7 +856,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "hypha_core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hypha_time",
  "hypha_wire",
@@ -844,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_cycle"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "log",
 ]
@@ -864,20 +885,21 @@ dependencies = [
 
 [[package]]
 name = "hypha_iceoryx2"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hypha_core",
  "hypha_msgdef",
  "hypha_time",
  "hypha_wire",
  "iceoryx2",
+ "iceoryx2-bb-posix",
  "log",
  "rustix",
 ]
 
 [[package]]
 name = "hypha_log"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hypha_time",
  "log",
@@ -887,18 +909,18 @@ dependencies = [
 
 [[package]]
 name = "hypha_msgdef"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "hypha_msggen"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hypha_msgdef",
 ]
 
 [[package]]
 name = "hypha_msgs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hypha_core",
  "hypha_msgdef",
@@ -908,7 +930,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_node"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hypha_core",
  "hypha_cycle",
@@ -925,7 +947,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hypha_core",
  "hypha_cycle",
@@ -937,7 +959,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_sys"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "memmap2",
@@ -946,14 +968,14 @@ dependencies = [
 
 [[package]]
 name = "hypha_time"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rustix",
 ]
 
 [[package]]
 name = "hypha_tools"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -961,6 +983,7 @@ dependencies = [
  "mcap",
  "nix 0.29.0",
  "ratatui",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",
@@ -971,7 +994,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_wire"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crc32c",
 ]
@@ -1403,6 +1426,17 @@ name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
+name = "libsqlite3-sys"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
+dependencies = [
+ "cc",
+ "pkg-config",
+ "vcpkg",
+]
 
 [[package]]
 name = "line-clipping"
@@ -2088,6 +2122,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "rsqlite-vfs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "353b74f9810d5b085b6c42c9d86a5f0fdb795553235cdd48753b32e3809d18a7"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "rusqlite"
+version = "0.41.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
+dependencies = [
+ "bitflags 2.13.2",
+ "fallible-iterator",
+ "fallible-streaming-iterator",
+ "hashlink",
+ "libsqlite3-sys",
+ "smallvec",
+ "sqlite-wasm-rs",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2279,6 +2337,16 @@ name = "smallvec"
 version = "1.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
+
+[[package]]
+name = "sqlite-wasm-rs"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6cd504cecbfe7eef649988840f9a6cb768d11085efec138f8e99f160632d867"
+dependencies = [
+ "cc",
+ "rsqlite-vfs",
+]
 
 [[package]]
 name = "stacker"
@@ -2635,6 +2703,12 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "vcpkg"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "version_check"

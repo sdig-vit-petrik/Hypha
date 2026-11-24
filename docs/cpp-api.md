@@ -11,6 +11,14 @@ besides (section 10.1), `hypha::TransformBuffer` and `hypha::StaticTransformBroa
 `<hypha/transform_buffer.h>` (section 10.2), and the step harness `<hypha/testing.h>`
 (section 5.4).
 
+`hy` is a second name of the namespace `hypha`: `hy::Node`, `hy::Duration` and
+`hy::now()` are `hypha::Node`, `hypha::Duration` and `hypha::now()`. It is a namespace
+alias, not a namespace of its own, so types, lookup, specializations (`hypha::QosOf`)
+and compiler messages keep the name `hypha`. `<hypha/hypha.h>` and the `hypha_base/`
+headers declare it (`hypha_base/short_namespace.h`). It takes the global name `hy`: a
+program with a global `hy` of its own defines `HYPHA_NO_SHORT_NAMESPACE` before it
+includes a hypha header. This guide and hypha's own code write `hypha::`.
+
 | Task                                                                  | Section | Example                                                                                              |
 | --------------------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------- |
 | A node that steps over its inputs at a rate                           | 1, 5.4  | `examples/speed`, `examples/scan_cycle`                                                          |
@@ -37,8 +45,8 @@ parameter file (`examples/speed/src/speed_monitor.cpp` is a full one):
 
 ```cpp
 #include <hypha/hypha.h>
-#include <hypha_msgs/geometry_msgs/Pose.h>
-#include <hypha_msgs/geometry_msgs/Twist.h>
+#include <geometry_msgs/Pose.h>
+#include <geometry_msgs/Twist.h>
 
 class Follower : public hypha::CycleNode {
     hypha::Latest<geometry_msgs::Pose> pose{*this, "pose"};
@@ -72,8 +80,8 @@ message as it arrives uses callback endpoints instead:
 
 ```cpp
 #include <hypha/hypha.h>
-#include <hypha_msgs/geometry_msgs/Pose.h>
-#include <hypha_msgs/sensor_msgs/LaserScan.h>
+#include <geometry_msgs/Pose.h>
+#include <sensor_msgs/LaserScan.h>
 
 void onScan(const hypha::Subscriber<sensor_msgs::LaserScan>::ConstPtr& scan);
 
@@ -95,7 +103,7 @@ function as the callback:
 ```cpp
 #include <hypha/hypha.h>
 #include <hypha_log/hypha_log.h>
-#include <hypha_msgs/sensor_msgs/Imu.h>
+#include <sensor_msgs/Imu.h>
 
 HYPHA_LOG_MODULE_INIT("attitude_node")
 
@@ -133,8 +141,22 @@ README examples) and `test_cycle_doc_examples.cpp` (sections 5.4, 5.5, 10.1) com
 
 ### 1.1 Messages
 
-The SDK installs the standard ROS message packages under `hypha_msgs/`
-(`#include <hypha_msgs/sensor_msgs/Imu.h>`). An application generates its own `.msg` and
+The SDK installs the standard ROS message packages at their ROS 1 path,
+`<package>/<Name>.h` (`#include <sensor_msgs/Imu.h>`); hypha's own messages and
+`ros_time.h` are in `hypha_msgs/`, the directory of the `hypha_msgs` package. The SDK
+owns the directory of each standard package it ships, and an application owns the
+directories of the packages it declares: declaring a standard package a second time, from
+a directory of its own, stops the configure. A process cannot use hypha messages and a
+ROS installation's message headers together: both define the same `std_msgs::Header`
+types and `ros::serialization` templates.
+
+Up to release 0.2.0 the headers had a `hypha_msgs/` prefix
+(`<hypha_msgs/sensor_msgs/Imu.h>`). It is gone with no forwarding header: an existing
+application drops `hypha_msgs/` from each message include line
+(`<hypha_msgs/hypha_msgs/NodeState.h>` becomes `<hypha_msgs/NodeState.h>`) and removes
+any include directory it added to reach `<package>/<Name>.h` without the prefix.
+
+An application generates its own `.msg` and
 `.srv` files with one `hypha_generate_messages()` call per package, an INTERFACE library
 of the package name; link it, and the include path and build order follow
 (`examples/mrs/CMakeLists.txt`):
@@ -147,9 +169,34 @@ target_link_libraries(app PRIVATE hypha::sdk app_msgs)
 ```
 
 `DEPENDS` names a standard package or one an earlier call declared; never copy or
-regenerate a standard package. Types, constants and the wire format follow ROS 1;
+regenerate a standard package. Every message `M` carries the pointer typedefs of both
+ROS generations: `M::Ptr` and `M::ConstPtr` (ROS 1), `M::SharedPtr`, `M::ConstSharedPtr`
+and `M::UniquePtr` (ROS 2), and `M_<Allocator>` names `M` as ROS 2's allocator template does. Each field `f` names its type `M::_f_type`, as both
+generations' C++ does, and has ROS 2's fluent setter `M& set__f(const M::_f_type&)`. Messages compare with `==`
+field by field, as ROS 2's do, `time` and `duration` fields included. Types, constants and the wire format follow ROS 1;
 engineering-traps.md gives the rules that surprise (`byte` is signed, a constant out of
 its type's range fails generation, no big-endian target).
+
+Code written for ROS 2 includes `<sensor_msgs/msg/point_cloud2.hpp>` and names
+`sensor_msgs::msg::PointCloud2`. An application that wants those names generates them for
+the packages it uses, its own and standard ones, with one call; hypha-cxx installs none:
+
+```cmake
+hypha_generate_ros2_headers(app_ros2_headers PACKAGES std_msgs sensor_msgs app_msgs)
+target_link_libraries(app PRIVATE hypha::sdk app_msgs app_ros2_headers)
+```
+
+Each message gets `<package>/msg/<name>.hpp` and each service `<package>/srv/<name>.hpp`,
+`<name>` spelled as rosidl spells it (`Vector3Stamped` is `vector3_stamped.hpp`). The
+header includes `<package/Name.h>` and declares `package::msg` (for a service also
+`package::srv`) as a name of `package`, for its own package and every package its fields
+reach, as a ROS 2 header makes the types it reaches visible; for a service it adds
+`Name_Request` and `Name_Response`. A type that reaches a `time` or
+`duration` field also names its field types `builtin_interfaces::msg::Time` and `Duration`,
+as in ROS 2. The type is the ROS 1 type: its fields keep their ROS 1 names and types
+(`header.seq`, and `stamp.secs`, not ROS 2's `stamp.sec`), so code that reads a ROS 2 field
+name fails to compile rather than read another value.
+`test/package_consumer/ros2_style.cpp` compiles against these names alone.
 
 ---
 
@@ -194,8 +241,12 @@ subscriber or a triggered cycle; every publisher notifies. Latch it for late sta
 
 ### 2.3 Cleaning up
 
-The `Node` that created the session leaves the bus in its destructor and destroys every
-cycle of the session; one that shares the session destroys nothing (`hypha/node.h`).
+Every `Node` of a process joins one session, and the last one destroyed leaves the bus
+and destroys every cycle of the session, whatever order the `Node`s were made in (#97);
+a default-constructed `Node` joins nothing and does not count (`hypha/node.h`). A
+publisher of a session that has left sends nothing: `publish()` returns false with
+`lastPublishStatus()` `InvalidState`, as the C ABI's loan and send do once the node was
+destroyed.
 A start-up error throws from `Node`, `advertise`, `subscribe` or `timer`, naming the port
 or topic and status (`hypha: ports.outputs.command failed: NotAvailable`). Bad bus data
 is counted, logged at a bounded rate and dropped, never fatal. No exception crosses the
@@ -239,6 +290,26 @@ Reference: `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h`,
 - The framework `/clock` subscriber wakes on the notification every `/clock` publisher
   sends. `/clock` going back ends a cycle's or
   timer's run with `ClockRewound`, and `runNode` restarts the process.
+- A `Timer` can be stopped and restarted. `cancel()` stops its calls until `reset()`; a
+  canceled timer counts no missed period and costs no wake-up. `reset()` puts the next
+  call one period after the call. `state()` returns a `TimerStatus`: `canceled`,
+  `period`, and `untilDue`, the time to the next call (empty while canceled). All
+  three use the timer's clock, framework time under simulated time, else host
+  monotonic time. A cancel or reset from a callback also holds back a call of that
+  timer still due later in the same turn; from another thread during a run each
+  returns `InvalidState`. A callback may create a timer when the node runs on host
+  time or on its own simulated clock. It joins before the run next waits; on a
+  simulated clock the node does not own, `Node::timer()` throws. Reference:
+  `hypha/node.h` (`Timer`, `TimerStatus`).
+- In a replay, a plain subscription or timer callback takes no part in the lockstep:
+  it runs as its sample arrives, `hypha::now()` is the clock, and a timer fires once
+  per turn with its missed count (execution-model.md §11.2, #153). Only cycles are
+  held, ordered and reported.
+- Seconds as a `double` must be finite: `Duration::fromSeconds`, `Time::fromSeconds`
+  and `Duration * double` throw `std::invalid_argument` for NaN or infinite input
+  (a compile error in a constant expression), and clamp finite input outside the int64
+  nanosecond range. On a path that must not throw, such as a cycle step,
+  `Duration::tryFromSeconds` returns an empty `std::optional` instead (#126).
 - There is no implicit `Time` to `RosTime` conversion; never stamp with `steadyNow()`,
   and check a time computed from an input once where it enters:
 
@@ -381,7 +452,7 @@ through `StepHarness`, the started cycle on the bus).
 
 ```cpp
 #include <hypha/hypha.h>
-#include <hypha_msgs/std_msgs/Float64.h>
+#include <std_msgs/Float64.h>
 class Controller final : public hypha::CycleNode {
   public:
     Controller() : hypha::CycleNode() {}
@@ -425,7 +496,7 @@ and the `Node` leaves the bus. The exit codes (0, 2, 70, 75, 78):
 `hypha/application_node.h`; restarts: tools.md (`hypha launch`). A refused
 configuration is a `hypha::ConfigError` (a `ParameterError` among them): throw one
 from the constructor or `setup()` to exit 78; `failRun()` gives 70. A bad `node.name`,
-an invalid `[log]` table or a bad `HYPHA_USE_SIM_TIME` fails *node creation* and
+an invalid `[log]` table or a bad `HYPHA_USE_SIM_TIME` or `HYPHA_REPLAY_LOCKSTEP` fails *node creation* and
 gives 70. A program with its own `main` returns 75 itself after `ClockRewound` to be
 restarted (`replay-flow-control.md` §4.4). Derive timer- and callback-driven
 applications from `ApplicationNode` (`examples/sensor_fusion/src/fusion_main.cpp`),
@@ -776,13 +847,29 @@ for (const auto sensor : settings.list("sensors")) {
   may share a name. A plain entry, `speed = "/odom_speed"`, is `InvalidArgument`.
 - **Reserved names.** `node`, `ports` and `log` belong to the framework: `node.name`
   (section 2), the port tables, and `[log]` (section 11), whose keys the parameter
-  API does not return. Simulated time is `HYPHA_USE_SIM_TIME` only; a `use_sim_time`
+  API does not return. The top-level keys `include` (below) and `unused` are not
+  parameters either. Simulated time is `HYPHA_USE_SIM_TIME` only; a `use_sim_time`
   key is an ordinary key.
 - **Unread keys.** `unreadKeys()` lists, sorted, the keys under a view that nothing
   read (`node.name` excluded; a list field as `list[index].field`). `runNode` exits
   78 when one remains after `setup()` and cycle start; a custom `main()` checks
   `hypha::config().unreadKeys()` itself. A value code chooses goes into the manifest
   with `hypha::recordConfig(key, value)`.
+- **Keys set on purpose and not read (#119).** Two ways keep a key out of
+  `unreadKeys()` and the start-up check without deleting it; a typo beside them is
+  still refused. Each lands in the manifest (`~/introspection`) as a row with source
+  `SOURCE_IGNORED` whose value is the reason, and is logged once at info.
+  - Code: `cfg.ignore(keyOrPrefix, reason)` marks a key, a table or a list entry under
+    the view as read by a branch the code chose not to take
+    (`config().ignore("model_params", "no TensorRT in this build")`). A key the file
+    does not set is fine. An empty key or reason throws `ParameterError`.
+  - File: a top-level `unused = ["pose_measurement.pose_measure_uncertainty_time"]`
+    lists keys or tables a vendored file sets and this node does not read. Every
+    file of a composition may list its own. An entry the composed file does not set,
+    such as a typo, refuses the file at load, so the list cannot go stale.
+
+  The check is in the C ABI layer (`hypha_config_ignore`, and `hypha_config_unread_keys`
+  leaves ignored keys out), so every SDK gets it.
 - **Arrays of scalars.** `cfg.requiredArray<T>(key)` returns `std::vector<T>`; `cfg.requiredArray<T, N>(key)` returns `std::array<T, N>` and refuses any other length. `optionalArray<T>` and `optionalArray<T, N>` return a `std::optional` of the same, empty only when the key is absent. T is any type `required<T>` reads (bool, an integer, float, double, std::string), and each element gets the same conversion and range check. A key that is not an array, an element of the wrong type, an array of tables and a wrong length throw `ParameterError` for the `required*` and the `optional*` form alike, and the message names the key and, for an element, its index (`hypha: parameter 'voxel_weights[2]': expected a number, found "x"`; `hypha: parameter 'extrinsic_t': expected 3 elements, found 4`). An empty array is an empty vector, and a length error for N > 0. Reading an array marks the key as read, so `unreadKeys()` does not list it. An array inside an entry of a table list is refused like a nested list.
 - **Porting.** A ROS 1 list parameter, with the fixed-size form:
   [ros1-migration-guide.md](ros1-migration-guide.md#107-a-list-of-scalars-in-the-parameter-file).
@@ -820,9 +907,11 @@ the row messages; the row rules and counters in `hypha/introspection.h`. Its C A
 ## 10. Coordinate frame transforms (TF)
 
 TF is a convention on ordinary topics: `/tf` and `/tf_static` carry
-`tf2_msgs/TFMessage`. A broadcaster is a publisher or an `Output` of that type, and
-`hypha::StaticTransformBroadcaster` (section 10.2) is one for the static topic;
-`examples/mrs/managers/transform_manager.cpp` sends both by hand.
+`tf2_msgs/TFMessage`. `hypha::TransformBroadcaster` and
+`hypha::StaticTransformBroadcaster` (section 10.2) send on them and refuse a transform
+that every buffer would refuse; a publisher or an `Output` of that type sends without
+the check, as `examples/mrs/managers/transform_manager.cpp` does, and the buffers
+still refuse what is invalid.
 
 - Dynamic transforms go to `/tf` when they change; transforms that share a stamp go
   in one message.
@@ -845,13 +934,14 @@ const auto found = this->tf.lookupLatest("map", "base_link");  // in step(): bas
 
 Buffer, clock steps, losses: [execution-model.md](execution-model.md) §6.7.
 
-### 10.2 Looking transforms up in a plain node, and sending static ones
+### 10.2 Looking transforms up in a plain node, and sending transforms
 
 A node without a cycle reads TF with a `hypha::TransformBuffer` from
 `<hypha/transform_buffer.h>`, which `hypha/hypha.h` does not include either. The run of
 the node ingests every message of `/tf` and `/tf_static` into the buffer, in host time
 and under simulated time alike; the lookups are those of `Transforms` and return the
 same `std::expected<geometry_msgs::TransformStamped, hypha::TransformError>`.
+`hypha::name(error)` gives the error's name for a log line (`"UnknownFrame"`).
 
 ```cpp
 // or {node, {.tf = "/tf", .tfStatic = "/tf_static"}, hypha::Duration::fromSeconds(10)}
@@ -862,6 +952,10 @@ if (stamp.has_value()) {
 }
 const auto latest = tf.lookupLatest("map", "base_link");
 
+hypha::TransformBroadcaster broadcaster{node};          // /tf, the tf policy
+if (!broadcaster.send(mapToBase)) {                      // a NaN pose is refused, not sent
+    HYPHA_LOG_ERROR("{}", broadcaster.lastRefusal());    // names the frames and the reason
+}
 hypha::StaticTransformBroadcaster statics{node};        // latched /tf_static
 const bool sent = statics.send(baseToLidar);            // keeps it, resends the whole set
 ```
@@ -871,18 +965,44 @@ const bool sent = statics.send(baseToLidar);            // keeps it, resends the
   thread. Two limits: create and destroy the buffer on the thread that configures the
   node, not while the node runs on another thread; and nothing is ingested unless the
   node runs. The cache (default 10 s) must be positive.
+- No lookup waits for a transform to arrive, by design (#91). The buffer fills only
+  while the node runs, on the thread that runs it, so a callback that waited would
+  block every other callback of the node and, under replay, the clock it waits for.
+  A transform that is not there yet is an error the caller handles. ROS 2's
+  `lookupTransform` with a timeout and `waitForTransform` have no counterpart: hold
+  the message and try again in a later callback, once `/tf` has brought the
+  transform (what `tf2_ros::MessageFilter` does), or drop it.
 - The buffer declares the `tf` policy on both topics, as `Transforms` does: a topic
   that a raw endpoint or a tool created first, with the `default` policy, refuses it
   with `QosMismatch`, and the constructor throws `ConfigError`.
 - A `/tf_static` sample latched before the buffer existed is found once the node has
   run. A refused destroy (the node runs on another thread) is logged, not thrown, and
   the buffer stays attached until the node is destroyed.
-- `StaticTransformBroadcaster` keeps every transform sent through it, by child frame (a
-  later one replaces the earlier in place), and publishes one message with the whole set
-  on each `send()`: one `TransformStamped` or a `std::vector` of them. `send()` returns
-  what `Publisher::publish` returns, and `lastPublishStatus()` says why not. It is an
-  endpoint of one thread at a time. Several broadcasters may share `/tf_static`; each
-  sends its own set.
+- **A refused transform (#123).** A lookup that fails on a frame whose newest
+  transform the buffer refused (not finite, not a unit quaternion, a stamp that is no
+  time, a second parent) returns `TransformError::Refused` in place of `UnknownFrame`,
+  `NotConnected` or `AfterBuffer`: the producer is broken, not late. The frame is the
+  target, the source or a frame above either; a later transform of that frame that the
+  buffer keeps clears it. The buffer's error log line, at most once a second, names the
+  reason, and the node metrics `tf.refused` and `tf.undecodable` count every refused
+  transform and every message that does not decode, for good. `Transforms` answers the
+  same.
+- **Both broadcasters check what they send.** `send()` checks each transform with the
+  check every buffer applies on ingest (`hypha_transform_check`, below the C ABI): an
+  empty frame name, a stamp that is no time (`nsecs` of a second or more; not read for a
+  static transform), a value that is not finite, a rotation that is not a unit
+  quaternion. A refused send sends and keeps nothing of its message, returns false,
+  `lastPublishStatus()` is `InvalidArgument` and `lastRefusal()` names the child, the
+  parent and the reason (`hypha: transform refused: 'base_link' in 'map': ...`). A second
+  parent or a cycle needs the other transforms, so only a buffer refuses those. Any
+  other false is the publish's, as `Publisher::publish`, with `lastRefusal()` empty.
+- `TransformBroadcaster` publishes each `send()` (one `TransformStamped` or a
+  `std::vector` as one message) on `/tf` with the `tf` policy; an empty vector sends
+  nothing and returns true. `StaticTransformBroadcaster` keeps every transform sent
+  through it, by child frame (a later one replaces the earlier in place), and publishes
+  one latched message with the whole set on each `send()`. Each is an endpoint of one
+  thread at a time. Several static broadcasters may share `/tf_static`; each sends its
+  own set.
 
 ## 11. Logging
 
@@ -979,7 +1099,9 @@ is under 500 µs at p99), burst loss, idle CPU, shutdown latency, one stalled co
 ## 13. Complete API reference
 
 The reference is the doc comments of the public headers; no build runs Doxygen
-(`docs/Doxyfile` renders them for a reader who has it). `<hypha/hypha.h>` includes
+(`docs/Doxyfile` renders them for a reader who has it). Every result type prints as a
+name: `Status::name()`, and `hypha::name()` of a `TransformError`, an `InputVerdict` or
+a `StopReason`; a value outside the enum reads `"Unknown"`. `<hypha/hypha.h>` includes
 all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hypha/testing.h`.
 
 | Header                                                                   | Holds                                                                                                                                                                                                |
@@ -997,5 +1119,6 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hyph
 | `hypha/config.h`                                                       | `config()`, `ConfigView`, `ConfigList`, `ConfigContext`, `ParameterError`; it includes `constraints.h` (`constraints`)                                                                                                 |
 | `hypha/introspection.h`, `hypha/metrics.h`                           | `introspect`, `nodeState`, `recordConfig`; `metrics`, `metric`                                                                                                                             |
 | `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h` | `Duration`, `Time`, literals; `now`, `steadyNow`, simulated time; `toRosTime`, `fromRosTime`                                                                                             |
+| `hypha_base/short_namespace.h`                                     | the alias `hy` of `hypha`; `HYPHA_NO_SHORT_NAMESPACE` leaves it out                                                                                                                      |
 | `hypha_log/hypha_log.h`                                                | The `HYPHA_LOG_*` macros                                                                                                                                                                           |
 | `hypha/hypha_ffi.h`                                                    | The C ABI below them all: [interface-specification.md](interface-specification.md)                                                                                                                    |

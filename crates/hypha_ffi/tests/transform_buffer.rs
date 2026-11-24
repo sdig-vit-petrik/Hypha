@@ -1,6 +1,11 @@
 //! The transform buffer of a plain node through the C ABI.
 #![expect(clippy::expect_used, reason = "a failed test setup stops the test with its message")]
-#![expect(clippy::float_cmp, reason = "the translations compared are exact binary sums")]
+
+/// The bit patterns of `values`: the translations compared are exact binary sums, so they
+/// are compared exactly, and no float comparison is needed.
+fn bits<const N: usize>(values: [f64; N]) -> [u64; N] {
+    values.map(f64::to_bits)
+}
 
 mod common;
 use crate::common::replay::{SERIAL, create_waitset, run_for, run_status, send_payload};
@@ -219,8 +224,8 @@ fn a_lookup_between_two_dynamic_stamps_interpolates() {
     rig.send_dynamic("world", "base", 3 * SECOND, [2.0, 4.0, 0.0]);
     rig.settle();
     let transform = found(rig.buffer, "world", "base", Some(2 * SECOND));
-    assert_eq!(transform.translation, [1.0, 2.0, 0.0]);
-    assert_eq!(transform.rotation_xyzw, [0.0, 0.0, 0.0, 1.0]);
+    assert_eq!(bits(transform.translation), bits([1.0, 2.0, 0.0]));
+    assert_eq!(bits(transform.rotation_xyzw), bits([0.0, 0.0, 0.0, 1.0]));
     assert_eq!(transform.stamp_nanos, 2 * SECOND);
     let named = found(rig.buffer, "/world", "/base", Some(2 * SECOND));
     assert_eq!(named, transform, "one leading '/' is dropped");
@@ -234,7 +239,7 @@ fn a_chain_through_a_static_and_a_dynamic_transform_composes() {
     rig.send_dynamic("world", "base", SECOND, [1.0, 0.0, 0.0]);
     rig.settle();
     let transform = found(rig.buffer, "world", "camera", Some(SECOND));
-    assert_eq!(transform.translation, [1.0, 0.0, 0.5]);
+    assert_eq!(bits(transform.translation), bits([1.0, 0.0, 0.5]));
     assert_eq!(transform.stamp_nanos, SECOND);
 }
 
@@ -259,7 +264,7 @@ fn a_static_transform_latched_before_the_buffer_existed_is_found_after_the_node_
     let waitset = unsafe { create_waitset(node) };
     run_for(waitset, SETTLE_NANOS);
     let transform = found(buffer, "base", "lidar", None);
-    assert_eq!(transform.translation, [0.0, 0.2, 0.0]);
+    assert_eq!(bits(transform.translation), bits([0.0, 0.2, 0.0]));
     assert_eq!(transform.stamp_nanos, 0, "an all-static chain holds at time 0");
 
     // SAFETY: every handle is live and released once.
@@ -282,11 +287,11 @@ fn lookup_latest_takes_the_latest_time_common_to_the_chain() {
     rig.settle();
     let chain = found(rig.buffer, "world", "tool", None);
     assert_eq!(chain.stamp_nanos, 3 * SECOND, "the newest time both dynamic hops hold");
-    assert_eq!(chain.translation, [3.0, 1.0, 1.0]);
+    assert_eq!(bits(chain.translation), bits([3.0, 1.0, 1.0]));
     let all_static = found(rig.buffer, "arm", "tool", None);
     assert_eq!(all_static.stamp_nanos, 0);
     let identity = found(rig.buffer, "nowhere", "nowhere", None);
-    assert_eq!(identity.translation, [0.0; 3], "equal names give the identity");
+    assert_eq!(bits(identity.translation), bits([0.0; 3]), "equal names give the identity");
 }
 
 #[test]
@@ -364,7 +369,10 @@ fn a_message_that_does_not_decode_fails_no_run() {
     assert_eq!(run_status(rig.waitset, SETTLE_NANOS), HyphaStatus::Ok as i32);
     rig.send_dynamic("world", "base", SECOND, [1.0, 0.0, 0.0]);
     rig.settle();
-    assert_eq!(found(rig.buffer, "world", "base", Some(SECOND)).translation, [1.0, 0.0, 0.0]);
+    assert_eq!(
+        bits(found(rig.buffer, "world", "base", Some(SECOND)).translation),
+        bits([1.0, 0.0, 0.0])
+    );
 }
 
 /// The handles a lookup thread and the test share, live until both threads joined.
@@ -607,5 +615,76 @@ fn under_simulated_time_every_received_sample_is_ingested() {
     rig.send_dynamic("world", "base", 5 * SECOND, [9.0, 0.0, 0.0]);
     rig.settle();
     assert_eq!(found(rig.buffer, "world", "base", None).stamp_nanos, 5 * SECOND);
-    assert_eq!(found(rig.buffer, "world", "base", Some(SECOND / 2)).translation, [0.0; 3]);
+    assert_eq!(
+        bits(found(rig.buffer, "world", "base", Some(SECOND / 2)).translation),
+        bits([0.0; 3])
+    );
+}
+
+/// `tf_message` with every translation NaN: what a producer that ran on NaN sends.
+fn nan_message(parent: &str, child: &str, stamp_nanos: i64) -> Vec<u8> {
+    tf_message(parent, child, stamp_nanos, [f64::NAN; 3])
+}
+
+#[test]
+fn a_frame_whose_newest_transform_was_refused_answers_refused_and_is_counted() {
+    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    let rig = Rig::new("tfb_refused");
+    rig.send_dynamic("map", "base", SECOND, [1.0, 0.0, 0.0]);
+    // SAFETY: the publisher is live.
+    unsafe { send_payload(rig.tf, &nan_message("map", "base", 2 * SECOND)) };
+    // SAFETY: the publisher is live.
+    unsafe { send_payload(rig.tf, &nan_message("map", "gnss", 2 * SECOND)) };
+    rig.settle();
+    assert_eq!(result_of(rig.buffer, "map", "base", Some(2 * SECOND)), HYPHA_TF_REFUSED);
+    assert_eq!(result_of(rig.buffer, "map", "gnss", None), HYPHA_TF_REFUSED);
+    assert_eq!(result_of(rig.buffer, "map", "nowhere", None), HYPHA_TF_UNKNOWN_FRAME);
+    found(rig.buffer, "map", "base", Some(SECOND));
+    assert_eq!(crate::common::node_metric(rig.node, "tf.refused"), Some(2));
+    assert_eq!(crate::common::node_metric(rig.node, "tf.undecodable"), Some(0));
+    // A good transform of the frame clears its refusal.
+    rig.send_dynamic("map", "base", 3 * SECOND, [1.0, 0.0, 0.0]);
+    rig.settle();
+    found(rig.buffer, "map", "base", Some(2 * SECOND));
+    assert_eq!(result_of(rig.buffer, "map", "base", Some(9 * SECOND)), HYPHA_TF_AFTER_BUFFER);
+}
+
+#[test]
+fn the_sender_check_refuses_what_a_buffer_refuses_and_names_the_frames() {
+    let check = |child: &str, sent: &HyphaSentTransform, is_static: u32| {
+        // SAFETY: both names come with their lengths; `sent` is a live local.
+        unsafe {
+            hypha_transform_check(
+                "map".as_ptr().cast(),
+                3,
+                child.as_ptr().cast(),
+                child.len(),
+                sent,
+                is_static,
+            )
+        }
+    };
+    let good = HyphaSentTransform {
+        translation: [1.0, 2.0, 3.0],
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+        stamp_secs: 1,
+        stamp_nsecs: 0,
+    };
+    assert_eq!(check("base", &good, 0), HyphaStatus::Ok);
+    let nan = HyphaSentTransform { translation: [f64::NAN, 0.0, 0.0], ..good };
+    assert_eq!(check("base", &nan, 0), HyphaStatus::InvalidArgument);
+    let mut text = vec![0_u8; 512];
+    let mut length = 0_usize;
+    // SAFETY: `text` has its length writable; `length` is a local.
+    let read = unsafe { hypha_last_error(text.as_mut_ptr().cast(), text.len(), &raw mut length) };
+    assert_eq!(read, HyphaStatus::Ok);
+    text.truncate(length);
+    let reason = String::from_utf8(text).expect("UTF-8");
+    assert!(reason.starts_with("'base' in 'map': "), "{reason}");
+    let skewed = HyphaSentTransform { rotation_xyzw: [0.0, 0.0, 0.0, 2.0], ..good };
+    assert_eq!(check("base", &skewed, 1), HyphaStatus::InvalidArgument);
+    let no_time = HyphaSentTransform { stamp_nsecs: 1_000_000_000, ..good };
+    assert_eq!(check("base", &no_time, 0), HyphaStatus::InvalidArgument);
+    assert_eq!(check("base", &no_time, 1), HyphaStatus::Ok, "a static stamp is not read");
+    assert_eq!(check("", &good, 0), HyphaStatus::InvalidArgument);
 }

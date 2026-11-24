@@ -27,15 +27,20 @@ pub use registrations::{
 pub(crate) use registrations::{attach_cycle_timer, attach_triggered_cycle};
 pub mod run;
 pub use run::{waitset_request_stop, waitset_run};
+pub mod timer_control;
+use timer_control::TimerControl;
+pub use timer_control::{
+    HyphaTimerState, waitset_timer_cancel, waitset_timer_reset, waitset_timer_state,
+};
 
 use std::cell::{Ref, RefCell, RefMut};
 use std::os::raw::c_void;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
 use hypha_core::dispatch::{BatchStep, BatchTurn, DispatchLimits};
-use hypha_core::port::dispatch::{AttachmentId, StopReason};
+use hypha_core::port::dispatch::{AttachmentId, FIRST_DISPATCHER_IDENTIFIER, StopReason};
 use hypha_iceoryx2::waitset::{Dispatcher, EventOutcome, Iox2WaitSet, Progression, Trigger};
 
 use crate::node::HyphaNode;
@@ -73,10 +78,13 @@ pub struct HyphaDelivery {
 /// `hypha_waitset_request_stop`, `hypha_waitset_request_failure`, `hypha_cycle_health` and
 /// `hypha_cycle_binding`; any other call that names this `WaitSet`, one of its cycles or
 /// input sources returns `InvalidState` on that thread and changes nothing. On the run's
-/// own thread a callback may also detach a registration, applied when the run returns; an
-/// attach, a second run, and a call that creates, configures or destroys a cycle or an
-/// input source return `InvalidState`. A run must not start while another thread is
-/// inside a call on this `WaitSet`: that is a caller error with no status.
+/// own thread a callback may also detach a registration, applied when the run returns;
+/// attach a timer whose wake needs no native attachment, which joins the dispatch before
+/// the next wait; and cancel, reset or read a timer. Any other attach, a second run, and
+/// a call that creates, configures or destroys a cycle or an input source return
+/// `InvalidState`. Each call and each run claims the `WaitSet` for the calling thread,
+/// so a run or a call that another thread starts while one is inside a call returns
+/// `InvalidState` too (#83).
 pub struct HyphaWaitSet {
     /// The node this `WaitSet` serves and co-owns: its destruction drops the `WaitSet` first.
     node: Arc<HyphaNode>,
@@ -100,9 +108,12 @@ pub struct HyphaWaitSet {
     /// Registrations detached by a callback during the current run, removed and released
     /// once the run returns.
     pending_detach: RefCell<Vec<AttachmentId>>,
-    /// The ids of the live registrations. Not borrowed by a run, so a callback's detach
+    /// The timers a callback attached during the current run, not borrowed by the run.
+    run_attaches: RefCell<RunAttaches>,
+    /// The live registrations that `attach` recorded, with the control of each plain
+    /// timer. Not borrowed by a run, so a callback's detach, cancel, reset or state read
     /// can tell a known registration from an unknown one.
-    live_ids: RefCell<Vec<AttachmentId>>,
+    live: RefCell<Vec<LiveRegistration>>,
     input_sources: RefCell<Vec<Weak<crate::cycle::CycleInputSource>>>,
     /// The node's execution counters, shared from this `WaitSet`'s creation.
     pub(crate) health: Arc<ExecutionHealth>,
@@ -110,6 +121,39 @@ pub struct HyphaWaitSet {
 
 /// The cycles a `WaitSet` owns; nothing holds a cycle's address, so it may move in the list.
 pub(crate) type Cycles = Vec<crate::cycle::Cycle>;
+
+/// The timers a callback attached during a run, which the dispatcher alone holds.
+struct RunAttaches {
+    /// Attached since the dispatcher last looked. It takes them before its next wait,
+    /// and the run's end takes those it did not.
+    pending: Vec<Registration>,
+    /// How many registrations the running dispatcher holds, for the registration limit.
+    held: usize,
+    /// The id the next one takes. Starts at [`FIRST_DISPATCHER_IDENTIFIER`], above every
+    /// id of the native set, and only grows.
+    next_id: AttachmentId,
+}
+
+impl RunAttaches {
+    fn new() -> Self {
+        Self { pending: Vec::new(), held: 0, next_id: FIRST_DISPATCHER_IDENTIFIER }
+    }
+
+    /// A new id, which the native set never hands out. `ResourceLimit` once the ids ran
+    /// out, which no process reaches.
+    fn take_id(&mut self) -> Result<AttachmentId, Error> {
+        let id = self.next_id;
+        self.next_id = id.checked_add(1).ok_or(Error::ResourceLimit)?;
+        Ok(id)
+    }
+}
+
+/// One entry of the registry of live registrations, which no run borrows.
+struct LiveRegistration {
+    id: AttachmentId,
+    /// The control of a plain timer; `None` for any other registration.
+    timer: Option<Arc<TimerControl>>,
+}
 
 // `Send` by its fields: the C ABI lets its caller run it, and destroy its node, on any
 // thread, one thread at a time. It stays `!Sync`: its configuration lives in `RefCell`s.
@@ -127,9 +171,39 @@ pub struct WaitSetShared {
     /// Set by [`WaitSetShared::request_failure`] from any thread: the current or next run
     /// ends as failed with [`HyphaStatus::ApplicationFailed`]. The run that reports it clears it.
     failure: std::sync::atomic::AtomicBool,
-    /// The thread that owns the current run, `None` between runs. A call from any other
-    /// thread during the run is refused ([`WaitSetShared::runs_on_another_thread`]).
-    run_owner: std::sync::Mutex<Option<ThreadId>>,
+    /// The claim token of the thread inside a call or a run on this `WaitSet`, 0 when
+    /// none is ([`WaitSetShared::claim`]).
+    owner: AtomicU64,
+}
+
+/// The source of the claim tokens; each thread takes one, never 0, on its first claim.
+static NEXT_CLAIM_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    static CLAIM_TOKEN: u64 = NEXT_CLAIM_TOKEN.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The calling thread's claim token.
+fn claim_token() -> u64 {
+    CLAIM_TOKEN.with(|token| *token)
+}
+
+/// The claim of a `WaitSet` by the calling thread for one call or one run, released when
+/// it drops. A claim inside a claim of the same thread, such as a callback's call during
+/// the run, holds nothing more and releases nothing.
+#[must_use = "the claim holds the WaitSet until it drops"]
+pub struct WaitSetClaim<'a> {
+    shared: &'a WaitSetShared,
+    /// Whether this claim took the `WaitSet`, so its drop gives it back.
+    took: bool,
+}
+
+impl Drop for WaitSetClaim<'_> {
+    fn drop(&mut self) {
+        if self.took {
+            self.shared.owner.store(0, Ordering::Release);
+        }
+    }
 }
 
 // `hypha_waitset_request_stop` and `hypha_waitset_request_failure` reach this from
@@ -146,28 +220,31 @@ impl WaitSetShared {
             running: hypha_runtime::RunState::default(),
             stop,
             failure: std::sync::atomic::AtomicBool::new(false),
-            run_owner: std::sync::Mutex::new(None),
+            owner: AtomicU64::new(0),
         }
     }
 
-    /// Whether the `WaitSet` runs on a thread other than the calling one, so a C call
-    /// that only the run's own thread may make is refused with `InvalidState` before it
-    /// forms a reference to the `WaitSet`. Any thread may call it.
-    #[must_use]
-    pub fn runs_on_another_thread(&self) -> bool {
-        if !self.running.is_running() {
-            return false;
+    /// Claim the `WaitSet` for the calling thread until the claim drops: one
+    /// compare-and-swap of the owner, so of two threads that start a call or a run at once
+    /// exactly one gets it. A C call claims before it forms a reference to the `WaitSet`,
+    /// and a run claims for its whole length. Any thread may call it.
+    ///
+    /// # Errors
+    /// `InvalidState` while another thread is inside a call or a run on this `WaitSet`;
+    /// nothing is claimed then.
+    pub fn claim(&self) -> Result<WaitSetClaim<'_>, Error> {
+        let token = claim_token();
+        match self.owner.compare_exchange(0, token, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => Ok(WaitSetClaim { shared: self, took: true }),
+            Err(held) if held == token => Ok(WaitSetClaim { shared: self, took: false }),
+            Err(_) => Err(Error::InvalidState),
         }
-        self.run_owner() != Some(std::thread::current().id())
     }
 
-    pub(crate) fn run_owner(&self) -> Option<ThreadId> {
-        *self.run_owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Record `owner` as the thread of the current run, `None` once it ends.
-    pub(crate) fn set_run_owner(&self, owner: Option<ThreadId>) {
-        *self.run_owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = owner;
+    /// Whether a run is in progress on the calling thread: the run holds the claim for its
+    /// whole length, so a call from one of its callbacks is the only one that sees it.
+    pub(crate) fn runs_on_this_thread(&self) -> bool {
+        self.running.is_running() && self.owner.load(Ordering::Acquire) == claim_token()
     }
 
     /// Whether the application asked for the run to fail. Any thread may read it.
@@ -444,7 +521,8 @@ pub(crate) enum DataCallback {
 }
 
 enum Target {
-    /// The registration shares the subscriber until the detach or the destruction of the `WaitSet`.
+    /// The registration shares the subscriber until the detach or the destruction of the
+    /// `WaitSet`.
     Subscription { subscriber: Arc<HyphaSubscriber>, callback: DataCallback },
     /// Replays latched topics to subscribers that joined late.
     LatchReplay,
@@ -452,12 +530,14 @@ enum Target {
     SimClock,
     /// A clock-driven timer the registration owns, due against framework time. On host
     /// time `run_anchored` is false until the first run turn re-anchors the timer, so the
-    /// time before the first run is not counted as missed.
+    /// time before the first run is not counted as missed. A plain timer has a `control`,
+    /// shared with the registry, which its cancel and reset change during a run.
     Timer {
         timer: hypha_core::timer::Timer,
         callback: Option<Box<dyn IntervalHandler>>,
         cycle: Option<Box<replay::CycleTimer>>,
         run_anchored: bool,
+        control: Option<Arc<TimerControl>>,
     },
     /// A triggered cycle. Its periodic wake serves fallbacks and a wildcard trigger.
     Triggered(Box<triggered::TriggeredCycle>),
@@ -488,6 +568,15 @@ impl Registration {
         Self { id, target, warnings: CallbackWarnings::default(), transport_failing: false }
     }
 
+    /// The entry of this registration in the registry of live registrations.
+    fn live_entry(&self) -> LiveRegistration {
+        let timer = match self.target {
+            Target::Timer { ref control, .. } => control.clone(),
+            _ => None,
+        };
+        LiveRegistration { id: self.id, timer }
+    }
+
     /// Tell a dispatched subscriber that this registration no longer drains it. Runs
     /// before the context release, which can free the last owner of the subscriber.
     fn end_dispatch(&self) {
@@ -511,7 +600,9 @@ impl Registration {
 impl Drop for HyphaWaitSet {
     fn drop(&mut self) {
         crate::node_progress::withdraw_progress(self.node(), std::ptr::from_ref(self) as usize);
-        for registration in self.registrations.get_mut() {
+        // A run's end takes every timer attached during it; any left here goes the same way.
+        let attached = self.run_attaches.get_mut().pending.iter_mut();
+        for registration in self.registrations.get_mut().iter_mut().chain(attached) {
             registration.end_dispatch();
             registration.release_context();
         }

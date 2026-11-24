@@ -1,0 +1,408 @@
+# autoware_multi_object_tracker (Universe 0.53.2): autoware_launch 0.53.0's
+# multi_object_tracker_node.param.yaml over the package's own, its
+# data_association_matrix.param.yaml, and of input_channels.param.yaml the one channel this
+# launch feeds, lidar_clustering, as the rule-based detection does; converted from the YAML
+# files by a script, not by hand. The tracker tracks in map from the EKF's /tf.
+
+# The polygon tracker's polygon hazard profile: no assignment matches it (a polygon hazard
+# goes to the static tracker), so the node never reads it.
+unused = ["tracker_profiles.polygon_tracker.polygon.hazard"]
+
+# Upstream's launch file passes it as an argument, false by default.
+publish_merged_objects = false
+"input/detection01/channel" = "lidar_clustering"
+"input/detection02/channel" = "none"
+"input/detection03/channel" = "none"
+"input/detection04/channel" = "none"
+"input/detection05/channel" = "none"
+"input/detection06/channel" = "none"
+"input/detection07/channel" = "none"
+"input/detection08/channel" = "none"
+"input/detection09/channel" = "none"
+"input/detection10/channel" = "none"
+"input/detection11/channel" = "none"
+"input/detection12/channel" = "none"
+world_frame_id = "map"
+ego_frame_id = "base_link"
+publish_on_timer = true
+publish_rate = 10.0
+ego_source = "tf"
+delay_compensation = "full"
+consider_odometry_uncertainty = false
+pruning_pedestrian_pair_min_iou = 0.1
+pruning_known_pair_min_iou = 0.1
+pruning_unknown_pair_min_giou = 0.1
+pruning_unknown_pair_max_gap = 1.0
+publish_processing_time = true
+publish_processing_time_detail = false
+publish_tentative_objects = false
+publish_debug_markers = false
+diagnostics_warn_delay = 0.5
+diagnostics_error_delay = 1.0
+diagnostics_warn_extrapolation = 0.5
+diagnostics_error_extrapolation = 1.0
+unknown_association_giou_threshold = -0.8
+
+[tracker_configs.polygon_tracker]
+enable_velocity_estimation = true
+
+[tracker_configs.polygon_tracker.enable_motion_output]
+unknown = false
+car = true
+truck = true
+bus = true
+trailer = true
+motorcycle = true
+bicycle = true
+pedestrian = true
+animal = true
+hazard = false
+
+[tracker_configs.static_tracker]
+convert_polygon_to_bbox = false
+
+[tracker_assignment.bounding_box.unknown]
+create = "general_vehicle_tracker"
+match = ["general_vehicle_tracker", "pedestrian_and_bicycle_tracker"]
+
+[tracker_assignment.bounding_box.car]
+create = "general_vehicle_tracker"
+match = ["general_vehicle_tracker"]
+
+[tracker_assignment.bounding_box.truck]
+create = "general_vehicle_tracker"
+match = ["general_vehicle_tracker"]
+
+[tracker_assignment.bounding_box.bus]
+create = "general_vehicle_tracker"
+match = ["general_vehicle_tracker"]
+
+[tracker_assignment.bounding_box.trailer]
+create = "general_vehicle_tracker"
+match = ["general_vehicle_tracker"]
+
+[tracker_assignment.bounding_box.motorcycle]
+create = "pedestrian_and_bicycle_tracker"
+match = ["pedestrian_and_bicycle_tracker"]
+
+[tracker_assignment.bounding_box.bicycle]
+create = "pedestrian_and_bicycle_tracker"
+match = ["pedestrian_and_bicycle_tracker"]
+
+[tracker_assignment.bounding_box.pedestrian]
+create = "pedestrian_and_bicycle_tracker"
+match = ["pedestrian_and_bicycle_tracker"]
+
+[tracker_assignment.bounding_box.animal]
+create = "null"
+
+[tracker_assignment.bounding_box.hazard]
+create = "static_tracker"
+match = ["static_tracker"]
+
+[tracker_assignment.polygon.unknown]
+create = "polygon_tracker"
+match = ["polygon_tracker", "static_tracker", "general_vehicle_tracker", "pedestrian_and_bicycle_tracker"]
+
+[tracker_assignment.polygon.car]
+create = "polygon_tracker"
+match = ["polygon_tracker", "general_vehicle_tracker"]
+
+[tracker_assignment.polygon.truck]
+create = "polygon_tracker"
+match = ["polygon_tracker", "general_vehicle_tracker"]
+
+[tracker_assignment.polygon.bus]
+create = "polygon_tracker"
+match = ["polygon_tracker", "general_vehicle_tracker"]
+
+[tracker_assignment.polygon.trailer]
+create = "polygon_tracker"
+match = ["polygon_tracker", "general_vehicle_tracker"]
+
+[tracker_assignment.polygon.motorcycle]
+create = "polygon_tracker"
+match = ["polygon_tracker", "pedestrian_and_bicycle_tracker"]
+
+[tracker_assignment.polygon.bicycle]
+create = "polygon_tracker"
+match = ["polygon_tracker", "pedestrian_and_bicycle_tracker"]
+
+[tracker_assignment.polygon.pedestrian]
+create = "polygon_tracker"
+match = ["polygon_tracker", "pedestrian_and_bicycle_tracker"]
+
+[tracker_assignment.polygon.animal]
+create = "polygon_tracker"
+match = ["polygon_tracker"]
+
+[tracker_assignment.polygon.hazard]
+create = "static_tracker"
+match = ["static_tracker"]
+
+[tracker_assignment.cylinder.unknown]
+create = "null"
+
+[tracker_assignment.cylinder.car]
+create = "null"
+
+[tracker_assignment.cylinder.truck]
+create = "null"
+
+[tracker_assignment.cylinder.bus]
+create = "null"
+
+[tracker_assignment.cylinder.trailer]
+create = "null"
+
+[tracker_assignment.cylinder.motorcycle]
+create = "pedestrian_and_bicycle_tracker"
+match = ["pedestrian_and_bicycle_tracker"]
+
+[tracker_assignment.cylinder.bicycle]
+create = "pedestrian_and_bicycle_tracker"
+match = ["pedestrian_and_bicycle_tracker"]
+
+[tracker_assignment.cylinder.pedestrian]
+create = "pedestrian_and_bicycle_tracker"
+match = ["pedestrian_and_bicycle_tracker"]
+
+[tracker_assignment.cylinder.animal]
+create = "null"
+
+[tracker_assignment.cylinder.hazard]
+create = "static_tracker"
+match = ["static_tracker"]
+
+[tracker_profiles.general_vehicle_tracker.bounding_box.unknown]
+max_dist = 4.0
+max_area = 60.0
+min_area = 3.6
+min_iou = 0.0001
+
+[tracker_profiles.general_vehicle_tracker.bounding_box.car]
+max_dist = 5.0
+max_area = 12.1
+min_area = 3.6
+min_iou = 0.0001
+
+[tracker_profiles.general_vehicle_tracker.bounding_box.truck]
+max_dist = 5.0
+max_area = 36.0
+min_area = 6.0
+min_iou = 0.1
+
+[tracker_profiles.general_vehicle_tracker.bounding_box.bus]
+max_dist = 5.0
+max_area = 60.0
+min_area = 10.0
+min_iou = 0.1
+
+[tracker_profiles.general_vehicle_tracker.bounding_box.trailer]
+max_dist = 5.0
+max_area = 60.0
+min_area = 10.0
+min_iou = 0.1
+
+[tracker_profiles.general_vehicle_tracker.polygon.unknown]
+max_dist = 4.0
+max_area = 75.0
+min_area = 0.01
+min_iou = 0.0001
+
+[tracker_profiles.general_vehicle_tracker.polygon.car]
+max_dist = 4.0
+max_area = 75.0
+min_area = 0.01
+min_iou = 0.0001
+
+[tracker_profiles.general_vehicle_tracker.polygon.truck]
+max_dist = 4.0
+max_area = 75.0
+min_area = 0.01
+min_iou = 0.0001
+
+[tracker_profiles.general_vehicle_tracker.polygon.bus]
+max_dist = 4.0
+max_area = 75.0
+min_area = 0.01
+min_iou = 0.0001
+
+[tracker_profiles.general_vehicle_tracker.polygon.trailer]
+max_dist = 4.0
+max_area = 75.0
+min_area = 0.01
+min_iou = 0.0001
+
+[tracker_profiles.pedestrian_and_bicycle_tracker.bounding_box.unknown]
+max_dist = 3.0
+max_area = 3.5
+min_area = 0.01
+min_iou = 0.0001
+
+[tracker_profiles.pedestrian_and_bicycle_tracker.bounding_box.motorcycle]
+max_dist = 3.0
+max_area = 3.5
+min_area = 0.1
+min_iou = -0.3
+
+[tracker_profiles.pedestrian_and_bicycle_tracker.bounding_box.bicycle]
+max_dist = 3.0
+max_area = 3.5
+min_area = 0.1
+min_iou = 0.0001
+
+[tracker_profiles.pedestrian_and_bicycle_tracker.bounding_box.pedestrian]
+max_dist = 2.0
+max_area = 3.0
+min_area = 0.1
+min_iou = 0.0001
+
+[tracker_profiles.pedestrian_and_bicycle_tracker.cylinder.motorcycle]
+max_dist = 3.0
+max_area = 3.5
+min_area = 0.1
+min_iou = -0.3
+
+[tracker_profiles.pedestrian_and_bicycle_tracker.cylinder.bicycle]
+max_dist = 3.0
+max_area = 3.5
+min_area = 0.1
+min_iou = 0.0001
+
+[tracker_profiles.pedestrian_and_bicycle_tracker.cylinder.pedestrian]
+max_dist = 2.0
+max_area = 3.0
+min_area = 0.1
+min_iou = 0.0001
+
+[tracker_profiles.pedestrian_and_bicycle_tracker.polygon.unknown]
+max_dist = 3.0
+max_area = 3.5
+min_area = 0.01
+min_iou = 0.0001
+
+[tracker_profiles.pedestrian_and_bicycle_tracker.polygon.motorcycle]
+max_dist = 3.0
+max_area = 3.5
+min_area = 0.01
+min_iou = 0.0001
+
+[tracker_profiles.pedestrian_and_bicycle_tracker.polygon.bicycle]
+max_dist = 3.0
+max_area = 3.5
+min_area = 0.01
+min_iou = 0.0001
+
+[tracker_profiles.pedestrian_and_bicycle_tracker.polygon.pedestrian]
+max_dist = 3.0
+max_area = 3.0
+min_area = 0.01
+min_iou = 0.0001
+
+[tracker_profiles.polygon_tracker.polygon.unknown]
+max_dist = 4.0
+max_area = 100.0
+min_area = 0.0
+min_iou = 0.0001
+
+[tracker_profiles.polygon_tracker.polygon.car]
+max_dist = 5.0
+max_area = 100.0
+min_area = 0.0
+min_iou = 0.0001
+
+[tracker_profiles.polygon_tracker.polygon.truck]
+max_dist = 5.0
+max_area = 100.0
+min_area = 0.0
+min_iou = 0.0001
+
+[tracker_profiles.polygon_tracker.polygon.bus]
+max_dist = 5.0
+max_area = 100.0
+min_area = 0.0
+min_iou = 0.0001
+
+[tracker_profiles.polygon_tracker.polygon.trailer]
+max_dist = 5.0
+max_area = 100.0
+min_area = 0.0
+min_iou = 0.0001
+
+[tracker_profiles.polygon_tracker.polygon.motorcycle]
+max_dist = 3.0
+max_area = 3.5
+min_area = 0.0
+min_iou = -0.3
+
+[tracker_profiles.polygon_tracker.polygon.bicycle]
+max_dist = 3.0
+max_area = 3.5
+min_area = 0.0
+min_iou = 0.0001
+
+[tracker_profiles.polygon_tracker.polygon.pedestrian]
+max_dist = 2.0
+max_area = 3.0
+min_area = 0.0
+min_iou = 0.0001
+
+[tracker_profiles.polygon_tracker.polygon.animal]
+max_dist = 3.0
+max_area = 3.5
+min_area = 0.0
+min_iou = 0.0001
+
+[tracker_profiles.polygon_tracker.polygon.hazard]
+max_dist = 3.0
+max_area = 3.5
+min_area = 0.0
+min_iou = 0.0001
+
+[tracker_profiles.static_tracker.bounding_box.hazard]
+max_dist = 2.0
+max_area = 2.6
+min_area = 0.001
+min_iou = 0.0001
+
+[tracker_profiles.static_tracker.cylinder.hazard]
+max_dist = 2.0
+max_area = 2.6
+min_area = 0.001
+min_iou = 0.0001
+
+[tracker_profiles.static_tracker.polygon.hazard]
+max_dist = 2.0
+max_area = 2.6
+min_area = 0.001
+min_iou = 0.0001
+
+[tracker_profiles.static_tracker.polygon.unknown]
+max_dist = 2.0
+max_area = 2.6
+min_area = 0.001
+min_iou = 0.0001
+
+[input_channels.lidar_clustering]
+associator_type = "polar"
+
+[input_channels.lidar_clustering.flags]
+can_spawn_new_tracker = true
+can_trust_existence_probability = false
+can_trust_extension = false
+can_trust_classification = true
+can_trust_orientation = false
+
+[input_channels.lidar_clustering.optional]
+name = "clustering"
+short_name = "Lcl"
+
+# The one input: Autoware's clustering objects, in detection01 (above; the node names
+# the channel parameters with slashes, so each is one quoted key).
+
+[ports.inputs."input.detection01.objects"]
+topic = "/perception/object_recognition/detection/clustering/objects"
+
+[ports.outputs."output.objects"]
+topic = "/perception/object_recognition/tracking/objects"

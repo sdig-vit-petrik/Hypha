@@ -95,10 +95,22 @@ fn parse_bounded_memory(variable: Option<OsString>) -> Result<bool, String> {
     }
 }
 
-fn build(variable: Option<OsString>) -> Result<DomainConfig, String> {
-    // No host iceoryx2.toml is read, so two units of one domain cannot disagree about
-    // the segment.
+/// The iceoryx2 configuration of `domain`, the empty name for the domain "none".
+///
+/// No host iceoryx2.toml is read, so two units of one domain cannot disagree about
+/// the segment.
+pub(crate) fn config_of(domain: &str) -> Result<Config, String> {
     let mut config = Config::default();
+    if !domain.is_empty() {
+        let prefix = domain_prefix(domain);
+        config.global.prefix = FileName::new(prefix.as_bytes())
+            .map_err(|cause| format!("the domain '{domain}' gives no valid prefix: {cause:?}"))?;
+    }
+    apply_hypha_defaults(&mut config);
+    Ok(config)
+}
+
+fn build(variable: Option<OsString>) -> Result<DomainConfig, String> {
     let domain = match variable {
         None => String::new(),
         Some(raw) => {
@@ -114,14 +126,10 @@ fn build(variable: Option<OsString>) -> Result<DomainConfig, String> {
                      {MAX_DOMAIN_LENGTH} characters"
                 ));
             }
-            let prefix = domain_prefix(&domain);
-            config.global.prefix = FileName::new(prefix.as_bytes()).map_err(|cause| {
-                format!("{DOMAIN_VARIABLE}='{domain}' gives no valid prefix: {cause:?}")
-            })?;
             domain
         }
     };
-    apply_hypha_defaults(&mut config);
+    let config = config_of(&domain).map_err(|cause| format!("{DOMAIN_VARIABLE}: {cause}"))?;
     Ok(DomainConfig { domain, bounded_memory: false, config })
 }
 

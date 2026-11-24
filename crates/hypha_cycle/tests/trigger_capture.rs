@@ -92,7 +92,7 @@ fn pending_trigger_stamps_lists_unread_samples_oldest_first() {
     let mut runtime = CycleRuntime::new();
     let mut pending = vec![99];
     runtime.pending_trigger_stamps(&mut pending).expect("no trigger is fine");
-    assert!(pending.is_empty());
+    assert!(pending.is_empty(), "{pending:?}");
     let index = runtime.add_binding(history(&[10, 20, 30]), queued(1)).expect("binding");
     runtime.set_trigger(index as usize).expect("queued trigger");
     assert_eq!(runtime.trigger(), Some(index as usize));
@@ -137,7 +137,7 @@ fn a_fallback_step_takes_no_trigger_sample_and_reports_silence() {
         .expect("supervision");
     let _ = step(&mut runtime, 10, 1);
     let seen = step(&mut runtime, 110, 0);
-    assert!(seen[0].samples.is_empty());
+    assert!(seen[0].samples.is_empty(), "{:?}", seen[0].samples);
     assert_eq!(seen[0].verdict, InputVerdict::Stale);
     let faults = seen[0].supervision().expect("supervised").faults();
     assert_ne!(faults & FAULT_STALE, 0);

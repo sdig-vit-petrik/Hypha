@@ -7,7 +7,7 @@
 #   cmake -S . -B build -DCMAKE_PREFIX_PATH=<sdk> && cmake --build build && ./run.sh build
 
 cmake_minimum_required(VERSION 3.20)
-project(mrs_on_hypha VERSION 0.2.0 LANGUAGES CXX)
+project(mrs_on_hypha VERSION 0.3.0 LANGUAGES CXX)
 
 if(NOT TARGET hypha::sdk)
   find_package(hypha CONFIG REQUIRED)
@@ -27,22 +27,9 @@ hypha_generate_messages(PACKAGE mrs_msgs
   OUT_DIR "${MRS_MSG_OUT}"
   DEPENDS std_msgs geometry_msgs sensor_msgs nav_msgs)
 
-# Upstream code includes <mrs_msgs/UavState.h> and <geometry_msgs/Pose.h>: the package
-# directories, generated and installed, go on the include path one level below hypha_msgs/.
-get_target_property(MRS_SDK_INCLUDES hypha::sdk INTERFACE_INCLUDE_DIRECTORIES)
-set(MRS_SDK_MSG_INCLUDES "")
-foreach(dir ${MRS_SDK_INCLUDES})
-  string(REGEX REPLACE "^\\$<BUILD_INTERFACE:(.*)>$" "\\1" dir "${dir}")
-  string(REGEX REPLACE "^\\$<INSTALL_INTERFACE:.*>$" "" dir "${dir}")
-  if(dir AND IS_DIRECTORY "${dir}/hypha_msgs")
-    list(APPEND MRS_SDK_MSG_INCLUDES "${dir}/hypha_msgs")
-  endif()
-endforeach()
-if(NOT MRS_SDK_MSG_INCLUDES)
-  message(FATAL_ERROR "examples/mrs: no hypha_msgs directory on the hypha::sdk include path")
-endif()
+# Upstream code includes <mrs_msgs/UavState.h> and <geometry_msgs/Pose.h>, the paths the
+# message targets and hypha::sdk put on the include path.
 add_library(mrs_includes INTERFACE)
-target_include_directories(mrs_includes INTERFACE "${MRS_MSG_OUT}/hypha_msgs" ${MRS_SDK_MSG_INCLUDES})
 target_link_libraries(mrs_includes INTERFACE mrs_msgs mrs_bridge std_srvs hypha::sdk Eigen3::Eigen)
 target_compile_features(mrs_includes INTERFACE cxx_std_23)
 
@@ -55,13 +42,14 @@ foreach(def ${MRS_MSG_DEFS})
 endforeach()
 file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/test_include/all_mrs_msgs.h" CONTENT "${MRS_ALL_MSGS}")
 
-# mrs_check(<name> SOURCES <file>... [LIBS <target>...]): one check executable, one CTest test.
+# mrs_check(<name> SOURCES <file>... [LIBS <target>...]): one check executable, one CTest
+# test in a bus domain of its own.
 function(mrs_check name)
   cmake_parse_arguments(ARG "" "" "SOURCES;LIBS" ${ARGN})
   add_executable(mrs_${name} ${ARG_SOURCES})
   target_include_directories(mrs_${name} PRIVATE test "${CMAKE_CURRENT_BINARY_DIR}/test_include")
   target_link_libraries(mrs_${name} PRIVATE mrs_includes ${ARG_LIBS})
-  add_test(NAME mrs_${name} COMMAND mrs_${name})
+  hypha_add_test(mrs_${name})
 endfunction()
 
 mrs_check(messages_compile SOURCES test/messages_compile.cpp)

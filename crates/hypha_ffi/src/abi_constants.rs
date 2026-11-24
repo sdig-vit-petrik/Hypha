@@ -38,6 +38,13 @@ same_as_node!(HYPHA_TF_BEFORE_BUFFER, transforms);
 pub const HYPHA_TF_AFTER_BUFFER: u32 = 5;
 same_as_node!(HYPHA_TF_AFTER_BUFFER, transforms);
 
+/// The lookup failed on a frame whose newest transform the buffer refused (not finite,
+/// not a unit quaternion, a stamp that is no time, a second parent): its producer is
+/// broken, not late. It replaces `UNKNOWN_FRAME`, `NOT_CONNECTED` and `AFTER_BUFFER`
+/// while that frame's newest transform is a refused one.
+pub const HYPHA_TF_REFUSED: u32 = 6;
+same_as_node!(HYPHA_TF_REFUSED, transforms);
+
 /// Freshness verdict: no sample admitted since the binding was created.
 pub const HYPHA_CYCLE_VERDICT_NEVER_ARRIVED: u32 = 0;
 same_as_node!(HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, cycle::types);

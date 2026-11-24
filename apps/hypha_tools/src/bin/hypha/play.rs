@@ -71,12 +71,39 @@ struct Cli {
 
 impl Cli {
     /// The sync rules of a `--clock` replay, with the defaults for what was not given.
-    fn sync(&self) -> SyncConfig {
+    fn sync(&self, lockstep: bool) -> SyncConfig {
         SyncConfig {
             chunk_nanos: self.chunk_nanos.unwrap_or(DEFAULT_CHUNK_NANOS),
             nodes: self.nodes.clone(),
             settle: self.settle.unwrap_or(DEFAULT_SETTLE),
             timeout: self.timeout.unwrap_or(DEFAULT_TIMEOUT),
+            lockstep,
+        }
+    }
+}
+
+/// The variable that turns the replay lockstep off for a whole launch; every node reads
+/// it too, so the player and the nodes agree.
+const LOCKSTEP_VARIABLE: &str = "HYPHA_REPLAY_LOCKSTEP";
+
+/// Whether `text`, the value of [`LOCKSTEP_VARIABLE`], keeps the lockstep: `1` or
+/// `true` keep it, `0` or `false` turn it off, anything else is refused, as at node
+/// creation.
+fn parse_lockstep(text: &str) -> Result<bool, String> {
+    match text {
+        "1" | "true" => Ok(true),
+        "0" | "false" => Ok(false),
+        _ => Err(format!("{LOCKSTEP_VARIABLE} must be 1, true, 0 or false, not '{text}'")),
+    }
+}
+
+/// Whether the environment keeps the replay lockstep; an unset variable keeps it.
+fn lockstep_requested() -> Result<bool, String> {
+    match std::env::var(LOCKSTEP_VARIABLE) {
+        Ok(text) => parse_lockstep(&text),
+        Err(std::env::VarError::NotPresent) => Ok(true),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err(format!("{LOCKSTEP_VARIABLE} is not readable text"))
         }
     }
 }
@@ -114,10 +141,11 @@ fn parse_timeout(text: &str) -> Result<Duration, String> {
     non_zero_seconds("--timeout", text)
 }
 
-/// Parses `args` (excluding argv\[0]) into `Cli`. `Ok(None)` means `--help`
-/// was requested and already printed; `Err` means the command line is
-/// invalid and a message was already printed -- the caller refuses to start.
-fn parse_args(args: &[String]) -> Result<Option<Cli>, ()> {
+/// Parses `args` (excluding argv\[0]) into `Cli`, for a replay in the lockstep when
+/// `lockstep`. `Ok(None)` means `--help` was requested and already printed; `Err` means
+/// the command line is invalid and a message was already printed -- the caller refuses
+/// to start.
+fn parse_args(args: &[String], lockstep: bool) -> Result<Option<Cli>, ()> {
     let words = std::iter::once("hypha play").chain(args.iter().map(String::as_str));
     let cli = match Cli::try_parse_from(words) {
         Ok(cli) => cli,
@@ -147,12 +175,42 @@ fn parse_args(args: &[String]) -> Result<Option<Cli>, ()> {
         }
     }
 
+    if cli.publish_clock && !lockstep {
+        // Open loop: nothing paces a replay at max, and no participant is waited for.
+        if cli.pace == Some(Pace::Max) {
+            eprintln!(
+                "hypha play: --rate max needs the replay lockstep; with {LOCKSTEP_VARIABLE}=0 nothing would pace the replay"
+            );
+            ok = false;
+        }
+        let lockstep_flags = [
+            (!cli.nodes.is_empty(), "--nodes"),
+            (cli.settle.is_some(), "--settle"),
+            (cli.timeout.is_some(), "--timeout"),
+        ];
+        for (given, flag) in lockstep_flags {
+            if given {
+                eprintln!(
+                    "hypha play: {flag} takes effect only in the replay lockstep, not with {LOCKSTEP_VARIABLE}=0"
+                );
+                ok = false;
+            }
+        }
+    }
+
     if ok { Ok(Some(cli)) } else { Err(()) }
 }
 
 /// Runs the tool; `args` is the whole command line, `args[0]` the name it shows.
 pub(crate) fn main(args: Vec<String>) -> ExitCode {
-    let cli = match parse_args(args.get(1..).unwrap_or(&[])) {
+    let lockstep = match lockstep_requested() {
+        Ok(lockstep) => lockstep,
+        Err(cause) => {
+            eprintln!("hypha play: {cause}, refusing to start");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cli = match parse_args(args.get(1..).unwrap_or(&[]), lockstep) {
         Ok(Some(cli)) => cli,
         Ok(None) => return ExitCode::SUCCESS,
         Err(()) => {
@@ -193,6 +251,11 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
     for topic in &cli.topics {
         println!("hypha play: narrowed to '{topic}'");
     }
+    if cli.publish_clock && !lockstep {
+        println!(
+            "hypha play: open loop ({LOCKSTEP_VARIABLE}=0): /clock and the data follow --rate, and no node is waited for"
+        );
+    }
 
     let config = PlaySessionConfig {
         pace,
@@ -200,7 +263,7 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         publish_clock: cli.publish_clock,
         topics: cli.topics.clone(),
         utc_range,
-        sync: cli.sync(),
+        sync: cli.sync(lockstep),
     };
 
     let result = run_play_session(&bus, &player, config, &stop_signal);
@@ -225,15 +288,49 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use super::{Cli, parse_args};
+    use super::{Cli, parse_args, parse_lockstep};
     use clap::Parser as _;
     use clap::error::ErrorKind;
     use hypha_tools::replay_sync::{DEFAULT_SETTLE, DEFAULT_TIMEOUT, Pace};
     use std::time::Duration;
 
     fn parse(args: &[&str]) -> Result<Cli, ()> {
+        parse_in(args, true)
+    }
+
+    fn parse_in(args: &[&str], lockstep: bool) -> Result<Cli, ()> {
         let owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
-        parse_args(&owned).map(|cli| cli.expect("not --help"))
+        parse_args(&owned, lockstep).map(|cli| cli.expect("not --help"))
+    }
+
+    #[test]
+    fn the_lockstep_variable_reads_one_true_zero_or_false_and_refuses_the_rest() {
+        assert_eq!(parse_lockstep("1"), Ok(true));
+        assert_eq!(parse_lockstep("true"), Ok(true));
+        assert_eq!(parse_lockstep("0"), Ok(false));
+        assert_eq!(parse_lockstep("false"), Ok(false));
+        assert!(parse_lockstep("no").is_err());
+    }
+
+    #[test]
+    fn an_open_loop_replay_refuses_rate_max_and_the_flags_of_the_lockstep() {
+        for flags in [
+            vec!["--rate", "max"],
+            vec!["--nodes", "posmaster"],
+            vec!["--settle", "1"],
+            vec!["--timeout", "2"],
+        ] {
+            let mut args = vec!["--input", "a.mcap", "--clock"];
+            args.extend(flags.iter().copied());
+            assert!(parse_in(&args, false).is_err(), "{flags:?} without the lockstep");
+            assert!(parse_in(&args, true).is_ok(), "{flags:?} in the lockstep");
+        }
+        let open =
+            parse_in(&["--input", "a.mcap", "--clock", "--rate", "4", "--chunk", "20"], false)
+                .expect("an open-loop replay at a rate");
+        assert!(!open.sync(false).lockstep);
+        // Without --clock there is no lockstep to turn off: max stays allowed.
+        assert!(parse_in(&["--input", "a.mcap", "--rate", "max"], false).is_ok());
     }
 
     #[test]
@@ -293,7 +390,7 @@ mod tests {
             "3",
         ])
         .expect("parses");
-        let sync = cli.sync();
+        let sync = cli.sync(true);
         assert_eq!(sync.settle, Duration::from_millis(500));
         assert_eq!(sync.chunk_nanos, 250_000_000);
         assert_eq!(sync.timeout, Duration::from_secs(3));
@@ -302,7 +399,7 @@ mod tests {
 
     #[test]
     fn the_defaults_are_the_settle_chunk_and_timeout_of_the_spec() {
-        let sync = parse(&["--input", "a.mcap", "--clock"]).expect("parses").sync();
+        let sync = parse(&["--input", "a.mcap", "--clock"]).expect("parses").sync(true);
         assert_eq!(sync.settle, DEFAULT_SETTLE);
         assert_eq!(sync.chunk_nanos, 100_000_000);
         assert_eq!(sync.timeout, DEFAULT_TIMEOUT);

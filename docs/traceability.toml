@@ -115,7 +115,7 @@ tests = ["hypha_iceoryx2/housekeeping_creates_no_thread", "hypha_ffi/waitset_cro
 
 [[requirement]]
 id = "FSR-15"
-tests = ["hypha_core/timer_missed_count", "hypha_core/timer_reset", "hypha_time/cadence_policies"]
+tests = ["hypha_core/timer_missed_count", "hypha_core/timer_reset", "hypha_time/cadence_policies", "hypha_ffi/waitset_timer_control"]
 
 [[requirement]]
 id = "FSR-16"
@@ -170,6 +170,7 @@ tests = [
   "hypha_tools/record_sync",
   "hypha_tools/utc_replay_bus",
   "hypha_tools/play_flow_control",
+  "hypha_ffi/replay_callbacks",
 ]
 
 [[requirement]]
@@ -230,7 +231,7 @@ tests = ["hypha_log/*", "cxx:test_log_*"]
 
 [[requirement]]
 id = "FSR-37"
-tests = ["hypha_ffi/sim_time_rewind", "hypha_tools/play_restart", "hypha_core/timer_time_jump"]
+tests = ["hypha_ffi/sim_time_rewind", "hypha_tools/play_restart", "hypha_core/timer_time_jump", "hypha_ffi/waitset_timer_control", "hypha_ffi/replay_callbacks"]
 
 [[requirement]]
 id = "FSR-38"

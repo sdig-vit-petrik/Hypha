@@ -5,7 +5,7 @@
 #   cmake -S . -B build && cmake --build build
 
 cmake_minimum_required(VERSION 3.20)
-project(sensor_pipeline VERSION 0.2.0 LANGUAGES CXX)
+project(sensor_pipeline VERSION 0.3.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -42,15 +42,14 @@ endforeach()
 install(TARGETS ${SENSOR_PIPELINE_TARGETS} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
 # The replay check (replay_check.sh) runs the processor twice on the recorded fixture,
-# with hypha play and hypha record, compares the two outputs by stamp, and runs the slow
-# mode once. It needs the tools and the comparison; it is not run when the hypha tree is
-# built without tests.
+# with hypha play and hypha record, and compares the two outputs by stamp. It needs the
+# tools and the comparison; it is not run when the hypha tree is built without tests.
 set(SENSOR_PIPELINE_REPLAY_TEST ON)
 if(DEFINED HYPHA_BUILD_TESTS AND NOT HYPHA_BUILD_TESTS)
   set(SENSOR_PIPELINE_REPLAY_TEST OFF)
 endif()
 if(SENSOR_PIPELINE_REPLAY_TEST AND TARGET hypha::hypha AND TARGET sensor_pipeline_compare)
-  add_test(NAME sensor_pipeline_replay_check
+  hypha_add_test(sensor_pipeline_replay_check
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/replay_check.sh"
       --hypha "$<TARGET_FILE:hypha::hypha>"
       --processor "$<TARGET_FILE:hypha_cloud_processor>"

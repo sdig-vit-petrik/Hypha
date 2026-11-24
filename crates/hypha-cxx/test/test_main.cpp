@@ -9,13 +9,13 @@
 int main(int argc, char** argv)
 {
     // ctest runs the gtest shards in parallel processes, so each process gets a bus
-    // domain of its own: the caller's HYPHA_DOMAIN (or "t") plus the process id. Their
-    // /clock and topics never meet, and the peers a test spawns inherit the domain. The
-    // tests write parameter files under fixed names in the temporary directory, so each
-    // process gets a temporary directory of its own as well.
+    // domain of its own under the test root: t_ plus the process id, whatever domain
+    // the caller runs in. Their /clock and topics never meet, the peers a test spawns
+    // inherit the domain, and `hypha clean --domain t_` removes it once the process
+    // ended. The tests write parameter files under fixed names in the temporary
+    // directory, so each process gets a temporary directory of its own as well.
     const std::string pid = std::to_string(::getpid());
-    const char*       base = std::getenv("HYPHA_DOMAIN");
-    const std::string domain = std::string(base != nullptr ? base : "t") + "_" + pid;
+    const std::string domain = "t_" + pid;
     std::error_code   error;
     const auto temporary = std::filesystem::temp_directory_path(error) / ("hypha_test_" + pid);
     if (error || !std::filesystem::create_directories(temporary, error)

@@ -568,10 +568,10 @@ impl InterceptView {
             .is_none_or(|seen| now.saturating_duration_since(seen) >= OFFLINE_AFTER);
         StatusLine {
             armed: spec.map(|spec| spec.armed),
-            last_error: applied.map(|state| state.last_error.clone()).unwrap_or_default(),
+            last_error: applied.map_or_default(|state| state.last_error.clone()),
             pending: backend.is_some_and(|state| state.applied_revision < self.written_revision),
             offline,
-            config_error: backend.map(|state| state.config_error.clone()).unwrap_or_default(),
+            config_error: backend.map_or_default(|state| state.config_error.clone()),
             message: self.message.clone(),
         }
     }
@@ -710,7 +710,7 @@ impl InterceptView {
             .and_then(|wire| read_scalar(&type_name, wire).ok());
         let width = integer_width(&type_name).map_or(0, |bytes| bytes.saturating_mul(8));
         let mut bits = vec![BitState::Keep; width];
-        let mut text = current.as_ref().map(edit_text).unwrap_or_default();
+        let mut text = current.as_ref().map_or_default(edit_text);
         match stored {
             Some(OverrideSpec::Value { value }) => text = value,
             Some(OverrideSpec::Bits { set, clear }) => {
@@ -944,7 +944,7 @@ impl InterceptView {
     /// and changes nothing; a file that does not parse is never overwritten.
     fn mutate(&mut self, change: impl FnOnce(&mut InterceptConfig) -> Result<(), String>) {
         let Some(backend) = self.backend() else {
-            "no hypha_intercept backend is running".clone_into(&mut self.message);
+            "no hypha intercept backend is running".clone_into(&mut self.message);
             return;
         };
         let applied = backend.applied_revision;
@@ -1280,7 +1280,8 @@ MSG: test_msgs/Cell\nfloat32 voltage\n";
         // d then y deletes.
         press(&mut view, &app, KeyCode::Char('d'));
         press(&mut view, &app, KeyCode::Char('y'));
-        assert!(file(&path).interception.is_empty());
+        let found = file(&path).interception;
+        assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]
@@ -1295,7 +1296,10 @@ MSG: test_msgs/Cell\nfloat32 voltage\n";
         assert_eq!(view.form.as_ref().unwrap().field, FormField::Name);
         type_text(&mut view, &app, "Bad");
         press(&mut view, &app, KeyCode::Enter);
-        assert!(!view.form.as_ref().expect("still open").error.is_empty());
+        assert!(
+            !view.form.as_ref().expect("still open").error.is_empty(),
+            "the form shows no error"
+        );
         for _ in 0.."pickedBad".len() {
             press(&mut view, &app, KeyCode::Backspace);
         }
@@ -1327,7 +1331,8 @@ MSG: test_msgs/Cell\nfloat32 voltage\n";
         let names: Vec<&str> = hits.iter().map(|(topic, _)| *topic).collect();
         assert_eq!(names, ["/battery/raw", "/battery/raw/extra"], "case-insensitive substring");
         type_text(&mut view, &app, "x");
-        assert!(suggestions(view.form.as_ref().unwrap(), &app.topics).is_empty());
+        let found = suggestions(view.form.as_ref().unwrap(), &app.topics);
+        assert!(found.is_empty(), "{found:?}");
         press(&mut view, &app, KeyCode::Backspace);
         press(&mut view, &app, KeyCode::Down);
         press(&mut view, &app, KeyCode::Down);
@@ -1397,7 +1402,7 @@ MSG: test_msgs/Cell\nfloat32 voltage\n";
         let (mut view, app, path) = bench("broken");
         std::fs::write(&path, "revision = [").unwrap();
         press(&mut view, &app, KeyCode::Char('a'));
-        assert!(!view.status(Instant::now()).message.is_empty());
+        assert!(!view.status(Instant::now()).message.is_empty(), "the status line is empty");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "revision = [");
     }
 

@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 
 using hypha::Duration;
 using hypha::Time;
@@ -16,13 +17,20 @@ constexpr int64_t kMinNanos = std::numeric_limits<int64_t>::min();
 
 }  // namespace
 
-TEST(TimeSaturation, FromSecondsGivesZeroForNonFiniteInput)
+TEST(TimeSaturation, FromSecondsRefusesNonFiniteInput)
 {
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const double inf = std::numeric_limits<double>::infinity();
-    EXPECT_TRUE(Time::fromSeconds(nan).isZero());
-    EXPECT_TRUE(Time::fromSeconds(inf).isZero());
-    EXPECT_TRUE(Time::fromSeconds(-inf).isZero());
+    EXPECT_THROW(static_cast<void>(Time::fromSeconds(nan)), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(Time::fromSeconds(inf)), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(Time::fromSeconds(-inf)), std::invalid_argument);
+}
+
+TEST(TimeSaturation, FromSecondsConvertsFiniteInputInConstantExpressions)
+{
+    constexpr Time stamp = Time::fromSeconds(12.5);
+    static_assert(stamp.nanos() == 12500000000LL);
+    EXPECT_EQ(stamp.nanos(), 12500000000LL);
 }
 
 TEST(TimeSaturation, FromSecondsClampsOutOfRangeInput)

@@ -1,0 +1,6 @@
+# The gyro odometer of ../gyro_odometer.toml with the Applanix INS speed as the vehicle
+# twist: the bags hold no vehicle velocity report.
+include = ["../gyro_odometer.toml"]
+
+[ports.inputs."vehicle.twist_with_covariance"]
+topic = "/applanix/lvx_client/twist_with_covariance"

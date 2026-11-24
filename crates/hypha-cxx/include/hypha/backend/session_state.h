@@ -60,6 +60,8 @@ struct Session
     std::string  parameterFile;
     /// Counts the sessions this process has released; a cycle of an earlier one is dead.
     uint64_t generation{0};
+    /// The Nodes that joined the current session; the last one to go leaves it (#97).
+    uint64_t joined{0};
     bool     shuttingDown{false};
 };
 

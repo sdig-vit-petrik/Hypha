@@ -5,13 +5,20 @@
 //! otherwise the attach is refused with `InvalidArgument`. A successful attach transfers
 //! `context` to the registration, which calls `release` once when it is detached or the
 //! `WaitSet` is destroyed; a failed attach transfers nothing.
+//!
+//! During a run the native set is the run's, so only a timer that needs no native
+//! attachment is accepted, from a callback: the dispatcher alone holds it, under an id
+//! above every native one
+//! ([`FIRST_DISPATCHER_IDENTIFIER`](hypha_core::port::dispatch::FIRST_DISPATCHER_IDENTIFIER)).
 
+use super::timer_control::{TimerControl, clock_now};
 use super::{
     Arc, DataCallback, DeliveryHandler, Duration, Error, ForeignCallbacks, HyphaAttachmentId,
     HyphaContextRelease, HyphaIntervalCallback, HyphaSubscriber, HyphaSubscriptionCallback,
     HyphaWaitSet, IntervalHandler, Registration, SubscriptionHandler, Target, Trigger, c_void,
 };
 use crate::cycle::{Cycle, CycleId};
+use hypha_core::port::dispatch::LAST_NATIVE_IDENTIFIER;
 
 /// How often a wildcard subscription, which has no event service, is read.
 const WILDCARD_POLL_PERIOD: Duration = Duration::from_millis(1);
@@ -20,7 +27,10 @@ const WILDCARD_POLL_PERIOD: Duration = Duration::from_millis(1);
 pub const HYPHA_ATTACH_SUBSCRIPTION: u32 = 0;
 /// A periodic registration on framework time, owned by the `WaitSet`. Its callback gets
 /// the periods missed since its previous call (0 on time; not a running total). Simulated
-/// time earlier than the timer has seen fires nothing and ends the run with `ClockRewound`.
+/// time earlier than the timer has seen fires nothing and ends the run with `ClockRewound`,
+/// canceled or not. A callback of the running `WaitSet` may attach one when
+/// the node runs on host time or on its own simulated clock; its first call comes one
+/// period after the attach.
 pub const HYPHA_ATTACH_TIMER: u32 = 2;
 
 /// Describes one registration. `kind` is one of the `HYPHA_ATTACH_*` values.
@@ -168,19 +178,62 @@ fn periodic_fields_clear(attachment: &HyphaAttachment) -> bool {
 /// before any native attach.
 pub(crate) fn attach(set: &HyphaWaitSet, request: Request) -> Result<HyphaAttachmentId, Error> {
     if set.is_running() {
-        return Err(Error::InvalidState);
+        return defer_attach(set, request);
     }
     // Held across the native attach, so an accepted registration is always recorded.
     let mut registrations = set.registrations.try_borrow_mut().map_err(|_| Error::InvalidState)?;
-    let limit = usize::try_from(set.limits.max_registrations()).unwrap_or(usize::MAX);
-    if registrations.len() >= limit {
+    if registrations.len() >= registration_limit(set) {
         return Err(Error::ResourceLimit);
     }
     // Borrowed before the native attach, so nothing fails after the registration exists.
-    let mut live_ids = set.live_ids.try_borrow_mut().map_err(|_| Error::InvalidState)?;
+    let mut live = set.live.try_borrow_mut().map_err(|_| Error::InvalidState)?;
     let (id, target) = register(set, request)?;
-    registrations.push(Registration::new(id, target));
-    live_ids.push(id);
+    let registration = Registration::new(id, target);
+    live.push(registration.live_entry());
+    registrations.push(registration);
+    Ok(id)
+}
+
+fn registration_limit(set: &HyphaWaitSet) -> usize {
+    usize::try_from(set.limits.max_registrations()).unwrap_or(usize::MAX)
+}
+
+/// An attach during a run: only a plain timer whose wake needs no native attachment, from
+/// the run's own thread. The dispatcher takes it before its next wait; its first call
+/// comes one period after now. `InvalidState` for anything else.
+fn defer_attach(set: &HyphaWaitSet, request: Request) -> Result<HyphaAttachmentId, Error> {
+    if !set.shared.runs_on_this_thread() {
+        return Err(Error::InvalidState);
+    }
+    // A refused request drops here and leaves its C context to the caller.
+    let Request::Timer { period, framework_period, callback: Some(callback), cycle: None } =
+        request
+    else {
+        return Err(Error::InvalidState);
+    };
+    let node = set.node();
+    let sim_time = node.on_sim_time();
+    // A clock driven from outside the node needs a native poll, and the run holds the set.
+    if timer_wake(period, node.uses_sim_time, sim_time) != Trigger::Timed {
+        return Err(Error::InvalidState);
+    }
+    let (Ok(mut attaches), Ok(mut live)) =
+        (set.run_attaches.try_borrow_mut(), set.live.try_borrow_mut())
+    else {
+        return Err(Error::InvalidState);
+    };
+    if attaches.held.saturating_add(attaches.pending.len()) >= registration_limit(set) {
+        return Err(Error::ResourceLimit);
+    }
+    let id = attaches.take_id()?;
+    let timer = hypha_core::timer::Timer::new(framework_period, clock_now(sim_time));
+    let control = Some(TimerControl::new(&timer, sim_time));
+    // Nothing refuses the attach from here: the C context changes owner.
+    let callback = Some(callback.adopt());
+    let target = Target::Timer { timer, callback, cycle: None, run_anchored: true, control };
+    let registration = Registration::new(id, target);
+    live.push(registration.live_entry());
+    attaches.pending.push(registration);
     Ok(id)
 }
 
@@ -243,17 +296,17 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
                     hypha_core::timer::Timer::on_grid(framework_period, hypha_time::now())
                 }
                 (true, false) => hypha_core::timer::Timer::awaiting_grid(framework_period),
-                (false, _) if sim_time => {
-                    hypha_core::timer::Timer::new(framework_period, hypha_time::now())
-                }
-                (false, _) => {
-                    hypha_core::timer::Timer::new(framework_period, hypha_time::scheduling_now())
-                }
+                (false, _) => hypha_core::timer::Timer::new(framework_period, clock_now(sim_time)),
             };
+            // A plain timer can be canceled and reset; a cycle runs at its rate.
+            let control = cycle.is_none().then(|| TimerControl::new(&timer, sim_time));
             let cycle = cycle.map(super::replay::CycleTimer::new);
             // Nothing refuses the attach from here: the C context changes owner.
             let callback = callback.map(Adoption::adopt);
-            Ok((id, Target::Timer { timer, callback, cycle, run_anchored: sim_time }))
+            // A plain timer made before the first clock value starts on that value, not on
+            // the placeholder zero.
+            let run_anchored = sim_time && (cycle.is_some() || hypha_time::sim_time_has_value());
+            Ok((id, Target::Timer { timer, callback, cycle, run_anchored, control }))
         }
         Request::Triggered { cycle, silence_nanos, notified } => {
             let schedule = hypha_runtime::trigger_schedule::TriggerSchedule::new(silence_nanos)
@@ -348,16 +401,18 @@ pub fn waitset_detach(set: &HyphaWaitSet, attachment: HyphaAttachmentId) -> Resu
 
 /// A detach during a run: accepted only from the run's own thread, a callback.
 fn defer_detach(set: &HyphaWaitSet, attachment: HyphaAttachmentId) -> Result<(), Error> {
-    let from_the_run = set.shared.run_owner() == Some(std::thread::current().id());
-    if !from_the_run {
+    if !set.shared.runs_on_this_thread() {
         return Err(Error::InvalidState);
     }
     // The dispatcher holds the registrations for the run, so the id is checked against
-    // the native set.
+    // the registry of live registrations.
     let Ok(mut pending) = set.pending_detach.try_borrow_mut() else {
         return Err(Error::InvalidState);
     };
-    let known = set.live_ids.try_borrow().is_ok_and(|ids| ids.contains(&attachment));
+    let known = set
+        .live
+        .try_borrow()
+        .is_ok_and(|live| live.iter().any(|registration| registration.id == attachment));
     if !known {
         return Err(Error::InvalidArgument);
     }
@@ -398,13 +453,15 @@ fn remove_registration(set: &HyphaWaitSet, attachment: HyphaAttachmentId) -> Res
         else {
             return Err(Error::InvalidArgument);
         };
-        if native.detach(attachment).is_err() {
+        // A timer attached during a run has no native attachment.
+        let native_registration = attachment <= LAST_NATIVE_IDENTIFIER;
+        if native_registration && native.detach(attachment).is_err() {
             return Err(Error::InvalidArgument);
         }
         registrations.remove(index)
     };
-    if let Ok(mut ids) = set.live_ids.try_borrow_mut() {
-        ids.retain(|id| *id != attachment);
+    if let Ok(mut live) = set.live.try_borrow_mut() {
+        live.retain(|registration| registration.id != attachment);
     }
     registration.end_dispatch();
     registration.release_context();
@@ -418,11 +475,12 @@ fn remove_registration(set: &HyphaWaitSet, attachment: HyphaAttachmentId) -> Res
 /// # Errors
 /// `InvalidArgument` for an unknown kind, a missing callback or subscriber, or a field
 /// the kind does not use; the error of `reach`; an attach error.
-pub fn waitset_attach_foreign<'set, C: ForeignCallbacks>(
-    reach: impl FnOnce() -> Result<&'set HyphaWaitSet, Error>,
+pub fn waitset_attach_foreign<C: ForeignCallbacks, S: std::ops::Deref<Target = HyphaWaitSet>>(
+    reach: impl FnOnce() -> Result<S, Error>,
     attachment: &HyphaAttachment,
     share: impl FnOnce(*mut HyphaSubscriber) -> Arc<HyphaSubscriber>,
 ) -> Result<HyphaAttachmentId, Error> {
     let request = Request::decode::<C>(attachment, share)?;
-    attach(reach()?, request)
+    let set = reach()?;
+    attach(&set, request)
 }

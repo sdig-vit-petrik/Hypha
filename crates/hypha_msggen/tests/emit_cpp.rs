@@ -75,8 +75,29 @@ fn std_msgs_header_exact_output() {
         "  hypha_msgs::RosTime stamp{};\n",
         "  std::string frame_id{};\n",
         "\n",
+        "  using _seq_type = uint32_t;\n",
+        "  using _stamp_type = hypha_msgs::RosTime;\n",
+        "  using _frame_id_type = std::string;\n",
+        "  Header& set__seq(const _seq_type& _arg) {\n",
+        "    this->seq = _arg;\n",
+        "    return *this;\n",
+        "  }\n",
+        "  Header& set__stamp(const _stamp_type& _arg) {\n",
+        "    this->stamp = _arg;\n",
+        "    return *this;\n",
+        "  }\n",
+        "  Header& set__frame_id(const _frame_id_type& _arg) {\n",
+        "    this->frame_id = _arg;\n",
+        "    return *this;\n",
+        "  }\n",
+        "\n",
+        "  bool operator==(const Header&) const = default;\n",
+        "\n",
         "  using Ptr = std::shared_ptr<Header>;\n",
         "  using ConstPtr = std::shared_ptr<const Header>;\n",
+        "  using SharedPtr = std::shared_ptr<Header>;\n",
+        "  using ConstSharedPtr = std::shared_ptr<const Header>;\n",
+        "  using UniquePtr = std::unique_ptr<Header>;\n",
         "\n",
         "  static constexpr const char* TYPE_NAME = \"std_msgs/Header\";\n",
         "  static constexpr const char* MD5 = \"2176decaecbce78abc3b96ef049fabed\";\n",
@@ -84,6 +105,9 @@ fn std_msgs_header_exact_output() {
         "\n",
         "using HeaderPtr = Header::Ptr;\n",
         "using HeaderConstPtr = Header::ConstPtr;\n",
+        "// ROS 2 names the type through its allocator: Header_<Allocator>.\n",
+        "template <class Allocator>\n",
+        "using Header_ = Header;\n",
         "\n",
         "}  // namespace std_msgs\n",
         "\n",
@@ -186,7 +210,7 @@ fn nested_message_type_with_include() {
 
     let result = emit_with(&msg_spec, vec![stub("geometry_msgs", "Point")], "def456");
 
-    assert!(result.contains("#include <hypha_msgs/geometry_msgs/Point.h>"));
+    assert!(result.contains("#include <geometry_msgs/Point.h>"));
     assert!(result.contains("geometry_msgs::Point position{};"));
 }
 
@@ -209,7 +233,7 @@ fn two_fields_same_nested_type_one_include() {
 
     let result = emit_with(&msg_spec, vec![stub("geometry_msgs", "Point")], "xyz789");
 
-    let include_count = result.matches("#include <hypha_msgs/geometry_msgs/Point.h>").count();
+    let include_count = result.matches("#include <geometry_msgs/Point.h>").count();
     assert_eq!(include_count, 1, "Include should appear exactly once");
     assert!(result.contains("geometry_msgs::Point start{};"));
     assert!(result.contains("geometry_msgs::Point end{};"));
@@ -227,7 +251,7 @@ fn variable_array_of_nested_type() {
 
     let result = emit_with(&msg_spec, vec![stub("geometry_msgs", "Point")], "arr123");
 
-    assert!(result.contains("#include <hypha_msgs/geometry_msgs/Point.h>"));
+    assert!(result.contains("#include <geometry_msgs/Point.h>"));
     assert!(result.contains("std::vector<geometry_msgs::Point> points{};"));
 }
 

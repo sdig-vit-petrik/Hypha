@@ -85,6 +85,19 @@ static ROWS: &[Row] = rows! {
             INVALID
         );
     }
+    hypha_config_ignore => |live| {
+        let key = "a".as_ptr().cast();
+        let reason = "b".as_ptr().cast();
+        // SAFETY: a null configuration is refused before either text is read.
+        let null_config = unsafe { hypha_config_ignore(null(), key, 1, reason, 1) };
+        assert_eq!(null_config, INVALID);
+        // SAFETY: a null key with a length is refused before it is read.
+        let null_key = unsafe { hypha_config_ignore(live.config, null(), 1, reason, 1) };
+        assert_eq!(null_key, INVALID);
+        // SAFETY: a null reason with a length is refused before it is read.
+        let null_reason = unsafe { hypha_config_ignore(live.config, key, 1, null(), 1) };
+        assert_eq!(null_reason, INVALID);
+    }
     hypha_config_resolve_key => |live| {
         let mut length = 0_usize;
         let name = "map";
@@ -538,6 +551,19 @@ static ROWS: &[Row] = rows! {
     hypha_transform_buffer_destroy => |_live| {
         assert_eq!(unsafe { hypha_transform_buffer_destroy(null_mut()) }, HyphaStatus::Ok);
     }
+    hypha_transform_check => |_live| {
+        let name = "a".as_ptr().cast();
+        let sent = HyphaSentTransform { rotation_xyzw: [0.0, 0.0, 0.0, 1.0], ..HyphaSentTransform::default() };
+        // SAFETY: a null parent with a length is refused before anything is read.
+        let no_parent = unsafe { hypha_transform_check(null(), 1, name, 1, &raw const sent, 0) };
+        assert_eq!(no_parent, INVALID);
+        // SAFETY: a null child with a length is refused before anything is read.
+        let no_child = unsafe { hypha_transform_check(name, 1, null(), 1, &raw const sent, 0) };
+        assert_eq!(no_child, INVALID);
+        // SAFETY: a null transform is refused before it is read.
+        let no_transform = unsafe { hypha_transform_check(name, 1, "b".as_ptr().cast(), 1, null(), 0) };
+        assert_eq!(no_transform, INVALID);
+    }
     hypha_node_default_waitset => |live| {
         assert_eq!(unsafe { hypha_node_default_waitset(null_mut(), &mut null_mut()) }, INVALID);
         assert_eq!(unsafe { hypha_node_default_waitset(live.node, null_mut()) }, INVALID);
@@ -565,6 +591,21 @@ static ROWS: &[Row] = rows! {
     }
     hypha_waitset_request_failure => |_live| {
         assert_eq!(unsafe { hypha_waitset_request_failure(null_mut()) }, INVALID);
+    }
+    hypha_waitset_timer_cancel => |_live| {
+        // SAFETY: a null `WaitSet` is the refused argument; nothing is dereferenced.
+        assert_eq!(unsafe { hypha_waitset_timer_cancel(null_mut(), 1) }, INVALID);
+    }
+    hypha_waitset_timer_reset => |_live| {
+        // SAFETY: as for `hypha_waitset_timer_cancel`.
+        assert_eq!(unsafe { hypha_waitset_timer_reset(null_mut(), 1) }, INVALID);
+    }
+    hypha_waitset_timer_state => |live| {
+        let mut state = HyphaTimerState { canceled: false, period_nanos: 0, until_due_nanos: 0 };
+        // SAFETY: a null `WaitSet` is the refused argument; `state` is a writable local.
+        assert_eq!(unsafe { hypha_waitset_timer_state(null(), 1, &raw mut state) }, INVALID);
+        // SAFETY: the `WaitSet` is live; a null `out` is the refused argument.
+        assert_eq!(unsafe { hypha_waitset_timer_state(live.waitset, 1, null_mut()) }, INVALID);
     }
 };
 

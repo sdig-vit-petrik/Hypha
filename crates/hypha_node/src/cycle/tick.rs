@@ -147,9 +147,14 @@ pub(crate) fn cycle_timer_tick(
     );
 
     // A replay step that lost samples is not faithful, so it fails, after its
-    // supervision and health are applied.
-    let fidelity = replay_cut_nanos
-        .map_or(Ok(()), |cut| report_replay_fidelity(inputs, input_options, runtime, cut));
+    // supervision and health are applied. Outside the lockstep nothing paces the inputs,
+    // and a loss is only warned of, as in a ROS playback.
+    let fidelity = match (replay_cut_nanos, replay_losses(timing, set)) {
+        (Some(cut), Some(losses)) => {
+            report_replay_fidelity(inputs, input_options, runtime, cut, losses)
+        }
+        _ => Ok(()),
+    };
     if step_outcome.answer.is_some() {
         apply_rejections(cycle_name, inputs, &state.port_names, runtime, supervision);
         apply_supervision(&state.input_rows, &state.input_options, runtime, supervision);
@@ -198,7 +203,7 @@ fn run_step(
     // The TF inputs take the transforms of this capture before the step looks them up.
     for input in state.transforms.iter_mut() {
         input
-            .ingest(state.cycle_name, captures, time.replay_cut_nanos.is_some())
+            .ingest(state.cycle_name, captures, replay_losses(time, state.waitset))
             .map_err(|status| status as i32)?;
     }
     let mut emission =
@@ -343,8 +348,8 @@ fn log_judgement_events(
     }
 }
 
-/// Report the replay losses of one finished step, one error per topic, and fail
-/// the step when it lost any sample.
+/// Report the replay losses of one finished step, one line per topic, and fail
+/// the step when it lost any sample and `losses` says so.
 ///
 /// A transport sequence gap counts once per source, however many cycles read it. The
 /// failure does not wait for the rate-limited log line.
@@ -353,6 +358,7 @@ fn report_replay_fidelity(
     input_options: &[super::types::HyphaCycleBindingOptions],
     runtime: &CycleRuntime,
     cut_nanos: u64,
+    losses: Losses,
 ) -> Result<(), Error> {
     let now = Instant::now();
     let mut lost_any = false;
@@ -384,14 +390,34 @@ fn report_replay_fidelity(
         });
         drop(fidelity);
         lost_any |= new_losses > 0;
-        if let Some(text) = line {
-            log::error!(target: "hypha", "hypha: {text}");
+        match (line, losses) {
+            (Some(text), Losses::Fail) => log::error!(target: "hypha", "hypha: {text}"),
+            (Some(text), Losses::Warn) => {
+                log::warn!(target: "hypha", "hypha: {text}; outside the replay lockstep the run goes on");
+            }
+            (None, _) => {}
         }
         if let Some(text) = short_warning {
             log::warn!(target: "hypha", "hypha: {text}");
         }
     }
-    if lost_any { Err(Error::SequenceGap) } else { Ok(()) }
+    if lost_any && losses == Losses::Fail { Err(Error::SequenceGap) } else { Ok(()) }
+}
+
+/// What lost input samples do to the run of a step at `time` of a cycle of `set`: none
+/// for a step that is no replay step.
+fn replay_losses(time: CycleTime, set: &crate::waitset::HyphaWaitSet) -> Option<Losses> {
+    time.replay_cut_nanos?;
+    Some(if set.node().open_loop { Losses::Warn } else { Losses::Fail })
+}
+
+/// What a replay step's lost input samples do to its run.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Losses {
+    /// In the replay lockstep: the step is not faithful and fails the run.
+    Fail,
+    /// In an open-loop playback (`HYPHA_REPLAY_LOCKSTEP=0`): warned of.
+    Warn,
 }
 
 /// Warn, rate-limited per topic, when a replay step cannot admit samples stamped more

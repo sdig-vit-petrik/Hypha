@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(hypha_workspace VERSION 0.2.0 LANGUAGES CXX)
+project(hypha_workspace VERSION 0.3.0 LANGUAGES CXX)
 
 # An installed binary finds libhypha_ffi beside it. The build tree uses the
 # directories of the linked libraries, which CMake adds by itself.

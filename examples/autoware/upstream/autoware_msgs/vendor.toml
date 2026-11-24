@@ -1,0 +1,24 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/autowarefoundation/autoware_msgs"
+ref = "1.13.0"
+commit = "bb8e7bf5d97168663e0e7b357929e4fcdbd3a967"
+
+# Path here = SHA-256 of the file.
+[files]
+"LICENSE" = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+"NOTICE" = "39d83389aa0571fe17ec352e26650783aa711710a0a71112a2e960d51d9e5a1e"
+"autoware_perception_msgs/msg/DetectedObject.msg" = "11444ed93a5b3d1be21fe8472bdf661ed9e6cab46f974f2cc7d353defdb066ce"
+"autoware_perception_msgs/msg/DetectedObjectKinematics.msg" = "72ab462d30e2fc84dbab2501193fbb0d83ecfe54ce89305f5f024278d349f4c9"
+"autoware_perception_msgs/msg/DetectedObjects.msg" = "848051a59fd3e150d0028ba3cc7e93c94e0dd1d2e1835d073026139913200e76"
+"autoware_perception_msgs/msg/ObjectClassification.msg" = "f9f287e112c168ca26ac0626d60e005bd4547426a7c6c7effe5c5c088e4768bd"
+"autoware_perception_msgs/msg/Shape.msg" = "869b273ebc158b0ffab71ea4a923dd520de1f89d5e9ef3bbeed5bfd279dbeed0"
+"autoware_perception_msgs/msg/TrackedObject.msg" = "de2933b9cd818e7a987a33cb115969dde653fd18cd422bbbc5100f4c680375b7"
+"autoware_perception_msgs/msg/TrackedObjectKinematics.msg" = "aeb67b61d5ab2d5991ae13be6b1862e6282057a30431bfed8696f8a7a3b6ecaa"
+"autoware_perception_msgs/msg/TrackedObjects.msg" = "e3ae24a4bc2f200044be54f8f219504fa2e721f58b846c188b4ce38ed111251a"
+"autoware_perception_msgs/package.xml" = "6a2df2213f6c5f9d66a072c2bad4b153cb2542cf97b6cefdd598a272e871bbae"
+"autoware_sensing_msgs/msg/ConcatenatedPointCloudInfo.msg" = "5e8567f6fa799893f1b1486558f534d4c70a9c155064a56c524a9dcb7713b157"
+"autoware_sensing_msgs/msg/GnssInsOrientation.msg" = "7184574fca9a4470807f5368ae8e651d47468d0cfb288c4f1a47674bcc2c0111"
+"autoware_sensing_msgs/msg/GnssInsOrientationStamped.msg" = "fcd46b758af5cba0bc30b20e3172b4ccd8da27f1796b68004e32faf5932e6984"
+"autoware_sensing_msgs/msg/SourcePointCloudInfo.msg" = "d5d5e83562fc3b4ab678c4a26372a35f5da6620770c575e7a72841417827f66c"
+"autoware_sensing_msgs/package.xml" = "d00d0a9bfca446ec72201a19b9b2c407bdf735e9803ba14e1adaadeb0840c46e"

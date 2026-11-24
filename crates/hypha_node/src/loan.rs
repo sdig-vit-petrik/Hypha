@@ -22,14 +22,17 @@ pub struct HyphaLoan {
     transport_sent_nanos: Option<u64>,
     /// Set by `hypha_loan_send`. `None` stamps the framework clock.
     framework_sent_nanos: Option<u64>,
+    /// The publisher's node has left the bus once this is set: the loan is not sent.
+    node_left: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Borrow a frame of `payload_size` payload bytes from `publisher`. A pool with no free
 /// buffer drops the sample, which the subscribers count as lost.
 ///
 /// # Errors
-/// The transport's refusal, such as `PoolExhausted` or `TooLarge`; `InvalidState` for a
-/// loan whose payload is not exactly `payload_size` bytes.
+/// `InvalidState` once the publisher's node has left the bus, or for a loan whose payload
+/// is not exactly `payload_size` bytes; the transport's refusal, such as `PoolExhausted`
+/// or `TooLarge`.
 pub fn publisher_loan_frame(
     publisher: &HyphaPublisher,
     payload_size: usize,
@@ -42,11 +45,13 @@ pub fn publisher_loan_frame(
     Ok(held)
 }
 
-/// Send a filled loan. A negative `framework_sent_nanos` stamps the framework clock. The
+/// Send a filled loan. A negative `framework_sent_nanos` stamps framework time on this
+/// thread: the time of the step or the replayed callback that sends, else the clock. The
 /// loan is released whatever the result.
 ///
 /// # Errors
-/// The transport's error, or `InvalidState` for a clock that cannot be stamped.
+/// The transport's error; `InvalidState` for a clock that cannot be stamped, or once the
+/// publisher's node has left the bus, which sends nothing.
 pub fn loan_send(mut loan: HyphaLoan, framework_sent_nanos: i64) -> Result<(), Error> {
     if let Ok(nanos) = u64::try_from(framework_sent_nanos) {
         loan.stamp_framework_sent(nanos);
@@ -62,6 +67,9 @@ pub(crate) fn lend_frame(
     endpoint: &HyphaPublisher,
     payload_size: usize,
 ) -> Result<HyphaLoan, Error> {
+    if endpoint.node_left.load(Ordering::Acquire) {
+        return Err(Error::InvalidState);
+    }
     let loan = endpoint.port.loan(payload_size).map_err(Error::from)?;
     Ok(HyphaLoan {
         inner: Some(loan),
@@ -70,6 +78,7 @@ pub(crate) fn lend_frame(
         sequence_counter: Arc::clone(&endpoint.next_sequence),
         transport_sent_nanos: None,
         framework_sent_nanos: None,
+        node_left: Arc::clone(&endpoint.node_left),
     })
 }
 
@@ -87,13 +96,18 @@ pub(crate) fn lend_frame_or_gap(
 }
 
 /// Advance `counter` and return the number of the frame that takes it.
+///
+/// A compare-exchange loop, not `fetch_update`: newer Rust deprecates that name, and its
+/// successor `try_update` is newer than the minimum supported Rust.
 pub(crate) fn take_sequence(counter: &AtomicU64) -> u64 {
-    let previous = counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            Some(hypha_wire::integrity::next_sequence(current))
-        })
-        .unwrap_or_default();
-    hypha_wire::integrity::next_sequence(previous)
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = hypha_wire::integrity::next_sequence(current);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 impl HyphaLoan {
@@ -115,6 +129,9 @@ impl HyphaLoan {
     /// Stamp the frame, seal its header over the payload and send it. The loan is
     /// released whatever the result, and a send that fails leaves a gap.
     pub(crate) fn send_frame(mut self) -> Result<(), Error> {
+        if self.node_left.load(Ordering::Acquire) {
+            return Err(Error::InvalidState);
+        }
         let inner = self.inner.take().ok_or(Error::InvalidArgument)?;
         let sequence = take_sequence(&self.sequence_counter);
         let stamp = match self.transport_sent_nanos {
@@ -123,9 +140,12 @@ impl HyphaLoan {
                 u64::try_from(hypha_time::steady_now().nanos()).map_err(|_| Error::InvalidState)?
             }
         };
+        // Framework time on this thread: the time of the step or of the replayed callback
+        // that sends, else the clock.
         let framework_stamp = match self.framework_sent_nanos {
             Some(nanos) => nanos,
-            None => u64::try_from(hypha_time::now().nanos()).map_err(|_| Error::InvalidState)?,
+            None => u64::try_from(hypha_time::framework_now().nanos())
+                .map_err(|_| Error::InvalidState)?,
         };
         let metadata = FrameMetadata {
             schema_hash: self.schema_hash,

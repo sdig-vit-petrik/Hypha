@@ -17,6 +17,7 @@
 //! ```
 
 pub mod emit_cpp;
+pub mod emit_ros2;
 pub mod emit_rust;
 pub mod naming;
 

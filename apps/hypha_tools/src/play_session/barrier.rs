@@ -1,9 +1,10 @@
 //! The `/clock` barrier: participant reports, the clock sample, and the wait for acknowledgements.
 
+use super::waiting::AckWait;
 use super::{CLOCK_RESEND_INTERVAL, CLOCK_TOPIC, CONTROL_POLL_INTERVAL, Flow, Session, reports};
 use crate::replay_sync;
 use crate::replay_sync::PROGRESS_TOPIC;
-use hypha_node::sdk::clock_barrier::{first_silent, unacknowledged};
+use hypha_node::sdk::clock_barrier::unacknowledged;
 use std::time::{Duration, Instant};
 
 impl Session<'_> {
@@ -70,7 +71,8 @@ impl Session<'_> {
 
     /// Waits until every participant has answered a `/clock` sample for `log_time` sent at or
     /// after `floor`, with its clock at or beyond `log_time`. While it waits the sample is sent
-    /// again, and a participant that stays quiet for the timeout stops the replay.
+    /// again, a wait longer than a second names the nodes it waits for, and a participant whose
+    /// clock does not rise for the timeout, quiet or not, stops the replay with their names.
     pub(super) fn await_acks(
         &mut self,
         log_time: u64,
@@ -80,6 +82,7 @@ impl Session<'_> {
         let required = self.participants.names();
         let started = Instant::now();
         let mut last_send = started;
+        let mut wait = AckWait::new(log_time, started);
         // Each participant's first answer, as this loop saw it, for the rate report.
         let mut first_acks: Vec<(String, Instant)> = Vec::new();
         loop {
@@ -98,17 +101,14 @@ impl Session<'_> {
                 self.report.record_barrier(sent_at, &first_acks);
                 return Ok(Flow::Go);
             }
+            wait.observe(&self.participants, &pending, now);
+            // Named first, so a timeout as short as the notice time still shows the wait.
+            if let Some(line) = wait.notice(&self.participants, &pending, now) {
+                eprintln!("{line}");
+            }
             let timeout = self.config.sync.timeout;
-            if let Some(silent) = first_silent(&self.participants, &pending, started, now, timeout)
-            {
-                let last = silent.last_clock_nanos.map_or_else(
-                    || "it never reported".to_string(),
-                    |nanos| format!("its last clock was {nanos} ns"),
-                );
-                return Err(format!(
-                    "hypha play: replay participant '{}' stopped reporting: {last}; no progress for {timeout:?}",
-                    silent.node
-                ));
+            if let Some(message) = wait.give_up(&self.participants, &pending, now, timeout) {
+                return Err(message);
             }
             if now.saturating_duration_since(last_send) >= CLOCK_RESEND_INTERVAL {
                 self.publish_clock_frame(log_time)?;
@@ -119,8 +119,13 @@ impl Session<'_> {
         }
     }
 
-    /// Sends `/clock` for `log_time` and waits for every participant to answer it.
+    /// Sends `/clock` for `log_time` and, in the lockstep, waits for every participant to
+    /// answer it. An open-loop playback sends it and goes on.
     pub(super) fn barrier(&mut self, log_time: u64) -> Result<Flow, String> {
+        if !self.in_lockstep() {
+            self.publish_clock_frame(log_time)?;
+            return Ok(Flow::Go);
+        }
         let sent_at = Instant::now();
         let floor = self.send_clock(log_time)?;
         self.await_acks(log_time, floor, sent_at)

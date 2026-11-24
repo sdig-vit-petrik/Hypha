@@ -35,16 +35,27 @@ enum Policy {
     Withhold(Duration),
     /// Only the first `after` answers are sent, then the node goes quiet.
     Silent { after: usize },
+    /// The first `after` answers are full; every later sample is answered with the clock
+    /// of the last full one, as a node that holds a deadline for an upstream reports.
+    Hold { after: usize },
 }
 
 impl Policy {
     fn answers(self, first_seen: Option<Instant>, answered: usize, now: Instant) -> bool {
         match self {
-            Self::Always => true,
+            Self::Always | Self::Hold { .. } => true,
             Self::Withhold(delay) => {
                 first_seen.is_some_and(|seen| now.saturating_duration_since(seen) >= delay)
             }
             Self::Silent { after } => answered < after,
+        }
+    }
+
+    /// The clock value an answer to `sample` reports, given the last one reported.
+    fn clock_of(self, sample: ClockSample, answered: usize, last: Option<u64>) -> u64 {
+        match (self, last) {
+            (Self::Hold { after }, Some(last)) if answered >= after => last,
+            _ => sample.nanos,
         }
     }
 }
@@ -144,6 +155,7 @@ fn serve(
     let mut trace = Trace::default();
     let mut first_seen = None;
     let mut answered = 0_usize;
+    let mut last_reported = None;
     let status = loop {
         let exited = child.try_wait().expect("the child status");
         drain_data(data, &mut trace);
@@ -159,7 +171,9 @@ fn serve(
                     answered > 0 || trace.data.is_empty(),
                     "a message went out before any participant answered the clock"
                 );
-                responder.answer(newest);
+                let nanos = policy.clock_of(newest, answered, last_reported);
+                responder.answer(ClockSample { nanos, ..newest });
+                last_reported = Some(nanos);
                 answered = answered.saturating_add(1);
             }
         }
@@ -303,6 +317,35 @@ fn a_participant_that_goes_quiet_stops_the_replay_and_is_named() {
     assert!(!status.success(), "a silent participant must fail the replay");
     assert!(stderr.contains(PARTICIPANT), "the error names the participant: {stderr}");
     assert!(stderr.contains("stopped reporting"), "the error says why: {stderr}");
+    assert!(stderr.contains("HYPHA_REPLAY_LOCKSTEP=0"), "the error names the open loop: {stderr}");
+    let notice = format!("waiting for '{PARTICIPANT}'");
+    assert!(stderr.contains(&notice), "the wait was named before the end: {stderr}");
+}
+
+#[test]
+fn a_participant_that_reports_but_never_advances_stops_the_replay_and_is_named() {
+    let start = start_nanos();
+    let path = recording_path("held");
+    write_recording(&path, start, &MESSAGES);
+
+    let bus = BusNode::new(PARTICIPANT).expect("the participant's bus");
+    let (_opener, mut data) = open_data(&bus);
+    let mut responder = Responder::new(&bus, PARTICIPANT);
+    let mut child =
+        spawn_player(&path, &["--nodes", PARTICIPANT, "--rate", "max", "--timeout", "1"]);
+
+    // Every resent /clock is answered, but with the clock of the second answer: the node
+    // is never quiet, and never reaches the chunk.
+    let run = serve(&mut child, &mut responder, &mut data, Policy::Hold { after: 2 }, |_| false);
+    let status = run.status.expect("the child exits");
+    let mut stderr = String::new();
+    child.stderr.take().expect("stderr").read_to_string(&mut stderr).expect("stderr text");
+    std::fs::remove_file(&path).expect("remove the recording");
+
+    assert!(!status.success(), "a participant that never advances must fail the replay");
+    assert!(stderr.contains(PARTICIPANT), "the error names the participant: {stderr}");
+    assert!(stderr.contains("does not advance"), "the error says why: {stderr}");
+    assert!(stderr.contains("HYPHA_REPLAY_LOCKSTEP=0"), "the error names the open loop: {stderr}");
 }
 
 #[test]
@@ -488,4 +531,100 @@ fn a_window_that_ends_off_the_chunk_grid_ends_the_clock_at_its_end() {
         [0, 100, 200, 300, 400, 450].iter().map(|ms| at(start, *ms)).collect();
     assert_eq!(clock_values(&run.trace), boundaries);
     assert_message_order(&run.trace, &messages_at(start));
+}
+
+/// Starts an open-loop player (`HYPHA_REPLAY_LOCKSTEP=0`) with `--clock`.
+fn spawn_open_loop_player(path: &Path, extra: &[&str]) -> Child {
+    Command::new(env!("CARGO_BIN_EXE_hypha"))
+        .env("HYPHA_REPLAY_LOCKSTEP", "0")
+        .arg("play")
+        .arg("--input")
+        .arg(path)
+        .args(["--clock", "--start-utc", START])
+        .args(extra)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("hypha_play")
+}
+
+/// The participant's data subscriber, on a topic this test opens first: a subscriber
+/// that declares no policy never creates it.
+fn open_data(bus: &BusNode) -> (hypha_node::sdk::RawPublisher, RawSubscriber) {
+    let data_md5 =
+        hypha_node::sdk::md5::md5_from_definition("std_msgs/UInt8", "uint8 data\n").expect("MD5");
+    let opener = bus
+        .publish_raw(DATA_TOPIC, "std_msgs/UInt8", &data_md5, "uint8 data\n")
+        .expect("the data topic's opener");
+    let data = bus
+        .subscribe_raw_with_schema(
+            DATA_TOPIC,
+            "std_msgs/UInt8",
+            "",
+            hypha_node::sdk::SubscriberOptions::default().keeping(8),
+        )
+        .expect("a data subscriber");
+    (opener, data)
+}
+
+#[test]
+fn an_open_loop_replay_does_not_wait_for_a_participant_that_never_answers() {
+    let start = start_nanos();
+    let path = recording_path("open_loop");
+    write_recording(&path, start, &MESSAGES);
+
+    let bus = BusNode::new(PARTICIPANT).expect("the participant's bus");
+    let (_opener, mut data) = open_data(&bus);
+    let mut responder = Responder::new(&bus, PARTICIPANT);
+    let mut child = spawn_open_loop_player(&path, &["--rate", "20"]);
+
+    let run = serve(&mut child, &mut responder, &mut data, Policy::Silent { after: 0 }, |_| false);
+    let status = run.status.expect("the child exits");
+    std::fs::remove_file(&path).expect("remove the recording");
+    assert!(status.success(), "an open-loop replay waits for no answer");
+    let boundaries: Vec<u64> =
+        [0, 100, 200, 300, 400, 500].iter().map(|ms| at(start, *ms)).collect();
+    assert_eq!(clock_values(&run.trace), boundaries, "one /clock per chunk, sent once each");
+    assert_eq!(run.trace.clocks.len(), boundaries.len(), "no /clock is sent again");
+    assert_message_order(&run.trace, &messages_at(start));
+}
+
+#[test]
+fn an_open_loop_loop_sends_the_clock_back_without_waiting_for_a_restart() {
+    let start = start_nanos();
+    let path = recording_path("open_loop_loop");
+    write_recording(&path, start, &MESSAGES);
+
+    let bus = BusNode::new(PARTICIPANT).expect("the participant's bus");
+    let (_opener, mut data) = open_data(&bus);
+    let mut responder = Responder::new(&bus, PARTICIPANT);
+    let mut child = spawn_open_loop_player(&path, &["--rate", "20", "--loop"]);
+
+    let wanted = 2 * MESSAGES.len();
+    let run = serve(&mut child, &mut responder, &mut data, Policy::Silent { after: 0 }, |trace| {
+        trace.data.len() >= wanted
+    });
+    assert!(run.status.is_none(), "the loop keeps playing until stopped");
+    let _ = child.kill();
+    let _ = child.wait();
+    std::fs::remove_file(&path).expect("remove the recording");
+
+    let values = clock_values(&run.trace);
+    let tail = values.iter().position(|nanos| *nanos == at(start, 500)).expect("a tail clock");
+    assert_eq!(values.get(tail + 1), Some(&start), "the next pass starts with the clock back");
+    let values: Vec<u8> = run.trace.data.iter().map(|(value, _)| *value).collect();
+    assert_eq!(values.get(..wanted), Some(&[1, 2, 3, 4, 1, 2, 3, 4][..]), "two passes went out");
+}
+
+#[test]
+fn an_open_loop_replay_refuses_rate_max() {
+    let path = recording_path("open_loop_max");
+    write_recording(&path, start_nanos(), &MESSAGES);
+    let mut child = spawn_open_loop_player(&path, &["--rate", "max"]);
+    let status = child.wait().expect("the child exits");
+    let mut stderr = String::new();
+    child.stderr.take().expect("stderr").read_to_string(&mut stderr).expect("stderr text");
+    std::fs::remove_file(&path).expect("remove the recording");
+    assert!(!status.success(), "nothing would pace an open-loop replay at max");
+    assert!(stderr.contains("--rate max"), "the refusal names the flag: {stderr}");
 }

@@ -1,6 +1,7 @@
 //! Simulated time going back ends the process; nothing rewinds in place.
 //!
-//! A rewound timer or cycle ends its run with `ClockRewound`; `hypha_launch` restarts
+//! A `/clock` sample lower than the node's last one, and a rewound timer or cycle, end
+//! the run with `ClockRewound`; `hypha launch` restarts
 //! the process, which waits on its first node ([`rejoin`]) for a `/clock` sample of the
 //! new timeline before it opens any port of its own.
 
@@ -24,6 +25,12 @@ static RESTART: RestartState = RestartState::new();
 /// Refuse a rewind of simulated time to `now_nanos` seen by `subject` (a cycle or a timer).
 pub(crate) fn refuse_rewind(subject: &str, now_nanos: i64) -> HyphaStatus {
     log::error!(target: "hypha", "hypha: {subject} saw simulated time go back to {now_nanos} ns: a running cycle never rewinds; the process exits 75 for a backward seek");
+    HyphaStatus::ClockRewound
+}
+
+/// Refuse a `/clock` sample of `to_nanos` that `node` read after it applied `from_nanos`.
+pub(crate) fn refuse_clock_rewind(node: &str, from_nanos: u64, to_nanos: u64) -> HyphaStatus {
+    log::error!(target: "hypha", "hypha: '{node}' saw /clock go back from {from_nanos} ns to {to_nanos} ns: nothing rewinds in place; the process exits 75 for a backward seek");
     HyphaStatus::ClockRewound
 }
 

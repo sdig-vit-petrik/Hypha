@@ -4,18 +4,18 @@
 // ros1_codec_golden.h were produced from these builders, so a test that encodes a builder
 // and compares against the golden array proves the wire bytes did not move.
 
-#include <hypha_msgs/geometry_msgs/PoseWithCovariance.h>
-#include <hypha_msgs/geometry_msgs/Twist.h>
-#include <hypha_msgs/geometry_msgs/TwistStamped.h>
-#include <hypha_msgs/geometry_msgs/TwistWithCovariance.h>
-#include <hypha_msgs/nav_msgs/Odometry.h>
-#include <hypha_msgs/sensor_msgs/Imu.h>
-#include <hypha_msgs/sensor_msgs/JointState.h>
-#include <hypha_msgs/std_msgs/Bool.h>
-#include <hypha_msgs/std_msgs/Duration.h>
-#include <hypha_msgs/std_msgs/Empty.h>
-#include <hypha_msgs/std_msgs/Float64MultiArray.h>
-#include <hypha_msgs/std_msgs/Header.h>
+#include <geometry_msgs/PoseWithCovariance.h>
+#include <geometry_msgs/Twist.h>
+#include <geometry_msgs/TwistStamped.h>
+#include <geometry_msgs/TwistWithCovariance.h>
+#include <nav_msgs/Odometry.h>
+#include <sensor_msgs/Imu.h>
+#include <sensor_msgs/JointState.h>
+#include <std_msgs/Bool.h>
+#include <std_msgs/Duration.h>
+#include <std_msgs/Empty.h>
+#include <std_msgs/Float64MultiArray.h>
+#include <std_msgs/Header.h>
 
 #include <array>
 #include <cstdint>

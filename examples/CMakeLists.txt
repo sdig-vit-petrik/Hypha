@@ -17,9 +17,11 @@ add_subdirectory(sim_twin)
 add_subdirectory(sensor_fusion)
 add_subdirectory(sensor_pipeline)
 
-# The MRS port needs Eigen and builds vendored upstream code, so it builds only
-# against an installed SDK (examples/check.sh), not inside the framework build.
+# The MRS and Autoware ports need Eigen (Autoware also GoogleTest) and build vendored
+# upstream code, so they build only against an installed SDK (examples/check.sh), not
+# inside the framework build.
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   enable_testing()
   add_subdirectory(mrs)
+  add_subdirectory(autoware)
 endif()

@@ -321,12 +321,12 @@ fn reclaim_dead_nodes(
                 if own_run {
                     log::error!(target: "hypha/transport", "hypha: node '{}' cannot reclaim its own dead run, of pid {pid}: \
                              {cause:?}; the run still holds the name's ports, so the node does not start. Run \
-                             `./clean-shm.sh` with the domain stopped", node_name.as_str());
+                             `hypha clean` with the domain stopped", node_name.as_str());
                     return Err(PortError::Backend(BACKEND_RECLAIM_FAILED));
                 }
                 log::error!(target: "hypha/transport", "hypha: node '{}' cannot reclaim the dead node '{dead_name}' of pid \
-                         {pid}: {cause:?}; it stays listed as dead and holds its ports until `./clean-shm.sh` \
-                         wipes the stopped domain", node_name.as_str());
+                         {pid}: {cause:?}; it stays listed as dead and holds its ports until `hypha clean` \
+                         removes the stopped domain", node_name.as_str());
             }
         }
     }
@@ -415,7 +415,7 @@ fn open_data_service(
     };
     let Ok(stamped) = qos::policy_of_service(service.attributes()) else {
         log::error!(target: "hypha/transport", "hypha_iceoryx2: data service '{}' names no QoS policy of this hypha build \
-                 in its attribute {}: another hypha build or a stale segment made it (run `./clean-shm.sh` \
+                 in its attribute {}: another hypha build or a stale segment made it (run `hypha clean` \
                  with the domain stopped)", service_name.as_str(), qos::QOS_ATTRIBUTE);
         return Err(PortError::QosMismatch);
     };

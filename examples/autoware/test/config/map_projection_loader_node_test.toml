@@ -1,0 +1,4 @@
+# autoware_map_projection_loader_node_test: the node with upstream's local Cartesian UTM
+# test data, and no Lanelet2 map.
+map_projector_info_path = "upstream/autoware_core/map/autoware_map_projection_loader/test/data/map_projector_info_local_cartesian_utm.yaml"
+lanelet2_map_path = ""

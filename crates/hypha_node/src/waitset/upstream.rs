@@ -41,11 +41,15 @@ impl UpstreamHold {
         inputs: &[Arc<CycleInputSource>],
         node: &HyphaNode,
     ) -> Result<Limit, Error> {
-        self.input_ids.clear();
+        let mut subscribers = Vec::with_capacity(inputs.len());
         for source in inputs {
             if let Some(subscriber) = input_subscriber(source)? {
-                subscriber.port.publisher_node_ids(&mut self.input_ids);
+                subscribers.push(subscriber);
             }
+        }
+        self.input_ids.clear();
+        for subscriber in subscribers {
+            subscriber.port.publisher_node_ids(&mut self.input_ids);
         }
         self.input_ids.sort_unstable();
         self.input_ids.dedup();

@@ -1,0 +1,23 @@
+# The Applanix driver's outputs from the bag's recorded GSOF 49 and 50: the driver's own
+# parameter values (config/lvx_client_params.param.yaml of autoware/applanix) and topics.
+# The fix is in gnss_ins_link, the INS mount on the bag's /tf_static, where the driver's
+# default child frame POS_REF is not on the tree; the poser then applies the lever arm.
+child_frame = "gnss_ins_link"
+base_frame_id = "base_link"
+gnss_ins_frame_id = "gnss_ins_link"
+enable_ned2enu_transform = true
+
+[ports.inputs."gsof.ins_solution_49"]
+topic = "/lvx_client/gsof/ins_solution_49"
+
+[ports.inputs."gsof.ins_solution_rms_50"]
+topic = "/lvx_client/gsof/ins_solution_rms_50"
+
+[ports.outputs."gnss.fix"]
+topic = "/applanix/lvx_client/gnss/fix"
+
+[ports.outputs.autoware_orientation]
+topic = "/applanix/lvx_client/autoware_orientation"
+
+[ports.outputs.twist_with_covariance]
+topic = "/applanix/lvx_client/twist_with_covariance"

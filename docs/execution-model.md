@@ -88,9 +88,13 @@ Consequences you must plan for:
   a topic and never runs the executor reports the usage error once per
   publisher as one log line. Readers see the topic as undescribed until the
   publishing loop runs the executor.
-- **Attachments freeze during a run.** Create every subscription and timer
+- **Attachments freeze during a run.** Create every subscription and cycle
   before you call `run()`. A subscription created during a run is refused
-  with `InvalidState`.
+  with `InvalidState`. A timer is the exception: a callback may create one when
+  the node runs on host time or on its own simulated clock, and it joins before
+  the run next waits. On a simulated clock the node does not own, it is refused.
+  A callback may also cancel and reset a timer (`Timer::cancel()`,
+  `Timer::reset()`; [cpp-api.md](cpp-api.md) section 3).
 - **One `WaitSet` has one thread.** Two `WaitSet`s may run at the same time on
   two threads you created. Their callbacks then run concurrently with each
   other, so shared state needs your own synchronisation.
@@ -515,7 +519,7 @@ neither, or whose trigger has no positive silence limit is refused at start with
    comes. It reports at most the lowest clock its upstreams reported, and stays
    below its earliest pending trigger or fallback. A feedback loop made only of
    triggered cycles has no delay element: it holds for good, until the player's
-   `--timeout` or a stop ends it. A loop needs a delay element, a rate cycle or a clock driver, as an
+   `--timeout` ends it with an error that names the loop's nodes, or a stop does. A loop needs a delay element, a rate cycle or a clock driver, as an
    algebraic loop does in any block-diagram tool.
 
 ### 6.7 The TF input
@@ -532,12 +536,18 @@ below the C ABI, that the step looks up with explicit results and never waits on
    `InvalidFrame`. A transform the buffer refuses (a rotation that is not a unit
    quaternion, a non-finite value, a second parent for a frame, a cycle, a frame both
    static and dynamic, a header stamp whose `nsecs` reaches one second) is left out and
-   logged, at most once a second per TF input with the count.
+   logged, at most once a second per TF input with the count. Every refusal is counted
+   for good in the node metric `tf.refused` (`tf.undecodable` for a message that does
+   not decode), and the input keeps the last refusal of each frame until a transform of
+   that frame is kept again.
 2. **Lookups.** A lookup names a target, a source and a time, or asks for the latest
    time common to every transform on the chain (C ABI `latest`, C++ `lookupLatest`).
    Time 0 is a time like any other, since simulated time may start there. Unknown frame, frames not connected, time
    before the buffer and time after it are distinct results; an empty name is refused
-   and one leading `/` is dropped. A policy such as "at the stamp, else the newest" is
+   and one leading `/` is dropped. A lookup that fails as unknown frame, not connected
+   or after the buffer while a frame on its chain (the target, the source or a frame
+   above either) has a refused newest transform answers `Refused` instead (#123): the
+   producer is broken, not late. A policy such as "at the stamp, else the newest" is
    the application's (MRS keeps it in its `Transformer`).
 3. **A clock that goes back.** The cycle ends its run with `ClockRewound` and the
    process restarts (section 11.1), so the buffer starts empty in the new process.
@@ -817,21 +827,26 @@ host:
   nodes between runs.
 - **Nothing rewinds in place.** When simulated time goes back under any timer or
   cycle of a `WaitSet`, the run ends with `ClockRewound` and logs the timer or cycle and
-  the new time; `runNode` restarts the process. A backward seek of `hypha play` restarts
+  the new time; `runNode` restarts the process. A node that follows `/clock` also checks
+  `/clock` itself, whatever its `WaitSet` holds and in the open loop too: a sample lower
+  than the last one it applied is not applied, the run ends with `ClockRewound`, and the
+  node logs `hypha: '<node>' saw /clock go back from <a> ns to <b> ns`. A node with only
+  subscriptions therefore restarts as well (#130). A CLI tool (`_hyphacli_<tool>`) follows
+  the clock back. A backward seek of `hypha play` restarts
   the process: `hypha::runNode` exits 75, `hypha launch` starts it again, and it rejoins on the next `/clock`
   (`replay-flow-control.md`, section 4.4). The new process anchors its grid on
   its first clock value, so a pass that starts again runs on the same phase as
-  the first one. A plain timer (`Node::timer`) is not a cycle: it restarts one
-  period after the new time.
-- **Plain timers are unchanged.** A `Node::timer` callback has no time argument,
-  so under simulated time it still fires once per sweep and counts the missed
-  periods.
+  the first one. A plain timer (`Node::timer`) is not a cycle: it starts one
+  period after the first clock value of the new process.
+- **Plain timers.** A plain timer is not a replay cycle: on simulated time it
+  fires once per sweep against the clock and counts the missed periods (section 11.2).
 
 A replay is faithful when no sample it should have read was lost. A loss is one
 of two things: a transport overflow, which shows as a sequence gap, or a history
 eviction that a cursor had not read. A step that has a new loss on an
 input (queued or latest) fails, and the `WaitSet` run that holds it fails with
-`SequenceGap`. The node logs `replay not faithful: N samples lost on <topic>` at
+`SequenceGap`; in the open loop (section 11.2) the loss is counted and warned of,
+and the run goes on. The node logs `replay not faithful: N samples lost on <topic>` at
 error level, at most once per topic per second, and a repeated loss is summed
 into the next line. The binding's losses also count in its `overrun_total`.
 While a latest binding in host time counts neither its transport gaps nor its history
@@ -857,6 +872,43 @@ for one chunk of an input's samples (`replay-flow-control.md`, section 6.7). A r
 `--rate` is only as faithful as the host keeps up.
 
 ---
+
+### 11.2 Plain callbacks in a replay
+
+The replay lockstep runs cycles only: rate cycles (section 11.1) and triggered cycles
+(section 6.6) are held for their upstream nodes, run in time order and reported on
+`/clock_progress`. A plain subscription or a plain `Node::timer` takes no part (#153):
+
+- **When it runs.** A plain callback runs as its sample arrives, with framework time
+  the clock. A plain timer is due against `/clock`, fires once per turn and counts the
+  periods it missed, as on host time (section 11). It is not held for any node, and
+  the player does not wait for it.
+- **Progress.** A plain callback reports nothing. A node opens its `/clock_progress`
+  publisher when it commits its first cycle, so a node with only plain callbacks is
+  neither waited for by the player nor an upstream of any cycle: a cycle that reads
+  its output runs its deadlines as the clock reaches them. Its replay is not
+  deterministic. A framework timer, such as the 1 s `~/state` timer of `runNode`, is
+  a plain timer and takes no part either.
+- **Rewind.** A node on simulated time that reads a `/clock` lower than its last one
+  ends its run with `ClockRewound`, whatever its `WaitSet` holds (#130, section 11.1).
+- **Two modes.** A replay has two modes and one switch. The lockstep is the default.
+  `HYPHA_REPLAY_LOCKSTEP=0`, set for the whole launch, is the open loop: every node on
+  simulated time follows `/clock` as a ROS node follows `ros2 bag play`, reports no
+  progress and is waited for by no one; its replay cycles run one step per deadline
+  but hold no deadline for an upstream node, and a replay input that lost samples is
+  logged as a warning instead of failing the run (`replay-flow-control.md` §4.6).
+  `HYPHA_USE_SIM_TIME=follow` is refused: no node of a launch leaves the lockstep
+  alone. A system that needs a deterministic replay is built from cycles; one that
+  cannot be, such as a port of ROS nodes, plays in the open loop.
+
+### 11.3 Design note: one execution model for cycles and plain callbacks (#136)
+
+Closed by the owner's decision of 2026-11-24 (#153): the lockstep's contract is rate
+and triggered cycles, and plain callbacks leave it. The second set of replay rules for
+callbacks (`waitset/callback_events.rs`, #72) is gone, so the duplication the note
+described no longer exists, and no scheduler core is shared. State inputs (#103) are
+not planned. A plain subscription has no supervision; an event-driven node that needs
+verdicts or a deterministic replay becomes a triggered cycle (#138).
 
 ## 12. One subscriber, one delivery style
 
@@ -885,7 +937,9 @@ attach returns `InvalidState` until the first registration is detached or its
 - **Nothing progresses until you run a `WaitSet`.** Schema queries go
   unanswered and latched topics are not replayed until then. A node that only
   publishes still needs a run for its housekeeping.
-- **You cannot subscribe during a run.** Attachments freeze at run entry.
+- **You cannot subscribe during a run.** Attachments freeze at run entry; only a
+  timer on host time or on the node's own simulated clock may be created from a
+  callback.
 - A wildcard subscription runs about 1000 times a second whether or not data
   arrived: a pattern has no event service, so it is polled. See section 8.
 - A publisher or an output writes `header.seq` and nothing else. hypha does not write
@@ -894,7 +948,8 @@ attach returns `InvalidState` until the first registration is detached or its
   the conversion.
 - A raw callback's bytes are gone after the callback returns.
 - A timer that fell behind does not catch up with a burst. A cycle on
-  simulated time runs each expired deadline (section 11.1).
+  simulated time runs each expired deadline (section 11.1); a plain timer does not
+  (section 11.2).
 - A loop of triggered cycles alone fails with `Timeout` under simulated time. Put
   a rate cycle in the loop (section 6.6).
 - A callback that throws does not reach `main`. The run counts it as a

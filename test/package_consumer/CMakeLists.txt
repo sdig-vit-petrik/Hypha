@@ -17,7 +17,15 @@ endif()
 # property under test.
 hypha_generate_messages(PACKAGE consumer_msgs
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msgs/consumer_msgs"
+  SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/srvs/consumer_msgs"
   DEPENDS std_msgs)
 
-add_executable(hypha_package_consumer main.cpp)
-target_link_libraries(hypha_package_consumer PRIVATE hypha::sdk consumer_msgs)
+# ROS 2 names for a standard package, one it reaches and the application's own, so that
+# ros2_style.cpp includes nothing but ROS 2 paths.
+hypha_generate_ros2_headers(consumer_ros2_headers
+  PACKAGES std_msgs geometry_msgs consumer_msgs)
+
+# short_namespace.cpp uses only hy::, own_global_hy.cpp opts out of it beside a hy of its own.
+add_executable(hypha_package_consumer main.cpp ros2_style.cpp short_namespace.cpp
+  own_global_hy.cpp)
+target_link_libraries(hypha_package_consumer PRIVATE hypha::sdk consumer_msgs consumer_ros2_headers)

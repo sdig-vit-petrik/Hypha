@@ -1018,10 +1018,10 @@ fn draw_help_tab(f: &mut Frame<'_>, area: Rect) {
         help_line("[PgUp/PgDn/Home/End]", "Page through topic or node lists; jump to the ends"),
         help_line("[Space]", "Pause / Resume live rate calculations"),
         help_line("[Esc]", "Clear search filter"),
-        help_line("[q] / [Ctrl+C]", "Quit hypha_top cleanly"),
+        help_line("[q] / [Ctrl+C]", "Quit hypha top cleanly"),
         Line::raw(""),
         Line::styled(
-            " Intercept tab (drives a running hypha_intercept): ",
+            " Intercept tab (drives a running hypha intercept): ",
             Style::default().fg(FG).add_modifier(Modifier::BOLD),
         ),
         help_line("[Tab] / [Shift+Tab]", "Next / previous pane: list, fields, override"),

@@ -43,7 +43,9 @@ impl RunDriver for NativeRun<'_> {
             };
         };
         IN_DISPATCH.with(|active| active.set(true));
-        set.shared.set_run_owner(Some(std::thread::current().id()));
+        if let Ok(mut attaches) = set.run_attaches.try_borrow_mut() {
+            attaches.held = registrations.len();
+        }
         let due = Vec::with_capacity(registrations.len());
         let mut dispatcher = CallbackDispatcher {
             registrations: &mut registrations,
@@ -67,13 +69,17 @@ impl RunDriver for NativeRun<'_> {
         self.slow_callbacks = dispatcher.slow_callbacks;
         self.callback_failure = dispatcher.failure;
         drop(dispatcher);
+        // A timer a callback attached after the last wait joins for the next run, before
+        // the deferred detaches, which may name it.
+        if let Ok(mut attaches) = set.run_attaches.try_borrow_mut() {
+            registrations.append(&mut attaches.pending);
+        }
         drop(registrations);
         drop(cycles);
         drop(native);
         // Still inside the run, so a release that tries to run it again is refused as a
         // nested run.
         super::registrations::finish_deferred_detaches(set);
-        set.shared.set_run_owner(None);
         IN_DISPATCH.with(|active| active.set(false));
         report
     }
@@ -83,7 +89,8 @@ impl RunDriver for NativeRun<'_> {
 /// host time. A completed run returns its report, even when the run itself failed.
 ///
 /// # Errors
-/// `InvalidState` for a run inside a run, or beside one on another thread.
+/// `InvalidState` for a run inside a run, or while another thread is inside a call or a
+/// run on `set`.
 pub fn waitset_run(
     set: &HyphaWaitSet,
     limit: Option<Duration>,
@@ -91,6 +98,8 @@ pub fn waitset_run(
     if in_dispatch() {
         return Err(Error::InvalidState);
     }
+    // Held for the whole run: a call or a run another thread starts meanwhile is refused.
+    let _claim = set.shared.claim()?;
     let mut driver = NativeRun { set, slow_callbacks: 0, callback_failure: None };
     let report =
         set.shared.running.run(set.limits, limit, &mut driver).map_err(|_| Error::InvalidState)?;

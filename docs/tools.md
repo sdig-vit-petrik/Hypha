@@ -1,16 +1,21 @@
 # Command-line tools
 
-Nine tools ship with hypha, as one executable: `hypha <tool>` with the tools
-`topic`, `top`, `node`, `record`, `play`, `intercept`, `foxglove`, `launch` and
-`param`; `hypha --help` lists them. The installation also links each old name
-(`hypha_topic`, `hypha_play`, ..., `hypha_foxglove_bridge` for `hypha foxglove`)
-to `hypha`, and a start under such a name runs that tool, so `hypha_play --input
-run.mcap` and `hypha play --input run.mcap` are the same command. Messages name
-the tool as `hypha play: ...`. `hypha_ros_bridge` and `hypha_msggen` stay
-executables of their own.
+Eleven tools ship with hypha, as one executable: `hypha <tool>` with the tools
+`topic`, `top`, `node`, `record`, `play`, `convert`, `intercept`, `foxglove`, `launch`,
+`param` and `clean`; `hypha --help` lists them. Two shorter names run the same
+executable. `hy` is `hypha`: `hy play --input run.mcap` is `hypha play --input
+run.mcap`. Each tool has a link of its own, `hy<tool>`: `hytopic`, `hytop`,
+`hynode`, `hyrecord`, `hyplay`, `hyconvert`, `hyintercept`, `hyfoxglove`, `hylaunch`,
+`hyparam` and `hyclean`, so `hyplay --input run.mcap` is the same command again. The
+installation makes `hy` and these links; the old names `hypha_<tool>` are gone.
+Usage and messages name the tool as `hypha play: ...` whatever name started it. In
+CMake, `hypha::<tool>` (`hypha::topic`, ...) runs a tool's link. `hypha_ros_bridge`
+and `hypha_msggen` stay executables of their own.
 
 The tools are ordinary bus nodes: each one joins the
 bus through the framework, and none of them reaches around it to the transport.
+`hypha convert` and `hypha param` work on files and do not join the bus, and
+`hypha clean` removes a domain's resources without joining it.
 
 `hypha top`, `hypha topic`, `hypha node` and `hypha record` without `--sync` join
 as CLI tool nodes, `_hyphacli_<tool>`: any number of each runs at once in one
@@ -20,7 +25,7 @@ that died. `hypha play`, `hypha record --sync`, `hypha intercept` and
 with the same name in a domain is refused.
 
 Build them with `./build.sh`; `hypha` lands in `target/release/`, and the build
-tree links the old names to it in `build/apps/tool-links/`.
+tree links `hy` and the `hy<tool>` names to it in `build/apps/tool-links/`.
 
 Run any tool with `--help` for its exact options. This page is a map, not a
 manual — the binaries are the authority on their own flags.
@@ -318,8 +323,10 @@ node that publishes progress, and a `hypha record --sync` recorder.
 `--settle <s>` (default 2) starts the replay once no new node has reported for
 that long. `--nodes <name>...` adds required nodes: the start also waits for each of
 them and fails after 30 s if one is missing. Nodes that report without being named
-take part too. A participant that reports nothing for
-`--timeout <s>` (default 5) stops the replay, and the error names it. `--rate`
+take part too. A wait longer than 1 s prints the nodes it waits for. A participant
+whose clock does not rise for `--timeout <s>` (default 5), quiet or not, stops the
+replay with exit 1, and the error names every awaited node and what it did
+(`replay-flow-control.md` §6.1). `--rate`
 paces each message on the wall clock; `max` waits only for the participants. A report
 wakes the player's wait at once (no fixed poll); an unanswered `/clock` is sent again
 every 200 ms.
@@ -327,7 +334,7 @@ every 200 ms.
 With `--clock`, `--loop` and the restart key start a pass again from the start of
 the window, which sends `/clock` back. That restarts the participants: no node
 rewinds in place. The player sends the first `/clock` value once, waits until every
-participant that runs cycles has left the bus (each C++ node built on
+participant has left the bus (each C++ node built on
 `hypha::runNode` exits 75 and its `hypha launch` supervisor starts it again), opens its publishers again, and waits for the
 same participants to rejoin before the pass sends data. A `hypha record --sync`
 recorder stays through it. A participant that is still on the bus or has not
@@ -361,7 +368,22 @@ timezone offset; offsets are normalized to UTC. The reader uses the MCAP
 index to select the window. Recordings can also be searched by UTC in an MCAP
 viewer such as Foxglove Studio.
 
-For a system rerun, start the nodes with `HYPHA_USE_SIM_TIME=1` in their environment. With `--clock`,
+For a system rerun, start the nodes with `HYPHA_USE_SIM_TIME=1` in their environment.
+A replay has two modes and one rule: use the lockstep, the default; if the system cannot
+run in it, set `HYPHA_REPLAY_LOCKSTEP=0` for the whole launch.
+
+`HYPHA_REPLAY_LOCKSTEP=0` (or `false`), set for the player and every node of the
+launch, turns the lockstep off: an open-loop playback like `ros2 bag play`. With
+`--clock` the player prints `hypha play: open loop (HYPHA_REPLAY_LOCKSTEP=0): /clock
+and the data follow --rate, and no node is waited for`, publishes each chunk's data on
+the `--rate` schedule and `/clock` once at each boundary, and reads no
+`/clock_progress`: no start barrier, no acknowledgement, no resend, no chunk split for a
+subscriber queue, and no wait for a restart after `--loop`. `--rate max` is refused, as
+nothing would pace the replay, and so are `--nodes`, `--settle` and `--timeout`. The
+nodes follow `/clock` and warn of a lost sample instead of failing; a node still exits
+75 when `/clock` goes back. The result depends on the host and its load, as a ROS
+playback's does (`replay-flow-control.md`, section 4.6). Any other value than `1`,
+`true`, `0` or `false` refuses the start. With `--clock`,
 playback initializes `/clock` to the selected UTC start, advances it at each chunk
 boundary, and sets each message's UTC before publishing its payload. Recorded `/clock` payloads are omitted so they cannot replace that
 timeline. Select enough data before the incident to initialize application
@@ -388,7 +410,42 @@ Observers, such as a recorder or the bridge, are not waited for. A message sent
 before one connects is lost to it.
 
 Interactive keys while playing: pause (`<Space>`), step one chunk (`<s>`), speed
-up and slow down (`<+>` and `<->`), restart (`<r>`), quit (`<q>`).
+up and slow down (`<+>` and `<->`), restart (`<r>`), quit (`<q>`). The keys and the
+progress line need a terminal on stdin and stdout that the player may read: it must be
+in the terminal's foreground process group. As a shell's background job or a
+`hypha launch` unit the player takes no keys and prints plain lines.
+
+### `hypha convert` — a ROS 2 bag into a recording
+
+Turns a ROS 2 bag in rosbag2's SQLite storage (`.db3`) into an MCAP recording that
+`hypha play` replays, without ROS (#46). Uncompress a `.db3.zstd` bag with `zstd -d`
+first.
+
+```bash
+hypha convert run.db3 -o run.mcap --msg-path <dir>    # every topic it has a definition for
+hypha convert run.db3 -o run.mcap --topic /imu --topic /lidar/points --xyzirc /lidar/points
+```
+
+- **Serialization.** Each topic's CDR messages become ROS 1 serialization through the
+  ROS 1 definition of its type, which the recording carries with its MD5, as
+  `hypha record` writes them. Bags recorded before rosbag2 embedded definitions hold
+  none, so the definitions come from the message paths: each `--msg-path`, in order,
+  then the SDK's `share/hypha/msg`. A path holds `<package>/<Name>.msg` or
+  `<package>/msg/<Name>.msg`.
+- **ROS 2 types.** `std_msgs/Header` has no `seq` in ROS 2: the converter writes the
+  message's index on its topic. `builtin_interfaces/Time` becomes `time`, and a negative
+  second fails the conversion, as ROS 1's `time` is unsigned; `Duration` becomes
+  `duration`.
+- **Times.** A message's log and publish time is the bag's receive time.
+- **What is left out.** A topic whose type has no definition, or that is not CDR, is left
+  out and listed with its reason. One named with `--topic` fails the conversion instead.
+  A message that does not decode fails it, naming the topic and the message.
+- **Point layouts.** `--xyzirc <topic>` rewrites an XYZI `sensor_msgs/PointCloud2`
+  (four `float32`) into the XYZIRC that Autoware 2.1.0 reads: `intensity` and
+  `return_type` as `uint8`, `channel` as `uint16`, still 16 bytes a point. Each intensity
+  is rounded and held to 0 to 255, return type and channel are 0, and `row_step` is
+  recomputed. The tool reports the highest intensity it saw. When every intensity rounds
+  to 0, it says the recording holds no intensity on that scale.
 
 ---
 
@@ -517,8 +574,9 @@ node running.
 - **A node that calls `setsid` or `setpgid` leaves its process group**, and
   the supervisor's group signals do not reach it.
 - **A node does not own the terminal.** It runs in a background process group of
-  its window, so a read from the terminal stops it with SIGTTIN. Output is not
-  affected.
+  its window, so it gets no keys: a read from the terminal stops it with SIGTTIN,
+  or fails with `EIO` when the node ignores or blocks that signal. Output is not
+  affected. `hypha play` as a unit sees this, takes no keys and prints plain lines.
 
 #### Measured cost
 
@@ -563,6 +621,52 @@ file by hand, so its comments and key order stay as written.
 There is no live parameter server — parameters are read at node start-up.
 
 ---
+
+### `hypha clean` — remove the shared memory of domains nobody uses
+
+```text
+hypha clean --domain <prefix>   every domain whose name starts with <prefix>
+hypha clean                     the domain of HYPHA_DOMAIN, the domain "none" when unset
+```
+
+A process that ends without its cleanup, after a crash or a kill, leaves its domain's
+iceoryx2 resources behind, and a segment made by another hypha build or with other
+limits fails the next open (`docs/engineering-traps.md`). `hypha clean` removes every
+resource of a domain nobody uses: the shared-memory segments (`/dev/shm` on Linux, the
+objects that `/tmp/iox2*.shm_state` names on macOS) and the services, node files,
+sockets and schema files under `/tmp/iceoryx2`. It matches names inside the per-node
+directories `nodes/<id>/`, which several domains share, and removes such a directory
+only once it is empty. It kills nothing.
+
+It keeps a domain while one of its nodes lives, as iceoryx2's node monitor reports it:
+the lock a live process holds on its node's monitor file, which the kernel releases when
+the process ends. A node of another user, or one whose files are inconsistent, also
+keeps its domain. Under `--domain`, it also keeps a domain while its run lives: the
+process whose id follows the prefix in the domain's name, so a test domain `t_<pid>_<n>`
+stays between the tests of a running suite. A process that holds a resource without a
+node of the domain is not seen. A node in the middle of its start is not yet listed, so
+a clean of a domain that is starting can remove what that node just created.
+
+It prints a line for each domain it removed (with its count of resources), each it
+kept and why, and each resource it could not remove, then a summary line:
+
+```text
+hypha clean: removed domain t_4711_3 (21 resources)
+hypha clean: kept domain t_5120_1: node sensor_driver of pid 5133 is alive
+hypha clean: of the domains under 't_', removed 1, kept 1, failed 0
+```
+
+Exit codes: 0 when nothing is left that could be removed (it removed every domain it
+covered, or there was nothing to remove), 2 when it kept a domain in use (it may have
+removed others), 1 on a failure (a command line it refuses, a resource it could not
+read or remove). The printed lines tell a removal from nothing to remove. A caller
+decides what a kept domain means for it: `test.sh` and `examples/check.sh` accept 2,
+since a kept test domain belongs to another run that still lives, and fail on 1.
+`hypha clean` without `--domain` never touches another domain, even one whose name
+starts with this one.
+
+To wipe every domain of the host, and to kill the processes that still hold a resource,
+the repository keeps `./clean-shm.sh [--force]`, which needs `lsof`.
 
 ## Testing communication
 

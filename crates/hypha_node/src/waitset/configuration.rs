@@ -1,8 +1,8 @@
 //! `WaitSet` construction and the C ABI call that hands out a node's `WaitSet`.
 
 use super::{
-    Arc, DispatchLimits, Error, HyphaNode, HyphaWaitSet, Registration, Target, Trigger,
-    WaitSetShared,
+    Arc, DispatchLimits, Error, HyphaNode, HyphaWaitSet, Registration, RunAttaches, Target,
+    Trigger, WaitSetShared,
 };
 use std::cell::RefCell;
 
@@ -29,7 +29,8 @@ fn build(node: Arc<HyphaNode>) -> Result<Box<HyphaWaitSet>, Error> {
         warn_nanos: CALLBACK_WARN_NANOS,
         warn_interval_nanos: WARNING_INTERVAL_NANOS,
         pending_detach: RefCell::new(Vec::new()),
-        live_ids: RefCell::new(Vec::new()),
+        run_attaches: RefCell::new(RunAttaches::new()),
+        live: RefCell::new(Vec::new()),
         input_sources: RefCell::new(Vec::new()),
         health,
     }))
@@ -165,8 +166,12 @@ fn attach_sim_clock(waitset: &HyphaWaitSet) -> Result<(), Error> {
     if !node.uses_sim_time {
         return Ok(());
     }
-    // A sample of either input wakes this WaitSet, which then drains both.
+    // A sample of either input wakes this WaitSet, which then drains both. A node outside
+    // the lockstep reads no reports, so it has no progress input.
     attach_input_listener(waitset, &node.sim_clock_subscriber)?;
+    if node.open_loop {
+        return Ok(());
+    }
     attach_input_listener(waitset, &node.progress_subscriber)
 }
 

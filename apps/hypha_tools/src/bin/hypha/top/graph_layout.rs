@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn self_edges_and_unknown_vertices_are_ignored() {
         let placed = layout(&[2], &[(0, 0), (0, 9)]);
-        assert!(placed.segments.is_empty());
+        assert!(placed.segments.is_empty(), "{:?}", placed.segments);
         assert_eq!(placed.boxes.len(), 1);
     }
 }

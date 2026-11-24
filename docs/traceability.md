@@ -28,7 +28,7 @@ of every row from a test run.
 | FSR-12 | `hypha_ffi/subscriber_delivery_mode`, `cxx:test_subscriber` |  |
 | FSR-13 | `hypha_iceoryx2/notification`, `hypha_ffi/waitset_wakeups`, `hypha_iceoryx2/waitset_wake_cadence` |  |
 | FSR-14 | `hypha_iceoryx2/housekeeping_creates_no_thread`, `hypha_ffi/waitset_cross_thread_stop` |  |
-| FSR-15 | `hypha_core/timer_missed_count`, `hypha_core/timer_reset`, `hypha_time/cadence_policies` |  |
+| FSR-15 | `hypha_core/timer_missed_count`, `hypha_core/timer_reset`, `hypha_time/cadence_policies`, `hypha_ffi/waitset_timer_control` |  |
 | FSR-16 | `hypha_time/clock`, `hypha_time/cross_process_monotonic`, `cxx:test_clock` |  |
 | FSR-17 | `hypha_ffi/sim_time_environment`, `hypha_ffi/sim_time_waitset_turn`, `cxx:test_clock_driver`, `cxx:test_time_jump`; MRS flights in `examples/check.sh` |  |
 | FSR-18 | `hypha_core/parameters`, `hypha_core/parameter_constraints`, `hypha_ffi/parameter_boundary`, `cxx:test_parameters` |  |
@@ -37,7 +37,7 @@ of every row from a test run.
 | FSR-21 | `hypha_msggen/*`, `hypha_msgs/messages`; the installed SDK flow (`scripts/test-installed-sdk.sh`) |  |
 | FSR-22 | `hypha_tools/echo_plot_cli`, `hypha_tools/topic_follower`, `hypha_ffi/introspection_rows` | The O(1) clause has no measurement (R7). |
 | FSR-23 | `hypha_ffi/schema`, `hypha_ffi/schema_hash_resolution`, `hypha_iceoryx2/schema_retention` |  |
-| FSR-24 | `hypha_tools/test_recorder_player_core`, `hypha_tools/record_sync`, `hypha_tools/utc_replay_bus`, `hypha_tools/play_flow_control` |  |
+| FSR-24 | `hypha_tools/test_recorder_player_core`, `hypha_tools/record_sync`, `hypha_tools/utc_replay_bus`, `hypha_tools/play_flow_control`, `hypha_ffi/replay_callbacks` |  |
 | FSR-25 | `hypha_iceoryx2/start_order_matrix` |  |
 | FSR-26 | `hypha_iceoryx2/schema_retention`, `cxx:test_handle_lifetime`; `schema_retention`: a closed topic leaves no record; an MRS flight leaves nothing in `/tmp/iceoryx2` | No test checks that a clean shutdown leaves no segment. |
 | FSR-27 | `hypha_iceoryx2/stale_resource_reclaim`, `hypha_node/peer_kill_isolation`; `peer_kill_isolation`: SIGKILL of a publisher, of a reader and of a reader that holds samples, and a restarted publisher: no loss, no rejection, no refused publish for the survivors; R3 harness, by hand | No test kills a publisher that holds an unsent loan, or a process between two sends of one cycle step. |
@@ -49,7 +49,7 @@ of every row from a test run.
 | FSR-32 | `hypha_tools/test_foxglove_protocol` |  |
 | FSR-35 | `hypha_tools/launch_supervisor`, `hypha_tools/launch_session_lifecycle`, `hypha_tools/test_launch_units` |  |
 | FSR-36 | `hypha_log/*`, `cxx:test_log_*` |  |
-| FSR-37 | `hypha_ffi/sim_time_rewind`, `hypha_tools/play_restart`, `hypha_core/timer_time_jump` |  |
+| FSR-37 | `hypha_ffi/sim_time_rewind`, `hypha_tools/play_restart`, `hypha_core/timer_time_jump`, `hypha_ffi/waitset_timer_control`, `hypha_ffi/replay_callbacks` |  |
 | FSR-38 | `hypha_cycle/*`, `hypha_ffi/cycle_*`, `cxx:test_cycle_node`, `cxx:test_cycle_step_faults` |  |
 | FSR-39 | `hypha_cycle/input_supervision`, `cxx:test_input_supervision` |  |
 | FSR-41 | `hypha_ffi/introspection_snapshot`, `cxx:test_node_introspection` |  |

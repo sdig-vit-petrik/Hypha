@@ -61,11 +61,30 @@ echo "-> Building the examples against the installed SDK"
 cmake -S examples -B "$BUILD_DIR" $CMAKE_ARGS
 cmake --build "$BUILD_DIR" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 
+# Every test runs in a bus domain of its own under the test root t_ (hypha_add_test); the
+# domains of the runs that ended go, a system running on this host keeps its own. The
+# SDK's hypha clears them (on PATH without --prefix).
+HYPHA_TOOL="hypha"
+if [[ -n "$PREFIX" ]]; then
+  HYPHA_TOOL="$PREFIX/bin/hypha"
+fi
+clean_status=0
+"$HYPHA_TOOL" clean --domain t_ || clean_status=$?
+case "$clean_status" in
+  0 | 2) ;; # 2: it kept the test domain of another run that still lives
+  *) exit "$clean_status" ;;
+esac
+
 echo -e "\n-> The MRS flights: unit checks, then every scenario"
-./clean-shm.sh --force
-examples/mrs/run.sh "$BUILD_DIR/mrs" takeoff_goto --checks
+# Each flight in a test domain of its own, t_<pid of this gate>_<n>.
+flight=1
+HYPHA_DOMAIN="t_$$_${flight}" examples/mrs/run.sh "$BUILD_DIR/mrs" takeoff_goto --checks
 for scenario in estimation takeoff takeoff_via_uav_manager goto_outside_safety_area; do
-  examples/mrs/run.sh "$BUILD_DIR/mrs" "$scenario"
+  flight=$((flight + 1))
+  HYPHA_DOMAIN="t_$$_${flight}" examples/mrs/run.sh "$BUILD_DIR/mrs" "$scenario"
 done
+
+echo -e "\n-> The Autoware port: the upstream unit tests, the shim, each node on the bus"
+ctest --test-dir "$BUILD_DIR/autoware" --output-on-failure
 
 echo -e "\nGate complete."

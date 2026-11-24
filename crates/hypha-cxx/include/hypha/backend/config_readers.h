@@ -89,6 +89,17 @@ inline std::vector<std::string> unreadParameterKeys(const std::string& prefix)
     return keys;
 }
 
+/// @brief Marks @p key, a key or a table, as set on purpose and not read, for @p reason.
+///        Without a configuration nothing is set, so there is nothing to mark: Ok.
+inline ::HyphaStatus ignoreParameter(const std::string& key, const std::string& reason)
+{
+    const HyphaConfig* config = configHandle();
+    if (config == nullptr) {
+        return HYPHA_STATUS_OK;
+    }
+    return ::hypha_config_ignore(config, key.data(), key.size(), reason.data(), reason.size());
+}
+
 /// @brief The file name that the text parameter @p key holds, resolved against the
 ///        directory of the file that wrote @p key. InvalidState without a loaded
 ///        configuration, InvalidArgument when @p key holds no text.

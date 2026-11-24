@@ -1,11 +1,11 @@
 // failRun() ends the run as failed and holds the outputs of the step it is called in.
 
 #include "hypha/cycle_node.h"
-#include <hypha_msgs/std_msgs/Float64.h>
 
 #include "test_types.h"
 
 #include <gtest/gtest.h>
+#include <std_msgs/Float64.h>
 
 #include <atomic>
 #include <filesystem>

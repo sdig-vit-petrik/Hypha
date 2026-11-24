@@ -1,0 +1,30 @@
+name: Change
+description: A feature, a removal or a clean-up of hypha.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is missing or in the way today, with the places in the code or the documents that show it. Not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What changes. Name each public API, key, message field or flag it adds or removes, and say whether it breaks a release line (ABI, wire format, C++ source, requirements).
+    validations:
+      required: true
+  - type: textarea
+    id: rejected
+    attributes:
+      label: Rejected
+      description: The alternatives considered and why each was dropped. hypha prefers the simple, robust option over the clever or fast one.
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: The observable result that closes the issue, and the test or run that shows it.
+    validations:
+      required: true

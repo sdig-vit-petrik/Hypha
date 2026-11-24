@@ -3,13 +3,13 @@
 // path (encode), the sized path (detail::encodeUnchecked) and encodeInto.
 
 #include <hypha/backend/ros1_codec.h>
-#include <hypha_msgs/std_msgs/Header.h>
 
 #include "ros1_codec_fixtures.h"
 #include "ros1_codec_golden.h"
 
 #include <gtest/gtest.h>
 #include <ros/serialization.h>
+#include <std_msgs/Header.h>
 
 #include <array>
 #include <cstddef>

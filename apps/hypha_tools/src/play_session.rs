@@ -10,6 +10,7 @@ mod start;
 #[cfg(test)]
 #[allow(clippy::arithmetic_side_effects, clippy::expect_used, clippy::unwrap_used)]
 mod tests;
+mod waiting;
 
 use self::pace::Schedule;
 use crate::CLOCK_TOPIC;
@@ -67,6 +68,10 @@ pub struct SyncConfig {
     pub settle: Duration,
     /// How long a node may report nothing while the replay waits for it.
     pub timeout: Duration,
+    /// Wait for the participants at each chunk. `false` (`HYPHA_REPLAY_LOCKSTEP=0`) is an
+    /// open-loop playback: `/clock` and the data on the `--rate` schedule, with no barrier,
+    /// no acknowledgement and no restart of the participants.
+    pub lockstep: bool,
 }
 
 impl Default for SyncConfig {
@@ -76,6 +81,7 @@ impl Default for SyncConfig {
             nodes: Vec::new(),
             settle: DEFAULT_SETTLE,
             timeout: DEFAULT_TIMEOUT,
+            lockstep: true,
         }
     }
 }
@@ -309,9 +315,16 @@ impl<'bus> Session<'bus> {
             replay_bus::ensure_sole_clock_publisher(bus)?;
             let clock = create_clock_publisher(bus)
                 .ok_or_else(|| "cannot create UTC replay clock".to_string())?;
-            let progress = replay_bus::progress_subscriber(bus)
-                .map_err(|error| format!("cannot read {PROGRESS_TOPIC}: {error}"))?;
-            (Some(clock), Some(progress))
+            // An open-loop playback reads no report: nothing it does waits for a node.
+            let progress = if config.sync.lockstep {
+                Some(
+                    replay_bus::progress_subscriber(bus)
+                        .map_err(|error| format!("cannot read {PROGRESS_TOPIC}: {error}"))?,
+                )
+            } else {
+                None
+            };
+            (Some(clock), progress)
         } else {
             (None, None)
         };
@@ -378,6 +391,12 @@ impl<'bus> Session<'bus> {
     /// The publishers connected to the progress topic; none while there is no such topic.
     fn progress_publisher_count(&self) -> Result<usize, String> {
         self.progress_publishers.as_ref().map_or(Ok(0), RawSubscriber::publisher_count)
+    }
+
+    /// True when the replay publishes `/clock` and waits for its participants at each
+    /// chunk; false without `/clock` and in an open-loop playback.
+    fn in_lockstep(&self) -> bool {
+        self.clock.is_some() && self.config.sync.lockstep
     }
 
     /// Resets the state that belongs to one pass.

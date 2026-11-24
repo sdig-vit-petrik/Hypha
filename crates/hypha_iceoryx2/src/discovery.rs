@@ -2,7 +2,7 @@
 
 use hypha_core::port::PortError;
 use iceoryx2::node::{Node, NodeView};
-use iceoryx2::prelude::{SemanticString as _, *};
+use iceoryx2::prelude::*;
 use iceoryx2::service::static_config::messaging_pattern::MessagingPattern as StaticPattern;
 
 use crate::header::FRAME_HEADER_TYPE_NAME;
@@ -95,12 +95,11 @@ pub fn list_nodes() -> Result<Vec<DiscoveredNode>, PortError> {
 /// One registry entry, or `None` when its process id cannot be read.
 fn discovered_node(view: &impl NodeView, is_alive: bool) -> Option<DiscoveredNode> {
     let pid = view.id().pid::<Ipc>().ok()?.value();
-    let name = view.details().as_ref().map(|d| d.name().as_str().to_string()).unwrap_or_default();
+    let name = view.details().as_ref().map_or_default(|d| d.name().as_str().to_string());
     let executable = view
         .details()
         .as_ref()
-        .map(|d| String::from_utf8_lossy(d.executable().as_bytes()).into_owned())
-        .unwrap_or_default();
+        .map_or_default(|d| String::from_utf8_lossy(d.executable().as_bytes()).into_owned());
     Some(DiscoveredNode { name, executable, pid, is_alive })
 }
 

@@ -1,0 +1,40 @@
+# autoware_gyro_odometer: the edits of the hypha port, applied to a copy of
+# upstream/autoware_core/localization/autoware_gyro_odometer by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
+diff -ruN a/test/test_gyro_odometer.cpp b/test/test_gyro_odometer.cpp
+--- a/test/test_gyro_odometer.cpp
++++ b/test/test_gyro_odometer.cpp
+@@ -36,8 +36,9 @@
+ builtin_interfaces::msg::Time make_stamp(int32_t sec, uint32_t nanosec)
+ {
+   builtin_interfaces::msg::Time stamp;
+-  stamp.sec = sec;
+-  stamp.nanosec = nanosec;
++  // hypha port: ROS 1 stamps (secs, nsecs) until ROS 2 definitions (#45); every stamp field in this file is renamed.
++  stamp.secs = sec;
++  stamp.nsecs = nanosec;
+   return stamp;
+ }
+ 
+@@ -459,8 +460,8 @@
+   EXPECT_DOUBLE_EQ(out.twist.covariance[COV_IDX_XYZRPY::YAW_YAW], 3.0);
+ 
+   // output stamp is the later of latest vehicle twist (12s) and latest imu (13s)
+-  EXPECT_EQ(out.header.stamp.sec, 13);
+-  EXPECT_EQ(out.header.stamp.nanosec, 0u);
++  EXPECT_EQ(out.header.stamp.secs, 13);
++  EXPECT_EQ(out.header.stamp.nsecs, 0u);
+   // frame id is taken from the front of the gyro queue
+   EXPECT_EQ(out.header.frame_id, "base_link");
+ }
+@@ -485,8 +486,8 @@
+ 
+   const TwistWithCovarianceStamped out = fuse_twist(vehicle_twist_queue, gyro_queue);
+ 
+-  EXPECT_EQ(out.header.stamp.sec, 20);
+-  EXPECT_EQ(out.header.stamp.nanosec, 500u);
++  EXPECT_EQ(out.header.stamp.secs, 20);
++  EXPECT_EQ(out.header.stamp.nsecs, 500u);
+   EXPECT_EQ(out.header.frame_id, "imu_link");
+ }
+ 

@@ -1,0 +1,42 @@
+name: Defect
+description: hypha does something wrong, or a document contradicts the code.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A defect that could let an application use wrong, old or missing data without a
+        fault indication is reported privately, see `SECURITY.md`. Do not file it here.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What happens, and what should happen instead. Name the file and line where you know it.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: The smallest steps or test that show it, with the exact output.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version and platform
+      description: The release or commit, the operating system and the architecture.
+      placeholder: "0.3.0, Ubuntu 26.04, arm64"
+    validations:
+      required: true
+  - type: textarea
+    id: cause
+    attributes:
+      label: Cause and proposed fix
+      description: If you know them. Leave empty otherwise.
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: What must hold for this to be closed, including the test that reproduces it first.

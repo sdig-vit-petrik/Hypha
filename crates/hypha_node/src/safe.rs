@@ -9,7 +9,7 @@ pub use crate::clock::{
     clock_now_nanos, clock_set_sim_time, clock_steady_now_nanos,
 };
 pub use crate::config::{
-    HyphaConfig, config_create, config_resolve_key, config_unread_keys, node_config,
+    HyphaConfig, config_create, config_ignore, config_resolve_key, config_unread_keys, node_config,
 };
 pub use crate::cycle::{
     CycleId, CycleSnapshots, CycleStepHandler, EmissionView, HyphaInputSource, ImageView,
@@ -43,16 +43,17 @@ pub use crate::subscriber::{
     SubscriberSettings, subscribe_typed, subscriber_counters, subscriber_publisher_count,
     subscriber_receive, subscriber_topic,
 };
-pub use crate::transforms::TransformLookup;
 pub use crate::transforms::buffer::{
     HyphaTransformBuffer, transform_buffer_create, transform_buffer_destroy,
     transform_buffer_lookup,
 };
+pub use crate::transforms::{HyphaSentTransform, TransformLookup, transform_check};
 pub use crate::waitset::registrations::waitset_attach_foreign;
 pub use crate::waitset::{
     CallbackAction, DeliveryHandler, ForeignCallbacks, HYPHA_RUN_REASON_DEADLINE,
     HYPHA_RUN_REASON_RUNTIME_FAILED, HYPHA_RUN_REASON_SETUP_FAILED, HYPHA_RUN_REASON_STOPPED,
-    HyphaWaitSet, HyphaWaitSetRunReport, IntervalHandler, SampleDelivery, SubscriptionHandler,
-    WaitSetLease, WaitSetShared, node_default_waitset, waitset_attach_subscription, waitset_detach,
-    waitset_request_stop, waitset_run,
+    HyphaTimerState, HyphaWaitSet, HyphaWaitSetRunReport, IntervalHandler, SampleDelivery,
+    SubscriptionHandler, WaitSetClaim, WaitSetLease, WaitSetShared, node_default_waitset,
+    waitset_attach_subscription, waitset_detach, waitset_request_stop, waitset_run,
+    waitset_timer_cancel, waitset_timer_reset, waitset_timer_state,
 };

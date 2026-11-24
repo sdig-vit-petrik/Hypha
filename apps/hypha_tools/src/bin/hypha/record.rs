@@ -319,7 +319,7 @@ fn answer_chunk(
     }
     for (topic, count) in &lost {
         eprintln!(
-            "hypha record: --sync: '{topic}' lost {count} sample(s) so far: its queue was full; lower hypha_play --chunk so that a chunk holds fewer samples of that topic"
+            "hypha record: --sync: '{topic}' lost {count} sample(s) so far: its queue was full; lower hypha play --chunk so that a chunk holds fewer samples of that topic"
         );
     }
     Ok(Flow::Stop)

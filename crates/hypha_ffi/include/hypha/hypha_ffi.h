@@ -3,8 +3,9 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 1
+#define HYPHA_ABI_REVISION 6
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -28,6 +29,12 @@
 
 // The time is newer than the newest sample of a transform on the chain.
 #define HYPHA_TF_AFTER_BUFFER 5
+
+// The lookup failed on a frame whose newest transform the buffer refused (not finite,
+// not a unit quaternion, a stamp that is no time, a second parent): its producer is
+// broken, not late. It replaces `UNKNOWN_FRAME`, `NOT_CONNECTED` and `AFTER_BUFFER`
+// while that frame's newest transform is a refused one.
+#define HYPHA_TF_REFUSED 6
 
 // Freshness verdict: no sample admitted since the binding was created.
 #define HYPHA_CYCLE_VERDICT_NEVER_ARRIVED 0
@@ -162,7 +169,9 @@ enum HyphaStatus
   HYPHA_STATUS_TIMEOUT = 18,
   // Operation invoked in invalid state.
   HYPHA_STATUS_INVALID_STATE = 20,
-  // Simulated time went back under a replay or triggered cycle; a running cycle never rewinds.
+  // A `/clock` sample went below the node's last one: a run of a `WaitSet` on simulated
+  // time ends with it, whatever it dispatches (cycles, plain timers, plain
+  // subscriptions); a command-line tool's node is exempt. The process restarts.
   HYPHA_STATUS_CLOCK_REWOUND = 22,
   // The application asked for its run to fail (`hypha_waitset_request_failure`).
   HYPHA_STATUS_APPLICATION_FAILED = 23,
@@ -327,8 +336,9 @@ typedef struct HyphaLoan HyphaLoan;
 // A session on the bus. Opaque to the caller.
 //
 // `hypha_node_create` reads `HYPHA_USE_SIM_TIME`: `1` or `true` puts the node on
-// simulated time, `0`, `false` or an unset variable leaves it off, and any other value
-// is `InvalidArgument`. A refused parameter file or `[log]` table is `InvalidArgument`,
+// simulated time, in the replay lockstep unless `HYPHA_REPLAY_LOCKSTEP=0` turns it off;
+// `0`, `false` or an unset variable leaves it off, and any other value is
+// `InvalidArgument`. A refused parameter file or `[log]` table is `InvalidArgument`,
 // or `InvalidState` for a sink lock another process holds or a second, different `[log]`
 // table. Each `WaitSet` on the node co-owns it, so the node outlives it whatever order
 // (or thread) the caller destroys them in.
@@ -357,10 +367,13 @@ typedef struct HyphaTransformBuffer HyphaTransformBuffer;
 // `hypha_waitset_request_stop`, `hypha_waitset_request_failure`, `hypha_cycle_health` and
 // `hypha_cycle_binding`; any other call that names this `WaitSet`, one of its cycles or
 // input sources returns `InvalidState` on that thread and changes nothing. On the run's
-// own thread a callback may also detach a registration, applied when the run returns; an
-// attach, a second run, and a call that creates, configures or destroys a cycle or an
-// input source return `InvalidState`. A run must not start while another thread is
-// inside a call on this `WaitSet`: that is a caller error with no status.
+// own thread a callback may also detach a registration, applied when the run returns;
+// attach a timer whose wake needs no native attachment, which joins the dispatch before
+// the next wait; and cancel, reset or read a timer. Any other attach, a second run, and
+// a call that creates, configures or destroys a cycle or an input source return
+// `InvalidState`. Each call and each run claims the `WaitSet` for the calling thread,
+// so a run or a call that another thread starts while one is inside a call returns
+// `InvalidState` too (#83).
 typedef struct HyphaWaitSet HyphaWaitSet;
 
 // The settings of a cycle that drives `/clock` for a simulator.
@@ -786,6 +799,19 @@ typedef struct HyphaSubscriberCounters {
   uint64_t loan_refused;
 } HyphaSubscriberCounters;
 
+// A transform a sender checks before it sends it: where the child sits in the parent,
+// at a ROS stamp.
+typedef struct HyphaSentTransform {
+  // The child origin in the parent frame.
+  double translation[3];
+  // The child orientation in the parent frame, `[x, y, z, w]`.
+  double rotation_xyzw[4];
+  // The header stamp, seconds part.
+  uint32_t stamp_secs;
+  // The header stamp, nanoseconds part; a time needs it below 1 000 000 000.
+  uint32_t stamp_nsecs;
+} HyphaSentTransform;
+
 // Identity joined from the subscription topic and the frame header.
 typedef struct HyphaSampleIdentity {
   // Subscription topic bytes.
@@ -870,6 +896,19 @@ typedef struct HyphaWaitSetRunReport {
   uint64_t slow_callbacks;
 } HyphaWaitSetRunReport;
 
+// The state of a plain timer registration, as `hypha_waitset_timer_state` reports it.
+typedef struct HyphaTimerState {
+  // True after a cancel, until the next reset.
+  bool canceled;
+  // The attached period, in nanoseconds.
+  int64_t period_nanos;
+  // Nanoseconds until the next call, on the timer's own clock: simulated framework
+  // time under simulated time, else the host monotonic scheduling clock. Zero when
+  // the call is due now, `INT64_MAX` while canceled. Before the first run of a timer
+  // on host time it counts from the attach; the run starts the period anew.
+  int64_t until_due_nanos;
+} HyphaTimerState;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -936,7 +975,8 @@ void hypha_config_destroy(struct HyphaConfig *config);
 const struct HyphaConfig *hypha_node_config(const struct HyphaNode *node);
 
 // Write the unread keys of `config` under `prefix` (all for a zero `prefix_len`),
-// joined by `'\n'`, to `out`; `node.name` is excluded. `TooLarge` when `out_capacity`
+// joined by `'\n'`, to `out`; `node.name` and the keys `hypha_config_ignore` or the
+// file's `unused` list ignore are excluded. `TooLarge` when `out_capacity`
 // is too small; `out_len` then holds the byte length.
 //
 // # Safety
@@ -948,6 +988,25 @@ HyphaStatus hypha_config_unread_keys(const struct HyphaConfig *config,
                                      char *out,
                                      size_t out_capacity,
                                      size_t *out_len);
+
+// Mark `key`, a key, a table or a list entry (`sensors[0].rate`), as set on purpose and
+// not read, for `reason`: it and every key under it leave `hypha_config_unread_keys`, and
+// it becomes a node manifest row with source `IntrospectedConfig::SOURCE_IGNORED` whose
+// value is `reason`, logged once at info. A key `config` does not set is accepted; a
+// second call for the same key keeps the first reason and returns `Ok`. Both texts are
+// UTF-8, read for the call only and copied; nothing is returned to free.
+//
+// `InvalidArgument`: a null `config`, a zero `key_len` or `reason_len`, a null text with
+// a nonzero length, or text that is not UTF-8.
+//
+// # Safety
+// `config` is live or null. `key` holds `key_len` bytes and `reason` holds `reason_len`
+// bytes.
+HyphaStatus hypha_config_ignore(const struct HyphaConfig *config,
+                                const char *key,
+                                size_t key_len,
+                                const char *reason,
+                                size_t reason_len);
 
 // Resolve the file name that the text parameter `key` holds against the directory of
 // the file that wrote `key`, and write it to `out`. An absolute name, or any name when
@@ -1328,6 +1387,8 @@ HyphaStatus hypha_last_error(char *out,
 // writable bytes, valid until the loan is sent or dropped; both are null on any other
 // status. The caller owns the loan and releases it with `hypha_loan_send` or
 // `hypha_loan_drop`. A null `publisher`, `out` or `out_payload` is `InvalidArgument`.
+// `InvalidState` once the node that made the publisher was destroyed
+// (`hypha_node_destroy`): nothing is sent on a node that has left the bus.
 //
 // # Safety
 // `publisher` must come from `hypha_publish_with_qos`. `out` and `out_payload` each
@@ -1339,8 +1400,10 @@ HyphaStatus hypha_publisher_loan_frame(struct HyphaPublisher *publisher,
 
 // Send a filled loan. The loan is released whatever the result.
 //
-// The framework send time is `framework_sent_nanos` when it is zero or more, else the
-// framework clock. A null `loan` returns `InvalidArgument`.
+// The framework send time is `framework_sent_nanos` when it is zero or more, else
+// framework time on the calling thread: the time of the cycle step or the replayed
+// callback that sends, else the framework clock. A null `loan` returns `InvalidArgument`.
+// `InvalidState`, and nothing sent, once the publisher's node was destroyed.
 //
 // # Safety
 // `loan` must come from `hypha_publisher_loan_frame` and must not be used afterwards.
@@ -1755,6 +1818,28 @@ HyphaStatus hypha_transform_buffer_lookup(const struct HyphaTransformBuffer *buf
 // after an `Ok`.
 HyphaStatus hypha_transform_buffer_destroy(struct HyphaTransformBuffer *buffer);
 
+// Check one transform before it is sent with the check every transform buffer and TF
+// input applies on ingest: `child` in `parent`, UTF-8 of the given lengths, borrowed
+// for the call, with `*transform` read for the call; `is_static` nonzero for a
+// `/tf_static` transform, whose stamp is not read. Needs no node and keeps nothing.
+//
+// `Ok`: every buffer accepts it, unless it gives the child a second parent or closes a
+// cycle, which only a buffer that holds the other transforms can see.
+// `InvalidArgument`: a null pointer, non-UTF-8 text, an empty frame name, a stamp that
+// is no time (`stamp_nsecs` of 1 000 000 000 or more), a translation or rotation that is
+// not finite, or a rotation that is not a unit quaternion. The reason, naming both
+// frames, is then the calling thread's `hypha_last_error`; nothing is logged.
+//
+// # Safety
+// `parent` holds `parent_len` bytes and `child` holds `child_len` bytes, or each is
+// null; `transform` is null or points to one initialized `HyphaSentTransform`.
+HyphaStatus hypha_transform_check(const char *parent,
+                                  size_t parent_len,
+                                  const char *child,
+                                  size_t child_len,
+                                  const struct HyphaSentTransform *transform,
+                                  uint32_t is_static);
+
 // Return this node's `WaitSet`, creating it on first use.
 //
 // The node owns it and it stays valid as long as the node; `hypha_node_destroy`
@@ -1772,6 +1857,13 @@ HyphaStatus hypha_node_default_waitset(struct HyphaNode *node,
 // read. Success transfers `context` and `release`, released once at the detach or the
 // node's destruction; a refused attach transfers nothing. `InvalidState`: during a run,
 // or a subscriber another registration dispatches.
+//
+// During a run a callback, on the run's thread, may attach a `HYPHA_ATTACH_TIMER` when
+// the node runs on host time or on its own simulated clock (`use_sim_time`): it joins
+// the dispatch before the run's next wait, and its first call comes one period after
+// the attach. Its id lies above every id a registration attached between runs takes.
+// The attach is `InvalidState` from any other thread, for any other kind, and for a
+// timer on a simulated clock driven from outside the node, which needs a native poll.
 // # Safety
 // `waitset` and `attachment` are live; `out` is writable. The subscriber of
 // `attachment` is null or a live handle from `hypha_subscribe_typed`.
@@ -1821,6 +1913,48 @@ HyphaStatus hypha_waitset_request_stop(struct HyphaWaitSet *waitset);
 // `waitset` must be a live handle or null. Any thread may call it on a running
 // `WaitSet`.
 HyphaStatus hypha_waitset_request_failure(struct HyphaWaitSet *waitset);
+
+// Cancel a plain timer: it calls nothing until `hypha_waitset_timer_reset`, counts no
+// missed period and holds no wake-up of the run. Idempotent. From a callback it also
+// holds back a call of the timer still due later in the same dispatch turn. A canceled
+// timer on simulated time still follows its clock: time going back ends the run with
+// `ClockRewound`, as for any timer, and so does a reset to a time earlier than it saw.
+//
+// `InvalidArgument`: null `waitset`, or a `timer` that names no plain timer of it (a
+// cycle's timer, a subscription, an unknown id). `InvalidState`: another thread than
+// the run's during a run.
+//
+// # Safety
+// `waitset` must be null or a live handle.
+HyphaStatus hypha_waitset_timer_cancel(struct HyphaWaitSet *waitset,
+                                       HyphaAttachmentId timer);
+
+// Reset a plain timer: its next call comes one period after now on the clock it was
+// created on (simulated framework time under simulated time, else the host monotonic
+// scheduling clock), and a cancel ends. The time before the reset counts as missed in
+// no call. From a callback it takes effect before the run's next wait and holds back a
+// call of the timer still due later in the same dispatch turn.
+//
+// `InvalidArgument` and `InvalidState` as `hypha_waitset_timer_cancel`.
+//
+// # Safety
+// `waitset` must be null or a live handle.
+HyphaStatus hypha_waitset_timer_reset(struct HyphaWaitSet *waitset,
+                                      HyphaAttachmentId timer);
+
+// Write the state of a plain timer to `out`, read at the call (see `HyphaTimerState`).
+// It does not wait for the run: a callback may read it.
+//
+// `InvalidArgument`: null `waitset` or `out`, or a `timer` that names no plain timer of
+// it. `InvalidState`: another thread than the run's during a run. Only `Ok` writes
+// `out`.
+//
+// # Safety
+// `waitset` must be null or a live handle; `out` null or writable for one
+// `HyphaTimerState`, which the caller owns.
+HyphaStatus hypha_waitset_timer_state(const struct HyphaWaitSet *waitset,
+                                      HyphaAttachmentId timer,
+                                      struct HyphaTimerState *out);
 
 #ifdef __cplusplus
 }  // extern "C"

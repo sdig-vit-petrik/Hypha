@@ -14,11 +14,26 @@ impl CallbackDispatcher<'_> {
     /// before evaluating timers or callbacks.
     ///
     /// Each `/clock` sample is recorded on the node still under the input's lock, so the
-    /// recorded newest is never older than the clock.
+    /// recorded newest is never older than the clock. A sample lower than the newest one
+    /// the node applied is not applied and ends the run with `ClockRewound`, whatever the
+    /// `WaitSet` holds and in the lockstep or not: nothing rewinds in place (#130). A CLI
+    /// tool follows the clock back.
     pub(super) fn drain_sim_clock(&mut self) -> Result<(), Progression> {
         let node = self.node;
+        let refuses_rewind = !hypha_core::port::is_cli_node_name(&node.name);
         self.drain_topic(&node.sim_clock_subscriber, |sample| {
-            let read = super::apply_sim_clock_sample(sample)?;
+            let read = super::callbacks::read_sim_clock_sample(sample)?;
+            if refuses_rewind
+                && let Some(newest) = node_progress::newest_read(node)
+                && read.nanos < newest.nanos
+            {
+                return Err(Error::from_status(crate::replay_restart::refuse_clock_rewind(
+                    &node.name,
+                    newest.nanos,
+                    read.nanos,
+                )));
+            }
+            super::callbacks::apply_sim_clock_read(read)?;
             node_progress::record_clock_read(node, read);
             Ok(())
         })?;
@@ -73,8 +88,8 @@ impl CallbackDispatcher<'_> {
         })
     }
 
-    /// True when this `WaitSet` has a cycle whose steps the progress reports: a replay
-    /// cycle or a triggered cycle.
+    /// True when this `WaitSet` has steps the progress reports: a replay cycle or a
+    /// triggered cycle. Plain callbacks take no part in the replay.
     fn reports_progress(&self) -> bool {
         self.has_replay_timer()
             || self
@@ -105,8 +120,7 @@ impl CallbackDispatcher<'_> {
         }
     }
 
-    /// The earliest deadline that the cycles of this `WaitSet` have not run. `None` when
-    /// no cycle holds one.
+    /// The earliest deadline that this `WaitSet` has not run. `None` when nothing holds one.
     fn progress_frontier(&self) -> Option<i64> {
         self.registrations
             .iter()

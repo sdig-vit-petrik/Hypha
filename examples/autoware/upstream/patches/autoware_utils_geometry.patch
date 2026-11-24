@@ -1,0 +1,101 @@
+# autoware_utils_geometry: the edits of the hypha port, applied to a copy of
+# upstream/autoware_utils/autoware_utils_geometry by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
+diff -ruN a/include/autoware_utils_geometry/boost_polygon_utils.hpp b/include/autoware_utils_geometry/boost_polygon_utils.hpp
+--- a/include/autoware_utils_geometry/boost_polygon_utils.hpp
++++ b/include/autoware_utils_geometry/boost_polygon_utils.hpp
+@@ -18,7 +18,6 @@
+ #include <autoware_utils_geometry/boost_geometry.hpp>
+ 
+ #include <autoware_perception_msgs/msg/detected_object.hpp>
+-#include <autoware_perception_msgs/msg/predicted_object.hpp>
+ #include <autoware_perception_msgs/msg/tracked_object.hpp>
+ #include <geometry_msgs/msg/pose.hpp>
+ 
+@@ -48,27 +47,24 @@
+   const geometry_msgs::msg::Pose & pose, const autoware_perception_msgs::msg::Shape & shape,
+   const double buffer);
+ 
++// hypha port: no PredictedObject overloads: autoware_perception_msgs/PredictedPath holds a
++// builtin_interfaces/Duration, which hypha reads only as ROS 1 duration (#45); the tracker
++// uses none of them.
+ Polygon2d to_polygon2d(const autoware_perception_msgs::msg::DetectedObject & object);
+ Polygon2d to_polygon2d(const autoware_perception_msgs::msg::TrackedObject & object);
+-Polygon2d to_polygon2d(const autoware_perception_msgs::msg::PredictedObject & object);
+ 
+ Polygon2d to_polygon2d_safe(const autoware_perception_msgs::msg::DetectedObject & object);
+ Polygon2d to_polygon2d_safe(const autoware_perception_msgs::msg::TrackedObject & object);
+-Polygon2d to_polygon2d_safe(const autoware_perception_msgs::msg::PredictedObject & object);
+ 
+ Polygon2d to_polygon2d(
+   const autoware_perception_msgs::msg::DetectedObject & object, const double buffer);
+ Polygon2d to_polygon2d(
+   const autoware_perception_msgs::msg::TrackedObject & object, const double buffer);
+-Polygon2d to_polygon2d(
+-  const autoware_perception_msgs::msg::PredictedObject & object, const double buffer);
+ 
+ Polygon2d to_polygon2d_safe(
+   const autoware_perception_msgs::msg::DetectedObject & object, const double buffer);
+ Polygon2d to_polygon2d_safe(
+   const autoware_perception_msgs::msg::TrackedObject & object, const double buffer);
+-Polygon2d to_polygon2d_safe(
+-  const autoware_perception_msgs::msg::PredictedObject & object, const double buffer);
+ 
+ Polygon2d to_footprint(
+   const geometry_msgs::msg::Pose & base_link_pose, const double base_to_front,
+diff -ruN a/src/geometry/boost_polygon_utils.cpp b/src/geometry/boost_polygon_utils.cpp
+--- a/src/geometry/boost_polygon_utils.cpp
++++ b/src/geometry/boost_polygon_utils.cpp
+@@ -14,6 +14,10 @@
+ 
+ #include "autoware_utils_geometry/boost_polygon_utils.hpp"
+ 
++// hypha port: no PredictedObject overloads: autoware_perception_msgs/PredictedPath holds a
++// builtin_interfaces/Duration, which hypha reads only as ROS 1 duration (#45); the tracker
++// uses none of them.
++
+ #include "autoware_utils_geometry/geometry.hpp"
+ 
+ #include <tf2/utils.hpp>
+@@ -290,20 +294,6 @@
+     object.kinematics.pose_with_covariance.pose, object.shape, buffer);
+ }
+ 
+-autoware_utils_geometry::Polygon2d to_polygon2d(
+-  const autoware_perception_msgs::msg::PredictedObject & object)
+-{
+-  return autoware_utils_geometry::to_polygon2d(
+-    object.kinematics.initial_pose_with_covariance.pose, object.shape);
+-}
+-
+-autoware_utils_geometry::Polygon2d to_polygon2d(
+-  const autoware_perception_msgs::msg::PredictedObject & object, const double buffer)
+-{
+-  return autoware_utils_geometry::to_polygon2d(
+-    object.kinematics.initial_pose_with_covariance.pose, object.shape, buffer);
+-}
+-
+ autoware_utils_geometry::Polygon2d to_polygon2d_safe(
+   const geometry_msgs::msg::Pose & pose, const autoware_perception_msgs::msg::Shape & shape,
+   const double buffer)
+@@ -338,20 +328,6 @@
+ {
+   return autoware_utils_geometry::to_polygon2d_safe(
+     object.kinematics.pose_with_covariance.pose, object.shape, buffer);
+-}
+-
+-autoware_utils_geometry::Polygon2d to_polygon2d_safe(
+-  const autoware_perception_msgs::msg::PredictedObject & object)
+-{
+-  return autoware_utils_geometry::to_polygon2d_safe(
+-    object.kinematics.initial_pose_with_covariance.pose, object.shape);
+-}
+-
+-autoware_utils_geometry::Polygon2d to_polygon2d_safe(
+-  const autoware_perception_msgs::msg::PredictedObject & object, const double buffer)
+-{
+-  return autoware_utils_geometry::to_polygon2d_safe(
+-    object.kinematics.initial_pose_with_covariance.pose, object.shape, buffer);
+ }
+ 
+ Polygon2d to_footprint(

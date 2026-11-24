@@ -368,5 +368,6 @@ fn a_file_shared_by_many_branches_within_the_file_limit_loads() {
     }
     fixture.write("n3.toml", "[shared]\n");
     let params = load(&fixture.dir.join("n0.toml"));
-    assert!(params.names().is_empty());
+    let found = params.names();
+    assert!(found.is_empty(), "{found:?}");
 }

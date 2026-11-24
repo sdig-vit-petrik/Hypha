@@ -4,6 +4,7 @@
 //! handles are opaque pointers. One create, one destroy. Callback samples live only
 //! for the callback; owning receive keeps a transport sample until its explicit release.
 
+pub mod clean;
 pub mod clock;
 pub mod config;
 pub mod cycle;
@@ -38,7 +39,7 @@ pub mod waitset;
 pub use waitset::{
     HYPHA_ATTACH_SUBSCRIPTION, HYPHA_ATTACH_TIMER, HyphaAttachment, HyphaAttachmentId,
     HyphaCallbackResult, HyphaContextRelease, HyphaDelivery, HyphaIntervalCallback,
-    HyphaSubscriptionCallback, HyphaWaitSet, HyphaWaitSetRunReport,
+    HyphaSubscriptionCallback, HyphaTimerState, HyphaWaitSet, HyphaWaitSetRunReport,
 };
 
 pub use config::HyphaConfig;
@@ -85,8 +86,8 @@ pub use subscriber::{
 };
 pub use transforms::{
     HYPHA_DEFAULT_TF_CACHE_NANOS, HYPHA_TF_AFTER_BUFFER, HYPHA_TF_BEFORE_BUFFER, HYPHA_TF_FOUND,
-    HYPHA_TF_INVALID_FRAME, HYPHA_TF_NOT_CONNECTED, HYPHA_TF_UNKNOWN_FRAME, HyphaTransform,
-    buffer::HyphaTransformBuffer,
+    HYPHA_TF_INVALID_FRAME, HYPHA_TF_NOT_CONNECTED, HYPHA_TF_REFUSED, HYPHA_TF_UNKNOWN_FRAME,
+    HyphaSentTransform, HyphaTransform, buffer::HyphaTransformBuffer,
 };
 
 /// The guard of `mutex`, taken as it is when a holder panicked.

@@ -31,6 +31,8 @@ pub enum ConfigSource {
     CommandLine,
     /// Taken from its default, because the source did not set it.
     Default,
+    /// Set on purpose and not read; the row's value is the reason.
+    Ignored,
 }
 
 /// One configuration value. `default` is `None` when no default exists.

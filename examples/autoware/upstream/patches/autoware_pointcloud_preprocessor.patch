@@ -1,0 +1,352 @@
+# autoware_pointcloud_preprocessor: the edits of the hypha port, applied to a copy of
+# upstream/autoware_universe/sensing/autoware_pointcloud_preprocessor by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
+diff -ruN a/include/autoware/pointcloud_preprocessor/concatenate_data/combine_cloud_handler.hpp b/include/autoware/pointcloud_preprocessor/concatenate_data/combine_cloud_handler.hpp
+--- a/include/autoware/pointcloud_preprocessor/concatenate_data/combine_cloud_handler.hpp
++++ b/include/autoware/pointcloud_preprocessor/concatenate_data/combine_cloud_handler.hpp
+@@ -63,11 +63,12 @@
+ protected:
+   /// @brief TimeHash defines a custom hash function for builtin_interfaces::msg::Time by using
+   /// its nanoseconds representation as the hash value.
++  // hypha port: ROS 1 stamps (secs, nsecs) until ROS 2 definitions (#45); every stamp field in this file is renamed.
+   struct TimeHash
+   {
+     std::size_t operator()(const builtin_interfaces::msg::Time & t) const
+     {
+-      return std::hash<int64_t>()(static_cast<int64_t>(t.sec) * 1'000'000'000LL + t.nanosec);
++      return std::hash<int64_t>()(static_cast<int64_t>(t.secs) * 1'000'000'000LL + t.nsecs);
+     }
+   };
+ 
+diff -ruN a/include/autoware/pointcloud_preprocessor/concatenate_data/concatenate_and_time_sync_node.hpp b/include/autoware/pointcloud_preprocessor/concatenate_data/concatenate_and_time_sync_node.hpp
+--- a/include/autoware/pointcloud_preprocessor/concatenate_data/concatenate_and_time_sync_node.hpp
++++ b/include/autoware/pointcloud_preprocessor/concatenate_data/concatenate_and_time_sync_node.hpp
+@@ -45,11 +45,7 @@
+ #include <sensor_msgs/msg/point_cloud2.hpp>
+ #include <sensor_msgs/point_cloud2_iterator.hpp>
+ 
+-#include <message_filters/pass_through.h>
+-#include <message_filters/subscriber.h>
+-#include <message_filters/sync_policies/approximate_time.h>
+-#include <message_filters/sync_policies/exact_time.h>
+-#include <message_filters/synchronizer.h>
++// hypha port: the message_filters includes go; the node uses none of them.
+ 
+ namespace autoware::pointcloud_preprocessor
+ {
+diff -ruN a/src/concatenate_data/combine_cloud_handler.cpp b/src/concatenate_data/combine_cloud_handler.cpp
+--- a/src/concatenate_data/combine_cloud_handler.cpp
++++ b/src/concatenate_data/combine_cloud_handler.cpp
+@@ -213,14 +213,15 @@
+   const auto reference_timestamp_max = advanced_info->timestamp + advanced_info->noise_window;
+ 
+   builtin_interfaces::msg::Time reference_timestamp_min_msg;
+-  reference_timestamp_min_msg.sec = static_cast<int32_t>(reference_timestamp_min);
+-  reference_timestamp_min_msg.nanosec =
+-    static_cast<uint32_t>((reference_timestamp_min - reference_timestamp_min_msg.sec) * 1e9);
++  // hypha port: ROS 1 stamps (secs, nsecs) until ROS 2 definitions (#45); every stamp field in this file is renamed.
++  reference_timestamp_min_msg.secs = static_cast<int32_t>(reference_timestamp_min);
++  reference_timestamp_min_msg.nsecs =
++    static_cast<uint32_t>((reference_timestamp_min - reference_timestamp_min_msg.secs) * 1e9);
+ 
+   builtin_interfaces::msg::Time reference_timestamp_max_msg;
+-  reference_timestamp_max_msg.sec = static_cast<int32_t>(reference_timestamp_max);
+-  reference_timestamp_max_msg.nanosec =
+-    static_cast<uint32_t>((reference_timestamp_max - reference_timestamp_max_msg.sec) * 1e9);
++  reference_timestamp_max_msg.secs = static_cast<int32_t>(reference_timestamp_max);
++  reference_timestamp_max_msg.nsecs =
++    static_cast<uint32_t>((reference_timestamp_max - reference_timestamp_max_msg.secs) * 1e9);
+ 
+   StrategyAdvancedConfig strategy_config(reference_timestamp_min_msg, reference_timestamp_max_msg);
+   const auto serialized_config = strategy_config.serialize();
+diff -ruN a/src/concatenate_data/combine_cloud_handler_base.cpp b/src/concatenate_data/combine_cloud_handler_base.cpp
+--- a/src/concatenate_data/combine_cloud_handler_base.cpp
++++ b/src/concatenate_data/combine_cloud_handler_base.cpp
+@@ -64,10 +64,10 @@
+   }
+ 
+   // Twist data in the queue that is older than the current twist by 1 second will be cleared.
+-  const auto cutoff_time = add(msg.header.stamp, -std::chrono::seconds(1));
+-
++  // hypha port: the age compared in nanoseconds, the same test as stamp - 1 s < front; a
++  // hypha stamp is unsigned and cannot hold stamp - 1 s for a stamp below 1 s.
+   while (!twist_queue_.empty()) {
+-    if (is_earlier(cutoff_time, twist_queue_.front().header.stamp)) {
++    if (subtract(msg.header.stamp, twist_queue_.front().header.stamp) < std::chrono::seconds(1)) {
+       break;
+     }
+     twist_queue_.pop_front();
+@@ -91,10 +91,10 @@
+   }
+ 
+   // Twist data in the queue that is older than the current twist by 1 second will be cleared.
+-  const auto cutoff_time = add(msg.header.stamp, -std::chrono::seconds(1));
+-
++  // hypha port: the age compared in nanoseconds, the same test as stamp - 1 s < front; a
++  // hypha stamp is unsigned and cannot hold stamp - 1 s for a stamp below 1 s.
+   while (!twist_queue_.empty()) {
+-    if (is_earlier(cutoff_time, twist_queue_.front().header.stamp)) {
++    if (subtract(msg.header.stamp, twist_queue_.front().header.stamp) < std::chrono::seconds(1)) {
+       break;
+     }
+     twist_queue_.pop_front();
+diff -ruN a/src/concatenate_data/time_utils.hpp b/src/concatenate_data/time_utils.hpp
+--- a/src/concatenate_data/time_utils.hpp
++++ b/src/concatenate_data/time_utils.hpp
+@@ -23,14 +23,15 @@
+ namespace autoware::pointcloud_preprocessor
+ {
+ 
++// hypha port: ROS 1 stamps (secs, nsecs) until ROS 2 definitions (#45); every stamp field in this file is renamed.
+ /// Strict weak ordering for stamps.
+ struct TimeLess
+ {
+   bool operator()(
+     const builtin_interfaces::msg::Time & a, const builtin_interfaces::msg::Time & b) const
+   {
+-    if (a.sec != b.sec) return a.sec < b.sec;
+-    return a.nanosec < b.nanosec;
++    if (a.secs != b.secs) return a.secs < b.secs;
++    return a.nsecs < b.nsecs;
+   }
+ };
+ 
+@@ -42,7 +43,7 @@
+   const builtin_interfaces::msg::Time & stamp, const std::chrono::nanoseconds & duration)
+ {
+   const int64_t total_nanoseconds =
+-    static_cast<int64_t>(stamp.sec) * 1'000'000'000LL + stamp.nanosec + duration.count();
++    static_cast<int64_t>(stamp.secs) * 1'000'000'000LL + stamp.nsecs + duration.count();
+   int64_t sec = total_nanoseconds / 1'000'000'000LL;
+   int64_t nanosec = total_nanoseconds % 1'000'000'000LL;
+   if (nanosec < 0) {
+@@ -50,8 +51,8 @@
+     nanosec += 1'000'000'000LL;
+   }
+   builtin_interfaces::msg::Time result;
+-  result.sec = static_cast<int32_t>(sec);
+-  result.nanosec = static_cast<uint32_t>(nanosec);
++  result.secs = static_cast<int32_t>(sec);
++  result.nsecs = static_cast<uint32_t>(nanosec);
+   return result;
+ }
+ 
+@@ -60,14 +61,14 @@
+   const builtin_interfaces::msg::Time & a, const builtin_interfaces::msg::Time & b)
+ {
+   return std::chrono::nanoseconds(
+-    (static_cast<int64_t>(a.sec) - b.sec) * 1'000'000'000LL +
+-    (static_cast<int64_t>(a.nanosec) - b.nanosec));
++    (static_cast<int64_t>(a.secs) - b.secs) * 1'000'000'000LL +
++    (static_cast<int64_t>(a.nsecs) - b.nsecs));
+ }
+ 
+ /// Stamp in double seconds. Rounds once; double(total nanoseconds) * 1e-9 would round twice.
+ inline double to_seconds(const builtin_interfaces::msg::Time & stamp)
+ {
+-  return static_cast<double>(stamp.sec) + static_cast<double>(stamp.nanosec) * 1e-9;
++  return static_cast<double>(stamp.secs) + static_cast<double>(stamp.nsecs) * 1e-9;
+ }
+ 
+ }  // namespace autoware::pointcloud_preprocessor
+diff -ruN a/test/test_concatenate_node_unit.cpp b/test/test_concatenate_node_unit.cpp
+--- a/test/test_concatenate_node_unit.cpp
++++ b/test/test_concatenate_node_unit.cpp
+@@ -51,22 +51,8 @@
+     rclcpp::NodeOptions node_options;
+     // Instead of "input_topics", other parameters are not used.
+     // They just helps to setup the concatenate node
+-    node_options.parameter_overrides(
+-      {{"debug_mode", false},
+-       {"rosbag_length", 0.0},
+-       {"maximum_queue_size", 5},
+-       {"timeout_sec", 0.2},
+-       {"is_motion_compensated", true},
+-       {"publish_synchronized_pointcloud", true},
+-       {"keep_input_frame_in_synchronized_pointcloud", true},
+-       {"publish_previous_but_late_pointcloud", false},
+-       {"synchronized_pointcloud_postfix", "pointcloud"},
+-       {"input_twist_topic_type", "twist"},
+-       {"input_topics", input_topics},
+-       {"output_frame", "base_link"},
+-       {"matching_strategy.type", "advanced"},
+-       {"matching_strategy.lidar_timestamp_offsets", std::vector<double>{0.0, 0.04, 0.08}},
+-       {"matching_strategy.lidar_timestamp_noise_window", std::vector<double>{0.01, 0.01, 0.01}}});
++    // hypha port: the same values come from test/config/concatenate_node_unit_test.toml,
++    // the parameter file main() gives rclcpp::init, with the node's ports.
+ 
+     concatenate_node_ =
+       std::make_shared<PointCloudConcatenateDataSynchronizerComponent>(node_options);
+@@ -619,7 +605,9 @@
+ int main(int argc, char ** argv)
+ {
+   ::testing::InitGoogleTest(&argc, argv);
+-  rclcpp::init(argc, argv);
++  // hypha port: the parameter file of SetUp's node.
++  const char * hypha_argv[] = {argv[0], "test/config/concatenate_node_unit_test.toml"};
++  rclcpp::init(2, hypha_argv);
+   int ret = RUN_ALL_TESTS();
+   rclcpp::shutdown();
+   return ret;
+diff -ruN a/test/test_concatenation_info.cpp b/test/test_concatenation_info.cpp
+--- a/test/test_concatenation_info.cpp
++++ b/test/test_concatenation_info.cpp
+@@ -29,6 +29,7 @@
+ #include <string>
+ #include <vector>
+ 
++// hypha port: ROS 1 stamps (secs, nsecs) until ROS 2 definitions (#45); every stamp field in this file is renamed.
+ using autoware::pointcloud_preprocessor::ConcatenationInfoManager;
+ using autoware::pointcloud_preprocessor::StrategyAdvancedConfig;
+ 
+@@ -42,8 +43,8 @@
+ 
+     // Create test header
+     test_header_.frame_id = "base_link";
+-    test_header_.stamp.sec = 1234567891;
+-    test_header_.stamp.nanosec = 987654321;
++    test_header_.stamp.secs = 1234567891;
++    test_header_.stamp.nsecs = 987654321;
+ 
+     // Create test point clouds
+     pcl::PointXYZ pt(1.0f, 2.0f, 3.0f);
+@@ -137,8 +138,8 @@
+   EXPECT_EQ(first_source.topic, input_topics_[0]);
+   EXPECT_EQ(first_source.status, autoware_sensing_msgs::msg::SourcePointCloudInfo::STATUS_OK);
+   EXPECT_EQ(first_source.header.frame_id, test_cloud_1_.header.frame_id);
+-  EXPECT_EQ(first_source.header.stamp.sec, test_cloud_1_.header.stamp.sec);
+-  EXPECT_EQ(first_source.header.stamp.nanosec, test_cloud_1_.header.stamp.nanosec);
++  EXPECT_EQ(first_source.header.stamp.secs, test_cloud_1_.header.stamp.secs);
++  EXPECT_EQ(first_source.header.stamp.nsecs, test_cloud_1_.header.stamp.nsecs);
+   EXPECT_EQ(first_source.idx_begin, 0u);
+   EXPECT_EQ(first_source.length, test_cloud_1_.width * test_cloud_1_.height);
+ 
+@@ -224,8 +225,8 @@
+   auto & first_source = concatenated_point_cloud_info_msg.source_info[0];
+   EXPECT_EQ(first_source.status, autoware_sensing_msgs::msg::SourcePointCloudInfo::STATUS_INVALID);
+   EXPECT_EQ(first_source.header.frame_id, test_header_.frame_id);
+-  EXPECT_EQ(first_source.header.stamp.sec, test_header_.stamp.sec);
+-  EXPECT_EQ(first_source.header.stamp.nanosec, test_header_.stamp.nanosec);
++  EXPECT_EQ(first_source.header.stamp.secs, test_header_.stamp.secs);
++  EXPECT_EQ(first_source.header.stamp.nsecs, test_header_.stamp.nsecs);
+ }
+ 
+ TEST_F(ConcatenationInfoTest, ApplySourceWithStatus)
+@@ -249,12 +250,12 @@
+ 
+   // Create AdvancedStrategy config with test timestamps
+   builtin_interfaces::msg::Time reference_timestamp_min;
+-  reference_timestamp_min.sec = 1234567890;
+-  reference_timestamp_min.nanosec = 100000000;
++  reference_timestamp_min.secs = 1234567890;
++  reference_timestamp_min.nsecs = 100000000;
+ 
+   builtin_interfaces::msg::Time reference_timestamp_max;
+-  reference_timestamp_max.sec = 1234567890;
+-  reference_timestamp_max.nanosec = 900000000;
++  reference_timestamp_max.secs = 1234567890;
++  reference_timestamp_max.nsecs = 900000000;
+ 
+   auto cfg = StrategyAdvancedConfig(reference_timestamp_min, reference_timestamp_max);
+   ConcatenationInfoManager::set_config(cfg.serialize(), concatenated_point_cloud_info_msg);
+@@ -265,10 +266,10 @@
+   // Verify we can deserialize it back
+   auto deserialized_cfg =
+     StrategyAdvancedConfig(concatenated_point_cloud_info_msg.matching_strategy_config);
+-  EXPECT_EQ(deserialized_cfg.reference_timestamp_min_msg.sec, reference_timestamp_min.sec);
+-  EXPECT_EQ(deserialized_cfg.reference_timestamp_min_msg.nanosec, reference_timestamp_min.nanosec);
+-  EXPECT_EQ(deserialized_cfg.reference_timestamp_max_msg.sec, reference_timestamp_max.sec);
+-  EXPECT_EQ(deserialized_cfg.reference_timestamp_max_msg.nanosec, reference_timestamp_max.nanosec);
++  EXPECT_EQ(deserialized_cfg.reference_timestamp_min_msg.secs, reference_timestamp_min.secs);
++  EXPECT_EQ(deserialized_cfg.reference_timestamp_min_msg.nsecs, reference_timestamp_min.nsecs);
++  EXPECT_EQ(deserialized_cfg.reference_timestamp_max_msg.secs, reference_timestamp_max.secs);
++  EXPECT_EQ(deserialized_cfg.reference_timestamp_max_msg.nsecs, reference_timestamp_max.nsecs);
+ }
+ 
+ TEST_F(ConcatenationInfoTest, StrategyAdvancedConfigInvalidSerializedData)
+@@ -363,8 +364,8 @@
+   // Create concatenated cloud for the result
+   sensor_msgs::msg::PointCloud2 concatenated_cloud;
+   concatenated_cloud.header.frame_id = "concatenated_frame";
+-  concatenated_cloud.header.stamp.sec = 1234567892;
+-  concatenated_cloud.header.stamp.nanosec = 555666777;
++  concatenated_cloud.header.stamp.secs = 1234567892;
++  concatenated_cloud.header.stamp.nsecs = 555666777;
+ 
+   // Add only 2 out of 3 clouds with STATUS_OK
+   concatenation_info_manager.update_source_from_point_cloud(
+@@ -381,10 +382,10 @@
+   // Check header is updated
+   EXPECT_EQ(concatenated_point_cloud_info_msg.header.frame_id, concatenated_cloud.header.frame_id);
+   EXPECT_EQ(
+-    concatenated_point_cloud_info_msg.header.stamp.sec, concatenated_cloud.header.stamp.sec);
++    concatenated_point_cloud_info_msg.header.stamp.secs, concatenated_cloud.header.stamp.secs);
+   EXPECT_EQ(
+-    concatenated_point_cloud_info_msg.header.stamp.nanosec,
+-    concatenated_cloud.header.stamp.nanosec);
++    concatenated_point_cloud_info_msg.header.stamp.nsecs,
++    concatenated_cloud.header.stamp.nsecs);
+ 
+   // Check concatenation is not successful (2/3 clouds)
+   EXPECT_FALSE(concatenated_point_cloud_info_msg.concatenation_success);
+@@ -425,8 +426,8 @@
+   // Create concatenated cloud for the result
+   sensor_msgs::msg::PointCloud2 concatenated_cloud;
+   concatenated_cloud.header.frame_id = "concatenated_frame";
+-  concatenated_cloud.header.stamp.sec = 1234567892;
+-  concatenated_cloud.header.stamp.nanosec = 555666777;
++  concatenated_cloud.header.stamp.secs = 1234567892;
++  concatenated_cloud.header.stamp.nsecs = 555666777;
+ 
+   // Update result - should not be successful since we only have 1/3 valid clouds
+   concatenation_info_manager.set_result(concatenated_cloud, concatenated_point_cloud_info_msg);
+@@ -476,8 +477,8 @@
+   // Create concatenated cloud for first iteration
+   sensor_msgs::msg::PointCloud2 concatenated_cloud_1;
+   concatenated_cloud_1.header.frame_id = "concatenated_frame_1";
+-  concatenated_cloud_1.header.stamp.sec = 1234567892;
+-  concatenated_cloud_1.header.stamp.nanosec = 111222333;
++  concatenated_cloud_1.header.stamp.secs = 1234567892;
++  concatenated_cloud_1.header.stamp.nsecs = 111222333;
+ 
+   concatenation_info_manager.set_result(concatenated_cloud_1, concatenated_point_cloud_info_msg_1);
+ 
+@@ -485,10 +486,10 @@
+   EXPECT_EQ(
+     concatenated_point_cloud_info_msg_1.header.frame_id, concatenated_cloud_1.header.frame_id);
+   EXPECT_EQ(
+-    concatenated_point_cloud_info_msg_1.header.stamp.sec, concatenated_cloud_1.header.stamp.sec);
++    concatenated_point_cloud_info_msg_1.header.stamp.secs, concatenated_cloud_1.header.stamp.secs);
+   EXPECT_EQ(
+-    concatenated_point_cloud_info_msg_1.header.stamp.nanosec,
+-    concatenated_cloud_1.header.stamp.nanosec);
++    concatenated_point_cloud_info_msg_1.header.stamp.nsecs,
++    concatenated_cloud_1.header.stamp.nsecs);
+   EXPECT_FALSE(concatenated_point_cloud_info_msg_1.concatenation_success);
+ 
+   // Verify indexing for first iteration
+@@ -521,8 +522,8 @@
+   // Create concatenated cloud for second iteration
+   sensor_msgs::msg::PointCloud2 concatenated_cloud_2;
+   concatenated_cloud_2.header.frame_id = "concatenated_frame_2";
+-  concatenated_cloud_2.header.stamp.sec = 1234567893;
+-  concatenated_cloud_2.header.stamp.nanosec = 444555666;
++  concatenated_cloud_2.header.stamp.secs = 1234567893;
++  concatenated_cloud_2.header.stamp.nsecs = 444555666;
+ 
+   concatenation_info_manager.set_result(concatenated_cloud_2, concatenated_point_cloud_info_msg_2);
+ 
+@@ -530,10 +531,10 @@
+   EXPECT_EQ(
+     concatenated_point_cloud_info_msg_2.header.frame_id, concatenated_cloud_2.header.frame_id);
+   EXPECT_EQ(
+-    concatenated_point_cloud_info_msg_2.header.stamp.sec, concatenated_cloud_2.header.stamp.sec);
++    concatenated_point_cloud_info_msg_2.header.stamp.secs, concatenated_cloud_2.header.stamp.secs);
+   EXPECT_EQ(
+-    concatenated_point_cloud_info_msg_2.header.stamp.nanosec,
+-    concatenated_cloud_2.header.stamp.nanosec);
++    concatenated_point_cloud_info_msg_2.header.stamp.nsecs,
++    concatenated_cloud_2.header.stamp.nsecs);
+   EXPECT_TRUE(concatenated_point_cloud_info_msg_2.concatenation_success);
+ 
+   // Verify that the first iteration results are unchanged

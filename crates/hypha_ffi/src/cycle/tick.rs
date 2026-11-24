@@ -19,7 +19,7 @@ pub unsafe fn cycle_timer_tick(missed_periods: u64, cycle: *mut c_void) -> Hypha
     let reached = unsafe { CycleTarget::of(cycle.cast_const().cast::<HyphaCycle>()) }
         .and_then(|target| unsafe { target.waitset() });
     match reached {
-        Ok((set, id)) => cycle_tick(set, id, missed_periods),
+        Ok((set, id)) => cycle_tick(&set, id, missed_periods),
         Err(_) => HyphaCallbackResult::fail(HyphaStatus::InvalidState as i32),
     }
 }

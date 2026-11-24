@@ -27,7 +27,8 @@ pub(super) enum Due {
 
 /// Connects native readiness to the C callbacks.
 pub(super) struct CallbackDispatcher<'a> {
-    pub(super) registrations: &'a mut [Registration],
+    /// A `Vec`, so the timers a callback attached during the run join before the next wait.
+    pub(super) registrations: &'a mut Vec<Registration>,
     /// The cycles of the `WaitSet`, shared for the run.
     pub(super) cycles: &'a [Cycle],
     /// The address of the `WaitSet` this run serves. It keys the `WaitSet`'s offer among
@@ -79,13 +80,54 @@ fn find_cycle(cycles: &[Cycle], id: CycleId) -> Result<&Cycle, Error> {
 
 impl CallbackDispatcher<'_> {
     /// Add slow callbacks to this run's report and to the node's health.
-    fn count_slow(&mut self, slow: u64) {
+    pub(super) fn count_slow(&mut self, slow: u64) {
         self.slow_callbacks = self.slow_callbacks.wrapping_add(slow);
         self.health.add_slow_callbacks(slow);
     }
 
     fn find(&mut self, attachment: AttachmentId) -> Option<&mut Registration> {
         self.registrations.iter_mut().find(|registration| registration.id == attachment)
+    }
+
+    /// Take the timers a callback attached since the last wait into the dispatch.
+    pub(super) fn admit_attached(&mut self) {
+        let Ok(mut attaches) = self.set.run_attaches.try_borrow_mut() else {
+            return;
+        };
+        if attaches.pending.is_empty() {
+            return;
+        }
+        self.registrations.append(&mut attaches.pending);
+        attaches.held = self.registrations.len();
+    }
+
+    /// Apply the resets a call made to plain timers since the dispatcher last looked.
+    fn apply_timer_resets(&mut self) {
+        for registration in self.registrations.iter_mut() {
+            if let Target::Timer {
+                ref mut timer,
+                ref mut run_anchored,
+                control: Some(ref control),
+                ..
+            } = registration.target
+            {
+                // A reset that finds simulated time gone back stays pending, and the
+                // next due check ends the run for it (`fire_due_timers`).
+                let _applied = control.apply_reset(timer, run_anchored);
+            }
+        }
+    }
+
+    /// Whether a callback canceled or reset the plain timer `attachment` since this turn
+    /// found its call due.
+    fn holds_back(&self, attachment: AttachmentId) -> bool {
+        self.registrations.iter().any(|registration| {
+            registration.id == attachment
+                && matches!(
+                    registration.target,
+                    Target::Timer { control: Some(ref control), .. } if control.holds_back_due_call()
+                )
+        })
     }
 
     /// Fire every clock-driven timer that is due.
@@ -102,54 +144,52 @@ impl CallbackDispatcher<'_> {
                 self.due.push(item);
                 continue;
             }
-            let Target::Timer { ref mut timer, ref mut cycle, ref mut run_anchored, .. } =
-                registration.target
+            let Target::Timer {
+                ref mut timer,
+                ref mut cycle,
+                ref mut run_anchored,
+                ref control,
+                ..
+            } = registration.target
             else {
                 continue;
             };
             let grid = if timer.is_grid() { cycle.as_mut() } else { None };
             if let Some(owned) = grid {
-                let CycleTimer { cycle: id, ref mut upstream, ref deferred } = **owned;
-                let cycle = match find_cycle(cycles, id) {
-                    Ok(cycle) => cycle,
+                match grid_due(cycles, registration.id, timer, owned, now) {
+                    Ok(Some(due)) => self.due.push(due),
+                    Ok(None) => {}
                     Err(status) => return fail_with(&mut self.failure, registration.id, status),
-                };
-                if timer.awaiting_anchor() {
-                    // Nothing fires before the first clock value sets the phase.
-                    if !hypha_time::sim_time_has_value() {
-                        continue;
-                    }
-                    timer.anchor_grid(now);
                 }
-                let first_nanos = timer.next_due().nanos();
-                let (hypha_core::timer::Observation { fired, rewound }, missed_delta) =
-                    observe_with_delta(timer, now);
-                if rewound {
-                    let subject = format!("cycle '{}'", cycle.name());
+                continue;
+            }
+            // On simulated time a plain timer starts on the first clock value, not on the
+            // placeholder zero a node starts with.
+            if !*run_anchored && self.node.on_sim_time() && !hypha_time::sim_time_has_value() {
+                continue;
+            }
+            if let Some(control) = control.as_deref() {
+                // A reset or a canceled timer that finds time gone back is a rewind, as
+                // for any timer: the run ends and the process restarts (FSR-37).
+                let followed = control.apply_reset(timer, run_anchored)
+                    && (!control.is_canceled()
+                        || super::TimerControl::follow_while_canceled(timer, now));
+                if !followed {
+                    let subject = timer_subject(registration.id, timer.period().nanos());
                     let status = crate::replay_restart::refuse_rewind(&subject, now.nanos());
                     return fail_with(&mut self.failure, registration.id, status);
                 }
-                // A held cycle runs its backlog, and a sliced one the deadlines its last
-                // turn did not reach, on a turn with no new deadline.
-                let held = upstream.hold.backlog_first().is_some();
-                let sliced = deferred.is_some();
-                let nothing_to_run = fired == 0 && !held && !sliced;
-                if nothing_to_run {
+                // A canceled timer calls nothing and counts no missed period.
+                if control.is_canceled() {
                     continue;
                 }
-                let periods = replay_periods(fired, missed_delta);
-                self.due.push(Due::Replay(ReplayDue {
-                    attachment: registration.id,
-                    cycle: id,
-                    first_nanos,
-                    period_nanos: timer.period().nanos(),
-                    periods,
-                }));
-                continue;
             }
             let scheduled = anchor_at_first_run(timer, run_anchored, now);
             let (hypha_core::timer::Observation { fired, rewound }, missed_delta) =
                 observe_with_delta(timer, now);
+            if let Some(control) = control.as_deref() {
+                control.observed(timer.next_due());
+            }
             let owner = match cycle.as_ref().map(|timer| find_cycle(cycles, timer.cycle)) {
                 Some(Ok(cycle)) => Some(cycle),
                 Some(Err(status)) => return fail_with(&mut self.failure, registration.id, status),
@@ -197,6 +237,8 @@ impl CallbackDispatcher<'_> {
                 continue;
             }
             let decision = match item {
+                // A callback earlier in this turn may have canceled or reset the timer.
+                Due::Timer { attachment, .. } if self.holds_back(attachment) => continue,
                 Due::Timer { attachment, cycle, missed } => {
                     let result = self.invoke_periodic(attachment, cycle, missed);
                     self.act(attachment, result)
@@ -302,7 +344,7 @@ fn invalid(status: Error) -> HyphaCallbackResult {
 }
 
 /// Time one callback of registration `id` and count it in `warnings` when slow.
-fn timed<F: FnOnce() -> HyphaCallbackResult>(
+pub(super) fn timed<F: FnOnce() -> HyphaCallbackResult>(
     warnings: &mut CallbackWarnings,
     id: AttachmentId,
     warn_nanos: u64,
@@ -362,7 +404,9 @@ impl Dispatcher for CallbackDispatcher<'_> {
             let Registration { id, ref mut target, ref mut warnings, ref mut transport_failing } =
                 *registration;
             let (subscriber, callback) = match *target {
-                Target::Subscription { ref subscriber, ref mut callback } => (subscriber, callback),
+                Target::Subscription { ref subscriber, ref mut callback, .. } => {
+                    (subscriber, callback)
+                }
                 Target::LatchReplay => {
                     // Replay latched topics after a subscriber was created.
                     self.node.transport.replay_latched();
@@ -488,8 +532,11 @@ impl Dispatcher for CallbackDispatcher<'_> {
     }
 
     /// The wait may last until the earliest host deadline. Under simulated time the
-    /// timers hold no host deadline.
+    /// timers hold no host deadline, and a canceled timer holds none.
     fn next_timed_wait(&mut self) -> Option<std::time::Duration> {
+        // What a callback attached or reset takes effect before this wait.
+        self.admit_attached();
+        self.apply_timer_resets();
         // A replay cycle with deadlines its last slice did not reach goes on at once.
         let sliced = self.registrations.iter().any(|registration| match registration.target {
             Target::Timer { cycle: Some(ref timer), .. } => timer.deferred.is_some(),
@@ -523,7 +570,7 @@ fn anchor_at_first_run(
 
 /// Observe `timer` at `now`, with the periods this observation skipped: the `missed` of
 /// the callback, not the running total.
-fn observe_with_delta(
+pub(super) fn observe_with_delta(
     timer: &mut hypha_core::timer::Timer,
     now: hypha_time::Time,
 ) -> (hypha_core::timer::Observation, u64) {
@@ -532,7 +579,49 @@ fn observe_with_delta(
     (observation, timer.missed_count().wrapping_sub(previous_missed))
 }
 
-fn is_detached_in(
+/// The replay call of the grid timer of a cycle at `now`, `None` when it has nothing to
+/// run; the status that ends the run for an unknown cycle or a rewind.
+fn grid_due(
+    cycles: &[Cycle],
+    attachment: AttachmentId,
+    timer: &mut hypha_core::timer::Timer,
+    owned: &mut CycleTimer,
+    now: hypha_time::Time,
+) -> Result<Option<Due>, HyphaStatus> {
+    let CycleTimer { cycle: id, ref mut upstream, ref deferred } = *owned;
+    let cycle = find_cycle(cycles, id)?;
+    if timer.awaiting_anchor() {
+        // Nothing fires before the first clock value sets the phase.
+        if !hypha_time::sim_time_has_value() {
+            return Ok(None);
+        }
+        timer.anchor_grid(now);
+    }
+    let first_nanos = timer.next_due().nanos();
+    let (hypha_core::timer::Observation { fired, rewound }, missed_delta) =
+        observe_with_delta(timer, now);
+    if rewound {
+        let subject = format!("cycle '{}'", cycle.name());
+        return Err(crate::replay_restart::refuse_rewind(&subject, now.nanos()));
+    }
+    // A held cycle runs its backlog, and a sliced one the deadlines its last turn did not
+    // reach, on a turn with no new deadline.
+    let held = upstream.hold.backlog_first().is_some();
+    let sliced = deferred.is_some();
+    if fired == 0 && !held && !sliced {
+        return Ok(None);
+    }
+    let periods = replay_periods(fired, missed_delta);
+    Ok(Some(Due::Replay(ReplayDue {
+        attachment,
+        cycle: id,
+        first_nanos,
+        period_nanos: timer.period().nanos(),
+        periods,
+    })))
+}
+
+pub(super) fn is_detached_in(
     detached: &std::cell::RefCell<Vec<AttachmentId>>,
     attachment: AttachmentId,
 ) -> bool {
@@ -542,7 +631,10 @@ fn is_detached_in(
 /// The monotonic deadline of a registration that runs on the host clock, or `None`.
 fn host_deadline(target: &Target, host_timers: bool) -> Option<i64> {
     match *target {
-        Target::Timer { ref timer, .. } if host_timers => Some(timer.next_due().nanos()),
+        Target::Timer { ref timer, ref control, .. } if host_timers => {
+            let canceled = control.as_deref().is_some_and(super::TimerControl::is_canceled);
+            (!canceled).then(|| timer.next_due().nanos())
+        }
         Target::Triggered(ref state) if host_timers => state.schedule.next_fallback(),
         _ => None,
     }
@@ -558,7 +650,7 @@ pub(crate) fn status_from_code(code: i32) -> HyphaStatus {
 }
 
 /// How a rewind line names a plain timer: by its attachment id and period.
-fn timer_subject(id: AttachmentId, period_nanos: i64) -> String {
+pub(super) fn timer_subject(id: AttachmentId, period_nanos: i64) -> String {
     let period_millis = period_nanos / 1_000_000;
     format!("timer {id} (period {period_millis} ms)")
 }
@@ -571,5 +663,33 @@ mod timer_subject_tests {
     fn a_rewound_plain_timer_is_named_by_its_attachment_and_period() {
         assert_eq!(timer_subject(7, 1_000_000_000), "timer 7 (period 1000 ms)");
         assert_eq!(timer_subject(2, 2_500_000), "timer 2 (period 2 ms)");
+    }
+}
+
+#[cfg(test)]
+mod host_deadline_tests {
+    use std::sync::Arc;
+
+    use hypha_core::timer::Timer;
+    use hypha_time::{Duration, Time};
+
+    use super::{Target, host_deadline};
+    use crate::waitset::TimerControl;
+
+    #[test]
+    fn a_canceled_host_timer_holds_no_deadline_and_costs_no_wake_up() {
+        let timer = Timer::new(Duration::from_nanos(100), Time::from_nanos(1_000));
+        let control = TimerControl::new(&timer, false);
+        let shared = Some(Arc::clone(&control));
+        let target = Target::Timer {
+            timer,
+            callback: None,
+            cycle: None,
+            run_anchored: true,
+            control: shared,
+        };
+        assert_eq!(host_deadline(&target, true), Some(1_100));
+        control.cancel();
+        assert_eq!(host_deadline(&target, true), None);
     }
 }

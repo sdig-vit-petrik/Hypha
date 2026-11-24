@@ -2,6 +2,7 @@
 //!
 //! One line is one field (`type name`) or constant (`type NAME=value`). A `#` starts a
 //! comment to the end of the line, except inside the value of a `string` constant.
+//! A name follows ROS 1's rule: a letter, then letters, digits or `_`.
 
 use crate::constant::{ConstantValueError, constant_value};
 use crate::spec::{Constant, Field, FieldType, MessageSpec, Multiplicity, ServiceSpec, TypeName};
@@ -98,6 +99,22 @@ pub enum ParseError {
         /// The line number, counted from 1.
         line: usize,
     },
+    /// A field or constant name is not a letter followed by letters, digits or `_`.
+    InvalidName {
+        /// The line number, counted from 1.
+        line: usize,
+        /// The name as written.
+        text: String,
+    },
+    /// A field name is followed by more text, such as a ROS 2 default value.
+    TrailingText {
+        /// The line number, counted from 1.
+        line: usize,
+        /// The field name.
+        name: String,
+        /// The text after the name, comment removed.
+        text: String,
+    },
     /// A nested type name splits into an empty package or an empty name.
     InvalidTypeName {
         /// The line number, counted from 1.
@@ -157,6 +174,18 @@ impl std::fmt::Display for ParseError {
             }
             Self::EmptyName { line } => {
                 write!(out, "line {line}: empty field or constant name")
+            }
+            Self::InvalidName { line, text } => {
+                write!(
+                    out,
+                    "line {line}: field or constant name `{text}` is not a letter followed by letters, digits or `_`"
+                )
+            }
+            Self::TrailingText { line, name, text } => {
+                write!(
+                    out,
+                    "line {line}: unexpected `{text}` after field `{name}`; a default value is ROS 2 syntax, which is not supported"
+                )
             }
             Self::InvalidTypeName { line, text } => {
                 write!(
@@ -251,11 +280,22 @@ fn parse_declaration(
         return build_constant(line, after_type, equals_index, field_type);
     }
 
-    let name = strip_comment(after_type).trim().to_string();
+    let declared = strip_comment(after_type).trim();
+    let (name, trailing) = declared
+        .split_once(char::is_whitespace)
+        .map_or((declared, ""), |(name, trailing)| (name, trailing.trim_start()));
     if name.is_empty() {
         return Err(ParseError::EmptyName { line });
     }
-    Ok(Declaration::Field(Field { field_type, multiplicity, name }))
+    check_name(line, name)?;
+    if !trailing.is_empty() {
+        return Err(ParseError::TrailingText {
+            line,
+            name: String::from(name),
+            text: String::from(trailing),
+        });
+    }
+    Ok(Declaration::Field(Field { field_type, multiplicity, name: String::from(name) }))
 }
 
 /// Builds a constant from the text after its type, given where `=` sits.
@@ -275,6 +315,7 @@ fn build_constant(
     if name.is_empty() {
         return Err(ParseError::EmptyName { line });
     }
+    check_name(line, &name)?;
 
     let value_start = equals_index.saturating_add(1);
     let raw_value = after_type.get(value_start..).unwrap_or("");
@@ -304,6 +345,15 @@ fn build_constant(
             Err(ParseError::NonBuiltinConstant { line, text: constant.constant_type.render() })
         }
     }
+}
+
+/// Checks `name` against ROS 1's rule for a field or constant name,
+/// `[A-Za-z][A-Za-z0-9_]*`.
+fn check_name(line: usize, name: &str) -> Result<(), ParseError> {
+    let mut chars = name.chars();
+    let valid = chars.next().is_some_and(|first| first.is_ascii_alphabetic())
+        && chars.all(|rest| rest.is_ascii_alphanumeric() || rest == '_');
+    if valid { Ok(()) } else { Err(ParseError::InvalidName { line, text: String::from(name) }) }
 }
 
 /// Cuts `text` at its first comment marker, if it has one.

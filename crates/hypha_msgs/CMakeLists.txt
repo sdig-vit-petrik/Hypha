@@ -2,15 +2,16 @@
 # canonical .msg files in msg/. No ROS installation is used.
 
 cmake_minimum_required(VERSION 3.16)
-project(hypha_msgs VERSION 0.2.0 LANGUAGES CXX)
+project(hypha_msgs VERSION 0.3.0 LANGUAGES CXX)
 
 if(NOT COMMAND hypha_generate_messages)
   message(STATUS "hypha_msgs: hypha_generate_messages unavailable; skipping C++ header generation")
   return()
 endif()
 
-# The headers belong to the hypha_msgs/ include namespace that crates/hypha-cxx
-# owns and installs: build tree only, at the location hypha-cxx reads.
+# The headers land at <package>/<Name>.h in the package directories that
+# crates/hypha-cxx owns and installs: build tree only, at the location hypha-cxx
+# reads.
 set(HYPHA_MSGS_OUT_DIR "${CMAKE_BINARY_DIR}/generated/include")
 set(HYPHA_MSGS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/msg")
 

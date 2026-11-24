@@ -544,3 +544,125 @@ TEST(TimerLifetime, ATimerDestroyedInItsOwnCallbackStopsAtOnceAndLogsNothing)
     EXPECT_FALSE(timer.has_value());
     EXPECT_EQ(diagnostic.find("could not detach"), std::string::npos) << diagnostic;
 }
+
+TEST_F(NodeFixture, ACanceledTimerCallsNothingUntilAReset)
+{
+    hypha::Node node("timer_cancel");
+    int         fired = 0;
+    auto        timer = node.timer(100_ms, [&] {
+        ++fired;
+    });
+    advance(150_ms);
+    (void)node.runFor(hypha::Duration::fromMillis(1));
+    ASSERT_EQ(fired, 1);
+
+    ASSERT_TRUE(timer.cancel().has_value());
+    ASSERT_TRUE(timer.cancel().has_value()) << "a cancel is idempotent";
+    const auto canceled = timer.state();
+    ASSERT_TRUE(canceled.has_value());
+    EXPECT_TRUE(canceled->canceled);
+    EXPECT_EQ(canceled->period, 100_ms);
+    EXPECT_FALSE(canceled->untilDue.has_value());
+
+    advance(300_ms);
+    (void)node.runFor(hypha::Duration::fromMillis(1));
+    EXPECT_EQ(fired, 1);
+    EXPECT_EQ(timer.missedCount(), 0U) << "a canceled timer misses no period";
+
+    ASSERT_TRUE(timer.reset().has_value());
+    const auto reset = timer.state();
+    ASSERT_TRUE(reset.has_value());
+    EXPECT_FALSE(reset->canceled);
+    EXPECT_EQ(reset->untilDue, std::optional<hypha::Duration>(100_ms));
+
+    advance(50_ms);
+    (void)node.runFor(hypha::Duration::fromMillis(1));
+    EXPECT_EQ(fired, 1);
+    advance(60_ms);
+    (void)node.runFor(hypha::Duration::fromMillis(1));
+    EXPECT_EQ(fired, 2);
+    EXPECT_EQ(timer.missedCount(), 0U);
+}
+
+TEST_F(NodeFixture, AResetMovesTheNextCallOnePeriodPastTheReset)
+{
+    hypha::Node node("timer_reset");
+    int         fired = 0;
+    auto        timer = node.timer(100_ms, [&] {
+        ++fired;
+    });
+    advance(80_ms);
+    ASSERT_TRUE(timer.reset().has_value());
+
+    // The call the timer had due at 100 ms now comes at 180 ms.
+    advance(50_ms);
+    (void)node.runFor(hypha::Duration::fromMillis(1));
+    EXPECT_EQ(fired, 0);
+    const auto state = timer.state();
+    ASSERT_TRUE(state.has_value());
+    EXPECT_EQ(state->untilDue, std::optional<hypha::Duration>(50_ms));
+
+    advance(60_ms);
+    (void)node.runFor(hypha::Duration::fromMillis(1));
+    EXPECT_EQ(fired, 1);
+}
+
+TEST_F(NodeFixture, ACancelFromACallbackHoldsBackACallDueLaterInTheSameTurn)
+{
+    hypha::Node                 node("timer_cancel_other");
+    std::optional<hypha::Timer> second;
+    int                         firstCalls = 0;
+    int                         secondCalls = 0;
+    auto                        first = node.timer(100_ms, [&] {
+        ++firstCalls;
+        ASSERT_TRUE(second->cancel().has_value());
+    });
+    second.emplace(node.timer(100_ms, [&] {
+        ++secondCalls;
+    }));
+
+    // Both are due in this turn; the first, attached first, runs first.
+    advance(150_ms);
+    (void)node.runFor(hypha::Duration::fromMillis(1));
+    EXPECT_EQ(firstCalls, 1);
+    EXPECT_EQ(secondCalls, 0);
+}
+
+TEST(TimerControl, AnInvalidTimerIsRefused)
+{
+    hypha::Timer timer;
+    EXPECT_EQ(timer.cancel().error(), hypha::Status::InvalidState);
+    EXPECT_EQ(timer.reset().error(), hypha::Status::InvalidState);
+    EXPECT_EQ(timer.state().error(), hypha::Status::InvalidState);
+}
+
+TEST(TimerControl, ATimerCreatedInACallbackOnHostTimeFiresAndIsControlled)
+{
+    hypha::Node                 node("timer_in_callback");
+    std::optional<hypha::Timer> late;
+    int                         lateCalls = 0;
+    auto                        starter = node.timer(hypha::Duration::fromMillis(1), [&] {
+        if (late.has_value()) {
+            return;
+        }
+        late.emplace(node.timer(hypha::Duration::fromMillis(2), [&] {
+            ++lateCalls;
+            ASSERT_TRUE(late->cancel().has_value());
+        }));
+        const auto state = late->state();
+        ASSERT_TRUE(state.has_value());
+        EXPECT_FALSE(state->canceled);
+        ASSERT_TRUE(state->untilDue.has_value());
+        EXPECT_LE(*state->untilDue, hypha::Duration::fromMillis(2));
+    });
+
+    // Only outcomes: the late timer fired once and canceled itself.
+    for (int slice = 0; slice < 200 && lateCalls == 0; ++slice) {
+        ASSERT_TRUE(node.runFor(hypha::Duration::fromMillis(10)).ok());
+    }
+    ASSERT_TRUE(late.has_value());
+    EXPECT_EQ(lateCalls, 1);
+    const auto state = late->state();
+    ASSERT_TRUE(state.has_value());
+    EXPECT_TRUE(state->canceled);
+}

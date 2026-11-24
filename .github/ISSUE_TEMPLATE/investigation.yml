@@ -1,0 +1,28 @@
+name: Investigation
+description: A question to answer before anything is built. It ends in a written note, not in code.
+labels: ["investigation"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What must be decided, and why it cannot be decided yet.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What is known, with the places in the code or the documents.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps
+      description: What to read, measure or try.
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: The note or decision that closes it, and where it is written.
+    validations:
+      required: true

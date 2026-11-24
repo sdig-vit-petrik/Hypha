@@ -1,0 +1,16 @@
+# autoware_euclidean_cluster_node_test: the node on the bus.
+# The scene holds a cluster above max_cluster_size, so the limit is below upstream's.
+
+use_height = false
+min_cluster_size = 10
+max_cluster_size = 50
+tolerance = 0.7
+
+[ports.inputs.input]
+topic = "/test/euclidean_cluster/input"
+
+[ports.outputs.output]
+topic = "/test/euclidean_cluster/output"
+
+[ports.outputs."debug.clusters"]
+topic = "/test/euclidean_cluster/debug/clusters"

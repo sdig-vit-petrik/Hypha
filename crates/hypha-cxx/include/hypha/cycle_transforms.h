@@ -11,8 +11,9 @@
 #include "hypha/qos.h"
 #include "hypha/source.h"
 #include "hypha/transform_types.h"
-#include <hypha_msgs/geometry_msgs/TransformStamped.h>
-#include <hypha_msgs/tf2_msgs/TFMessage.h>
+
+#include <geometry_msgs/TransformStamped.h>
+#include <tf2_msgs/TFMessage.h>
 
 #include <cstdint>
 #include <expected>

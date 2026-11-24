@@ -1,0 +1,9 @@
+# autoware_detected_object_feature_remover (Universe 0.53.2): the shaped clusters without
+# their points, as autoware_launch 0.53.0's lidar_rule_detector.launch.xml wires it.
+run_convex_hull_conversion = false
+
+[ports.inputs.input]
+topic = "/perception/object_recognition/detection/clustering/objects_with_feature"
+
+[ports.outputs.output]
+topic = "/perception/object_recognition/detection/clustering/objects"

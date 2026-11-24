@@ -30,7 +30,7 @@ flowchart TD
     end
 
     subgraph CXX_SDK["C++ SDK (CMake package, thin facade)"]
-        OS_CXX["hypha-cxx<br/>C++23 facade, clock and time, log shim,<br/>generated C header, CMake config, hypha_msgs/"]
+        OS_CXX["hypha-cxx<br/>C++23 facade, clock and time, log shim,<br/>generated C header, CMake config, message headers"]
     end
 
     CPP_NODE --> OS_CXX
@@ -371,8 +371,8 @@ The repository provides modular, separable CMake and Cargo build units:
 | `crates/hypha_node` | Rust (Cargo) | The node runtime as safe Rust functions; the C types of the ABI. |
 | `crates/hypha_ffi` | Rust (Cargo) | Exports the C ABI as wrappers over `hypha_node`. Produces the shared library, versioned by `abi.revision`: `libhypha_ffi.so.<revision>` on Linux and `libhypha_ffi.<revision>.dylib` on macOS. |
 | `crates/hypha_msggen` | Rust (Cargo) | Generates C++ and Rust types from ROS 1 `.msg` and `.srv` files. Installed with the SDK for consumer code generation. |
-| `crates/hypha_msgs` | `.msg` + CMake | Canonical ROS 1 message definitions. Generates the `hypha_msgs/` headers into the build tree; installs nothing itself. |
-| `crates/hypha-cxx` | C++23 (CMake) | The one C++ package, `find_package(hypha)`. Installs `libhypha_ffi.so` and its generated header `hypha_ffi.h`, the `hypha_base` clock and time headers (sources in `crates/hypha-cxx/base`), the user-facing C++ SDK facade and the `<hypha_log/hypha_log.h>` macro shim. Owns and installs the whole `hypha_msgs/` include namespace. |
+| `crates/hypha_msgs` | `.msg` + CMake | Canonical ROS 1 message definitions. Generates their C++ headers into the build tree at `<package>/<Name>.h`; installs nothing itself. |
+| `crates/hypha-cxx` | C++23 (CMake) | The one C++ package, `find_package(hypha)`. Installs `libhypha_ffi.so` and its generated header `hypha_ffi.h`, the `hypha_base` clock and time headers (sources in `crates/hypha-cxx/base`), the user-facing C++ SDK facade and the `<hypha_log/hypha_log.h>` macro shim. Owns and installs the directory of each standard message package (`std_msgs/`, `geometry_msgs/`, ..., `hypha_msgs/`). |
 
 ### Building hypha
 
@@ -382,9 +382,18 @@ CMake project (FetchContent or `add_subdirectory`, in the `hypha-builder` image)
 or it uses `find_package(hypha)` on a prefix that `cmake --install` filled. As a
 subproject, hypha keeps its strict warnings to its own targets.
 
-`hypha-cxx` owns the complete `hypha_msgs/` include namespace. It writes
-`ros_time.h` by hand and installs the generated message headers beside it,
-because its own `ros/serialization.h` includes them.
+Message headers sit at their ROS 1 path, `<package>/<Name>.h`, and each
+package directory has one owner. `hypha-cxx` owns the directory of each standard
+package it ships (`std_msgs/`, `geometry_msgs/`, ..., `hypha_msgs/`). It writes
+`hypha_msgs/ros_time.h` by hand and installs the generated message headers beside
+it, because its own `ros/serialization.h` includes them. An application owns the
+directories of the packages it declares; `hypha_generate_messages()` refuses a
+second declaration of a package from another directory, a standard one included
+(`scripts/test-installed-sdk.sh`). ROS 2 alias headers (`<package>/msg/<name>.hpp`)
+belong to the application that generates them with `hypha_generate_ros2_headers()`,
+standard packages included; hypha installs none. The C++ namespace is the bare package
+(`std_msgs::Header`), as in ROS, so a process cannot use hypha messages and a ROS
+installation's message headers together.
 
 The same package installs what an application needs to generate its **own**
 messages: the generator binary, the canonical `.msg` definitions under
@@ -397,6 +406,10 @@ needs that field's definition, not its header — the generator computes the
 nested layout and identity from the definition text. Installing the headers
 alone would leave an application able only to reach into a hypha source
 checkout, which no install prefix has.
+
+Beside it, `hyphaTesting.cmake` installs `hypha_add_test(<target>)`: a CTest test
+that runs in a bus domain of its own under the test root `t_`
+(`docs/getting-started.md`).
 
 `./test.sh cpp` tests both ways: `scripts/test-installed-sdk.sh` against an
 install prefix, and `test/package_consumer` with hypha as a subproject.

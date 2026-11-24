@@ -5,8 +5,9 @@
 ///       A tool declares none: start the application nodes before the tools.
 
 #include <hypha/qos.h>
-#include <hypha_msgs/sensor_msgs/Imu.h>
-#include <hypha_msgs/sensor_msgs/PointCloud2.h>
+
+#include <sensor_msgs/Imu.h>
+#include <sensor_msgs/PointCloud2.h>
 
 #include <cstdint>
 

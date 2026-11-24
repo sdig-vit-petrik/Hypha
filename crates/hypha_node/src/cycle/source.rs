@@ -75,11 +75,6 @@ fn origin_of(frame: &hypha_wire::frame::ParsedFrame<'_>) -> hypha_cycle::SampleO
 }
 
 impl CycleInputSource {
-    /// Whether the `WaitSet` that created this source is running now.
-    pub(crate) fn waitset_is_running(&self) -> bool {
-        self.waitset.upgrade().is_some_and(|shared| shared.running.is_running())
-    }
-
     /// Whether this source was created on `set`. Compares addresses only; a destroyed
     /// `WaitSet`'s shared state stays allocated while this source names it.
     pub(crate) fn created_on(&self, set: &HyphaWaitSet) -> bool {
@@ -232,7 +227,7 @@ fn check_input_source<'set>(
     if endpoint.is_some_and(|endpoint| endpoint.owner_node != node) {
         return Err(Error::InvalidArgument);
     }
-    let topic = endpoint.map(|endpoint| endpoint.topic.clone()).unwrap_or_default();
+    let topic = endpoint.map_or_default(|endpoint| endpoint.topic.clone());
     // The source drains the subscriber alone.
     if let Some(endpoint) = endpoint {
         let previous = endpoint.claim(crate::subscriber::MODE_SOURCE)?;
@@ -280,10 +275,22 @@ pub fn input_source_destroy(
     // may be using. A bound cycle is another owner, and no cycle is destroyed during a
     // run, so the handle of a bound source only gives up its share.
     let last_owner = Arc::strong_count(&source.inner) == 1;
-    if last_owner && source.inner.waitset_is_running() {
+    if !last_owner {
+        drop(source);
+        return Ok(());
+    }
+    let Some(shared) = source.inner.waitset.upgrade() else {
+        drop(source);
+        return Ok(());
+    };
+    // Claimed, so no run starts while the receiver and the history are freed.
+    let claimed = shared.claim();
+    if claimed.is_err() || shared.running.is_running() {
+        drop(claimed);
         return Err((Error::InvalidState, source));
     }
     drop(source);
+    drop(claimed);
     Ok(())
 }
 

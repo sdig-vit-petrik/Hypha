@@ -70,7 +70,7 @@ fn roundtrips_channels_schemas_md5_and_bytes() {
         assert_eq!(counts[0], ("/odom_speed".to_string(), 2));
         assert_eq!(counts[1], ("/gripper_report".to_string(), 1));
 
-        rec.finish();
+        assert_eq!(rec.finish(), Ok(()));
     }
 
     {
@@ -127,7 +127,7 @@ fn roundtrips_zstd_and_uncompressed() {
                 publish_time_nanos: 500_000,
             };
             assert!(rec.record(&sample));
-            rec.finish();
+            assert_eq!(rec.finish(), Ok(()));
         }
 
         {
@@ -188,7 +188,7 @@ fn topics_filter_excludes_unlisted_channels() {
             publish_time_nanos: 10_900,
         };
         assert!(rec.record(&kept_again));
-        rec.finish();
+        assert_eq!(rec.finish(), Ok(()));
     }
 
     {
@@ -209,6 +209,41 @@ fn topics_filter_excludes_unlisted_channels() {
         assert_eq!(items[1].0, "/kept");
         assert_eq!(items[1].2, 900);
     }
+
+    let _ = fs::remove_file(path);
+}
+
+/// The player lists the channels in the order the recording made them, whatever the
+/// hash seed of the process: the summary holds them in a hash map.
+#[test]
+fn channels_are_listed_in_recording_order() {
+    let path = temp_mcap_path("channel_order", "mcap");
+    let definition = "float64 data\n".to_string();
+    let md5 = "fdb28210bfa9d7c91146260178d9a584".to_string();
+    let topics: Vec<String> = (0..12).map(|index| format!("/topic_{index:02}")).collect();
+    {
+        let mut rec = Recorder::new(&path);
+        assert!(rec.is_open(), "error: {}", rec.open_error());
+        for (index, topic) in topics.iter().enumerate() {
+            let time = 1_000_000 * (index as u64 + 1);
+            assert!(rec.record(&RecordSample {
+                topic,
+                data_type: "std_msgs/Float64",
+                md5: &md5,
+                definition: &definition,
+                bytes: &[0; 8],
+                log_time_nanos: time,
+                publish_time_nanos: time,
+            }));
+        }
+        assert_eq!(rec.finish(), Ok(()));
+    }
+
+    let player = Player::new(&path);
+    assert!(player.is_open(), "error: {}", player.open_error());
+    let listed: Vec<&str> =
+        player.channels().iter().map(|channel| channel.topic.as_str()).collect();
+    assert_eq!(listed, topics);
 
     let _ = fs::remove_file(path);
 }

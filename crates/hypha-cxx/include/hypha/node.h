@@ -24,6 +24,22 @@
 
 namespace hypha {
 
+/// What Timer::state() reads.
+struct TimerStatus
+{
+    /// True after cancel(), until the next reset().
+    bool canceled{false};
+    /// The period the timer was created with.
+    Duration period{};
+    /// The time until the next call on the timer's clock: framework time under simulated
+    /// time, else host monotonic time. Zero when the call is due; empty while canceled.
+    std::optional<Duration> untilDue{};
+};
+
+/// A periodic callback on framework time (Node::timer). Copies share one timer, which
+/// stops when the last copy goes. cancel(), reset() and state() may be called from a
+/// callback of the running node or, between runs, from any thread; from another thread
+/// during a run they return InvalidState and change nothing.
 class Timer
 {
   public:
@@ -44,6 +60,49 @@ class Timer
     uint64_t missedCount() const
     {
         return this->held ? this->held->missedCount() : 0U;
+    }
+
+    /// Stop calling until reset(). A canceled timer counts no missed period and costs no
+    /// wake-up. From a callback it also holds back a call of this timer still due later in
+    /// the same dispatch turn. Idempotent.
+    /// @return InvalidState for a timer that is not valid, or from another thread while the
+    ///         node runs.
+    [[nodiscard]] std::expected<void, Status> cancel()
+    {
+        if (!this->held) {
+            return std::unexpected(Status::InvalidState);
+        }
+        return this->held->cancel();
+    }
+
+    /// Restart the period from now: the next call comes one period after this call, on
+    /// the timer's clock, and a cancel ends. From a callback it holds back a call of this
+    /// timer still due later in the same dispatch turn.
+    /// @return As cancel().
+    [[nodiscard]] std::expected<void, Status> reset()
+    {
+        if (!this->held) {
+            return std::unexpected(Status::InvalidState);
+        }
+        return this->held->reset();
+    }
+
+    /// The timer's state, read at the call.
+    /// @return As cancel().
+    [[nodiscard]] std::expected<TimerStatus, Status> state() const
+    {
+        if (!this->held) {
+            return std::unexpected(Status::InvalidState);
+        }
+        return this->held->state().transform([](const HyphaTimerState& state) {
+            TimerStatus status;
+            status.canceled = state.canceled;
+            status.period = Duration::fromNanos(state.period_nanos);
+            if (!state.canceled) {
+                status.untilDue = Duration::fromNanos(state.until_due_nanos);
+            }
+            return status;
+        });
     }
 
   private:
@@ -83,19 +142,22 @@ inline void requestStop()
 /// }   // the bus is released here
 /// @endcode
 ///
-/// A second Node in the same process shares the session.
+/// Every Node of a process shares one session, which the last of them leaves when it is
+/// destroyed, whatever order they were made in (#97). A default-constructed Node joins
+/// nothing and does not count. A Publisher of a session that has left sends nothing:
+/// publish() returns false with lastPublishStatus() InvalidState.
 class Node
 {
   public:
-    /// A handle that owns no session; its members use the process session when one exists.
+    /// A handle that joins no session; its members use the process session when one exists.
     Node() = default;
 
-    /// Leaves the bus when this node created the session. Leaving destroys every cycle of
-    /// the session; endpoints and ports must not outlive their Node.
+    /// Leaves the bus when this is the last Node that joined the session. Leaving destroys
+    /// every cycle of the session; its publishers then refuse to send.
     ~Node()
     {
-        if (this->ownsSession_) {
-            backend::shutdown();
+        if (this->joined_) {
+            backend::leave();
         }
     }
 
@@ -109,13 +171,13 @@ class Node
     }
 
     /// A name is `[a-z][a-z0-9_]`, at most 64 characters; the `node.name` key of
-    /// @p parameterFile overrides it. A second Node keeps the first name.
+    /// @p parameterFile overrides it. A second Node joins the session and keeps the
+    /// first name.
     /// @throws std::runtime_error when the node cannot be created.
     Node(const std::string& name, const std::string& parameterFile)
     {
-        bool         created = false;
-        const Status status = backend::init(name, parameterFile, &created);
-        this->ownsSession_ = created;
+        const Status status = backend::init(name, parameterFile);
+        this->joined_ = status == Status::Ok;
         if (status != Status::Ok) {
             throw std::runtime_error(detail::failureText("node '" + name + "' creation", status));
         }
@@ -180,9 +242,13 @@ class Node
         );
     }
 
-    /// @brief Run `callback` every `period` of framework time. Create timers before run().
+    /// @brief Run `callback` every `period` of framework time; the first call comes one
+    ///        period after the timer starts. Create timers before run(), or from a callback
+    ///        of the run on host time or on the node's own simulated clock: such a timer
+    ///        joins before the run next waits.
     /// @throws std::runtime_error when the timer is refused: a period that is not
-    ///         positive (InvalidArgument), or no session (InvalidState).
+    ///         positive (InvalidArgument), no session, another thread during a run, or a
+    ///         run on a simulated clock the node does not own (InvalidState).
     [[nodiscard]] Timer timer(Duration period, std::function<void()> callback)
     {
         return Timer(require(backend::createTimer(period, std::move(callback)), "timer"));
@@ -207,7 +273,7 @@ class Node
     }
 
   private:
-    bool ownsSession_{false};
+    bool joined_{false};
 };
 
 }  // namespace hypha

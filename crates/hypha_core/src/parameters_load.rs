@@ -6,11 +6,13 @@ use std::path::{Path, PathBuf};
 use toml::{Table, Value};
 
 use crate::parameters::{
-    ListElement, ParamValue, ParameterLoadError, ParameterOverride, Parameters,
+    ListElement, ParamValue, ParameterLoadError, ParameterOverride, Parameters, key_is_under,
 };
 
 const LOG_TABLE: &str = "log";
 const INCLUDE_KEY: &str = "include";
+/// The top-level key that lists the keys a file sets on purpose and no code reads.
+const UNUSED_KEY: &str = "unused";
 const SINK_TABLE: &str = "sink";
 const SINK_PATH_KEY: &str = "path";
 
@@ -37,6 +39,8 @@ struct Sources {
     overrides: Vec<ParameterOverride>,
     /// The included files read so far, against [`MAX_INCLUDED_FILES`].
     included_files: usize,
+    /// Each file's `unused` entries, with the file that listed them, in file order.
+    unused: Vec<(String, PathBuf)>,
 }
 
 fn from_table(
@@ -53,7 +57,26 @@ fn from_table(
     let mut params = Parameters::with_sources(log, sources.origins, sources.overrides);
     flatten_table(&table, "", path, "", &mut params)?;
     refuse_name_conflicts(&params, path)?;
+    ignore_listed_keys(&params, &sources.unused)?;
     Ok(params)
+}
+
+/// Ignore each `unused` entry. An entry that names no key of the composed set is refused,
+/// so the list cannot go stale or hide a typo.
+fn ignore_listed_keys(
+    params: &Parameters,
+    unused: &[(String, PathBuf)],
+) -> Result<(), ParameterLoadError> {
+    let configured = params.configured_keys_at_load();
+    for (entry, file) in unused {
+        let is_set = configured.iter().any(|key| key_is_under(key, entry));
+        if !is_set {
+            let reason = format!("`{entry}` is not set in the configuration");
+            return Err(load_error(&file.display().to_string(), UNUSED_KEY, &reason));
+        }
+        params.ignore_listed(entry, file);
+    }
+    Ok(())
 }
 
 /// Read `path` and merge the files it includes. `stack` holds the canonical paths of
@@ -71,6 +94,7 @@ fn read_composed(
     // Expanded per file, before the includes, so an error names the file that holds it.
     expand_table(&mut table, &path_text, "")?;
     let listed = take_includes(&mut table, &path_text)?;
+    let unused = take_unused(&mut table, &path_text)?;
     let directory = path.parent().unwrap_or(Path::new(""));
     absolutize_sink_paths(&mut table, directory);
     let mut merged = Table::new();
@@ -85,6 +109,7 @@ fn read_composed(
     }
     // Recorded after the includes: the value this file writes is the one that stays.
     record_origins(&table, "", path, &mut sources.origins);
+    sources.unused.extend(unused.into_iter().map(|entry| (entry, path.to_path_buf())));
     Ok(merged)
 }
 
@@ -281,6 +306,24 @@ fn take_includes(table: &mut Table, path: &str) -> Result<Vec<String>, Parameter
     items
         .iter()
         .map(|item| item.as_str().map(str::to_string).ok_or_else(|| include_error(path)))
+        .collect()
+}
+
+/// Remove the `unused` key from `table` and return its entries, each a nonempty key name.
+fn take_unused(table: &mut Table, path: &str) -> Result<Vec<String>, ParameterLoadError> {
+    let Some(value) = table.remove(UNUSED_KEY) else {
+        return Ok(Vec::new());
+    };
+    let refused = || load_error(path, UNUSED_KEY, "the value must be an array of key names");
+    let Value::Array(items) = value else {
+        return Err(refused());
+    };
+    items
+        .iter()
+        .map(|item| match item.as_str() {
+            Some(name) if !name.is_empty() => Ok(name.to_string()),
+            _ => Err(refused()),
+        })
         .collect()
 }
 

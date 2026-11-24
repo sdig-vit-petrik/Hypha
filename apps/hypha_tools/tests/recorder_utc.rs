@@ -63,7 +63,8 @@ fn a_frame_without_a_framework_stamp_is_dropped_not_given_another_time() {
     let failure = session.failure().expect("a strict session fails on the drop").to_owned();
     assert!(failure.contains("the frame carries no framework send time"), "{failure}");
     drop(session.finish());
-    assert!(recorded_times(&output).is_empty());
+    let found = recorded_times(&output);
+    assert!(found.is_empty(), "{found:?}");
     std::fs::remove_file(output).expect("remove recording");
 }
 

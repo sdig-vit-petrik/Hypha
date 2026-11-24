@@ -1,0 +1,58 @@
+# autoware_multi_object_tracker: the edits of the hypha port, applied to a copy of
+# upstream/autoware_universe/perception/autoware_multi_object_tracker by the build (patch -p1).
+# Every edit is also marked '// hypha port:' with its reason.
+diff -ruN a/include/autoware/multi_object_tracker/tracker/trackers/tracker_base.hpp b/include/autoware/multi_object_tracker/tracker/trackers/tracker_base.hpp
+--- a/include/autoware/multi_object_tracker/tracker/trackers/tracker_base.hpp
++++ b/include/autoware/multi_object_tracker/tracker/trackers/tracker_base.hpp
+@@ -37,6 +37,9 @@
+ 
+ #include <array>
+ #include <optional>
++// hypha port: std::setw and std::setfill need <iomanip>, which upstream gets from other
++// headers only with libstdc++.
++#include <iomanip>
+ #include <string>
+ #include <vector>
+ 
+diff -ruN a/lib/tracker/motion_model/bicycle_motion_model.cpp b/lib/tracker/motion_model/bicycle_motion_model.cpp
+--- a/lib/tracker/motion_model/bicycle_motion_model.cpp
++++ b/lib/tracker/motion_model/bicycle_motion_model.cpp
+@@ -720,7 +720,11 @@
+     0.0, w_rear, 0.0, w_front,     // center_y
+     sin_yaw * wheel_base_inv, -cos_yaw * wheel_base_inv, -sin_yaw * wheel_base_inv,
+     cos_yaw * wheel_base_inv;  // yaw
+-  const Eigen::Matrix3d M = G * P.topLeftCorner<4, 4>() * G.transpose();
++  // hypha port: G * P * G^T is symmetric only up to rounding, and the two triangles round
++  // differently with Eigen on ARM (6 to 9 ULP); the average makes the exported block exactly
++  // symmetric, as test_vehicle_tracker.cpp's PositionYawCorrelated asserts.
++  const Eigen::Matrix3d M_raw = G * P.topLeftCorner<4, 4>() * G.transpose();
++  const Eigen::Matrix3d M = 0.5 * (M_raw + M_raw.transpose());
+ 
+   pose_cov[XYZRPY_COV_IDX::X_X] = M(0, 0);
+   pose_cov[XYZRPY_COV_IDX::X_Y] = M(0, 1);
+diff -ruN a/src/debugger/debug_object.hpp b/src/debugger/debug_object.hpp
+--- a/src/debugger/debug_object.hpp
++++ b/src/debugger/debug_object.hpp
+@@ -24,6 +24,9 @@
+ #include <visualization_msgs/msg/marker_array.hpp>
+ 
+ #include <boost/uuid/uuid.hpp>
++// hypha port: boost::hash needs <boost/container_hash/hash.hpp>, which older Boost brought
++// with the uuid headers.
++#include <boost/container_hash/hash.hpp>
+ #include <boost/uuid/uuid_hash.hpp>
+ 
+ #include <list>
+diff -ruN a/src/debugger/debugger.cpp b/src/debugger/debugger.cpp
+--- a/src/debugger/debugger.cpp
++++ b/src/debugger/debugger.cpp
+@@ -180,7 +180,8 @@
+       diagnostic_msgs::msg::DiagnosticStatus::OK};
+   }
+ 
+-  const uint8_t max_level = std::max(delay_result.level, extrapolation_result.level);
++  // hypha port: a ROS 1 DiagnosticStatus level is a byte, int8, where ROS 2's is uint8 (#45).
++  const auto max_level = std::max(delay_result.level, extrapolation_result.level);
+ 
+   if (max_level == diagnostic_msgs::msg::DiagnosticStatus::OK) {
+     return {"[OK] All timing parameters are within safe limits.", max_level};

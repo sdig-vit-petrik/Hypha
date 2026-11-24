@@ -28,7 +28,7 @@ pub unsafe extern "C" fn hypha_waitset_run(
         Err(status) => return status,
     };
     let limit = (limit_nanos != 0).then(|| Duration::from_nanos(limit_nanos));
-    match waitset_run(set, limit) {
+    match waitset_run(&set, limit) {
         Ok(report) => {
             unsafe { out_report.write(report) };
             HyphaStatus::Ok

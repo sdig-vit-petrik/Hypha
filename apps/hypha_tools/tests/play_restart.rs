@@ -1,6 +1,7 @@
 //! A backward seek of `hypha play` restarts a real C++ participant, `replay_restart_peer`.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+use hypha_tools::launch_supervisor::STOP_GRACE_PERIOD;
 use hypha_tools::utc_time::parse_utc_nanos;
 use mcap::records::MessageHeader;
 use mcap::{WriteOptions, Writer};
@@ -22,6 +23,29 @@ struct Killed(Child);
 
 impl Drop for Killed {
     fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// A `hypha launch unit` supervisor, stopped as an operator stops it when the test ends,
+/// passed or not: SIGTERM, which it passes on to its node's process group, then a wait.
+/// A SIGKILL could not be passed on and would leave the node running with parent 1 (#92);
+/// it is sent only to a supervisor that has not ended after its own grace period.
+struct Supervisor(Child);
+
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        let pid = nix::unistd::Pid::from_raw(i32::try_from(self.0.id()).unwrap_or(i32::MAX));
+        let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
+        let began = Instant::now();
+        let limit = STOP_GRACE_PERIOD.saturating_add(Duration::from_secs(5));
+        while began.elapsed() < limit {
+            if !matches!(self.0.try_wait(), Ok(None)) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
@@ -124,7 +148,7 @@ fn loop_restarts_the_peer(with_recorder: bool) {
         .stderr(Stdio::null())
         .spawn()
         .expect("the peer's supervisor");
-    let mut peer = Killed(peer);
+    let mut peer = Supervisor(peer);
     let player = Command::new(env!("CARGO_BIN_EXE_hypha"))
         .arg("play")
         .arg("--input")

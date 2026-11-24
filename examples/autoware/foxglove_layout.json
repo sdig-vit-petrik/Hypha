@@ -1,0 +1,245 @@
+{
+  "configById": {
+    "3D!slice-a": {
+      "cameraState": {
+        "perspective": true,
+        "distance": 55,
+        "phi": 55,
+        "thetaOffset": 135,
+        "targetOffset": [
+          4,
+          0,
+          0
+        ],
+        "target": [
+          0,
+          0,
+          0
+        ],
+        "targetOrientation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "fovy": 45,
+        "near": 0.1,
+        "far": 5000
+      },
+      "followTf": "base_link",
+      "followMode": "follow-position",
+      "scene": {
+        "backgroundColor": "#20242c",
+        "transforms": {
+          "showLabel": false,
+          "axisScale": 0.6,
+          "enablePreloading": false
+        }
+      },
+      "transforms": {
+        "frame:ned": {
+          "visible": false
+        },
+        "frame:POS_REF": {
+          "visible": false
+        },
+        "frame:gnss_base_link": {
+          "visible": false
+        }
+      },
+      "topics": {
+        "/sensing/lidar/concatenated/pointcloud": {
+          "visible": true,
+          "pointSize": 1.5,
+          "pointShape": "circle",
+          "decayTime": 0,
+          "colorMode": "flat",
+          "flatColor": "#9aa3b566"
+        },
+        "/perception/obstacle_segmentation/single_frame/pointcloud": {
+          "visible": true,
+          "pointSize": 2,
+          "pointShape": "circle",
+          "decayTime": 0,
+          "colorMode": "flat",
+          "flatColor": "#ff9f1c"
+        },
+        "/perception/obstacle_segmentation/pointcloud": {
+          "visible": false,
+          "pointSize": 7,
+          "pointShape": "circle",
+          "decayTime": 0,
+          "colorMode": "flat",
+          "flatColor": "#2ec4b6"
+        },
+        "/studio_script/isuzu/ego": {
+          "visible": true
+        },
+        "/sensing/gnss/pose_with_covariance": {
+          "visible": false,
+          "type": "arrow",
+          "arrowScale": [
+            1.5,
+            0.15,
+            0.15
+          ],
+          "color": "#4cc9f0aa",
+          "showCovariance": true,
+          "covarianceColor": "#4cc9f044"
+        },
+        "/localization/pose_twist_fusion_filter/kinematic_state": {
+          "visible": true,
+          "type": "arrow",
+          "arrowScale": [
+            3,
+            0.3,
+            0.3
+          ],
+          "color": "#ffd166"
+        },
+        "/perception/object_recognition/detection/clustering/debug/clusters": {
+          "visible": false,
+          "pointSize": 3,
+          "pointShape": "circle",
+          "decayTime": 0,
+          "colorMode": "rgb",
+          "colorField": "rgb"
+        },
+        "/studio_script/tracking/tracks": {
+          "visible": true
+        }
+      },
+      "layers": {
+        "slice-a-grid": {
+          "visible": true,
+          "frameLocked": true,
+          "label": "Grid, 5 m",
+          "instanceId": "slice-a-grid",
+          "layerId": "foxglove.Grid",
+          "frameId": "base_link",
+          "size": 120,
+          "divisions": 24,
+          "lineWidth": 1,
+          "color": "#3c4454",
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "order": 1
+        }
+      }
+    },
+    "Plot!slice-a-ground": {
+      "title": "Ground filter: points per frame",
+      "paths": [
+        {
+          "value": "/sensing/lidar/concatenated/pointcloud.width",
+          "label": "lidar in",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        },
+        {
+          "value": "/perception/obstacle_segmentation/single_frame/pointcloud.width",
+          "label": "non-ground out",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        }
+      ],
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 20
+    },
+    "Plot!slice-a-objects": {
+      "title": "Tracks",
+      "paths": [
+        {
+          "value": "/studio_script/slice_a/object_count.count",
+          "label": "tracks",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        }
+      ],
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 20
+    },
+    "RawMessages!slice-a-diagnostics": {
+      "topicPath": "/diagnostics",
+      "diffEnabled": false
+    },
+    "Plot!isuzu-speed": {
+      "title": "EKF speed and yaw rate",
+      "paths": [
+        {
+          "value": "/localization/pose_twist_fusion_filter/kinematic_state.twist.twist.linear.x",
+          "label": "speed [m/s]",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        },
+        {
+          "value": "/localization/pose_twist_fusion_filter/kinematic_state.twist.twist.angular.z",
+          "label": "yaw rate [rad/s]",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        }
+      ],
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 20
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {
+    "slice-a-object-count": {
+      "name": "slice_a_object_count",
+      "sourceCode": "// The number of tracks in each message of the tracker, for the plot.\nexport const inputs = [\"/perception/object_recognition/tracking/objects\"];\nexport const output = \"/studio_script/slice_a/object_count\";\n\ntype Output = { count: number };\n\nexport default function script(event: { message: { objects: unknown[] } }): Output {\n  return { count: event.message.objects.length };\n}\n"
+    },
+    "isuzu-ego": {
+      "name": "isuzu_ego",
+      "sourceCode": "// Isuzu localization (#110): the bus and its trail in map, from the EKF's odometry.\n// The bus is a box approximated from the bag's sensor mounts, not its drawings: the sensor\n// kit sits 6.2 m ahead of base_link at the front, the side lidars 1.27 m left and right.\n// The trail keeps the EKF's positions; it starts again when the player loops and time\n// goes back.\nimport { CubePrimitive, LinePrimitive, LineType, SceneUpdate, TextPrimitive } from \"@foxglove/schemas\";\n\nexport const inputs = [\"/localization/pose_twist_fusion_filter/kinematic_state\"];\nexport const output = \"/studio_script/isuzu/ego\";\n\ntype Time = { sec: number; nsec: number };\ntype Odometry = {\n  header: { stamp: Time; frame_id: string };\n  pose: { pose: { position: { x: number; y: number; z: number } } };\n  twist: { twist: { linear: { x: number } } };\n};\n\n// The bus, in base_link: from 3.0 m behind to 6.5 m ahead, 2.5 m wide, 3.0 m high.\nconst REAR = 3.0;\nconst FRONT = 6.5;\nconst WIDTH = 2.5;\nconst HEIGHT = 3.0;\n// Trail points kept: a minute at 50 Hz.\nconst TRAIL = 3000;\n\nlet trail: { x: number; y: number; z: number }[] = [];\nlet lastNanos = -Infinity;\n\nexport default function script(event: { message: Odometry }): SceneUpdate {\n  const odom = event.message;\n  const stamp = odom.header.stamp;\n  const nanos = stamp.sec * 1e9 + stamp.nsec;\n  if (nanos < lastNanos) {\n    trail = [];\n  }\n  lastNanos = nanos;\n  const p = odom.pose.pose.position;\n  trail.push({ x: p.x, y: p.y, z: p.z });\n  if (trail.length > TRAIL) {\n    trail = trail.slice(trail.length - TRAIL);\n  }\n  const speed = odom.twist.twist.linear.x;\n  const identity = { x: 0, y: 0, z: 0, w: 1 };\n  const bus: CubePrimitive = {\n    pose: { position: { x: (FRONT - REAR) / 2, y: 0, z: HEIGHT / 2 }, orientation: identity },\n    size: { x: FRONT + REAR, y: WIDTH, z: HEIGHT },\n    color: { r: 0.98, g: 0.8, b: 0.18, a: 0.35 },\n  };\n  const label: TextPrimitive = {\n    pose: { position: { x: 0, y: 0, z: HEIGHT + 1.2 }, orientation: identity },\n    billboard: true,\n    font_size: 14,\n    scale_invariant: true,\n    color: { r: 1, g: 0.92, b: 0.55, a: 1 },\n    text: `Isuzu bus  ${(speed * 3.6).toFixed(1)} km/h`,\n  };\n  const path: LinePrimitive = {\n    type: LineType.LINE_STRIP,\n    pose: { position: { x: 0, y: 0, z: 0 }, orientation: identity },\n    thickness: 0.35,\n    scale_invariant: false,\n    points: trail,\n    color: { r: 0.98, g: 0.8, b: 0.18, a: 0.9 },\n    colors: [],\n    indices: [],\n  };\n  const entity = (id: string, frame: string) => ({\n    timestamp: stamp,\n    frame_id: frame,\n    id,\n    lifetime: { sec: 0, nsec: 0 },\n    frame_locked: true,\n    metadata: [],\n    arrows: [],\n    cubes: [],\n    spheres: [],\n    cylinders: [],\n    lines: [],\n    triangles: [],\n    texts: [],\n    models: [],\n  });\n  const busEntity = { ...entity(\"bus\", \"base_link\"), cubes: [bus], texts: [label] };\n  const trailEntity = { ...entity(\"trail\", \"map\"), lines: [path] };\n  return { deletions: [], entities: [busEntity, trailEntity] };\n}\n"
+    },
+    "tracking-tracks": {
+      "name": "tracking_tracks",
+      "sourceCode": "// Tracking (#114): the multi-object tracker's tracks in map, as Foxglove shows no\n// autoware_perception_msgs. A track is a box: the smallest rectangle around its footprint\n// (shape estimation's convex hull), or its own box or cylinder, extruded to its height\n// about its pose, in a colour fixed by its id,\n// with a label (short id, speed) and an arrow along its velocity when it moves.\nimport { ArrowPrimitive, LinePrimitive, LineType, SceneUpdate, TextPrimitive, TriangleListPrimitive } from \"@foxglove/schemas\";\n\nexport const inputs = [\"/perception/object_recognition/tracking/objects\"];\nexport const output = \"/studio_script/tracking/tracks\";\n\ntype Vec3 = { x: number; y: number; z: number };\ntype Quat = { x: number; y: number; z: number; w: number };\ntype Track = {\n  object_id: { uuid: Uint8Array | number[] };\n  existence_probability: number;\n  kinematics: {\n    pose_with_covariance: { pose: { position: Vec3; orientation: Quat } };\n    twist_with_covariance: { twist: { linear: Vec3 } };\n  };\n  shape: { type: number; footprint: { points: Vec3[] }; dimensions: Vec3 };\n};\ntype Tracks = { header: { stamp: { sec: number; nsec: number }; frame_id: string }; objects: Track[] };\n\n// Speed below which a track shows no arrow, in m/s.\nconst MOVING = 0.5;\nconst BOX = 0;\nconst CYLINDER = 1;\n\nfunction hue(id: Uint8Array | number[]): { r: number; g: number; b: number } {\n  const h = ((id[0] ?? 0) * 256 + (id[1] ?? 0)) / 65536;\n  const k = (n: number) => (n + h * 6) % 6;\n  const f = (n: number) => 0.85 - 0.6 * Math.max(0, Math.min(k(n), 4 - k(n), 1));\n  return { r: f(5), g: f(3), b: f(1) };\n}\n\nfunction footprint(shape: Track[\"shape\"]): Vec3[] {\n  const d = shape.dimensions;\n  if (shape.type === BOX) {\n    const x = d.x / 2;\n    const y = d.y / 2;\n    return [{ x, y, z: 0 }, { x: -x, y, z: 0 }, { x: -x, y: -y, z: 0 }, { x, y: -y, z: 0 }];\n  }\n  if (shape.type === CYLINDER) {\n    const r = d.x / 2;\n    return Array.from({ length: 16 }, (_, i) => {\n      const a = (i / 16) * 2 * Math.PI;\n      return { x: r * Math.cos(a), y: r * Math.sin(a), z: 0 };\n    });\n  }\n  return rectangle(shape.footprint.points);\n}\n\n// The smallest rectangle around a footprint, its angle searched in 1 degree steps: a\n// display aid, as the tracker tracks the footprint itself.\nfunction rectangle(points: Vec3[]): Vec3[] {\n  if (points.length < 3) {\n    return points;\n  }\n  let best = { area: Infinity, a: 0, u0: 0, u1: 0, v0: 0, v1: 0 };\n  for (let degrees = 0; degrees < 90; degrees++) {\n    const a = (degrees * Math.PI) / 180;\n    const c = Math.cos(a);\n    const s = Math.sin(a);\n    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;\n    for (const p of points) {\n      const u = p.x * c + p.y * s;\n      const v = -p.x * s + p.y * c;\n      u0 = Math.min(u0, u); u1 = Math.max(u1, u);\n      v0 = Math.min(v0, v); v1 = Math.max(v1, v);\n    }\n    const area = (u1 - u0) * (v1 - v0);\n    if (area < best.area) {\n      best = { area, a, u0, u1, v0, v1 };\n    }\n  }\n  const c = Math.cos(best.a);\n  const s = Math.sin(best.a);\n  const corner = (u: number, v: number) => ({ x: u * c - v * s, y: u * s + v * c, z: 0 });\n  return [corner(best.u0, best.v0), corner(best.u1, best.v0), corner(best.u1, best.v1), corner(best.u0, best.v1)];\n}\n\nexport default function script(event: { message: Tracks }): SceneUpdate {\n  const tracks = event.message;\n  const stamp = tracks.header.stamp;\n  const entities = tracks.objects.map((track, index) => {\n    const id = Array.from(track.object_id.uuid);\n    const shortId = id.slice(0, 2).map((b) => b.toString(16).padStart(2, \"0\")).join(\"\");\n    const rgb = hue(id);\n    const pose = track.kinematics.pose_with_covariance.pose;\n    const height = Math.max(track.shape.dimensions.z, 0.3);\n    const ring = footprint(track.shape);\n    const bottom = ring.map((p) => ({ x: p.x, y: p.y, z: -height / 2 }));\n    const top = ring.map((p) => ({ x: p.x, y: p.y, z: height / 2 }));\n    const outline: Vec3[] = [];\n    for (let i = 0; i < ring.length; i++) {\n      const j = (i + 1) % ring.length;\n      outline.push(bottom[i], bottom[j], top[i], top[j], bottom[i], top[i]);\n    }\n    const faces: Vec3[] = [];\n    for (let i = 1; i + 1 < ring.length; i++) {\n      faces.push(top[0], top[i], top[i + 1]);\n    }\n    for (let i = 0; i < ring.length; i++) {\n      const j = (i + 1) % ring.length;\n      faces.push(bottom[i], bottom[j], top[j], bottom[i], top[j], top[i]);\n    }\n    const v = track.kinematics.twist_with_covariance.twist.linear;\n    const speed = Math.hypot(v.x, v.y);\n    const color = { ...rgb, a: 1 };\n    const lines: LinePrimitive[] = [{\n      type: LineType.LINE_LIST, pose, thickness: 0.06, scale_invariant: false,\n      points: outline, color, colors: [], indices: [],\n    }];\n    const triangles: TriangleListPrimitive[] = [{\n      pose, points: faces, color: { ...rgb, a: 0.25 }, colors: [], indices: [],\n    }];\n    const texts: TextPrimitive[] = [{\n      pose: { position: { x: pose.position.x, y: pose.position.y, z: pose.position.z + height / 2 + 0.8 },\n              orientation: { x: 0, y: 0, z: 0, w: 1 } },\n      billboard: true, font_size: 12, scale_invariant: true, color,\n      text: speed >= MOVING ? `#${shortId} ${(speed * 3.6).toFixed(0)} km/h` : `#${shortId}`,\n    }];\n    // The twist is in the track's own frame: the arrow points along it from the pose.\n    const arrows: ArrowPrimitive[] = speed >= MOVING ? [{\n      pose: { position: pose.position, orientation: pose.orientation },\n      shaft_length: Math.min(speed, 10) * 0.5, shaft_diameter: 0.15,\n      head_length: 0.5, head_diameter: 0.4, color,\n    }] : [];\n    return {\n      timestamp: stamp, frame_id: tracks.header.frame_id, id: `track-${index}`,\n      lifetime: { sec: 0, nsec: 0 }, frame_locked: false, metadata: [],\n      arrows, cubes: [], spheres: [], cylinders: [], lines, triangles, texts, models: [],\n    };\n  });\n  // Each message replaces the tracks of the one before: no lifetime, which would count\n  // from the stamp and expire tracks whose stamp lags the viewer's clock.\n  return { deletions: [{ timestamp: stamp, type: 1, id: \"\" }], entities };\n}\n"
+    }
+  },
+  "playbackConfig": {
+    "speed": 1
+  },
+  "layout": {
+    "first": "3D!slice-a",
+    "second": {
+      "first": "Plot!isuzu-speed",
+      "second": {
+        "first": "Plot!slice-a-objects",
+        "second": {
+          "first": "Plot!slice-a-ground",
+          "second": "RawMessages!slice-a-diagnostics",
+          "direction": "column",
+          "splitPercentage": 55
+        },
+        "direction": "column",
+        "splitPercentage": 33
+      },
+      "direction": "column",
+      "splitPercentage": 25
+    },
+    "direction": "row",
+    "splitPercentage": 70
+  }
+}

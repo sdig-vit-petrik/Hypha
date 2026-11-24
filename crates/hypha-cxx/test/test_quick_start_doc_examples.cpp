@@ -4,8 +4,9 @@
 
 #include "hypha/hypha.h"
 #include <hypha_log/hypha_log.h>
-#include <hypha_msgs/sensor_msgs/Imu.h>
-#include <hypha_msgs/std_msgs/Float64.h>
+
+#include <sensor_msgs/Imu.h>
+#include <std_msgs/Float64.h>
 
 HYPHA_LOG_MODULE_INIT("compute_node")
 

@@ -93,6 +93,7 @@ fn config_message(row: &ConfigRow) -> IntrospectedConfig {
         ConfigSource::Application => IntrospectedConfig::SOURCE_APPLICATION,
         ConfigSource::CommandLine => IntrospectedConfig::SOURCE_COMMAND_LINE,
         ConfigSource::Default => IntrospectedConfig::SOURCE_DEFAULT,
+        ConfigSource::Ignored => IntrospectedConfig::SOURCE_IGNORED,
     };
     IntrospectedConfig {
         key: row.key.clone(),

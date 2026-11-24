@@ -14,7 +14,7 @@ use crate::publisher::HyphaPublisher;
 use crate::status::Error;
 use crate::subscriber::HyphaSubscriber;
 
-/// How often the driver looks for acknowledgements, as `hypha_play` does.
+/// How often the driver looks for acknowledgements, as `hypha play` does.
 pub(super) const ACK_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 /// The registration state of one driver cycle. Dropping it turns simulated time off.

@@ -14,6 +14,13 @@ use std::sync::Arc;
 /// read. Success transfers `context` and `release`, released once at the detach or the
 /// node's destruction; a refused attach transfers nothing. `InvalidState`: during a run,
 /// or a subscriber another registration dispatches.
+///
+/// During a run a callback, on the run's thread, may attach a `HYPHA_ATTACH_TIMER` when
+/// the node runs on host time or on its own simulated clock (`use_sim_time`): it joins
+/// the dispatch before the run's next wait, and its first call comes one period after
+/// the attach. Its id lies above every id a registration attached between runs takes.
+/// The attach is `InvalidState` from any other thread, for any other kind, and for a
+/// timer on a simulated clock driven from outside the node, which needs a native poll.
 /// # Safety
 /// `waitset` and `attachment` are live; `out` is writable. The subscriber of
 /// `attachment` is null or a live handle from `hypha_subscribe_typed`.
@@ -34,7 +41,7 @@ pub unsafe extern "C" fn hypha_waitset_attach(
     // `Arc`; the registration takes one more owner, which a refused attach drops.
     // SAFETY: the `WaitSet` is live by the caller's contract.
     let reach = || unsafe { waitset_here(waitset) }.map_err(|_| Error::InvalidState);
-    let attached = waitset_attach_foreign::<CCallbacks>(reach, &supplied, |subscriber| unsafe {
+    let attached = waitset_attach_foreign::<CCallbacks, _>(reach, &supplied, |subscriber| unsafe {
         Arc::increment_strong_count(subscriber);
         Arc::from_raw(subscriber.cast_const())
     });
@@ -65,5 +72,5 @@ pub unsafe extern "C" fn hypha_waitset_detach(
         Ok(set) => set,
         Err(status) => return status,
     };
-    hypha_node::status::status_of(waitset_detach(set, attachment))
+    hypha_node::status::status_of(waitset_detach(&set, attachment))
 }

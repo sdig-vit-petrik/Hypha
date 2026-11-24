@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 # usage: clean-shm.sh [--force]
 #
-# Removes the iceoryx2 resources of this machine: the shared-memory segments
-# under /dev/shm (Linux), the shared-memory objects and their state files
-# /tmp/iox2*.shm_state (macOS), and the metadata and sockets under /tmp/iceoryx2. A
-# process that still holds one of them stops the removal; --force kills it first.
+# Removes the iceoryx2 resources of every bus domain of this machine: the
+# shared-memory segments under /dev/shm (Linux), the shared-memory objects and their
+# state files /tmp/iox2*.shm_state (macOS), and the metadata and sockets under
+# /tmp/iceoryx2. A process that still holds one of them stops the removal; --force
+# kills it first. It needs lsof to find the holders.
+#
+# This script is for that one job, the whole host. To remove the domains nobody uses,
+# one domain or the test domains under t_, run `hypha clean` (docs/tools.md): it kills
+# nothing and keeps a domain in use.
 set -euo pipefail
 
-FORCE=false
-if [ "${1:-}" = "--force" ]; then
-  FORCE=true
-fi
+case "${1:-}" in
+  "") FORCE=false ;;
+  --force) FORCE=true ;;
+  *)
+    echo "usage: clean-shm.sh [--force]; for one domain run hypha clean --domain <prefix>" >&2
+    exit 2
+    ;;
+esac
 
 parent_of() {
   local pid="$1"

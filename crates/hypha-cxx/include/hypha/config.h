@@ -166,9 +166,23 @@ class ConfigView
         return detail::toArray<T, N>(*values);
     }
 
+    /// @brief The keys under this view that nothing read and nothing ignored, sorted.
     std::vector<std::string> unreadKeys() const
     {
         return backend::unreadParameterKeys(this->name());
+    }
+
+    /// @brief Marks the key or table @p keyOrPrefix as read by a branch the code did not
+    ///        take: it leaves unreadKeys() and is an ignored manifest row with @p reason.
+    ///        An absent key is fine. @throws ParameterError for an empty key or reason.
+    void ignore(const std::string& keyOrPrefix, const std::string& reason) const
+    {
+        const std::string key = this->name(keyOrPrefix);
+        if (backend::ignoreParameter(key, reason) != HYPHA_STATUS_OK) {
+            throw ParameterError(
+                "hypha: parameter '" + key + "' needs a key and a reason to ignore"
+            );
+        }
     }
 
   private:

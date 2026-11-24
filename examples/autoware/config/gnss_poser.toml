@@ -1,0 +1,26 @@
+# autoware_gnss_poser GNSSPoser: the values of upstream config/gnss_poser.param.yaml, and the
+# topics of Autoware's reference sensor kit (autoware/sample_sensor_kit_launch 005bf85,
+# launch/gnss.launch.xml), where the node runs in /sensing/gnss with a u-blox receiver.
+# /map/map_projector_info is a literal topic of the node. Topics are the node's ports.
+
+base_frame = "base_link"
+gnss_base_frame = "gnss_base_link"
+map_frame = "map"
+buff_epoch = 1
+use_gnss_ins_orientation = true
+gnss_pose_pub_method = 0
+
+[ports.inputs.fix]
+topic = "/sensing/gnss/ublox/nav_sat_fix"
+
+[ports.inputs.autoware_orientation]
+topic = "/autoware_orientation"
+
+[ports.outputs.gnss_pose]
+topic = "/sensing/gnss/pose"
+
+[ports.outputs.gnss_pose_cov]
+topic = "/sensing/gnss/pose_with_covariance"
+
+[ports.outputs.gnss_fixed]
+topic = "/sensing/gnss/fixed"

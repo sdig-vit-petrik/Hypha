@@ -1,0 +1,18 @@
+# autoware_voxel_grid_based_euclidean_cluster_node_test: the node on the bus.
+# The scene holds a cluster above max_cluster_size, so the limit is below upstream's.
+
+use_height = false
+min_cluster_size = 10
+max_cluster_size = 50
+tolerance = 0.7
+voxel_leaf_size = 0.3
+min_points_number_per_voxel = 1
+
+[ports.inputs.input]
+topic = "/test/voxel_grid_based_euclidean_cluster/input"
+
+[ports.outputs.output]
+topic = "/test/voxel_grid_based_euclidean_cluster/output"
+
+[ports.outputs."debug.clusters"]
+topic = "/test/voxel_grid_based_euclidean_cluster/debug/clusters"

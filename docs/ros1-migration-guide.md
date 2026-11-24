@@ -33,10 +33,15 @@ are built at run time uses `hypha::Cycle` ([cpp-api.md](cpp-api.md) §5.5).
 ## 1. When to use this guide
 
 Use it for one ROS 1 C++ node that subscribes, computes and publishes, with or
-without timers, parameters and services. The procedure ends in a `CycleNode`. An
-event-driven node that handles each message as it arrives is ported to a plain
-`hypha::Node` instead: see
-[section 10](#10-porting-an-event-driven-node-to-a-plain-hyphanode).
+without timers, parameters and services. The procedure ends in a `CycleNode`:
+
+- A node whose work runs from a timer becomes a **rate cycle** (`rate_hz`).
+- A node whose work runs on each sample of one input becomes a **triggered cycle**:
+  `setTrigger(port)` on that input's `Arrivals` port, one step per sample at the
+  sample's time ([Step 2](#step-2-design-the-cycle)).
+- A plain `hypha::Node` is only for a node whose callbacks publish on more than one
+  input, a node that owns worker threads, and a shim of a ROS client library: see
+  [section 10](#10-porting-an-event-driven-node-to-a-plain-hyphanode).
 
 Do not use it, and ask the user first, when the node needs one of the items in
 [section 7](#7-stop-and-ask). hypha has no equivalent for them.
@@ -152,13 +157,15 @@ If the table has an item of section 7, stop and ask.
 
 ### Step 2: Design the cycle
 
-Map the inventory to one cycle for each timer rate. A node with one timer has
-one cycle. One process has one `CycleNode`; a second rate is a composed
-`hypha::Cycle` with its own name.
+Map the inventory to one cycle for each timer rate or for its one event input. A node
+with one timer has one rate cycle. A node with no timer, whose work runs in the callback
+of one subscription, has one triggered cycle on that input. One process has one
+`CycleNode`; a second rate is a composed `hypha::Cycle` with its own name.
 
 | ROS 1 | hypha cycle |
 |---|---|
 | Timer callback that computes and publishes | The `step()` method of the cycle node, at `rate_hz` under `[cycle]` in the TOML file. |
+| The one subscription whose callback computes and publishes, in a node with no timer | A `hypha::Arrivals<T>` member made the trigger with `setTrigger(port)` in `setup()`, and no `rate_hz`. `step()` runs once for each sample, which `samples()` holds alone; it calls the original callback with it. |
 | Subscription whose callback only stores the latest value | A `hypha::Latest<T>` member. |
 | Subscription whose callback does work for each message (counts, integrates, buffers, filters) | A `hypha::Arrivals<T>` member. The step calls the original callback once for each sample, in order. |
 | Publisher | A `hypha::Output<T>` member. Call `send(message)`. |
@@ -177,12 +184,26 @@ That is correct for a callback that only stores a value. A callback with an
 effect for each message (a counter, an integrator, a queue) must use an
 `Arrivals` port, or it runs too often.
 
-A node with no timer, whose whole work is in one subscription callback, also
-becomes a cycle node: use an `Arrivals` port and choose `rate_hz` above the input
-rate. Use a plain callback subscriber ([cpp-api.md](cpp-api.md) §5.2) only
-when a latency below one cycle period is a requirement. Write that reason in
-the change description. A node of that kind is ported to a plain `hypha::Node`
-as [section 10](#10-porting-an-event-driven-node-to-a-plain-hyphanode) shows.
+**A triggered cycle** ([execution-model.md](execution-model.md) §6.6,
+[cpp-api.md](cpp-api.md) §5.4, "Triggered cycles"). The reference is
+[examples/mrs/managers/estimation_manager.cpp](../examples/mrs/managers/estimation_manager.cpp):
+
+- The trigger port, `hypha::Arrivals<nav_msgs::Odometry> ground_truth`, is made the
+  trigger in `setup()` with `this->setTrigger(this->ground_truth)`. Its table in
+  `examples/mrs/config/estimation_manager.toml` has a `silence_ms` (100), and no
+  `[cycle]` table sets `rate_hz`: a rate and a trigger exclude each other.
+- The trigger needs a `silence_ms`, also when the port is `unsupervised`; `start()`
+  fails without one. Carry the old timeout of the input when the node had one, else
+  the longest gap the input may have.
+- When no trigger sample came for `silence_ms`, one **fallback step** runs with
+  `samples().empty()` and the port `stale()`, and repeats every `silence_ms`. Handle it
+  in `step()`: `estimation_manager` publishes no estimate and logs the input as stale.
+- A step at the trigger's send time T sees every other input cut before T on simulated
+  time, and its outputs carry T. The other subscriptions become `Latest` or `Arrivals`
+  ports as in the table above, and a TF listener a `hypha::Transforms` port.
+
+A node with two inputs whose callbacks each publish is not one triggered cycle: it
+stays a plain node (section 10).
 
 **Check:** each subscription has one input port, and each publication has one
 output port.
@@ -312,7 +333,7 @@ it in one file:
 
 ```cpp
 #include <hypha/hypha.h>
-#include <hypha_msgs/std_msgs/Float64.h>
+#include <std_msgs/Float64.h>
 
 #include "speed_controller/controller.h"
 
@@ -550,7 +571,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(condition, false, ...)`: writes when the condition becomes true |
 | `tf2_ros::TransformBroadcaster` | Output on `/tf` of type `tf2_msgs::TFMessage` |
 | `tf2_ros::StaticTransformBroadcaster` | An `Output<tf2_msgs::TFMessage>` declared with `latched` and `topic = "/tf_static"` in its ports table |
-| `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment |
+| `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment; for `ros2 bag play`'s behaviour, outside the replay lockstep, `HYPHA_REPLAY_LOCKSTEP=0` for the player and every node of the launch |
 | rosbag record / play | `hypha record` / `hypha play` (`apps/`) |
 | roslaunch | `hypha launch` |
 | roscore | None. Nodes find each other through shared memory |
@@ -590,11 +611,12 @@ A service name does not resolve from the ports tables. Read it with
 
 Generated hypha messages keep the ROS package namespace, the type name, the
 field names, and the `Ptr` and `ConstPtr` aliases. Logic that uses message
-types therefore compiles with few edits. Make only these:
+types therefore compiles with few edits. The include line stays: hypha installs
+`<sensor_msgs/Imu.h>` at the ROS 1 path. The process then uses hypha's headers in place
+of ROS's own; it cannot include both. Make only these edits:
 
 | ROS 1 | hypha | Edit |
 |---|---|---|
-| `#include <sensor_msgs/Imu.h>` | `#include <hypha_msgs/sensor_msgs/Imu.h>` | The include line. |
 | `boost::array<double, 9>` | `std::array<double, 9>` | Only where the logic names the type. |
 | `header.stamp` is `ros::Time` | `header.stamp` is `hypha_msgs::RosTime{secs, nsecs}` | `stamp.sec` to `stamp.secs`, `stamp.nsec` to `stamp.nsecs`. A call such as `stamp.toSec()` needs a helper; write one free function in the node file, do not edit each use. |
 | `ros::Time`, `ros::Duration` in logic | `hypha::Time`, `hypha::Duration` | Only when the logic itself measures time. |
@@ -633,9 +655,11 @@ or 1.
 - **One `[log]` table for each process.** A second node in the same process
   with a different table fails with `InvalidState`.
 - **Stale shared memory after a crash** can look like a code fault. Run
-  `./clean-shm.sh` before you look for a bug.
-- **A backward seek or a loop of `hypha play --clock` restarts the node.** A cycle
-  that sees simulated time go back ends the run with `ClockRewound`, the process
+  `hypha clean` with the domain stopped before you look for a bug.
+- **A backward seek or a loop of `hypha play --clock` restarts the node.** A node
+  that reads a `/clock` lower than its last one ends the run with `ClockRewound`, with
+  or without a timer and in the open loop too, as does a cycle that sees simulated time go
+  back; the process
   exits 75 and its supervisor starts it again
   ([execution-model.md](execution-model.md) §11.1). Every member is built anew, so
   the node needs no reset code; do not write one.
@@ -657,7 +681,10 @@ or 1.
 
 hypha has no equivalent for these. Stop and ask the user before you continue:
 
-- `tf2_ros::Buffer` or `TransformListener` lookups. hypha ships no TF buffer.
+- A transform lookup that waits: `waitForTransform`, `lookupTransform` with a timeout,
+  or `canTransform` in a loop. `hypha::TransformBuffer` lookups never wait (§10.6;
+  [cpp-api.md](cpp-api.md) section 10.2): the node holds its message until a later
+  callback finds the transform, or drops it.
 - `dynamic_reconfigure`, or a parameter changed at run time. Parameters are
   read once at start.
 - `actionlib`.
@@ -667,7 +694,8 @@ hypha has no equivalent for these. Stop and ask the user before you continue:
   request topic and a reply topic, and the caller a state over steps.
 - Missing or stale input with no rule in the ROS node. Ask which output is
   safe.
-- A per-message latency requirement below one cycle period.
+- A per-message latency requirement that a triggered step does not meet on the
+  target. Measure it first.
 - A logic change that you think is necessary. Report it, do not make it.
 
 Every item in this list is also a gap report: see section 8.
@@ -684,7 +712,7 @@ yourself.
 Report these:
 
 - **Blocker:** the node cannot be migrated without the missing item. Example:
-  a `tf2_ros::Buffer` lookup.
+  a lookup that must wait for its transform.
 - **Gap:** the migration is possible, but a hypha feature would make it
   smaller or safer. Example: a service name
   that does not resolve from the ports tables.
@@ -704,7 +732,7 @@ Rules:
   with one comment that names the report.
 - **Prove a defect.** Give the smallest command or test that shows it, the
   output you saw and the output that the documentation states. Clear
-  stale shared memory with `./clean-shm.sh` in the hypha repository first, so
+  stale shared memory with `hypha clean` (the domain stopped) first, so
   that an environment fault is not reported as a defect.
 
 Write each item in this form, in your report to the developer:
@@ -760,17 +788,30 @@ Step 3 (TOML) and Step 4 (build) apply unchanged. The rules of
 
 ### 10.1 Which target
 
-Use a plain `hypha::Node` when the node handles each message in its callback, has
-one timer or a few, keeps its own worker threads, or needs a latency below one
-cycle period. `Node::run()` calls every callback on the calling thread.
-Use a `CycleNode` when the node computes at one rate over a frozen capture of its
-inputs and needs the verdict of each input (`usable()`, `stale()`, `~/state`). A
-plain node has none of them: freshness is judged for cycle inputs only
-([cpp-api.md](cpp-api.md) §5.1), `runNode` is not used, so the node publishes no
-`~/state` and `~/introspection` and refuses no unread parameter key
-([cpp-api.md](cpp-api.md) §2). The model is in
-[execution-model.md](execution-model.md) §3 and §4. Write the reason for a plain
-node in the change description.
+| The ROS node | Target |
+|---|---|
+| Its work runs from a timer | A rate `CycleNode` (Step 2) |
+| Its work runs on each sample of one input | A triggered `CycleNode`: `setTrigger(port)` (Step 2) |
+| Its callbacks publish on more than one input | A plain `hypha::Node` |
+| It owns worker threads | A plain `hypha::Node` |
+| It is a shim of a ROS client library (#59) | A plain `hypha::Node` |
+
+What a triggered cycle adds over a plain node, and what it costs:
+
+| A triggered cycle adds | It costs |
+|---|---|
+| A verdict for each input (`stale()`, `Latest::usable()`), and `~/state` rows under `runNode` | A `silence_ms` for each supervised input, the trigger's included |
+| Outputs held until the step succeeds: a failed step publishes nothing ([execution-model.md](execution-model.md) §6.1) | A fallback step to handle when the trigger is silent |
+| Replay order: under simulated time the step runs at the sample's time, with the other inputs cut before it, and waits for its upstream nodes (§6.6) | One decode of each sample into its port before the step, and a payload copy in the input's history (§6.2) |
+| `~/introspection` and the refusal of an unread parameter key, from `runNode` | On host time, a trigger older than its `silence_ms` runs no step and counts in `age_rejections_total` |
+
+A plain `hypha::Node` has none of the first column: freshness is judged for cycle
+inputs only ([cpp-api.md](cpp-api.md) §5.1), and without `runNode` the node publishes
+no `~/state` and `~/introspection` and refuses no unread parameter key
+([cpp-api.md](cpp-api.md) §2). `Node::run()` calls every callback on the calling
+thread, and each `publish()` goes out at once. The model is in
+[execution-model.md](execution-model.md) §3, §4 and §11.2. Write the reason for a
+plain node in the change description.
 
 ### 10.2 Literal topic or port name
 
@@ -869,7 +910,7 @@ policy header that every node of the stack includes, and map the message type to
 ```cpp
 // my_stack/qos_policies.h: included by every node of the stack
 #include <hypha/qos.h>
-#include <hypha_msgs/sensor_msgs/Imu.h>
+#include <sensor_msgs/Imu.h>
 
 namespace my::policies {
 inline constexpr hypha::Qos imu{
@@ -988,19 +1029,19 @@ transform up at the cloud's stamp and publishes. Its replay recipe, `replay_chec
 runs the node on simulated time from a recorded fixture of 98296 bytes with `hypha play
 --clock` and `hypha record --sync`, and makes three checks:
 
-- **Loss.** The node prints `missingSequences()` and `metrics()` of each subscriber; a
-  clean run reports `missing=0`, and its slow mode (`[slow] enabled = true`) a growing
-  count.
-- **Timer misses.** The node prints `Timer::missedCount()`. Under simulated time the
-  first `/clock` adds the jump from time 0 to the recording's start, so compare two runs
-  of one fixture, not one count with zero.
+- **Loss.** The node prints `missingSequences()` and `metrics()` of each subscriber. A
+  replay at `--rate 1` reports `missing=0`; slow mode (`[slow] enabled = true`) shows a
+  growing count, live and in a replay, since nothing waits for a plain node.
+- **Timer misses.** The node prints `Timer::missedCount()`; the stalls of slow mode
+  show as misses.
 - **Comparison by stamp.** `sensor_pipeline_compare` reads two recordings with the test
   MCAP reader and pairs the outputs by `header.stamp`: two runs of the node, or a run and
   the ROS node's golden output.
 
-A plain node sends no replay progress, so the player does not wait for it
-([replay-flow-control.md](replay-flow-control.md) §6.7): the recipe replays at `--rate 1`
-and checks that the node received every input.
+A plain node on simulated time takes no part in the replay lockstep (#153): its
+callbacks run as their samples arrive, and the player does not wait for it
+([execution-model.md](execution-model.md) §11.2). Its replays are not identical from
+run to run; a node that needs a deterministic replay is built from cycles.
 
 
 ### 10.9 The exit code of a custom `main`

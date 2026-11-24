@@ -42,7 +42,10 @@ fn run(command: LaunchCommand) -> Result<ExitCode, String> {
                 .map_err(|error| format!("cannot read '{}': {error}", units_file.display()))?;
             let parsed = parse_units_file(&units_file)?;
             let session = session_name(&units_file, session.as_deref())?;
+            // The executable itself, not the link that started it: macOS reports a
+            // start as `hylaunch` under that name, and a unit runs `<launcher> launch unit`.
             let launcher = env::current_exe()
+                .and_then(fs::canonicalize)
                 .map_err(|error| format!("cannot find the hypha executable: {error}"))?;
             session_up(&tmux, &parsed, &session, &launcher, &units_file)?;
             println!("[hypha launch] session '{session}' is up with {} units", parsed.units.len());

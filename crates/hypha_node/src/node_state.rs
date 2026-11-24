@@ -201,7 +201,7 @@ mod tests {
     fn a_node_without_required_inputs_is_usable() {
         let state = state_of("n", &[]);
         assert_eq!(state.state, NodeState::INPUTS_USABLE);
-        assert!(state.inputs.is_empty());
+        assert!(state.inputs.is_empty(), "{:?}", state.inputs);
     }
 
     #[test]

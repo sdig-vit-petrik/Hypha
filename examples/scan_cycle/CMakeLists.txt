@@ -9,7 +9,7 @@
 #   cmake -S . -B build && cmake --build build && ctest --test-dir build
 
 cmake_minimum_required(VERSION 3.20)
-project(scan_cycle VERSION 0.2.0 LANGUAGES CXX)
+project(scan_cycle VERSION 0.3.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -69,7 +69,7 @@ if(SCAN_CYCLE_TESTS AND TARGET GTest::gtest_main)
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_definitions(${target} PRIVATE
       SCAN_CYCLE_TEST_CONFIG="${SCAN_CYCLE_TEST_CONFIG}")
-    add_test(NAME ${target} COMMAND ${target})
+    hypha_add_test(${target})
   endforeach()
   set_tests_properties(scan_cycle_bus_test PROPERTIES LABELS "needs-iceoryx2" TIMEOUT 120)
 endif()
