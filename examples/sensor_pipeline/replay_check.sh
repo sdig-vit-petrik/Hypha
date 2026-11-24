@@ -3,13 +3,11 @@
 #                        [--compare <sensor_pipeline_compare>] [--fixture <inputs.mcap>]
 #                        [--work <directory>]
 #
-# Replays the recorded inputs into hypha_cloud_processor three times on simulated time,
-# from the build tree of ./build.sh, and records the output of each run. The processor
-# takes part in the replay lockstep (#72): the player waits for its callbacks.
+# Replays the recorded inputs into hypha_cloud_processor twice on simulated time, from
+# the build tree of ./build.sh, and records the output of each run. The processor is a
+# plain callback node, so it takes no part in the replay lockstep (#153): the player
+# waits for the recorder only, and the processor's callbacks run as their samples arrive.
 #   run_a, run_b  processor.toml: both outputs must match by header stamp
-#   slow          processor_slow.toml: the stalled node must set the replay's rate and
-#                 lose no IMU sample and no timer period; its worker thread, outside the
-#                 lockstep, may still drop clouds at its hand-over queue
 # The run uses its own bus domain, sp_<pid>, and stops only the processes it started.
 # Exit 0 when every check passes, 1 otherwise.
 set -euo pipefail
@@ -156,10 +154,10 @@ replay_once() {
     wait_for_line "${record_pid}" "${record_out}" "Following"
 
     # 3. The player, in the foreground: /clock, the inputs only, at the recorded pace, and
-    #    no faster than the processor and the recorder answer.
-    echo "replay_check: ${run}: hypha play --clock --rate 1 --nodes hypha_record cloud_processor"
+    #    no faster than the recorder answers.
+    echo "replay_check: ${run}: hypha play --clock --rate 1 --nodes hypha_record"
     "${hypha_bin}" play --input "${fixture}" --clock --rate 1 --settle 0.5 \
-        --nodes hypha_record cloud_processor --topics "${input_topics[@]}" \
+        --nodes hypha_record --topics "${input_topics[@]}" \
         </dev/null >"${work_dir}/${run}.play.out" 2>&1
     grep "effective rate" "${work_dir}/${run}.play.out" || true
 
@@ -184,8 +182,8 @@ echo "replay_check: fixture ${fixture}: ${clouds} clouds; domain ${domain}; work
 failures=0
 
 # A normal run accounts for every cloud it received: processed or dropped at the hand-over,
-# and every processed cloud published. The replay paces the node's callbacks (#72), not its
-# worker thread, so a loaded host may still make the hand-over drop; that is counted.
+# and every processed cloud published. The replay does not pace the node (#153), so a
+# loaded host may make the hand-over drop; that is counted.
 check_clean_run() {
     local run="$1"
     local out="${work_dir}/${run}.processor.out"
@@ -228,24 +226,6 @@ else
 fi
 if ! "${compare_bin}" "${comparison}" "${work_dir}/run_a.mcap" "${work_dir}/run_b.mcap" \
     "${output_topic}" "${tolerance_m}"; then
-    failures=$((failures + 1))
-fi
-
-# Slow mode: the stalled node paces the replay instead of losing data. Its callbacks lose no
-# IMU sample and miss no timer period, and the player names it as what set the rate. Its
-# worker thread is outside the lockstep: what the hand-over dropped is reported, not checked.
-replay_once slow "${config_dir}/processor_slow.toml"
-slow_out="${work_dir}/slow.processor.out"
-imu_missing="$(final_value "${slow_out}" imu missing)"
-timer_missed="$(final_value "${slow_out}" node timer_missed)"
-dropped="$(final_value "${slow_out}" node handover_dropped)"
-rate_line="$(grep "effective rate" "${work_dir}/slow.play.out" || true)"
-echo "replay_check: slow: imu missing ${imu_missing}, timer periods missed ${timer_missed}," \
-    "clouds dropped at the hand-over ${dropped}"
-if [ "${imu_missing:-x}" != 0 ] || [ "${timer_missed:-x}" != 0 ] ||
-    [[ "${rate_line}" != *"set by 'cloud_processor'"* ]]; then
-    echo "replay_check: slow: imu missing ${imu_missing}, timer missed ${timer_missed}," \
-        "rate '${rate_line}': the node did not pace the replay" >&2
     failures=$((failures + 1))
 fi
 

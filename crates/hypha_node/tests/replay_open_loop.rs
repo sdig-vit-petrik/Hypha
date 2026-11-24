@@ -1,6 +1,7 @@
 //! `HYPHA_REPLAY_LOCKSTEP=0` turns the replay lockstep off for a node on simulated time
-//! (#102): its plain callbacks run as their samples arrive, and a replay cycle that lost
-//! input samples warns and keeps running. Each lockstep case beside it shows the default.
+//! (#102): a replay cycle that lost input samples warns and keeps running, and holds no
+//! deadline for an upstream. Each lockstep case beside it shows the default. Plain
+//! callbacks run as their samples arrive in both modes (#153).
 #![allow(clippy::expect_used, reason = "a test fails on a refused setup step")]
 #![allow(clippy::arithmetic_side_effects, reason = "test times are small constants")]
 
@@ -49,11 +50,22 @@ struct Feeder {
     clock: RawPublisher,
     data: RawPublisher,
     topic: String,
+    /// A `/clock_progress` publisher that never reports: the feeder then looks to a
+    /// cycle as an upstream in the lockstep that has not run its deadlines.
+    _progress: Option<RawPublisher>,
     _node: BusNode,
 }
 
 impl Feeder {
     fn new() -> Self {
+        Self::create(false)
+    }
+
+    fn silent_upstream() -> Self {
+        Self::create(true)
+    }
+
+    fn create(silent_upstream: bool) -> Self {
         let node = BusNode::new(&unique_name("feeder")).expect("feeder node");
         let clock = node
             .publish_raw_configured(
@@ -74,7 +86,18 @@ impl Feeder {
                 PublisherOptions::default(),
             )
             .expect("data publisher");
-        Self { clock, data, topic, _node: node }
+        let progress = silent_upstream.then(|| {
+            use hypha_msgs::hypha_msgs::ReplayProgress;
+            node.publish_raw_configured(
+                "/clock_progress",
+                ReplayProgress::TYPE_NAME,
+                ReplayProgress::SCHEMA_HASH,
+                "",
+                PublisherOptions::default(),
+            )
+            .expect("progress publisher")
+        });
+        Self { clock, data, topic, _progress: progress, _node: node }
     }
 
     fn clock(&mut self, nanos: u64) {
@@ -122,8 +145,9 @@ fn an_open_loop_callback_runs_as_its_sample_arrives() {
 }
 
 #[test]
-fn a_lockstep_callback_waits_until_the_clock_reaches_its_sample() {
-    assert_eq!(callbacks_run_for_a_sample_ahead_of_the_clock(None), 0);
+fn a_lockstep_callback_runs_as_its_sample_arrives_too() {
+    // Only cycles take part in the lockstep (#153): a plain callback is not held.
+    assert_eq!(callbacks_run_for_a_sample_ahead_of_the_clock(None), 1);
 }
 
 /// Counts the steps of a cycle.
@@ -156,7 +180,7 @@ struct Cycled {
 enum Upstream {
     /// A node on host time, which takes no part in the replay.
     None,
-    /// A node in the lockstep that never reports its progress.
+    /// A node on `/clock_progress` that never reports its progress.
     Silent,
 }
 
@@ -173,7 +197,7 @@ fn run_replay_cycle(
             .expect("node");
     let mut feeder = match upstream {
         Upstream::None => Feeder::new(),
-        Upstream::Silent => on_simulated_time(Some("1"), Feeder::new),
+        Upstream::Silent => Feeder::silent_upstream(),
     };
     let identity = safe::SubscriberIdentity {
         data_type: DATA_TYPE,
@@ -246,8 +270,8 @@ fn after_a_replay_loss(lockstep: Option<&str>) -> Cycled {
     })
 }
 
-/// The input's publisher is in the lockstep and never reports: a cycle in the lockstep
-/// holds each deadline for it.
+/// The input's publisher is on `/clock_progress` and never reports: a cycle in the
+/// lockstep holds each deadline for it.
 fn with_a_silent_upstream(lockstep: Option<&str>) -> Cycled {
     run_replay_cycle(lockstep, Upstream::Silent, |feeder, set, _| {
         feeder.clock(BASE);

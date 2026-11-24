@@ -42,9 +42,8 @@ endforeach()
 install(TARGETS ${SENSOR_PIPELINE_TARGETS} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
 # The replay check (replay_check.sh) runs the processor twice on the recorded fixture,
-# with hypha play and hypha record, compares the two outputs by stamp, and runs the slow
-# mode once. It needs the tools and the comparison; it is not run when the hypha tree is
-# built without tests.
+# with hypha play and hypha record, and compares the two outputs by stamp. It needs the
+# tools and the comparison; it is not run when the hypha tree is built without tests.
 set(SENSOR_PIPELINE_REPLAY_TEST ON)
 if(DEFINED HYPHA_BUILD_TESTS AND NOT HYPHA_BUILD_TESTS)
   set(SENSOR_PIPELINE_REPLAY_TEST OFF)

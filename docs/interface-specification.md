@@ -217,9 +217,8 @@ time of the send; a `WaitSet` delivery also reports the age it measured
 (`HyphaDelivery.transport_age_nanos`).
 The **framework send time** is simulated time on a sim-time node, wall time
 otherwise, or the value a replayer passed to `hypha_loan_send`. Every frame a cycle
-step sends carries the step's time, and every frame a replayed plain callback sends
-carries its event's time (execution-model.md §11.2): a send without a value reads
-framework time on the sending thread. Values from different clock sources are not
+step sends carries the step's time: a send without a value reads framework time on the
+sending thread, which outside a step is the clock. Values from different clock sources are not
 comparable. On simulated time a replay cycle ages each input by the framework send
 time: a step at deadline `D` admits the samples sent before `D`, and their age is `D`
 minus the framework send time. Any other cycle ages inputs by the transport send time.

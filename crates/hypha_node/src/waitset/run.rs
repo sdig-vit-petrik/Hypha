@@ -31,11 +31,10 @@ impl RunDriver for NativeRun<'_> {
         let set = self.set;
         // The run claimed `running`: a live borrow here is a caller that runs and
         // configures one `WaitSet` at once.
-        let (Ok(mut registrations), Ok(cycles), Ok(mut native), Ok(mut callbacks)) = (
+        let (Ok(mut registrations), Ok(cycles), Ok(mut native)) = (
             set.registrations.try_borrow_mut(),
             set.cycles.try_borrow(),
             set.native.try_borrow_mut(),
-            set.callback_replay.try_borrow_mut(),
         ) else {
             return RunReport {
                 reason: StopReason::SetupFailed,
@@ -63,7 +62,6 @@ impl RunDriver for NativeRun<'_> {
             health: &set.health,
             due,
             detached: &set.pending_detach,
-            callbacks: &mut callbacks,
         };
         let report = match limit {
             Some(limit) => native.run_for(budget, limit, &mut dispatcher),

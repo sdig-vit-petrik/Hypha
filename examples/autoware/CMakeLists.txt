@@ -521,7 +521,7 @@ autoware_test(autoware_map_projection_loader_node_test
   INCLUDES "${MAP_PROJECTION_LOADER_DIR}/src"
   LIBS autoware_map_projection_loader_core)
 
-# --- Slice A end to end: the replay check of slice_a_replay.sh --------------------------
+# --- Slice A end to end ------------------------------------------------------------------
 
 # Compares the Slice A outputs of two recordings, and summarizes one; it reads MCAP with the
 # test-only reader of the SDK.

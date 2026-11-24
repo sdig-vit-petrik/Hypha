@@ -4,7 +4,6 @@
 //! attaches work to it, and calls [`hypha_waitset_run`] on a thread it owns.
 //! This module starts no thread.
 
-pub mod callback_events;
 pub mod clock_driver;
 pub mod dispatch;
 pub mod replay;
@@ -115,9 +114,6 @@ pub struct HyphaWaitSet {
     /// can tell a known registration from an unknown one.
     live: RefCell<Vec<LiveRegistration>>,
     input_sources: RefCell<Vec<Weak<crate::cycle::CycleInputSource>>>,
-    /// The replay state of the plain callbacks, kept across runs. Borrowed mutably for
-    /// the length of a run.
-    callback_replay: RefCell<callback_events::CallbackReplay>,
     /// The node's execution counters, shared from this `WaitSet`'s creation.
     pub(crate) health: Arc<ExecutionHealth>,
 }
@@ -492,13 +488,8 @@ pub(crate) enum DataCallback {
 
 enum Target {
     /// The registration shares the subscriber until the detach or the destruction of the
-    /// `WaitSet`. Under replay `head` holds the one sample that waits for its turn in time
-    /// order (`callback_events`).
-    Subscription {
-        subscriber: Arc<HyphaSubscriber>,
-        callback: DataCallback,
-        head: Option<callback_events::Head>,
-    },
+    /// `WaitSet`.
+    Subscription { subscriber: Arc<HyphaSubscriber>, callback: DataCallback },
     /// Replays latched topics to subscribers that joined late.
     LatchReplay,
     /// Wakes the `WaitSet` periodically to drain `/clock` on simulated time.
