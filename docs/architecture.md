@@ -398,6 +398,10 @@ nested layout and identity from the definition text. Installing the headers
 alone would leave an application able only to reach into a hypha source
 checkout, which no install prefix has.
 
+Beside it, `hyphaTesting.cmake` installs `hypha_add_test(<target>)`: a CTest test
+that runs in a bus domain of its own under the test root `t_`
+(`docs/getting-started.md`).
+
 `./test.sh cpp` tests both ways: `scripts/test-installed-sdk.sh` against an
 install prefix, and `test/package_consumer` with hypha as a subproject.
 

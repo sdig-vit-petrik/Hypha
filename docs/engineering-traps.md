@@ -277,6 +277,13 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   message once and writes it once into the loan, and copies fixed-size numeric arrays
   (`float64[36]`) as one block, so the build refuses a big-endian target. The checked
   writer still throws `StreamOverrunException` on a buffer that is too small.
+- **A field or constant name is a ROS 1 name.** It is a letter followed by letters,
+  digits or `_` (`[A-Za-z][A-Za-z0-9_]*`, genmsg's rule); any other name, such as `a-b`
+  or `2x`, fails generation with file, line and the name. Text after a field name is
+  refused, not folded into the name: a ROS 2 default value such as `float64 x 1.0` fails
+  as unexpected text after field `x`, so a port must drop it (ROS 2 syntax is #45). The
+  tools refuse such a definition from the bus the same way. Keywords are legal names;
+  the emitters rename them (`class_`, `r#type`).
 - **A definition expands to at most 65 536 nested messages.** Shared types make a
   definition a diamond: 64 levels of two fields are 2^63 paths. Resolution refuses a
   definition past `MAX_EXPANDED_MESSAGES` (the root, plus each message field's count
@@ -379,14 +386,18 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   publishes `/clock` moves the clock of every simulated-time cycle that is
   listening, in every process. `/clock_progress` is shared the same way. `.config/nextest.toml` therefore runs every test process through
   `scripts/private-domain.sh`, which gives it the domain
-  `${HYPHA_DOMAIN:-t}_<nextest pid>_<slot>`: no two running tests share one. The
+  `t_<nextest pid>_<slot>`: no two running tests share one. The
   next test in a slot reclaims only the dead CLI tool nodes of the one before;
-  `test.sh` runs `./clean-shm.sh --force` before the suite. The C++ test
+  `test.sh` runs `./clean-shm.sh --domain t_` before the suite, which removes the
+  test domains of the runs that ended and nothing else. The C++ test
   main (`crates/hypha-cxx/test/test_main.cpp`) gives each gtest shard process,
-  which ctest runs in parallel, the domain `${HYPHA_DOMAIN:-t}_<pid>` and a
-  `TMPDIR` of its own for the parameter files. The tools and peers a test spawns
+  which ctest runs in parallel, the domain `t_<pid>` and a
+  `TMPDIR` of its own for the parameter files; `hypha_add_test()` gives any other
+  ctest test `t_<ctest pid>_<n>`. The tools and peers a test spawns
   inherit the domain. A test that runs a process in another domain must pass the
-  variable on itself.
+  variable on itself and name it `t_<pid>_...` after a process of its run: every
+  test domain lies under the root `t_`, so a test leaves nothing in the domain of a
+  system running on the host, and the clean keeps a domain whose run still lives.
 - **A node's zero clock is a placeholder, not a clock value.** The first sim node of
   a process starts simulated time at zero before any `/clock` arrives; a later sim
   node keeps the clock the process has. A replay cycle takes
@@ -417,7 +428,8 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   answers a `/clock` sample sent at or after the one it rejoined on
   (`node_progress::epoch`). Only then is the clock value compared.
 - **Time going back restarts; nothing rewinds in place.** A timer or cycle that sees
-  simulated time go back, ends the run with
+  simulated time go back, and a node on simulated time that reads a `/clock` lower than
+  its last one, whatever it holds and in follow mode too (#130), end the run with
   `ClockRewound`, `runNode` exits 75, and `hypha launch` starts the process again. Do not add rewind handling: the old
   in-place rewind (abandoned samples, re-reads, re-anchored fallbacks) was the main
   source of replay bugs. The restarted process must not open a port before every old

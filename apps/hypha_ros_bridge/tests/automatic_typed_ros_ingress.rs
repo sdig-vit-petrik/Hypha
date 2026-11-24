@@ -474,7 +474,7 @@ fn bridged_schema_resolves_in_another_process(topic: &str) -> bool {
 fn a_typed_consumer_accepts_automatic_ros_ingress_and_follows_a_schema_change() {
     // A domain of its own keeps the topics of a live system on this machine
     // out of the bridge under test. The schema reader process inherits it.
-    hypha_testkit::set_env("HYPHA_DOMAIN", format!("bridge_test_{}", std::process::id()));
+    hypha_testkit::set_env("HYPHA_DOMAIN", format!("t_{}_bridge", std::process::id()));
     // The bridge's ROS node must advertise an IPv4 address. A shell may export
     // a name such as `localhost` here, which the ROS client refuses at start.
     hypha_testkit::set_env("ROS_IP", "127.0.0.1");

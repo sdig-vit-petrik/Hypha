@@ -101,7 +101,7 @@ libraries (`libgeographiclib-dev`, `libpugixml-dev`, `libyaml-cpp-dev`,
 ```bash
 ./build.sh && cmake --install build --prefix /tmp/hypha-sdk
 cmake -S examples -B build/examples -DCMAKE_PREFIX_PATH=/tmp/hypha-sdk && cmake --build build/examples --parallel
-./clean-shm.sh --force && ctest --test-dir build/examples/autoware --output-on-failure
+ctest --test-dir build/examples/autoware --output-on-failure
 build/examples/autoware/autoware_crop_box_filter examples/autoware/config/crop_box_filter.toml
 ```
 
@@ -269,8 +269,8 @@ Each loop sends `/clock` back: the nodes exit 75 and start again at once. `launc
 puts the build's executables on `PATH` (`AUTOWARE_BUILD_DIR`, default
 `build/examples/autoware`), and `hypha` from `PATH` or else from `target/release`.
 `ISUZU_INPUT` names the recording, by default the one above. The player has no keys
-here (its stdin is `/dev/null`, #109): stop its window with `Ctrl-c` and run `hypha play`
-in a terminal of your own to pause or step.
+here (a unit runs in the background of its window): stop its window with `Ctrl-c` and run
+`hypha play` in a terminal of your own to pause or step.
 
 On bag 4 (macOS, 2026-11-23) the bus drives 115 m in 17.9 s, up to 7.6 m/s; the EKF's
 estimate stays within 0.8 m of the GNSS poses (mean 0.45 m, most of it the time between

@@ -118,18 +118,24 @@ fn domain_child() {
     assert!(passed, "the child role '{role}' failed");
 }
 
+/// A domain of this test run under the test root, which `clean-shm.sh --domain t_` clears.
+fn test_domain(side: &str) -> String {
+    format!("t_{}_{side}", std::process::id())
+}
+
 #[test]
 #[allow(clippy::expect_used)]
 fn two_domains_do_not_see_each_others_samples_or_nodes() {
     let topic = format!("/{}", unique_name("domain_topic"));
     let publisher_node = unique_name("domain_pub");
-    let mut publisher = spawn_child("publish", Some("left"), &topic, &publisher_node);
+    let (left, right) = (test_domain("left"), test_domain("right"));
+    let mut publisher = spawn_child("publish", Some(&left), &topic, &publisher_node);
     std::thread::sleep(Duration::from_millis(300));
 
-    let same_domain = run_child("expect_samples", Some("left"), &topic, &publisher_node);
-    let other_domain = run_child("expect_no_samples", Some("right"), &topic, &publisher_node);
-    let listed_in_same = run_child("expect_node_present", Some("left"), &topic, &publisher_node);
-    let absent_in_other = run_child("expect_node_absent", Some("right"), &topic, &publisher_node);
+    let same_domain = run_child("expect_samples", Some(&left), &topic, &publisher_node);
+    let other_domain = run_child("expect_no_samples", Some(&right), &topic, &publisher_node);
+    let listed_in_same = run_child("expect_node_present", Some(&left), &topic, &publisher_node);
+    let absent_in_other = run_child("expect_node_absent", Some(&right), &topic, &publisher_node);
 
     assert!(publisher.wait().expect("publisher exit").success());
     assert!(same_domain.success(), "a subscriber in the same domain received nothing");
@@ -157,7 +163,8 @@ fn a_domain_that_is_not_utf8_is_refused() {
 
 #[test]
 fn the_active_domain_is_reported() {
-    assert!(run_child("expect_domain", Some("left"), "left", "unused").success());
+    let left = test_domain("left");
+    assert!(run_child("expect_domain", Some(&left), &left, "unused").success());
     assert!(run_child("expect_domain", None, "", "unused").success());
 }
 

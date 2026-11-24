@@ -828,7 +828,12 @@ host:
   nodes between runs.
 - **Nothing rewinds in place.** When simulated time goes back under any timer or
   cycle of a `WaitSet`, the run ends with `ClockRewound` and logs the timer or cycle and
-  the new time; `runNode` restarts the process. A backward seek of `hypha play` restarts
+  the new time; `runNode` restarts the process. A node that follows `/clock` also checks
+  `/clock` itself, whatever its `WaitSet` holds and in follow mode too: a sample lower
+  than the last one it applied is not applied, the run ends with `ClockRewound`, and the
+  node logs `hypha: '<node>' saw /clock go back from <a> ns to <b> ns`. A node with only
+  subscriptions therefore restarts as well (#130). A CLI tool (`_hyphacli_<tool>`) follows
+  the clock back. A backward seek of `hypha play` restarts
   the process: `hypha::runNode` exits 75, `hypha launch` starts it again, and it rejoins on the next `/clock`
   (`replay-flow-control.md`, section 4.4). The new process anchors its grid on
   its first clock value, so a pass that starts again runs on the same phase as
@@ -877,7 +882,8 @@ plain callbacks too, not only with its cycles (#72). A node started with
 `HYPHA_USE_SIM_TIME=follow` takes no part: it follows `/clock` as a ROS node follows
 `ros2 bag play`, reports no progress, is waited for by no one, and runs its callbacks
 as their samples arrive. Its timers still fire against `/clock`, once per clock step
-(no burst), so a player's `--chunk` shorter than the timer's period keeps its rate. It
+(no burst), so a player's `--chunk` shorter than the timer's period keeps its rate, and a
+`/clock` that goes back restarts it as any node (section 11.1). It
 is for nodes in a feedback loop that cannot replay in lockstep yet (#103); its replays
 are not identical from run to run. Its plain subscriptions and plain
 timers become events, and a `WaitSet` runs them in time order, so a callback node

@@ -328,8 +328,9 @@ every 200 ms.
 With `--clock`, `--loop` and the restart key start a pass again from the start of
 the window, which sends `/clock` back. That restarts the participants: no node
 rewinds in place. The player sends the first `/clock` value once, waits until every
-participant that runs cycles has left the bus (each C++ node built on
-`hypha::runNode` exits 75 and its `hypha launch` supervisor starts it again), opens its publishers again, and waits for the
+participant has left the bus (each C++ node built on
+`hypha::runNode` exits 75 and its `hypha launch` supervisor starts it again; a node in
+follow mode exits 75 too, though the player does not wait for it), opens its publishers again, and waits for the
 same participants to rejoin before the pass sends data. A `hypha record --sync`
 recorder stays through it. A participant that is still on the bus or has not
 rejoined after 30 s stops the replay; a node with its own `main`, or a Rust node,
@@ -391,7 +392,10 @@ Observers, such as a recorder or the bridge, are not waited for. A message sent
 before one connects is lost to it.
 
 Interactive keys while playing: pause (`<Space>`), step one chunk (`<s>`), speed
-up and slow down (`<+>` and `<->`), restart (`<r>`), quit (`<q>`).
+up and slow down (`<+>` and `<->`), restart (`<r>`), quit (`<q>`). The keys and the
+progress line need a terminal on stdin and stdout that the player may read: it must be
+in the terminal's foreground process group. As a shell's background job or a
+`hypha launch` unit the player takes no keys and prints plain lines.
 
 ### `hypha convert` — a ROS 2 bag into a recording
 
@@ -552,8 +556,9 @@ node running.
 - **A node that calls `setsid` or `setpgid` leaves its process group**, and
   the supervisor's group signals do not reach it.
 - **A node does not own the terminal.** It runs in a background process group of
-  its window, so a read from the terminal stops it with SIGTTIN. Output is not
-  affected.
+  its window, so it gets no keys: a read from the terminal stops it with SIGTTIN,
+  or fails with `EIO` when the node ignores or blocks that signal. Output is not
+  affected. `hypha play` as a unit sees this, takes no keys and prints plain lines.
 
 #### Measured cost
 

@@ -22,7 +22,7 @@ const PARTICIPANT: &str = "utc_replay_observer";
 fn utc_window_replay_publishes_utc_clock_before_data() {
     if std::env::var_os("HYPHA_UTC_REPLAY_CHILD").is_none() {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("UTC").as_nanos();
-        let domain = format!("ur_{}_{nonce:x}", std::process::id());
+        let domain = format!("t_{}_ur_{nonce:x}", std::process::id());
         let status = Command::new(std::env::current_exe().expect("test executable"))
             .args(["--exact", "utc_window_replay_publishes_utc_clock_before_data", "--nocapture"])
             .env("HYPHA_UTC_REPLAY_CHILD", "1")

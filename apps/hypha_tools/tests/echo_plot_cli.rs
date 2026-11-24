@@ -19,7 +19,7 @@ fn plot_mode_prints_a_header_and_a_row_with_the_colored_string() {
         let status = Command::new(std::env::current_exe().expect("test executable"))
             .args(["--exact", "plot_mode_prints_a_header_and_a_row_with_the_colored_string"])
             .env("HYPHA_ECHO_PLOT_CHILD", "1")
-            .env("HYPHA_DOMAIN", format!("ep_{}_{nonce:x}", std::process::id()))
+            .env("HYPHA_DOMAIN", format!("t_{}_ep_{nonce:x}", std::process::id()))
             .status()
             .expect("isolated-domain test");
         assert!(status.success());

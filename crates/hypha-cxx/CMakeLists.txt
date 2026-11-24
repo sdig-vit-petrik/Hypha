@@ -138,6 +138,11 @@ install(DIRECTORY "${HYPHA_STANDARD_MSG_SOURCE_DIR}/"
 install(FILES "${HYPHA_MESSAGES_MODULE}"
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/hypha)
 
+# hypha_add_test(), which runs an application's test in a bus domain of its own.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/hyphaTesting.cmake")
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/hyphaTesting.cmake"
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/hypha)
+
 # The generator, so that hypha_generate_messages() works from an install prefix.
 install(PROGRAMS "${HYPHA_MSGGEN_BIN}" DESTINATION ${CMAKE_INSTALL_BINDIR})
 
@@ -179,7 +184,7 @@ if(HYPHA_BUILD_TESTS)
 
   add_executable(test_hypha_c test/test_c_abi.c)
   target_link_libraries(test_hypha_c PRIVATE hypha::ffi)
-  add_test(NAME test_hypha_c COMMAND test_hypha_c)
+  hypha_add_test(test_hypha_c)
 
   add_executable(test_hypha_base
     base/test/test_main.cpp
@@ -189,7 +194,8 @@ if(HYPHA_BUILD_TESTS)
     base/test/test_time_saturation.cpp
   )
   target_link_libraries(test_hypha_base PRIVATE hypha GTest::gtest)
-  add_test(NAME test_hypha_base COMMAND test_hypha_base)
+  # Simulated time joins the bus, and base/test/test_main.cpp sets no domain.
+  hypha_add_test(test_hypha_base)
   hypha_gtest_report(test_hypha_base)
 
   # The C++ peer of the framework-stamp round trip. The Rust test in
@@ -208,15 +214,14 @@ if(HYPHA_BUILD_TESTS)
   foreach(exit_case IN ITEMS "missing;78" "unread;78" "throw;70" "clean;0")
     list(GET exit_case 0 case_name)
     list(GET exit_case 1 case_code)
-    add_test(NAME run_node_exit_code_${case_name}
+    hypha_add_test(run_node_exit_code_${case_name}
       COMMAND ${CMAKE_COMMAND}
         -DNODE=$<TARGET_FILE:run_node_exit_code_node>
         -DCASE=${case_name}
         -DEXPECTED=${case_code}
         -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/test/run_node_exit_code.cmake)
-    set_tests_properties(run_node_exit_code_${case_name} PROPERTIES LABELS "needs-iceoryx2"
-      ENVIRONMENT "HYPHA_DOMAIN=k8_exit_${case_name}")
+    set_tests_properties(run_node_exit_code_${case_name} PROPERTIES LABELS "needs-iceoryx2")
   endforeach()
 
   # A library with another ABI revision is refused before any startup call.

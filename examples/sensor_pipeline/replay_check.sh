@@ -57,7 +57,8 @@ output_topic="/cloud_processor/centroid"
 tolerance_m="1e-9"
 # The longest wait for a ready line, in seconds of host time. A bound, not a pace.
 start_limit_s=30
-domain="sp_$$"
+# A domain of its own under the test root, which `clean-shm.sh --domain t_` clears.
+domain="t_$$_sp"
 export HYPHA_DOMAIN="${domain}"
 
 started_pids=()
