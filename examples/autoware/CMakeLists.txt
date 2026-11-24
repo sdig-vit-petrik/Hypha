@@ -106,7 +106,6 @@ endfunction()
 add_library(hypha_rclcpp STATIC shim/src/rclcpp.cpp)
 target_include_directories(hypha_rclcpp PUBLIC
   shim/include
-  "${AUTOWARE_MSG_OUT}/hypha_msgs"
   "${AUTOWARE_UPSTREAM_DIR}/common_interfaces/sensor_msgs/include"
   "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_system/include"
   "${AUTOWARE_UPSTREAM_DIR}/autoware_utils/autoware_utils_diagnostics/include"

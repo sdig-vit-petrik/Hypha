@@ -7,8 +7,6 @@
 /// diagnostics go from WARN to ERROR as pose updates stay away. Each step moves /clock by
 /// one predict period and turns each node once, so the EKF's timer runs once per step.
 
-#include <hypha_msgs/rosgraph_msgs/Clock.h>
-
 #include "ekf_localizer_node.hpp"
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
@@ -17,6 +15,7 @@
 #include <gtest/gtest.h>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rosgraph_msgs/Clock.h>
 #include <std_srvs/srv/set_bool.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
 

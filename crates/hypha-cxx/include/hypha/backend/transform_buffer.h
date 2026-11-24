@@ -5,7 +5,8 @@
 
 #include "hypha/backend/text_readers.h"
 #include "hypha/hypha_ffi.h"
-#include <hypha_msgs/geometry_msgs/TransformStamped.h>
+
+#include <geometry_msgs/TransformStamped.h>
 
 #include <cstddef>
 #include <cstdint>

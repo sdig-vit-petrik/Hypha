@@ -20,8 +20,12 @@
 # (std_msgs, geometry_msgs, ...). Their definitions are read, never re-emitted.
 #
 # OUT_DIR defaults to ${CMAKE_CURRENT_BINARY_DIR}/generated/include. Headers
-# land under <OUT_DIR>/hypha_msgs/<package>/; OUT_DIR itself is what goes on
-# the include path.
+# land at their ROS 1 path, <OUT_DIR>/<package>/<Name>.h, and OUT_DIR itself is
+# what goes on the include path: #include <app_msgs/Reading.h>.
+#
+# Each package directory has one owner. hypha's standard packages belong to the
+# installed SDK, so a second declaration of one from another directory is
+# refused, as is any package declared twice.
 
 # Every declared package is recorded by name, so DEPENDS can find its
 # definitions and the packages those definitions refer to in turn.
@@ -78,7 +82,6 @@ function(hypha_generate_messages)
   if(NOT ARG_OUT_DIR)
     set(ARG_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
   endif()
-  set(header_root "${ARG_OUT_DIR}/hypha_msgs")
 
   set(msg_files "")
   if(ARG_MSG_DIR)
@@ -97,17 +100,17 @@ function(hypha_generate_messages)
   set(generated_headers "")
   foreach(msg_file ${msg_files})
     get_filename_component(message_name "${msg_file}" NAME_WE)
-    list(APPEND generated_headers "${header_root}/${ARG_PACKAGE}/${message_name}.h")
+    list(APPEND generated_headers "${ARG_OUT_DIR}/${ARG_PACKAGE}/${message_name}.h")
   endforeach()
   foreach(srv_file ${srv_files})
     get_filename_component(service_name "${srv_file}" NAME_WE)
     list(APPEND generated_headers
-      "${header_root}/${ARG_PACKAGE}/${service_name}Request.h"
-      "${header_root}/${ARG_PACKAGE}/${service_name}Response.h"
-      "${header_root}/${ARG_PACKAGE}/${service_name}.h")
+      "${ARG_OUT_DIR}/${ARG_PACKAGE}/${service_name}Request.h"
+      "${ARG_OUT_DIR}/${ARG_PACKAGE}/${service_name}Response.h"
+      "${ARG_OUT_DIR}/${ARG_PACKAGE}/${service_name}.h")
   endforeach()
 
-  set(generator_args --package "${ARG_PACKAGE}" --out-dir "${header_root}")
+  set(generator_args --package "${ARG_PACKAGE}" --out-dir "${ARG_OUT_DIR}")
   if(ARG_MSG_DIR)
     list(APPEND generator_args --msg-dir "${ARG_MSG_DIR}")
   endif()

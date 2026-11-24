@@ -26,7 +26,7 @@ plane or its assurance boundary.
 ```cpp
 #include <hypha/hypha.h>
 #include <hypha_log/hypha_log.h>
-#include <hypha_msgs/std_msgs/Float64.h>
+#include <std_msgs/Float64.h>
 
 HYPHA_LOG_MODULE_INIT("compute_node")
 

@@ -5,9 +5,9 @@
 #include "hypha/cycle_transforms.h"
 #include "hypha/hypha.h"
 #include "hypha/testing.h"
-#include <hypha_msgs/std_msgs/Float64.h>
 
 #include <gtest/gtest.h>
+#include <std_msgs/Float64.h>
 
 #include <deque>
 #include <optional>

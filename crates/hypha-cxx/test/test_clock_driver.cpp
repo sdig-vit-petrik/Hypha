@@ -3,13 +3,13 @@
 
 #include "hypha/cycle_node.h"
 #include "hypha/hypha.h"
-#include <hypha_msgs/hypha_msgs/ReplayProgress.h>
-#include <hypha_msgs/rosgraph_msgs/Clock.h>
-#include <hypha_msgs/std_msgs/Float64.h>
+#include <hypha_msgs/ReplayProgress.h>
 
 #include "test_types.h"
 
 #include <gtest/gtest.h>
+#include <rosgraph_msgs/Clock.h>
+#include <std_msgs/Float64.h>
 
 #include <cstdint>
 #include <cstring>

@@ -54,9 +54,10 @@ endif()
 
 target_link_libraries(hypha INTERFACE hypha::ffi)
 
-# ROS 1 wire-compatible message headers. This package owns the whole
-# hypha_msgs/ include namespace: include/hypha_msgs/ros_time.h by hand, and the
-# headers crates/hypha_msgs generates into the build tree.
+# ROS 1 wire-compatible message headers, at their ROS 1 path <package>/<Name>.h.
+# This package owns the directory of each standard package: the headers
+# crates/hypha_msgs generates into the build tree, and in hypha_msgs/ also
+# include/hypha_msgs/ros_time.h by hand.
 set(HYPHA_MSGS_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated/include")
 # The headers appear during the build, so the link is for ordering only.
 target_link_libraries(hypha INTERFACE $<BUILD_INTERFACE:hypha_standard_messages>)
@@ -116,11 +117,6 @@ install(CODE "
 install(FILES "${HYPHA_FFI_HEADER_DIR}/hypha/hypha_ffi.h"
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hypha)
 
-# The generated half of the hypha_msgs/ namespace. It merges with the hand-written
-# half that install(DIRECTORY include/) placed at the same destination.
-install(DIRECTORY "${HYPHA_MSGS_INCLUDE_DIR}/hypha_msgs"
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-
 # The .msg sources the headers above were generated from, and the CMake
 # function that generates an application's own messages against them. An
 # application message that names std_msgs/Header needs the definition, not the
@@ -135,6 +131,19 @@ if(NOT IS_DIRECTORY "${HYPHA_STANDARD_MSG_SOURCE_DIR}")
 endif()
 install(DIRECTORY "${HYPHA_STANDARD_MSG_SOURCE_DIR}/"
   DESTINATION "${CMAKE_INSTALL_DATADIR}/hypha/msg")
+
+# The generated headers, one directory per standard package and nothing else of
+# the build tree: an application that builds hypha as a subproject generates its
+# own packages into the same directory. hypha_msgs/ merges with ros_time.h, which
+# install(DIRECTORY include/) placed at the same destination.
+file(GLOB HYPHA_STANDARD_PACKAGE_DIRS LIST_DIRECTORIES true RELATIVE
+  "${HYPHA_STANDARD_MSG_SOURCE_DIR}" "${HYPHA_STANDARD_MSG_SOURCE_DIR}/*")
+foreach(package ${HYPHA_STANDARD_PACKAGE_DIRS})
+  if(IS_DIRECTORY "${HYPHA_STANDARD_MSG_SOURCE_DIR}/${package}")
+    install(DIRECTORY "${HYPHA_MSGS_INCLUDE_DIR}/${package}"
+      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  endif()
+endforeach()
 install(FILES "${HYPHA_MESSAGES_MODULE}"
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/hypha)
 

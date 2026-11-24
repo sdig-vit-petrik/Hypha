@@ -1,6 +1,6 @@
 #include "hypha/hypha.h"
-#include <hypha_msgs/hypha_msgs/NodeIntrospection.h>
-#include <hypha_msgs/hypha_msgs/NodeState.h>
+#include <hypha_msgs/NodeIntrospection.h>
+#include <hypha_msgs/NodeState.h>
 
 #include "introspection_text.h"
 

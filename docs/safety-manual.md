@@ -20,7 +20,7 @@ Readers: the engineer who writes the safety case of such a system.
 
 | | |
 |---|---|
-| Item | The library `libhypha_ffi`, its C interface (`hypha/hypha_ffi.h`) and the C++ SDK headers (`hypha/`, `hypha_msgs/`) |
+| Item | The library `libhypha_ffi`, its C interface (`hypha/hypha_ffi.h`) and the C++ SDK headers (`hypha/`, `ros/` and the directories of the standard message packages, such as `std_msgs/` and `hypha_msgs/`) |
 | Version | The release tag; the C ABI revision of `abi.revision` is part of the library file name |
 | Platform | Linux on amd64 or arm64, one host; see [release-policy.md](release-policy.md) for the tested distribution and toolchain |
 | Function | Publish-subscribe communication between processes of one host over shared memory, with a checked frame around each message, periodic cycles with supervised inputs, timers, and node parameters |

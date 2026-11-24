@@ -1,6 +1,6 @@
 // A node reads its own execution health through the node.* metrics.
 
-#include <hypha_msgs/hypha_msgs/NodeState.h>
+#include <hypha_msgs/NodeState.h>
 
 #include "test_types.h"
 

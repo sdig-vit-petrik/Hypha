@@ -24,7 +24,7 @@ CLI and Antigravity use these same rules.
 - C++ SDK ergonomics and performance take priority. Keep existing Rust bindings correct when the ABI changes, but new capabilities need no matching Rust facade in the same change.
 - Replace old mechanisms rather than add compatibility paths. An ABI change updates the header, `abi.revision`, affected SDKs, and tests together.
 - One process uses one SDK: never load the C++ SDK's `libhypha_ffi` and link the Rust SDK in the same process. Each copy would hold its own simulated clock, log engine and signal handler.
-- Each installed include namespace has one owner. `hypha-cxx` owns `hypha_msgs/`; applications generate their own messages with `hypha_generate_messages()`.
+- Each installed include directory has one owner. Message headers sit at `<package>/<Name>.h`: `hypha-cxx` owns the directory of each standard package it ships (`std_msgs/`, ..., `hypha_msgs/`); an application owns the directories of the packages it declares with `hypha_generate_messages()`.
 - Fail explicitly on invalid or stale data. Do not invent values or silently discard a fallible result. Rust code under `crates/` forbids unsafe: `unsafe` only in `hypha_ffi` (the C boundary), `hypha_sys` (OS calls), the test-only module `hypha_testkit/src/env.rs` and the C boundary module `hypha_testing_mcap/src/ffi.rs` of the test-only MCAP reader; the Rust SDK `hypha_node::sdk` calls its safe functions (`hypha_node::safe`) and forbids `unsafe`; shipped paths obey the workspace panic and arithmetic lints.
 - For iceoryx2, use the thread-safe service, shared QoS builders and bounded service-open retry. Build a `WaitSet` once per run loop. Wildcard subscriptions resolve once at creation.
 
