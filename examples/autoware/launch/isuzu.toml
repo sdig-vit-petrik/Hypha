@@ -129,11 +129,11 @@ args = ["foxglove"]
 restart = "on-failure"
 
 # The recording in a loop at real time. /clock advances 20 ms at a time, so the EKF's 50 Hz
-# timer runs every period. stdin is /dev/null: a unit runs in the background of its window,
-# so the player's keys never reach it, and a key typed there hangs it (#109).
+# timer runs every period. A unit runs in the background of its window, so the player takes
+# no keys there.
 [[units]]
 name = "player"
 exec = "/bin/sh"
 restart = "on-failure"
-args = ["-c", 'exec hypha play --input "$ISUZU_INPUT" --clock --rate 1 --chunk 20 --loop </dev/null']
+args = ["-c", 'exec hypha play --input "$ISUZU_INPUT" --clock --rate 1 --chunk 20 --loop']
 after = ["ground_filter", "voxel_grid_downsample_filter", "euclidean_cluster", "shape_estimation", "detected_object_feature_remover", "multi_object_tracker", "map_projection_loader", "lvx_client", "gnss_poser", "gyro_odometer", "ekf_localizer", "gnss_pose_initializer", "foxglove_bridge"]
