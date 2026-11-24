@@ -47,7 +47,7 @@ pub(crate) fn newest_read(node: &HyphaNode) -> Option<ClockRead> {
 /// Offer `read` as the progress of the `WaitSet` at `waitset`, and send the node's report
 /// if every offer now answers one sample. A failure is logged once, and the node keeps running.
 pub(crate) fn report_progress(node: &HyphaNode, waitset: usize, read: ClockRead) {
-    if node.replay_follow {
+    if node.open_loop {
         return;
     }
     let mut reporter = node.progress.lock().unwrap_or_else(PoisonError::into_inner);
@@ -58,7 +58,7 @@ pub(crate) fn report_progress(node: &HyphaNode, waitset: usize, read: ClockRead)
 
 /// Forget the `WaitSet` at `waitset`. The offers left may now all answer one sample.
 pub(crate) fn withdraw_progress(node: &HyphaNode, waitset: usize) {
-    if node.replay_follow {
+    if node.open_loop {
         return;
     }
     let mut reporter = node.progress.lock().unwrap_or_else(PoisonError::into_inner);
@@ -117,9 +117,9 @@ fn send_due(node: &HyphaNode, reporter: &mut NodeProgress) {
 
 /// Open the progress publisher unless it is open already, so that an upstream is visible
 /// to its downstream before its first report.
-/// A node outside the lockstep (`HYPHA_USE_SIM_TIME=follow`) opens none: it reports nothing.
+/// A node in an open-loop playback (`HYPHA_REPLAY_LOCKSTEP=0`) opens none: it reports nothing.
 pub(crate) fn ensure_publisher(node: &HyphaNode) -> Result<(), HyphaStatus> {
-    if node.replay_follow {
+    if node.open_loop {
         return Ok(());
     }
     let is_open = node.progress.lock().unwrap_or_else(PoisonError::into_inner).publisher.is_some();

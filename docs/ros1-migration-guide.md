@@ -571,7 +571,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(condition, false, ...)`: writes when the condition becomes true |
 | `tf2_ros::TransformBroadcaster` | Output on `/tf` of type `tf2_msgs::TFMessage` |
 | `tf2_ros::StaticTransformBroadcaster` | An `Output<tf2_msgs::TFMessage>` declared with `latched` and `topic = "/tf_static"` in its ports table |
-| `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment; `follow` for `ros2 bag play`'s behaviour, outside the replay lockstep, for one node; `HYPHA_REPLAY_LOCKSTEP=0` for the player and every node of a launch |
+| `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment; for `ros2 bag play`'s behaviour, outside the replay lockstep, `HYPHA_REPLAY_LOCKSTEP=0` for the player and every node of the launch |
 | rosbag record / play | `hypha record` / `hypha play` (`apps/`) |
 | roslaunch | `hypha launch` |
 | roscore | None. Nodes find each other through shared memory |
@@ -657,7 +657,7 @@ or 1.
   `./clean-shm.sh` before you look for a bug.
 - **A backward seek or a loop of `hypha play --clock` restarts the node.** A node
   that reads a `/clock` lower than its last one ends the run with `ClockRewound`, with
-  or without a timer and in follow mode too, as does a cycle that sees simulated time go
+  or without a timer and in the open loop too, as does a cycle that sees simulated time go
   back; the process
   exits 75 and its supervisor starts it again
   ([execution-model.md](execution-model.md) §11.1). Every member is built anew, so

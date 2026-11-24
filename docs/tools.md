@@ -329,8 +329,7 @@ With `--clock`, `--loop` and the restart key start a pass again from the start o
 the window, which sends `/clock` back. That restarts the participants: no node
 rewinds in place. The player sends the first `/clock` value once, waits until every
 participant has left the bus (each C++ node built on
-`hypha::runNode` exits 75 and its `hypha launch` supervisor starts it again; a node in
-follow mode exits 75 too, though the player does not wait for it), opens its publishers again, and waits for the
+`hypha::runNode` exits 75 and its `hypha launch` supervisor starts it again), opens its publishers again, and waits for the
 same participants to rejoin before the pass sends data. A `hypha record --sync`
 recorder stays through it. A participant that is still on the bus or has not
 rejoined after 30 s stops the replay; a node with its own `main`, or a Rust node,
@@ -363,9 +362,9 @@ timezone offset; offsets are normalized to UTC. The reader uses the MCAP
 index to select the window. Recordings can also be searched by UTC in an MCAP
 viewer such as Foxglove Studio.
 
-For a system rerun, start the nodes with `HYPHA_USE_SIM_TIME=1` in their environment;
-`HYPHA_USE_SIM_TIME=follow` lets a node follow `/clock` outside the lockstep, as with
-`ros2 bag play` (execution-model.md §11.2).
+For a system rerun, start the nodes with `HYPHA_USE_SIM_TIME=1` in their environment.
+A replay has two modes and one rule: use the lockstep, the default; if the system cannot
+run in it, set `HYPHA_REPLAY_LOCKSTEP=0` for the whole launch.
 
 `HYPHA_REPLAY_LOCKSTEP=0` (or `false`), set for the player and every node of the
 launch, turns the lockstep off: an open-loop playback like `ros2 bag play`. With
