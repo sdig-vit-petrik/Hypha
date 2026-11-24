@@ -8,6 +8,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 
+#include <limits>
 #include <stdexcept>
 
 TEST(RclcppShim, RelativeNamesArePorts)
@@ -46,6 +47,14 @@ TEST(RclcppShim, TimeRoundTripsThroughAStamp)
     EXPECT_EQ(back.nsecs, 345U);
     EXPECT_EQ((rclcpp::Time(13, 0) - time).nanoseconds(), 999999655);
     EXPECT_EQ(rclcpp::Duration::from_seconds(1.5).nanoseconds(), 1500000000);
+}
+
+TEST(RclcppShim, ADurationFromNonFiniteSecondsIsRefused)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    EXPECT_THROW(static_cast<void>(rclcpp::Duration::from_seconds(nan)), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(rclcpp::Duration::from_seconds(-inf)), std::invalid_argument);
 }
 
 TEST(RclcppShim, AStampWithTooManyNanosecondsIsRefused)

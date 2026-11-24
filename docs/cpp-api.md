@@ -259,6 +259,11 @@ Reference: `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h`,
   stamp of every message it publishes are the sample's send time or the timer's
   deadline, and a timer runs every period (execution-model.md §11.2, #72). A worker
   thread the node starts is outside that order.
+- Seconds as a `double` must be finite: `Duration::fromSeconds`, `Time::fromSeconds`
+  and `Duration * double` throw `std::invalid_argument` for NaN or infinite input
+  (a compile error in a constant expression), and clamp finite input outside the int64
+  nanosecond range. On a path that must not throw, such as a cycle step,
+  `Duration::tryFromSeconds` returns an empty `std::optional` instead (#126).
 - There is no implicit `Time` to `RosTime` conversion; never stamp with `steadyNow()`,
   and check a time computed from an input once where it enters:
 
