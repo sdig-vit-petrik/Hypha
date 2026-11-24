@@ -75,7 +75,7 @@ delete it and its `[files]` line. The patch lines depend on the `diff` that writ
 | `add_on_set_parameters_callback` | kept and never called: parameters do not change while the node runs |
 | `create_publisher`, `create_subscription` on a relative name | a port: `output` is `[ports.outputs.output]`, `~/crop_box_polygon` is `[ports.outputs.crop_box_polygon]`, `a/b` is `[ports.outputs."a.b"]` |
 | the same on an absolute name (`/tf`) | a literal topic |
-| QoS depth | must fit the hypha policy of the message type (`hypha::QosOf<M>`, 32 for `default`); a larger or zero depth is refused. `TwistWithCovarianceStamped` and `Odometry` have the port's `twist` policy, depth 100 (`shim/include/hypha_rclcpp/qos_policies.hpp`), which their include paths include |
+| QoS depth | must fit the hypha policy of the message type (`hypha::QosOf<M>`, 32 for `default`); a larger or zero depth is refused. `TwistWithCovarianceStamped` and `Odometry` have the port's `twist` policy, depth 100 (`shim/include/hypha_rclcpp/qos_policies.hpp`), which `rclcpp/rclcpp.hpp` includes |
 | transient local | a latched publisher |
 | reliable, best effort | both served by the shared-memory queue, which keeps the newest `maxDepth` samples |
 | `publish` failure | logged with its status, counted in `failed_publish_count()` |
@@ -96,7 +96,7 @@ delete it and its `[files]` line. The patch lines depend on the `diff` that writ
 | `rcl_clock_type_t`, `RCL_ROS_TIME` | rcl's enum at global scope; every kind means framework time |
 | `rclcpp::create_timer(node, clock, period, callback)`, `TimerBase::cancel`/`reset`/`is_canceled`/`time_until_trigger` | a `hypha::Timer` of the node on framework time, whatever the clock passed; created and controlled from a callback too (#90), refused inside a callback on a simulated clock the node does not own; a refused call throws. `create_wall_timer` is not offered |
 | `RCLCPP_COMPONENTS_REGISTER_NODE` | registers the class with the component runner `shim/src/component_main.cpp`: one program per component, argument the TOML file, the exit codes of `hypha/application_node.h` |
-| `sensor_msgs::msg::PointCloud2` and the other ROS 2 message paths | hypha's generated ROS 1 messages under a `msg` namespace name (`shim/include/hypha_rclcpp/message_namespace.hpp`); time stamps compare with `==` |
+| `sensor_msgs::msg::PointCloud2` and the other ROS 2 message paths | hypha's generated ROS 1 messages under their ROS 2 names, from `hypha_generate_ros2_headers()` in `CMakeLists.txt`; time stamps compare with `==` |
 | `tl::expected`, `rcpputils`' copy of it | `std::expected` |
 | `fmt::format` with a literal format | `std::format` |
 | `PointCloud2_<Allocator>`, `PointField_<Allocator>` | the message itself: hypha messages use the standard allocator |

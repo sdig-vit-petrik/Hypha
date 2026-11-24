@@ -144,7 +144,7 @@ fn emit_struct(output: &mut String, spec: &MessageSpec, md5: &str) {
     put(
         output,
         format_args!(
-            "\n  bool operator==(const {name}&) const = default;\n\n  using Ptr = std::shared_ptr<{name}>;\n  using ConstPtr = std::shared_ptr<const {name}>;\n  using SharedPtr = std::shared_ptr<{name}>;\n  using ConstSharedPtr = std::shared_ptr<const {name}>;\n  using UniquePtr = std::unique_ptr<{name}>;\n\n  static constexpr const char* TYPE_NAME = \"{}\";\n  static constexpr const char* MD5 = \"{md5}\";\n}};\n\nusing {name}Ptr = {name}::Ptr;\nusing {name}ConstPtr = {name}::ConstPtr;\n\n}}  // namespace {package}\n\n",
+            "\n  bool operator==(const {name}&) const = default;\n\n  using Ptr = std::shared_ptr<{name}>;\n  using ConstPtr = std::shared_ptr<const {name}>;\n  using SharedPtr = std::shared_ptr<{name}>;\n  using ConstSharedPtr = std::shared_ptr<const {name}>;\n  using UniquePtr = std::unique_ptr<{name}>;\n\n  static constexpr const char* TYPE_NAME = \"{}\";\n  static constexpr const char* MD5 = \"{md5}\";\n}};\n\nusing {name}Ptr = {name}::Ptr;\nusing {name}ConstPtr = {name}::ConstPtr;\n// ROS 2 names the type through its allocator: {name}_<Allocator>.\ntemplate <class Allocator>\nusing {name}_ = {name};\n\n}}  // namespace {package}\n\n",
             spec.type_name.full()
         ),
     );

@@ -163,11 +163,32 @@ target_link_libraries(app PRIVATE hypha::sdk app_msgs)
 `DEPENDS` names a standard package or one an earlier call declared; never copy or
 regenerate a standard package. Every message `M` carries the pointer typedefs of both
 ROS generations: `M::Ptr` and `M::ConstPtr` (ROS 1), `M::SharedPtr`, `M::ConstSharedPtr`
-and `M::UniquePtr` (ROS 2). Each field `f` names its type `M::_f_type`, as both
+and `M::UniquePtr` (ROS 2), and `M_<Allocator>` names `M` as ROS 2's allocator template does. Each field `f` names its type `M::_f_type`, as both
 generations' C++ does, and has ROS 2's fluent setter `M& set__f(const M::_f_type&)`. Messages compare with `==`
 field by field, as ROS 2's do, `time` and `duration` fields included. Types, constants and the wire format follow ROS 1;
 engineering-traps.md gives the rules that surprise (`byte` is signed, a constant out of
 its type's range fails generation, no big-endian target).
+
+Code written for ROS 2 includes `<sensor_msgs/msg/point_cloud2.hpp>` and names
+`sensor_msgs::msg::PointCloud2`. An application that wants those names generates them for
+the packages it uses, its own and standard ones, with one call; hypha-cxx installs none:
+
+```cmake
+hypha_generate_ros2_headers(app_ros2_headers PACKAGES std_msgs sensor_msgs app_msgs)
+target_link_libraries(app PRIVATE hypha::sdk app_msgs app_ros2_headers)
+```
+
+Each message gets `<package>/msg/<name>.hpp` and each service `<package>/srv/<name>.hpp`,
+`<name>` spelled as rosidl spells it (`Vector3Stamped` is `vector3_stamped.hpp`). The
+header includes `<package/Name.h>` and declares `package::msg` (for a service also
+`package::srv`) as a name of `package`, for its own package and every package its fields
+reach, as a ROS 2 header makes the types it reaches visible; for a service it adds
+`Name_Request` and `Name_Response`. A type that reaches a `time` or
+`duration` field also names its field types `builtin_interfaces::msg::Time` and `Duration`,
+as in ROS 2. The type is the ROS 1 type: its fields keep their ROS 1 names and types
+(`header.seq`, and `stamp.secs`, not ROS 2's `stamp.sec`), so code that reads a ROS 2 field
+name fails to compile rather than read another value.
+`test/package_consumer/ros2_style.cpp` compiles against these names alone.
 
 ---
 
