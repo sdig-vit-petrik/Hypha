@@ -49,7 +49,7 @@ Every call that can fail returns `HyphaStatus`:
 | 19 | — | Retired (`ServerUnavailable`, unused since application RPC was removed). No function returns it. |
 | 20 | `InvalidState` | The call is not valid in the current state: a configuration call during a run, a nested run, a cycle call after its commit, an emission reservation left open. |
 | 21 | — | Retired (`Stale`; the verdict `HYPHA_CYCLE_VERDICT_STALE` names a stale input). No function returns it. |
-| 22 | `ClockRewound` | Simulated time went back under a timer or cycle of a `WaitSet`: a backward seek. Nothing rewinds in place; `runNode` exits 75 and `hypha launch` restarts the process. |
+| 22 | `ClockRewound` | Simulated time went back under a timer or cycle of a `WaitSet`, or a node on simulated time read a `/clock` lower than its last one: a backward seek. Nothing rewinds in place; `runNode` exits 75 and `hypha launch` restarts the process. |
 | 23 | `ApplicationFailed` | The application asked for its run to fail (`hypha_waitset_request_failure`, C++ `failRun()`). The run report carries it with `HYPHA_RUN_REASON_RUNTIME_FAILED`. |
 
 `Panic` reports a foreign callback that threw; the C++ SDK catches the exception
@@ -143,7 +143,8 @@ process, not to one node:
   domain. `./clean-shm.sh` wipes every domain; `./clean-shm.sh --domain <prefix>`
   only the domains named `<prefix>*` that no live process uses.
 - **Restart when time goes back.** A timer or cycle of a `WaitSet` that sees simulated
-  time go back ends its run with `ClockRewound`; the process exits 75 (C++ `runNode`)
+  time go back, and a `WaitSet` of a node on simulated time (lockstep or follow, not a CLI
+  tool) that reads a `/clock` lower than the node's last one, end the run with `ClockRewound`; the process exits 75 (C++ `runNode`)
   and its supervisor starts it again, `hypha launch` with `HYPHA_REJOIN_AFTER_NANOS`
   set. In the new process the first node created on simulated time waits for a `/clock`
   sample sent after that time, for at most 30 s (`Timeout`), and fails with
