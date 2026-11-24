@@ -552,5 +552,7 @@ fn a_stamp_with_a_second_of_nanoseconds_is_refused() {
     }
     run_for(rig.waitset, 100_000_000);
     let results: Vec<u32> = rig.probe.last().answers.iter().map(|a| a.1).collect();
-    assert_eq!(results, [HYPHA_TF_UNKNOWN_FRAME, HYPHA_TF_FOUND]);
+    // The refused frame answers why it is missing (#123), and the node counts it.
+    assert_eq!(results, [HYPHA_TF_REFUSED, HYPHA_TF_FOUND]);
+    assert_eq!(crate::common::node_metric(rig.node, "tf.refused"), Some(1));
 }

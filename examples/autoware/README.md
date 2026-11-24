@@ -90,7 +90,7 @@ delete it and its `[files]` line. The patch lines depend on the `diff` that writ
 | `rclcpp::Time(stamp, clock_type)`, `Time +=`/`-=` a `Duration`, `Duration` arithmetic, `Duration` to a message duration | as rclcpp |
 | `rclcpp::Rate(hz).period()` | the period only: nodes time their work with timers, and no `sleep` is offered |
 | `declare_parameter<std::vector<T>>(name, default)` | a list read, as the overload without a type |
-| `diagnostic_updater::Updater`, `DiagnosticStatusWrapper` | the tasks run every period on a timer of the node, one `/diagnostics` array with a `<node>: <task>` status each; `summary`, `add`, `setHardwareID`, `setPeriod`, `force_update`. The `diagnostic_updater.period` parameter is not read |
+| `diagnostic_updater::Updater`, `DiagnosticStatusWrapper` | the tasks run every period on a timer of the node, one `/diagnostics` array with a `<node>: <task>` status each; `summary`, `add`, `setHardwareID`, `setPeriod`, `force_update`. The `diagnostic_updater.period` parameter is not read; a file that sets it lists it in `unused` (cpp-api.md §9) |
 | `rclcpp::spin(node)` | `node.run()` on the calling thread: a single-threaded executor |
 | `rclcpp::spin_some(node)` | `node.runFor()` with the shortest limit: one dispatch turn, the due timers and the queued samples, never a wait; a failed run throws |
 | `rcl_clock_type_t`, `RCL_ROS_TIME` | rcl's enum at global scope; every kind means framework time |
@@ -109,7 +109,7 @@ delete it and its `[files]` line. The patch lines depend on the `diff` that writ
 | `canTransform`, `lookupTransform` at an `rclcpp::Time` | as the tf2 lookups above; a timeout is accepted and never waited for |
 | `tf2::doTransform` of a `Pose`, `tf2::fromMsg` of a `Pose` or `Transform` into a `tf2::Transform` or an Eigen affine, `tf2::transformCovariance` | tf2_geometry_msgs' and tf2_eigen's formulas, on the vendored tf2 types |
 | `autoware_utils_debug::BasicDebugPublisher<NodeT>`, `BasicPublishedTimePublisher<NodeT>` | the debug and published-time publishers; the shim's only node is `rclcpp::Node` |
-| `tf2_ros::TransformBroadcaster` | a `tf2_msgs/TFMessage` publisher on `/tf` with the `tf` policy |
+| `tf2_ros::TransformBroadcaster` | `hypha::TransformBroadcaster` on `/tf` with the `tf` policy: a transform every buffer would refuse (NaN, not a unit quaternion) is not sent, but logged and counted as a failed publish (#123). A lookup of `tf2_ros::Buffer` on a frame whose transform was refused throws `tf2::InvalidArgumentException` |
 | `autoware_agnocast_wrapper` | its build without Agnocast: upstream's `macros.hpp`; `Node`, `Service`, `Client`, `create_timer` and the tf2 types are the shim's |
 | `autoware_utils_logging::LoggerLevelConfigure` | the `~/config_logger` service, which refuses every request: hypha sets log levels from `[log]` in the parameter file only |
 | `managed_transform_buffer::ManagedTransformBuffer` | `hypha::TransformBuffer`; `getTransform` never waits (#91) and ignores its timeout. A static transform holds for all time; one not in the buffer yet is an empty result with a throttled warning, and the concatenate node drops that source and reports it, where upstream waits up to the timeout |

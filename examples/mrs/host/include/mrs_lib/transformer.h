@@ -256,6 +256,8 @@ class Transformer
                 return "the time is before the buffer";
             case hypha::TransformError::AfterBuffer:
                 return "the time is after the buffer";
+            case hypha::TransformError::Refused:
+                return "the buffer refused the newest transform of a frame on the chain";
         }
         return "unknown error";
     }

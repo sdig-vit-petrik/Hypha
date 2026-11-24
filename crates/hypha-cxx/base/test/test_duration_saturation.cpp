@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
+#include <stdexcept>
 
 using hypha::Duration;
 using namespace hypha::literals;
@@ -59,13 +61,14 @@ TEST(DurationSaturation, MultiplicationClampsAtTheLimits)
     EXPECT_EQ((100_ms * 1e300).nanos(), kMaxNanos);
 }
 
-TEST(DurationSaturation, NonFiniteFactorGivesZero)
+TEST(DurationSaturation, NonFiniteFactorIsRefused)
 {
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const double inf = std::numeric_limits<double>::infinity();
-    EXPECT_TRUE((100_ms * nan).isZero());
-    EXPECT_TRUE((100_ms * inf).isZero());
-    EXPECT_TRUE((100_ms * -inf).isZero());
+    EXPECT_THROW(static_cast<void>(100_ms * nan), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(100_ms * inf), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(100_ms * -inf), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(nan * 100_ms), std::invalid_argument);
 }
 
 TEST(DurationSaturation, IntegerFactoriesClampAtTheLimits)
@@ -75,13 +78,43 @@ TEST(DurationSaturation, IntegerFactoriesClampAtTheLimits)
     EXPECT_EQ(Duration::fromMillis(std::numeric_limits<int64_t>::max()).nanos(), kMaxNanos);
 }
 
-TEST(DurationSaturation, NonFiniteSecondsGiveZero)
+TEST(DurationSaturation, NonFiniteSecondsAreRefused)
 {
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const double inf = std::numeric_limits<double>::infinity();
-    EXPECT_TRUE(Duration::fromSeconds(nan).isZero());
-    EXPECT_TRUE(Duration::fromSeconds(inf).isZero());
-    EXPECT_TRUE(Duration::fromSeconds(-inf).isZero());
+    EXPECT_THROW(static_cast<void>(Duration::fromSeconds(nan)), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(Duration::fromSeconds(inf)), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(Duration::fromSeconds(-inf)), std::invalid_argument);
+}
+
+TEST(DurationSaturation, TryFromSecondsGivesNothingForNonFiniteSeconds)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    EXPECT_FALSE(Duration::tryFromSeconds(nan).has_value());
+    EXPECT_FALSE(Duration::tryFromSeconds(inf).has_value());
+    EXPECT_FALSE(Duration::tryFromSeconds(-inf).has_value());
+}
+
+TEST(DurationSaturation, TryFromSecondsConvertsAndClampsFiniteSeconds)
+{
+    const std::optional<Duration> span = Duration::tryFromSeconds(1.5);
+    ASSERT_TRUE(span.has_value());
+    EXPECT_EQ(span->nanos(), 1500000000);
+    const std::optional<Duration> clamped = Duration::tryFromSeconds(1e300);
+    ASSERT_TRUE(clamped.has_value());
+    EXPECT_EQ(clamped->nanos(), kMaxNanos);
+}
+
+TEST(DurationSaturation, FiniteSecondsStayUsableInConstantExpressions)
+{
+    constexpr Duration fiveSeconds = Duration::fromSeconds(5.0);
+    static_assert(fiveSeconds.nanos() == 5000000000LL);
+    constexpr Duration halved = fiveSeconds * 0.5;
+    static_assert(halved.nanos() == 2500000000LL);
+    constexpr std::optional<Duration> tried = Duration::tryFromSeconds(2.0);
+    static_assert(tried.has_value() && tried->nanos() == 2000000000LL);
+    EXPECT_EQ(fiveSeconds.nanos(), 5000000000LL);
 }
 
 TEST(DurationSaturation, OutOfRangeSecondsClampAtTheLimits)

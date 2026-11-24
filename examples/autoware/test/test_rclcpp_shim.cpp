@@ -7,7 +7,9 @@
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
 #include <std_srvs/srv/set_bool.hpp>
+#include <tf2_ros/transform_broadcaster.hpp>
 
+#include <limits>
 #include <stdexcept>
 
 TEST(RclcppShim, RelativeNamesArePorts)
@@ -48,6 +50,14 @@ TEST(RclcppShim, TimeRoundTripsThroughAStamp)
     EXPECT_EQ(rclcpp::Duration::from_seconds(1.5).nanoseconds(), 1500000000);
 }
 
+TEST(RclcppShim, ADurationFromNonFiniteSecondsIsRefused)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    EXPECT_THROW(static_cast<void>(rclcpp::Duration::from_seconds(nan)), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(rclcpp::Duration::from_seconds(-inf)), std::invalid_argument);
+}
+
 TEST(RclcppShim, AStampWithTooManyNanosecondsIsRefused)
 {
     builtin_interfaces::msg::Time stamp;
@@ -71,6 +81,22 @@ TEST(RclcppShim, ADepthAboveThePolicyIsRefused)
 TEST(RclcppShim, PrintfFormatting)
 {
     EXPECT_EQ(rclcpp::detail::formatPrintf("%d points in %s", 3, "lidar"), "3 points in lidar");
+}
+
+TEST(RclcppShim, ABroadcasterRefusesANanTransformAndCountsIt)
+{
+    auto                                 node = rclcpp::Node::make_shared("tf_broadcaster_probe");
+    tf2_ros::TransformBroadcaster        broadcaster(*node);
+    geometry_msgs::msg::TransformStamped pose;
+    pose.header.frame_id = "map";
+    pose.child_frame_id = "base_link";
+    pose.header.stamp.secs = 1;
+    pose.transform.rotation.w = 1.0;
+    broadcaster.sendTransform(pose);
+    EXPECT_EQ(broadcaster.failed_publish_count(), 0U);
+    pose.transform.translation.x = std::numeric_limits<double>::quiet_NaN();
+    broadcaster.sendTransform(pose);
+    EXPECT_EQ(broadcaster.failed_publish_count(), 1U);
 }
 
 TEST(RclcppShim, ATimerCreatedInACallbackIsCanceledAndReset)

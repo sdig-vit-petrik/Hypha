@@ -45,8 +45,8 @@ pub use clock::{
     hypha_clock_steady_now_nanos,
 };
 pub use config::{
-    hypha_config_create, hypha_config_destroy, hypha_config_resolve_key, hypha_config_unread_keys,
-    hypha_node_config,
+    hypha_config_create, hypha_config_destroy, hypha_config_ignore, hypha_config_resolve_key,
+    hypha_config_unread_keys, hypha_node_config,
 };
 pub use cycle::{HyphaCycle, cycle_timer_tick};
 pub use cycle::{
@@ -103,7 +103,7 @@ pub use abi_constants::{
     HYPHA_PORT_OUTPUT, HYPHA_PORT_TOPIC_OPTIONAL, HYPHA_PORT_TOPIC_REQUIRED,
     HYPHA_RUN_REASON_DEADLINE, HYPHA_RUN_REASON_RUNTIME_FAILED, HYPHA_RUN_REASON_SETUP_FAILED,
     HYPHA_RUN_REASON_STOPPED, HYPHA_TF_AFTER_BUFFER, HYPHA_TF_BEFORE_BUFFER, HYPHA_TF_FOUND,
-    HYPHA_TF_INVALID_FRAME, HYPHA_TF_NOT_CONNECTED, HYPHA_TF_UNKNOWN_FRAME,
+    HYPHA_TF_INVALID_FRAME, HYPHA_TF_NOT_CONNECTED, HYPHA_TF_REFUSED, HYPHA_TF_UNKNOWN_FRAME,
 };
 pub use hypha_node::parameter_constraints::HyphaNumberConstraint;
 pub use hypha_node::parameter_parse::{HyphaConfigValue, HyphaParamResult};
@@ -114,8 +114,8 @@ pub use hypha_node::status::HyphaStatus;
 pub use hypha_node::subscriber::{
     HyphaSampleIdentity, HyphaSubscriber, HyphaSubscriberCounters, HyphaSubscriberOptions,
 };
-pub use hypha_node::transforms::HyphaTransform;
 pub use hypha_node::transforms::buffer::HyphaTransformBuffer;
+pub use hypha_node::transforms::{HyphaSentTransform, HyphaTransform};
 pub use parameter_constraints::{hypha_param_validate_nonempty, hypha_param_validate_number};
 pub use parameter_parse::{hypha_config_list_len, hypha_config_list_value, hypha_config_value};
 pub use publisher::{
@@ -129,6 +129,7 @@ pub use subscriber::{
 };
 pub use transform_buffer::{
     hypha_transform_buffer_create, hypha_transform_buffer_destroy, hypha_transform_buffer_lookup,
+    hypha_transform_check,
 };
 pub use waitset::{
     HyphaAttachment, HyphaAttachmentId, HyphaCallbackResult, HyphaContextRelease, HyphaDelivery,

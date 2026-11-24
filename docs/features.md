@@ -98,7 +98,9 @@ threads, or in a tool or a shim of a ROS client library.**
 | Clock driver | How does a simulator drive `/clock` in lockstep? | `Cycle::setClockDriver`, `hypha::ClockDriverOptions` (`cycle_clock_driver.h`), `hypha_cycle_set_clock_driver`, `hypha_cycle_expect_participant` | mrs 1 |
 | TF input | Where is frame A in frame B at this step? | `hypha::Transforms`, `cycle_transforms.h`, `hypha_cycle_bind_transforms` | mrs 2 |
 | TF in a plain node | Where is frame A in frame B at a message stamp, from any thread? | `hypha::TransformBuffer` (`lookup`, `lookupLatest`), `transform_buffer.h`, `transform_types.h` (`TransformError`, `TransformTopics`, shared with `Transforms`), `hypha_transform_buffer_create`, `hypha_transform_buffer_lookup`, `hypha_transform_buffer_destroy`: ingested by the run of the node's `WaitSet`, no step; a lookup never waits (#91) | none yet |
-| Static transform broadcaster | How do I send static transforms so that a late subscriber gets all of them? | `hypha::StaticTransformBroadcaster` (`transform_buffer.h`): a latched `/tf_static` publisher that keeps each transform by child frame and sends the whole set each time | none yet |
+| Static transform broadcaster | How do I send static transforms so that a late subscriber gets all of them? | `hypha::StaticTransformBroadcaster` (`transform_buffer.h`): a latched `/tf_static` publisher that keeps each transform by child frame and sends the whole set each time; it refuses what `TransformBroadcaster` refuses | ex autoware (tests) |
+| Transform broadcaster | How do I send dynamic transforms so that an invalid one fails at my node, not at every reader? | `hypha::TransformBroadcaster` (`transform_buffer.h`, `send`, `lastRefusal`), `hypha_transform_check`, `HyphaSentTransform`: the check every buffer applies, below the C ABI; a refused send sends nothing (#123). A plain `Publisher<TFMessage>` sends unchecked, and the buffers keep their check | ex autoware (the shim's `tf2_ros::TransformBroadcaster`) |
+| Refused transforms | Is a missing transform late, or did its producer send an invalid one? | `TransformError::Refused`, `HYPHA_TF_REFUSED`, the node metrics `tf.refused` and `tf.undecodable` (#123) | ex autoware (shim: `tf2::InvalidArgumentException`) |
 
 ### 3.4 Input limits and supervision
 
@@ -123,6 +125,7 @@ fault.**
 | Step time | When is this step? | `CycleTime` (`now`, `stamp`, `dt`, `missed`); `hypha::now()` returns `now` while the step runs | all cycle users |
 | Simulated time | Does this process follow `/clock`? | `HYPHA_USE_SIM_TIME` (`1`/`true` in the replay lockstep, `follow` outside it), `hypha_clock_*sim_time` | tests, tools, ex autoware |
 | ROS stamps | How do I write or read a ROS `Header` stamp? | `hypha::toRosTime`, `hypha::fromRosTime`, `message_stamp.h` | app 9 |
+| Seconds without a throw | How do I turn computed seconds into a `Duration` on a path that must not throw? | `Duration::tryFromSeconds` (empty for NaN or infinite seconds; `fromSeconds` throws) | tests; for the Autoware port's cycle steps (#126) |
 
 ### 3.6 Configuration
 
@@ -134,6 +137,7 @@ fault.**
 | File names | Where is the file a parameter names? | `ConfigView::path()`, `hypha_config_resolve_key`: against the directory of the file that wrote the key | app 4 |
 | Port tables | Which topic does a port read or write? | `[ports.inputs.<name>]`, `[ports.outputs.<name>]`, `hypha_param_topic`, `hypha_topic_validate_public_name` | all |
 | Unread keys | Did the file set a key nobody reads? | `hypha_config_unread_keys` | all (at start) |
+| Keys not read on purpose | How do I keep a key that is set on purpose, but not read in this build or mode, without deleting it? | Code: `ConfigView::ignore(keyOrPrefix, reason)`, `hypha_config_ignore`. File: a top-level `unused = [...]`, whose every entry must be set. Both are manifest rows with `IntrospectedConfig::SOURCE_IGNORED` and the reason (#119) | ex autoware (file); tests (code) |
 | Configuration without a node | How does a tool read a file before it joins the bus? | `hypha_config_create`, `hypha_config_destroy`, `hypha_config_record_config` | tools |
 | Composition | How do files share values? | `include = [...]` | mrs |
 
@@ -200,6 +204,7 @@ that move bytes of any type; a new application use needs the owner's approval.
 | Callback endpoints beside cycles | Keep both, with the rule of section 3.2. | decided |
 | Where input limits come from | The port table, for every port: a composed `Cycle` port reads `silence_ms` and `stagnation_ms` from its table too. `InputOptions::silence`, `::stagnation` and the level-dependent key rules are gone. Code keeps `requireSilenceLimit` (the key is required) and `limitMax` (the bound the key must meet). `ignored = true` on a port with no limit is refused. | done |
 | ROS stamps | `toRosTime` returns a stamp, not `std::optional`: a time outside the ROS range is refused where it enters, once (`std::out_of_range`). | done |
+| Non-finite seconds | `Duration::fromSeconds`, `Time::fromSeconds` and `Duration * double` throw `std::invalid_argument` for NaN or infinite input instead of giving zero, and stay `constexpr` (#126). `Duration::tryFromSeconds` is the one non-throwing form, for a cycle step. The Rust `hypha_time` has no floating-point constructor or scaling, so it has nothing to refuse. | done |
 | Transform lookups that wait | No (#91, 2026-11-22). A lookup never waits: the buffer fills only while the node runs, on the run's thread, so a waiting callback would block the node's other callbacks and, under replay, the clock it waits for. A node that must have the transform holds its message and retries in a later callback (what `tf2_ros::MessageFilter` does); a ported node's shim does that, not the core. | decided |
 | Time going back | Only the restart design: a timer or cycle that sees simulated time go back, and a node that reads a `/clock` lower than its last one (#130), end the run with `ClockRewound` and the process restarts. A host clock step back is not a rewind and restarts nothing. The in-place handling is gone (`TriggerSchedule::rewind`, `pending_rewind`, `CycleTime::rewound`, the TF buffer's `clear_dynamic`). FSR-37 says so. | done |
 | Open-loop playback | Yes, as an opt-out for a whole launch (#102, owner 2026-11-22): `HYPHA_REPLAY_LOCKSTEP=0` turns the lockstep off for the player and every node, where `HYPHA_USE_SIM_TIME=follow` takes one node out of it and leaves the player waiting for the rest. The player sends `/clock` and the data on the `--rate` schedule, reads no report and refuses `--rate max`; a node follows `/clock` as in follow mode, and a lost replay input is warned of, not failed. A rewind still restarts every node (FSR-37). Not deterministic, and documented so (`replay-flow-control.md` §4.6). It removes nothing: the lockstep stays the default. | done |

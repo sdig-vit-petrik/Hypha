@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
+#include <stdexcept>
 
 namespace hypha {
 
@@ -42,7 +44,7 @@ constexpr int64_t saturatingMul(int64_t lhs, int64_t rhs)
 }
 
 /// @brief The int64 nearest `value` toward zero, clamped to the int64 range.
-///        Infinities clamp; NaN must be rejected by the caller first.
+///        Callers refuse NaN and infinities first.
 constexpr int64_t clampedNanos(double value)
 {
     constexpr double kUpperBound = 9223372036854775808.0;
@@ -81,12 +83,25 @@ class Duration
     }
 
     /// @brief Construct from seconds; the fractional part is truncated toward zero.
-    ///        NaN and infinite input give zero. Out-of-range input clamps.
+    ///        Out-of-range input clamps.
+    /// @throws std::invalid_argument for NaN or infinite seconds; in a constant
+    ///         expression that is a compile error. tryFromSeconds() does not throw.
     static constexpr Duration fromSeconds(double seconds)
     {
         const bool secondsAreFinite = std::isfinite(seconds);
         if (!secondsAreFinite) {
-            return Duration();
+            throw std::invalid_argument("hypha::Duration::fromSeconds: seconds are not finite");
+        }
+        return Duration(detail::clampedNanos(seconds * 1e9));
+    }
+
+    /// @brief fromSeconds() for a path that does not throw: empty for NaN or infinite
+    ///        seconds. Finite seconds convert and clamp as fromSeconds() does.
+    static constexpr std::optional<Duration> tryFromSeconds(double seconds)
+    {
+        const bool secondsAreFinite = std::isfinite(seconds);
+        if (!secondsAreFinite) {
+            return std::nullopt;
         }
         return Duration(detail::clampedNanos(seconds * 1e9));
     }
@@ -129,12 +144,13 @@ class Duration
         return Duration(-this->nanoseconds);
     }
 
-    /// @brief Scale by `factor`. A NaN or infinite factor gives zero.
+    /// @brief Scale by `factor`. An out-of-range product clamps.
+    /// @throws std::invalid_argument for a NaN or infinite factor.
     constexpr Duration operator*(double factor) const
     {
         const bool factorIsFinite = std::isfinite(factor);
         if (!factorIsFinite) {
-            return Duration();
+            throw std::invalid_argument("hypha::Duration::operator*: factor is not finite");
         }
         const double scaled = static_cast<double>(this->nanoseconds) * factor;
         return Duration(detail::clampedNanos(scaled));
@@ -177,13 +193,15 @@ class Time
         return Time(nanos);
     }
 
-    /// @brief NaN and infinite seconds give zero, which reads as "not known".
+    /// @brief Construct from seconds; the fractional part is truncated toward zero.
     ///        Out-of-range seconds clamp.
+    /// @throws std::invalid_argument for NaN or infinite seconds; in a constant
+    ///         expression that is a compile error.
     static constexpr Time fromSeconds(double seconds)
     {
         const bool secondsAreFinite = std::isfinite(seconds);
         if (!secondsAreFinite) {
-            return Time();
+            throw std::invalid_argument("hypha::Time::fromSeconds: seconds are not finite");
         }
         return Time(detail::clampedNanos(seconds * 1e9));
     }

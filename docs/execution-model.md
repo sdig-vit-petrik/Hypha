@@ -536,12 +536,18 @@ below the C ABI, that the step looks up with explicit results and never waits on
    `InvalidFrame`. A transform the buffer refuses (a rotation that is not a unit
    quaternion, a non-finite value, a second parent for a frame, a cycle, a frame both
    static and dynamic, a header stamp whose `nsecs` reaches one second) is left out and
-   logged, at most once a second per TF input with the count.
+   logged, at most once a second per TF input with the count. Every refusal is counted
+   for good in the node metric `tf.refused` (`tf.undecodable` for a message that does
+   not decode), and the input keeps the last refusal of each frame until a transform of
+   that frame is kept again.
 2. **Lookups.** A lookup names a target, a source and a time, or asks for the latest
    time common to every transform on the chain (C ABI `latest`, C++ `lookupLatest`).
    Time 0 is a time like any other, since simulated time may start there. Unknown frame, frames not connected, time
    before the buffer and time after it are distinct results; an empty name is refused
-   and one leading `/` is dropped. A policy such as "at the stamp, else the newest" is
+   and one leading `/` is dropped. A lookup that fails as unknown frame, not connected
+   or after the buffer while a frame on its chain (the target, the source or a frame
+   above either) has a refused newest transform answers `Refused` instead (#123): the
+   producer is broken, not late. A policy such as "at the stamp, else the newest" is
    the application's (MRS keeps it in its `Transformer`).
 3. **A clock that goes back.** The cycle ends its run with `ClockRewound` and the
    process restarts (section 11.1), so the buffer starts empty in the new process.

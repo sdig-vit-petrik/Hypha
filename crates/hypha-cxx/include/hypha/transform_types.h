@@ -28,6 +28,10 @@ enum class TransformError {
     BeforeBuffer,
     /// The time is newer than the newest sample of a transform on the chain.
     AfterBuffer,
+    /// The lookup failed on a frame whose newest transform the buffer refused (not
+    /// finite, not a unit quaternion, a stamp that is no time, a second parent): its
+    /// producer is broken, not late. The buffer's error log line names the reason.
+    Refused,
 };
 
 /// @brief The name of @p error, such as "UnknownFrame"; "Unknown" for any other value.
@@ -44,6 +48,8 @@ constexpr std::string_view name(TransformError error)
             return "BeforeBuffer";
         case TransformError::AfterBuffer:
             return "AfterBuffer";
+        case TransformError::Refused:
+            return "Refused";
     }
     return "Unknown";
 }
@@ -72,6 +78,8 @@ inline TransformError transformErrorOf(uint32_t result, std::string_view caller)
             return TransformError::BeforeBuffer;
         case HYPHA_TF_AFTER_BUFFER:
             return TransformError::AfterBuffer;
+        case HYPHA_TF_REFUSED:
+            return TransformError::Refused;
         default:
             throw std::runtime_error(
                 "hypha: " + std::string(caller) + " unknown result " + std::to_string(result)

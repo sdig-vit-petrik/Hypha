@@ -4,13 +4,16 @@
 
 pub mod buffer;
 
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hypha_core::message::DecodeOwned as _;
 use hypha_msgs::tf2_msgs::TFMessage;
 use hypha_runtime::tf_buffer::{Inserted, Rigid, TfBuffer, TfError};
 
+use crate::node_health::ExecutionHealth;
 use crate::status::Error;
 
 /// The SDK default of `cache_nanos` (`hypha_cycle_bind_transforms`,
@@ -29,6 +32,11 @@ pub const HYPHA_TF_NOT_CONNECTED: u32 = 3;
 pub const HYPHA_TF_BEFORE_BUFFER: u32 = 4;
 /// The time is newer than the newest sample of a transform on the chain.
 pub const HYPHA_TF_AFTER_BUFFER: u32 = 5;
+/// The lookup failed on a frame whose newest transform the buffer refused (not finite,
+/// not a unit quaternion, a stamp that is no time, a second parent): its producer is
+/// broken, not late. Takes the place of `UNKNOWN_FRAME`, `NOT_CONNECTED` and
+/// `AFTER_BUFFER` while that frame's newest transform is a refused one.
+pub const HYPHA_TF_REFUSED: u32 = 6;
 
 /// One looked-up transform: where `source` sits in `target`.
 #[repr(C)]
@@ -83,7 +91,8 @@ pub(crate) struct IngestPass {
 /// One refusal log line per owner per second at most.
 const REJECTION_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
-/// A transform buffer, with the count of what it refused since its last log line.
+/// A transform buffer, with the count of what it refused since its last log line and
+/// the last refusal of each frame whose newest transform was refused.
 #[derive(Debug)]
 pub(crate) struct TfState {
     buffer: TfBuffer,
@@ -92,12 +101,103 @@ pub(crate) struct TfState {
     /// Messages that did not decode as a `tf2_msgs/TFMessage` since the last log line.
     undecodable: u64,
     logged: Option<Instant>,
+    /// The reason of the last refusal of each child frame, by its name without a leading
+    /// `/`, until a transform of that frame is kept again.
+    refused: HashMap<String, String>,
+    /// The node's counters, where every refusal is counted for good (`tf.*` metrics).
+    health: Arc<ExecutionHealth>,
+}
+
+/// The nanoseconds of a ROS stamp, or the reason it is no time.
+fn stamp_nanos(secs: u32, nsecs: u32) -> Result<i64, String> {
+    let time = hypha_wire::ros_time::RosTime::new(secs, nsecs);
+    i64::try_from(time.as_nanos())
+        .ok()
+        .filter(|_| nsecs < 1_000_000_000)
+        .ok_or_else(|| format!("invalid stamp {secs}.{nsecs} s"))
+}
+
+/// A transform a sender checks before it sends it: where the child sits in the parent,
+/// at a ROS stamp.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct HyphaSentTransform {
+    /// The child origin in the parent frame.
+    pub translation: [f64; 3],
+    /// The child orientation in the parent frame, `[x, y, z, w]`.
+    pub rotation_xyzw: [f64; 4],
+    /// The header stamp, seconds part.
+    pub stamp_secs: u32,
+    /// The header stamp, nanoseconds part; a time needs it below 1 000 000 000.
+    pub stamp_nsecs: u32,
+}
+
+/// The check every transform buffer applies to each transform it ingests, for a sender
+/// to apply before it sends: `child` in `parent` (`is_static`: the stamp is not read).
+/// A refusal records its reason, which names both frames, for `hypha_last_error`.
+///
+/// # Errors
+/// `InvalidArgument` for an empty frame name, a stamp that is no time, a value that is
+/// not finite or a rotation that is not a unit quaternion. A second parent or a cycle
+/// needs the other transforms, so only a buffer refuses those.
+pub fn transform_check(
+    parent: &str,
+    child: &str,
+    transform: &HyphaSentTransform,
+    is_static: bool,
+) -> Result<(), Error> {
+    let rigid =
+        Rigid { translation: transform.translation, rotation_xyzw: transform.rotation_xyzw };
+    let stamp = (transform.stamp_secs, transform.stamp_nsecs);
+    refusal_of(parent, child, stamp, rigid, is_static).map_err(|reason| {
+        crate::last_error::record(&reason);
+        Error::InvalidArgument
+    })
+}
+
+/// The reason [`transform_check`] refuses a transform, naming the child and the parent.
+fn refusal_of(
+    parent: &str,
+    child: &str,
+    stamp: (u32, u32),
+    rigid: Rigid,
+    is_static: bool,
+) -> Result<(), String> {
+    let named = |reason: &dyn fmt::Display| format!("'{child}' in '{parent}': {reason}");
+    let nanos = if is_static {
+        0
+    } else {
+        stamp_nanos(stamp.0, stamp.1).map_err(|reason| named(&reason))?
+    };
+    hypha_runtime::tf_buffer::check(parent, child, nanos, rigid, is_static)
+        .map_err(|error| named(&error))
+}
+
+/// `name` without its one leading `/`.
+fn frame_key(name: &str) -> &str {
+    name.strip_prefix('/').unwrap_or(name)
 }
 
 impl TfState {
-    /// An empty buffer that keeps `cache` of dynamic history per frame.
-    pub(crate) fn new(cache: Duration) -> Self {
-        Self { buffer: TfBuffer::new(cache), rejected: 0, undecodable: 0, logged: None }
+    /// An empty buffer that keeps `cache` of dynamic history per frame, counting its
+    /// refusals in `health`.
+    pub(crate) fn new(cache: Duration, health: Arc<ExecutionHealth>) -> Self {
+        Self {
+            buffer: TfBuffer::new(cache),
+            rejected: 0,
+            undecodable: 0,
+            logged: None,
+            refused: HashMap::new(),
+            health,
+        }
+    }
+
+    /// Count and keep one refusal of `child`.
+    fn refuse(&mut self, child: &str, reason: String, pass: &mut IngestPass) {
+        self.rejected = self.rejected.saturating_add(1);
+        self.health.count_tf_refused();
+        self.refused.insert(frame_key(child).to_owned(), reason.clone());
+        pass.refusal = Some(reason);
     }
 
     /// Insert every transform of the `tf2_msgs/TFMessage` in `payload`, as static ones
@@ -118,21 +218,23 @@ impl TfState {
             let parent = &item.header.frame_id;
             let child = &item.child_frame_id;
             let time = item.header.stamp;
-            let stamp = i64::try_from(time.as_nanos()).ok();
-            let Some(stamp) = stamp.filter(|_| time.nsecs < 1_000_000_000) else {
-                self.rejected = self.rejected.saturating_add(1);
-                pass.refusal = Some(format!(
-                    "'{child}' in '{parent}': invalid stamp {}.{} s",
-                    time.secs, time.nsecs
-                ));
-                continue;
+            let stamp = match stamp_nanos(time.secs, time.nsecs) {
+                Ok(stamp) => stamp,
+                Err(reason) => {
+                    self.refuse(child, format!("'{child}' in '{parent}': {reason}"), pass);
+                    continue;
+                }
             };
             let t = &item.transform;
             let rigid = Rigid {
                 translation: [t.translation.x, t.translation.y, t.translation.z],
                 rotation_xyzw: [t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w],
             };
-            match self.buffer.insert(parent, child, stamp, rigid, is_static) {
+            let inserted = self.buffer.insert(parent, child, stamp, rigid, is_static);
+            if inserted.is_ok() {
+                self.refused.remove(frame_key(child));
+            }
+            match inserted {
                 Ok(Inserted::Kept) => {}
                 Ok(Inserted::DroppedHistory { newest_nanos }) => {
                     let first_time_this_pass = !pass.restarted.contains(child);
@@ -149,8 +251,7 @@ impl TfState {
                     }
                 }
                 Err(error) => {
-                    self.rejected = self.rejected.saturating_add(1);
-                    pass.refusal = Some(format!("'{child}' in '{parent}': {error}"));
+                    self.refuse(child, format!("'{child}' in '{parent}': {error}"), pass);
                 }
             }
         }
@@ -160,6 +261,7 @@ impl TfState {
     /// Count a message that did not decode, for an owner that goes on without it.
     pub(crate) fn count_undecodable(&mut self, pass: &mut IngestPass) {
         self.undecodable = self.undecodable.saturating_add(1);
+        self.health.count_tf_undecodable();
         pass.refusal = Some("a message that does not decode as tf2_msgs/TFMessage".to_owned());
     }
 
@@ -199,7 +301,17 @@ impl TfState {
             })),
             Err(error) => {
                 let code = result_code(&error).ok_or(Error::InvalidState)?;
-                Ok(TransformLookup::Missing(code))
+                let refusal_can_explain = matches!(
+                    error,
+                    TfError::UnknownFrame(_) | TfError::NotConnected | TfError::AfterBuffer
+                );
+                let refused = refusal_can_explain
+                    && self
+                        .buffer
+                        .frames_above(target, source)
+                        .iter()
+                        .any(|name| self.refused.contains_key(name));
+                Ok(TransformLookup::Missing(if refused { HYPHA_TF_REFUSED } else { code }))
             }
         }
     }
@@ -269,7 +381,7 @@ mod tests {
     }
 
     fn state() -> TfState {
-        TfState::new(Duration::from_secs(10))
+        TfState::new(Duration::from_secs(10), Arc::default())
     }
 
     #[test]
@@ -308,6 +420,91 @@ mod tests {
         assert_eq!(tf.undecodable, 0, "the log line reports and clears the count");
     }
 
+    const REFUSED: u32 = HYPHA_TF_REFUSED;
+
+    fn nan_transform(parent: &str, child: &str, stamp: RosTime) -> TransformStamped {
+        transform(parent, child, stamp, f64::NAN)
+    }
+
+    #[test]
+    fn a_lookup_that_fails_on_a_refused_frame_answers_refused() {
+        let mut tf = state();
+        let mut pass = IngestPass::default();
+        let good = encoded(vec![transform("map", "base", RosTime::new(1, 0), 1.0)]);
+        tf.ingest(OWNER, &good, false, &mut pass).expect("the message decodes");
+        let broken = encoded(vec![nan_transform("map", "base", RosTime::new(2, 0))]);
+        tf.ingest(OWNER, &broken, false, &mut pass).expect("the message decodes");
+        let never = encoded(vec![nan_transform("map", "gnss", RosTime::new(2, 0))]);
+        tf.ingest(OWNER, &never, false, &mut pass).expect("the message decodes");
+        // The good sample still answers at its own time.
+        assert!(matches!(
+            tf.lookup("map", "base", Some(1_000_000_000)),
+            Ok(TransformLookup::Found(_))
+        ));
+        // After it, and for a frame never accepted, the answer is the refusal, not "not yet".
+        assert_eq!(
+            tf.lookup("map", "base", Some(2_000_000_000)),
+            Ok(TransformLookup::Missing(REFUSED))
+        );
+        assert_eq!(tf.lookup("map", "gnss", None), Ok(TransformLookup::Missing(REFUSED)));
+        // The log line resets its own count, never the node's metric.
+        tf.finish(OWNER, pass);
+        tf.count_undecodable(&mut IngestPass::default());
+        let mut metrics = Vec::new();
+        tf.health.emit_tf_metrics(&mut |name, value| metrics.push((name.to_owned(), value)));
+        assert_eq!(metrics, vec![("tf.refused".to_owned(), 2), ("tf.undecodable".to_owned(), 1)]);
+    }
+
+    #[test]
+    fn the_sender_check_names_the_frames_and_the_reason() {
+        let finite = Rigid { translation: [0.0; 3], rotation_xyzw: [0.0, 0.0, 0.0, 1.0] };
+        let broken = Rigid { translation: [f64::NAN, 0.0, 0.0], ..finite };
+        assert_eq!(refusal_of("map", "base", (1, 0), finite, false), Ok(()));
+        let reason = refusal_of("map", "base", (1, 0), broken, false).expect_err("NaN");
+        assert!(reason.starts_with("'base' in 'map': transform rejected:"), "{reason}");
+        let stamp = refusal_of("map", "base", (1, 1_000_000_000), finite, false);
+        assert_eq!(stamp, Err("'base' in 'map': invalid stamp 1.1000000000 s".to_owned()));
+        assert_eq!(refusal_of("map", "base", (1, 1_000_000_000), finite, true), Ok(()));
+        assert!(refusal_of("", "base", (1, 0), finite, false).is_err());
+        let sent = HyphaSentTransform {
+            translation: [f64::NAN, 0.0, 0.0],
+            rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+            stamp_secs: 1,
+            stamp_nsecs: 0,
+        };
+        assert_eq!(transform_check("map", "base", &sent, false), Err(Error::InvalidArgument));
+        assert!(crate::last_error::last_error().starts_with("'base' in 'map': "));
+    }
+
+    #[test]
+    fn a_refused_frame_on_the_chain_answers_refused_and_an_accepted_one_clears_it() {
+        let mut tf = state();
+        let mut pass = IngestPass::default();
+        let setup = encoded(vec![
+            transform("map", "base", RosTime::new(1, 0), 1.0),
+            transform("base", "lidar", RosTime::new(1, 0), 0.5),
+            transform("base", "lidar", RosTime::new(3, 0), 0.5),
+        ]);
+        tf.ingest(OWNER, &setup, false, &mut pass).expect("the message decodes");
+        let broken = encoded(vec![nan_transform("map", "base", RosTime::new(2, 0))]);
+        tf.ingest(OWNER, &broken, false, &mut pass).expect("the message decodes");
+        assert_eq!(
+            tf.lookup("map", "lidar", Some(2_000_000_000)),
+            Ok(TransformLookup::Missing(REFUSED))
+        );
+        let fixed = encoded(vec![transform("map", "base", RosTime::new(3, 0), 1.0)]);
+        tf.ingest(OWNER, &fixed, false, &mut pass).expect("the message decodes");
+        assert!(matches!(
+            tf.lookup("map", "lidar", Some(2_000_000_000)),
+            Ok(TransformLookup::Found(_))
+        ));
+        // A lookup after the buffer of a frame that was never refused stays AfterBuffer.
+        assert_eq!(
+            tf.lookup("map", "lidar", Some(9_000_000_000)),
+            Ok(TransformLookup::Missing(HYPHA_TF_AFTER_BUFFER))
+        );
+    }
+
     #[test]
     fn a_stamp_that_is_no_time_is_counted_and_left_out() {
         let mut tf = state();
@@ -319,8 +516,10 @@ mod tests {
         tf.ingest(OWNER, &payload, false, &mut pass).expect("the message decodes");
         assert_eq!(tf.rejected, 1);
         assert!(pass.refusal.is_some_and(|text| text.contains("invalid stamp")));
+        // Left out, and the lookup says why: the frame's transform was refused (#123).
+        assert_eq!(tf.lookup("world", "bad", None), Ok(TransformLookup::Missing(HYPHA_TF_REFUSED)));
         assert_eq!(
-            tf.lookup("world", "bad", None),
+            tf.lookup("world", "nowhere", None),
             Ok(TransformLookup::Missing(HYPHA_TF_UNKNOWN_FRAME))
         );
         assert!(matches!(tf.lookup("world", "good", None), Ok(TransformLookup::Found(_))));

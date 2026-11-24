@@ -620,3 +620,71 @@ fn under_simulated_time_every_received_sample_is_ingested() {
         bits([0.0; 3])
     );
 }
+
+/// `tf_message` with every translation NaN: what a producer that ran on NaN sends.
+fn nan_message(parent: &str, child: &str, stamp_nanos: i64) -> Vec<u8> {
+    tf_message(parent, child, stamp_nanos, [f64::NAN; 3])
+}
+
+#[test]
+fn a_frame_whose_newest_transform_was_refused_answers_refused_and_is_counted() {
+    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    let rig = Rig::new("tfb_refused");
+    rig.send_dynamic("map", "base", SECOND, [1.0, 0.0, 0.0]);
+    // SAFETY: the publisher is live.
+    unsafe { send_payload(rig.tf, &nan_message("map", "base", 2 * SECOND)) };
+    // SAFETY: the publisher is live.
+    unsafe { send_payload(rig.tf, &nan_message("map", "gnss", 2 * SECOND)) };
+    rig.settle();
+    assert_eq!(result_of(rig.buffer, "map", "base", Some(2 * SECOND)), HYPHA_TF_REFUSED);
+    assert_eq!(result_of(rig.buffer, "map", "gnss", None), HYPHA_TF_REFUSED);
+    assert_eq!(result_of(rig.buffer, "map", "nowhere", None), HYPHA_TF_UNKNOWN_FRAME);
+    found(rig.buffer, "map", "base", Some(SECOND));
+    assert_eq!(crate::common::node_metric(rig.node, "tf.refused"), Some(2));
+    assert_eq!(crate::common::node_metric(rig.node, "tf.undecodable"), Some(0));
+    // A good transform of the frame clears its refusal.
+    rig.send_dynamic("map", "base", 3 * SECOND, [1.0, 0.0, 0.0]);
+    rig.settle();
+    found(rig.buffer, "map", "base", Some(2 * SECOND));
+    assert_eq!(result_of(rig.buffer, "map", "base", Some(9 * SECOND)), HYPHA_TF_AFTER_BUFFER);
+}
+
+#[test]
+fn the_sender_check_refuses_what_a_buffer_refuses_and_names_the_frames() {
+    let check = |child: &str, sent: &HyphaSentTransform, is_static: u32| {
+        // SAFETY: both names come with their lengths; `sent` is a live local.
+        unsafe {
+            hypha_transform_check(
+                "map".as_ptr().cast(),
+                3,
+                child.as_ptr().cast(),
+                child.len(),
+                sent,
+                is_static,
+            )
+        }
+    };
+    let good = HyphaSentTransform {
+        translation: [1.0, 2.0, 3.0],
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+        stamp_secs: 1,
+        stamp_nsecs: 0,
+    };
+    assert_eq!(check("base", &good, 0), HyphaStatus::Ok);
+    let nan = HyphaSentTransform { translation: [f64::NAN, 0.0, 0.0], ..good };
+    assert_eq!(check("base", &nan, 0), HyphaStatus::InvalidArgument);
+    let mut text = vec![0_u8; 512];
+    let mut length = 0_usize;
+    // SAFETY: `text` has its length writable; `length` is a local.
+    let read = unsafe { hypha_last_error(text.as_mut_ptr().cast(), text.len(), &raw mut length) };
+    assert_eq!(read, HyphaStatus::Ok);
+    text.truncate(length);
+    let reason = String::from_utf8(text).expect("UTF-8");
+    assert!(reason.starts_with("'base' in 'map': "), "{reason}");
+    let skewed = HyphaSentTransform { rotation_xyzw: [0.0, 0.0, 0.0, 2.0], ..good };
+    assert_eq!(check("base", &skewed, 1), HyphaStatus::InvalidArgument);
+    let no_time = HyphaSentTransform { stamp_nsecs: 1_000_000_000, ..good };
+    assert_eq!(check("base", &no_time, 0), HyphaStatus::InvalidArgument);
+    assert_eq!(check("base", &no_time, 1), HyphaStatus::Ok, "a static stamp is not read");
+    assert_eq!(check("", &good, 0), HyphaStatus::InvalidArgument);
+}

@@ -1,6 +1,7 @@
-// TransformBuffer and StaticTransformBroadcaster: TF in a plain node, on the real bus.
+// TransformBuffer and both broadcasters: TF in a plain node, on the real bus.
 // Host time; the stamps of the transforms are data.
 
+#include "hypha/metrics.h"
 #include "hypha/transform_buffer.h"
 
 #include "test_types.h"
@@ -11,6 +12,7 @@
 #include <chrono>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -332,4 +334,104 @@ TEST(StaticTransformBroadcaster, AVectorOfTransformsIsOneMessage)
     }));
     ASSERT_EQ(received.size(), 1U);
     EXPECT_EQ(received.front().transforms.size(), 3U);
+}
+
+namespace {
+
+geometry_msgs::TransformStamped nanTransform(const char* parent, const char* child)
+{
+    geometry_msgs::TransformStamped item = transform(parent, child, 2, 0.0);
+    item.transform.translation.x = std::numeric_limits<double>::quiet_NaN();
+    return item;
+}
+
+}  // namespace
+
+TEST(TransformBroadcaster, AValidTransformReachesABuffer)
+{
+    hypha::Node                 node("tb_valid");
+    hypha::TransformBroadcaster broadcaster{node, hypha::Topic{topics().tf}};
+    hypha::TransformBuffer      buffer{node, topics()};
+    EXPECT_TRUE(broadcaster.send(transform("map", "base", 1, 1.0)));
+    EXPECT_EQ(broadcaster.lastPublishStatus(), hypha::Status::Ok);
+    EXPECT_TRUE(broadcaster.lastRefusal().empty());
+    ASSERT_TRUE(hypha_test::runUntil(node, [&buffer] {
+        return buffer.lookupLatest("map", "base").has_value();
+    }));
+    EXPECT_EQ(buffer.lookupLatest("map", "base")->transform.translation.x, 1.0);
+}
+
+TEST(TransformBroadcaster, ANanTransformIsRefusedAndNothingOfItsMessageIsSent)
+{
+    hypha::Node                      node("tb_nan");
+    hypha::TransformBroadcaster      broadcaster{node, hypha::Topic{topics().tf}};
+    std::vector<tf2_msgs::TFMessage> received;
+    auto                             reader =
+        node.subscribe<tf2_msgs::TFMessage>(hypha::Topic{topics().tf}, KeepMessages{&received});
+    const std::vector<geometry_msgs::TransformStamped> batch{
+        transform("map", "odom", 2, 1.0), nanTransform("odom", "base_link")
+    };
+    EXPECT_FALSE(broadcaster.send(batch));
+    EXPECT_EQ(broadcaster.lastPublishStatus(), hypha::Status::InvalidArgument);
+    const std::string& refusal = broadcaster.lastRefusal();
+    EXPECT_NE(refusal.find("'base_link' in 'odom'"), std::string::npos) << refusal;
+    EXPECT_FALSE(broadcaster.send(transform("", "base", 1, 0.0)));
+    geometry_msgs::TransformStamped noTime = transform("map", "base", 1, 0.0);
+    noTime.header.stamp.nsecs = 1000000000;
+    EXPECT_FALSE(broadcaster.send(noTime));
+    EXPECT_NE(broadcaster.lastRefusal().find("invalid stamp"), std::string::npos);
+
+    // A good send afterwards is the first and only message on the topic.
+    EXPECT_TRUE(broadcaster.send(transform("map", "odom", 3, 1.0)));
+    EXPECT_TRUE(broadcaster.lastRefusal().empty());
+    ASSERT_TRUE(hypha_test::runUntil(node, [&received] {
+        return !received.empty();
+    }));
+    ASSERT_EQ(received.size(), 1U);
+    EXPECT_EQ(received.front().transforms.front().header.stamp.secs, 3U);
+}
+
+TEST(StaticTransformBroadcaster, ANanTransformIsRefusedAndNotKept)
+{
+    hypha::Node                       node("stb_nan");
+    hypha::StaticTransformBroadcaster statics{node, hypha::Topic{topics().tfStatic}};
+    ASSERT_TRUE(statics.send(transform("base", "lidar", 0, 0.5)));
+    EXPECT_FALSE(statics.send(nanTransform("base", "camera")));
+    EXPECT_EQ(statics.lastPublishStatus(), hypha::Status::InvalidArgument);
+    EXPECT_NE(statics.lastRefusal().find("'camera' in 'base'"), std::string::npos);
+    ASSERT_EQ(statics.transforms().size(), 1U) << "nothing of a refused send is kept";
+    // A static transform's stamp is not read.
+    geometry_msgs::TransformStamped anyStamp = transform("base", "radar", 0, 0.1);
+    anyStamp.header.stamp.nsecs = 1000000000;
+    EXPECT_TRUE(statics.send(anyStamp));
+    EXPECT_EQ(statics.transforms().size(), 2U);
+}
+
+TEST(TransformBuffer, ALookupOnAFrameWhoseTransformWasRefusedAnswersRefusedAndIsCounted)
+{
+    hypha::Node            node("tfb_refused");
+    hypha::TransformBuffer buffer{node, topics()};
+    // A raw publisher: a sender that does not check, as a bridge or a replay can be.
+    auto raw = node.advertise<tf2_msgs::TFMessage>(hypha::Topic{topics().tf});
+    ASSERT_TRUE(raw.publish(message(transform("map", "base", 1, 1.0))));
+    ASSERT_TRUE(raw.publish(message(nanTransform("map", "base"))));
+    ASSERT_TRUE(raw.publish(message(nanTransform("map", "gnss"))));
+    ASSERT_TRUE(hypha_test::runUntil(node, [] {
+        return hypha::metric("tf.refused").value_or(0) >= 2;
+    }));
+    EXPECT_EQ(hypha::metric("tf.refused"), 2U);
+    EXPECT_EQ(hypha::metric("tf.undecodable"), 0U);
+
+    const Found late = buffer.lookup("map", "base", hypha::Time::fromSeconds(2.0));
+    ASSERT_FALSE(late.has_value());
+    EXPECT_EQ(late.error(), hypha::TransformError::Refused);
+    EXPECT_EQ(hypha::name(late.error()), "Refused");
+    const Found never = buffer.lookupLatest("map", "gnss");
+    ASSERT_FALSE(never.has_value());
+    EXPECT_EQ(never.error(), hypha::TransformError::Refused);
+    EXPECT_TRUE(buffer.lookup("map", "base", hypha::Time::fromSeconds(1.0)).has_value())
+        << "the sample before the refusal still answers at its time";
+    const Found unknown = buffer.lookupLatest("map", "nowhere");
+    ASSERT_FALSE(unknown.has_value());
+    EXPECT_EQ(unknown.error(), hypha::TransformError::UnknownFrame);
 }

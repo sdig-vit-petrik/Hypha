@@ -61,6 +61,8 @@ pub struct TfBuffer {
     cache_nanos: i64,
     /// The newest dynamic stamp of each child frame, by its name without a leading `/`.
     newest: std::collections::HashMap<String, i64>,
+    /// The parent of each child frame the buffer holds, by names without a leading `/`.
+    parents: std::collections::HashMap<String, String>,
 }
 
 /// What an insert did with a frame's history.
@@ -108,6 +110,56 @@ fn lookup_error(error: RegistryError) -> TfError {
     }
 }
 
+/// A transform made from its parts after the check every transform passes: both frame
+/// names valid, a stamp that is a time unless `is_static`, finite values and a unit
+/// quaternion. Returns the frame names without a leading `/`.
+fn checked<'a>(
+    parent: &'a str,
+    child: &'a str,
+    stamp_nanos: i64,
+    rigid: Rigid,
+    is_static: bool,
+) -> Result<(&'a str, &'a str, Transform), TfError> {
+    let parent = frame(parent)?;
+    let child = frame(child)?;
+    let stamp = if is_static {
+        Stamp::Static
+    } else {
+        let time = timestamp(stamp_nanos)
+            .ok_or_else(|| TfError::Rejected(format!("negative stamp {stamp_nanos}")))?;
+        Stamp::At(time)
+    };
+    let [x, y, z] = rigid.translation;
+    let [qx, qy, qz, qw] = rigid.rotation_xyzw;
+    let transform = Transform::new(
+        parent,
+        child,
+        Vector3::new(x, y, z),
+        Quaternion::from_wxyz(qw, qx, qy, qz),
+        stamp,
+    )
+    .map_err(|error| TfError::Rejected(error.to_string()))?;
+    Ok((parent, child, transform))
+}
+
+/// The check a buffer applies to every transform it is given, for a sender to apply
+/// before it sends: `child` in `parent` at `stamp_nanos` (not read when `is_static`).
+/// It needs no buffer, so it cannot see a second parent or a cycle, which only a
+/// buffer that holds the other transforms refuses.
+///
+/// # Errors
+/// `InvalidFrame` for an empty name, `Rejected` with the reason for a negative stamp, a
+/// non-finite value or a rotation that is not a unit quaternion.
+pub fn check(
+    parent: &str,
+    child: &str,
+    stamp_nanos: i64,
+    rigid: Rigid,
+    is_static: bool,
+) -> Result<(), TfError> {
+    checked(parent, child, stamp_nanos, rigid, is_static).map(|_| ())
+}
+
 impl TfBuffer {
     /// An empty buffer that keeps `cache` of dynamic history per frame.
     #[must_use]
@@ -117,7 +169,28 @@ impl TfBuffer {
             registry: Registry::with_max_age(cache),
             cache_nanos,
             newest: std::collections::HashMap::new(),
+            parents: std::collections::HashMap::new(),
         }
+    }
+
+    /// `target`, `source` and every frame above either, by the parents the buffer holds,
+    /// without a leading `/`: the frames a chain between the two can pass. An empty name
+    /// is left out.
+    #[must_use]
+    pub fn frames_above(&self, target: &str, source: &str) -> Vec<String> {
+        let mut frames: Vec<String> = Vec::new();
+        for start in [target, source] {
+            let Ok(mut name) = frame(start) else { continue };
+            // A frame keeps one parent and the buffer refuses a cycle; the bound guards anyway.
+            for _ in 0..=self.parents.len() {
+                if !frames.iter().any(|known| known == name) {
+                    frames.push(name.to_owned());
+                }
+                let Some(parent) = self.parents.get(name) else { break };
+                name = parent;
+            }
+        }
+        frames
     }
 
     /// The history length of each frame, in nanoseconds.
@@ -134,7 +207,8 @@ impl TfBuffer {
     /// drops the frame's older transforms first ([`Inserted::DroppedHistory`]).
     ///
     /// # Errors
-    /// `InvalidFrame` for an empty name, `Rejected` for a transform the buffer refuses.
+    /// `InvalidFrame` for an empty name, `Rejected` for a transform the buffer refuses:
+    /// one [`check`] refuses, a second parent, a cycle.
     pub fn insert(
         &mut self,
         parent: &str,
@@ -143,25 +217,7 @@ impl TfBuffer {
         rigid: Rigid,
         is_static: bool,
     ) -> Result<Inserted, TfError> {
-        let parent = frame(parent)?;
-        let child = frame(child)?;
-        let stamp = if is_static {
-            Stamp::Static
-        } else {
-            let time = timestamp(stamp_nanos)
-                .ok_or_else(|| TfError::Rejected(format!("negative stamp {stamp_nanos}")))?;
-            Stamp::At(time)
-        };
-        let [x, y, z] = rigid.translation;
-        let [qx, qy, qz, qw] = rigid.rotation_xyzw;
-        let transform = Transform::new(
-            parent,
-            child,
-            Vector3::new(x, y, z),
-            Quaternion::from_wxyz(qw, qx, qy, qz),
-            stamp,
-        )
-        .map_err(|error| TfError::Rejected(error.to_string()))?;
+        let (parent, child, transform) = checked(parent, child, stamp_nanos, rigid, is_static)?;
         let mut inserted = Inserted::Kept;
         if !is_static && let Some(newest_nanos) = self.newest.get(child).copied() {
             let behind = newest_nanos.saturating_sub(stamp_nanos);
@@ -174,6 +230,7 @@ impl TfBuffer {
         self.registry
             .add_transform(transform)
             .map_err(|error| TfError::Rejected(error.to_string()))?;
+        self.parents.insert(child.to_owned(), parent.to_owned());
         if !is_static {
             let newest = self.newest.entry(child.to_owned()).or_insert(stamp_nanos);
             *newest = (*newest).max(stamp_nanos);
@@ -378,6 +435,39 @@ mod tests {
             tf.insert("c", "b", SECOND, at(0.0, 0.0, 0.0), false),
             Err(TfError::Rejected(_))
         ));
+    }
+
+    #[test]
+    fn a_non_finite_translation_or_rotation_is_rejected() {
+        let mut tf = buffer();
+        let nan = f64::NAN;
+        let moved = Rigid { translation: [nan, 0.0, 0.0], rotation_xyzw: IDENTITY };
+        assert!(matches!(
+            tf.insert("map", "base", SECOND, moved, false),
+            Err(TfError::Rejected(_))
+        ));
+        let turned = Rigid { translation: [0.0; 3], rotation_xyzw: [0.0, 0.0, f64::INFINITY, 1.0] };
+        assert!(matches!(
+            tf.insert("map", "base", SECOND, turned, false),
+            Err(TfError::Rejected(_))
+        ));
+        assert!(matches!(tf.lookup("map", "base", None), Err(TfError::UnknownFrame(_))));
+        // The sender's check gives the same answer as the buffer.
+        assert!(matches!(check("map", "base", SECOND, moved, false), Err(TfError::Rejected(_))));
+        assert!(matches!(
+            check("map", "base", -1, at(0.0, 0.0, 0.0), false),
+            Err(TfError::Rejected(_))
+        ));
+        assert!(matches!(
+            check("", "base", SECOND, at(0.0, 0.0, 0.0), false),
+            Err(TfError::InvalidFrame(_))
+        ));
+        assert_eq!(check("map", "base", SECOND, at(0.0, 0.0, 0.0), false), Ok(()));
+        assert_eq!(
+            check("map", "base", -1, at(0.0, 0.0, 0.0), true),
+            Ok(()),
+            "a static stamp is not read"
+        );
     }
 
     #[test]

@@ -186,6 +186,14 @@ semantics and its `HYPHA_TF_*` results are those of a cycle's TF input
   (`InvalidState`, the handle stays live); a destroy from a callback of the run defers
   the detach to the end of the run. A destroy after `hypha_node_destroy` only frees the
   handle, which names its node weakly.
+- **Refusals and the sender's check (#123).** Every refused transform counts in the
+  node metric `tf.refused` and keeps its frame's refusal until a transform of that frame
+  is kept again; a lookup that would answer `HYPHA_TF_UNKNOWN_FRAME`,
+  `HYPHA_TF_NOT_CONNECTED` or `HYPHA_TF_AFTER_BUFFER` answers `HYPHA_TF_REFUSED` while a
+  frame on its chain holds one. `hypha_transform_check(parent, parent_len, child,
+  child_len, transform, is_static)` applies the same check to one `HyphaSentTransform`
+  before a send, needs no node, and records the reason for `hypha_last_error` on a
+  refusal (`InvalidArgument`); the C++ broadcasters call it.
 
 ## Clocks and send times
 
@@ -256,6 +264,7 @@ counted by `hypha_subscriber_missing_sequences`.
 |---|---|---|
 | Node execution | `node.callbacks_invoked`, `node.callback_failures`, `node.slow_callbacks`, `node.sweeps`, `node.last_sweep_end_nanos`, `node.last_callback_status`, `node.is_sim_time` | `hypha_node_metrics` with a node |
 | Transport (process-wide) | `transport.failed_notifications` | `hypha_node_metrics` with a node: sends of this process whose wake notification failed; their samples wait for the next notification of the topic |
+| Transforms | `tf.refused`, `tf.undecodable` | `hypha_node_metrics` with a node: transforms that a transform buffer or TF input of the node refused, and messages on their topics that did not decode, since the node began |
 | Schema | `schema.invalid_records`, `schema.unavailable_lookups`, `schema.resource_limit_failures` | `hypha_node_metrics` with a node |
 | Log (process-wide) | `log.lines_written`, `log.write_failures`, `log.rejected_lines` | `hypha_node_metrics`, with or without a node |
 | Subscriber | `integrity.invalid_frame`, `integrity.corrupt_payload`, `integrity.schema_mismatch`, `integrity.sequence_gap`, `integrity.invalid_timestamp`, `loan.budget`, `loan.held`, `loan.refused` | `RawSubscriber::metrics` (Rust SDK); `hypha_subscriber_counters` (C ABI, as a struct) |

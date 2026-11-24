@@ -259,6 +259,11 @@ Reference: `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h`,
   stamp of every message it publishes are the sample's send time or the timer's
   deadline, and a timer runs every period (execution-model.md §11.2, #72). A worker
   thread the node starts is outside that order.
+- Seconds as a `double` must be finite: `Duration::fromSeconds`, `Time::fromSeconds`
+  and `Duration * double` throw `std::invalid_argument` for NaN or infinite input
+  (a compile error in a constant expression), and clamp finite input outside the int64
+  nanosecond range. On a path that must not throw, such as a cycle step,
+  `Duration::tryFromSeconds` returns an empty `std::optional` instead (#126).
 - There is no implicit `Time` to `RosTime` conversion; never stamp with `steadyNow()`,
   and check a time computed from an input once where it enters:
 
@@ -796,13 +801,29 @@ for (const auto sensor : settings.list("sensors")) {
   may share a name. A plain entry, `speed = "/odom_speed"`, is `InvalidArgument`.
 - **Reserved names.** `node`, `ports` and `log` belong to the framework: `node.name`
   (section 2), the port tables, and `[log]` (section 11), whose keys the parameter
-  API does not return. Simulated time is `HYPHA_USE_SIM_TIME` only; a `use_sim_time`
+  API does not return. The top-level keys `include` (below) and `unused` are not
+  parameters either. Simulated time is `HYPHA_USE_SIM_TIME` only; a `use_sim_time`
   key is an ordinary key.
 - **Unread keys.** `unreadKeys()` lists, sorted, the keys under a view that nothing
   read (`node.name` excluded; a list field as `list[index].field`). `runNode` exits
   78 when one remains after `setup()` and cycle start; a custom `main()` checks
   `hypha::config().unreadKeys()` itself. A value code chooses goes into the manifest
   with `hypha::recordConfig(key, value)`.
+- **Keys set on purpose and not read (#119).** Two ways keep a key out of
+  `unreadKeys()` and the start-up check without deleting it; a typo beside them is
+  still refused. Each lands in the manifest (`~/introspection`) as a row with source
+  `SOURCE_IGNORED` whose value is the reason, and is logged once at info.
+  - Code: `cfg.ignore(keyOrPrefix, reason)` marks a key, a table or a list entry under
+    the view as read by a branch the code chose not to take
+    (`config().ignore("model_params", "no TensorRT in this build")`). A key the file
+    does not set is fine. An empty key or reason throws `ParameterError`.
+  - File: a top-level `unused = ["pose_measurement.pose_measure_uncertainty_time"]`
+    lists keys or tables a vendored file sets and this node does not read. Every
+    file of a composition may list its own. An entry the composed file does not set,
+    such as a typo, refuses the file at load, so the list cannot go stale.
+
+  The check is in the C ABI layer (`hypha_config_ignore`, and `hypha_config_unread_keys`
+  leaves ignored keys out), so every SDK gets it.
 - **Arrays of scalars.** `cfg.requiredArray<T>(key)` returns `std::vector<T>`; `cfg.requiredArray<T, N>(key)` returns `std::array<T, N>` and refuses any other length. `optionalArray<T>` and `optionalArray<T, N>` return a `std::optional` of the same, empty only when the key is absent. T is any type `required<T>` reads (bool, an integer, float, double, std::string), and each element gets the same conversion and range check. A key that is not an array, an element of the wrong type, an array of tables and a wrong length throw `ParameterError` for the `required*` and the `optional*` form alike, and the message names the key and, for an element, its index (`hypha: parameter 'voxel_weights[2]': expected a number, found "x"`; `hypha: parameter 'extrinsic_t': expected 3 elements, found 4`). An empty array is an empty vector, and a length error for N > 0. Reading an array marks the key as read, so `unreadKeys()` does not list it. An array inside an entry of a table list is refused like a nested list.
 - **Porting.** A ROS 1 list parameter, with the fixed-size form:
   [ros1-migration-guide.md](ros1-migration-guide.md#107-a-list-of-scalars-in-the-parameter-file).
@@ -840,9 +861,11 @@ the row messages; the row rules and counters in `hypha/introspection.h`. Its C A
 ## 10. Coordinate frame transforms (TF)
 
 TF is a convention on ordinary topics: `/tf` and `/tf_static` carry
-`tf2_msgs/TFMessage`. A broadcaster is a publisher or an `Output` of that type, and
-`hypha::StaticTransformBroadcaster` (section 10.2) is one for the static topic;
-`examples/mrs/managers/transform_manager.cpp` sends both by hand.
+`tf2_msgs/TFMessage`. `hypha::TransformBroadcaster` and
+`hypha::StaticTransformBroadcaster` (section 10.2) send on them and refuse a transform
+that every buffer would refuse; a publisher or an `Output` of that type sends without
+the check, as `examples/mrs/managers/transform_manager.cpp` does, and the buffers
+still refuse what is invalid.
 
 - Dynamic transforms go to `/tf` when they change; transforms that share a stamp go
   in one message.
@@ -865,7 +888,7 @@ const auto found = this->tf.lookupLatest("map", "base_link");  // in step(): bas
 
 Buffer, clock steps, losses: [execution-model.md](execution-model.md) §6.7.
 
-### 10.2 Looking transforms up in a plain node, and sending static ones
+### 10.2 Looking transforms up in a plain node, and sending transforms
 
 A node without a cycle reads TF with a `hypha::TransformBuffer` from
 `<hypha/transform_buffer.h>`, which `hypha/hypha.h` does not include either. The run of
@@ -883,6 +906,10 @@ if (stamp.has_value()) {
 }
 const auto latest = tf.lookupLatest("map", "base_link");
 
+hypha::TransformBroadcaster broadcaster{node};          // /tf, the tf policy
+if (!broadcaster.send(mapToBase)) {                      // a NaN pose is refused, not sent
+    HYPHA_LOG_ERROR("{}", broadcaster.lastRefusal());    // names the frames and the reason
+}
 hypha::StaticTransformBroadcaster statics{node};        // latched /tf_static
 const bool sent = statics.send(baseToLidar);            // keeps it, resends the whole set
 ```
@@ -905,12 +932,31 @@ const bool sent = statics.send(baseToLidar);            // keeps it, resends the
 - A `/tf_static` sample latched before the buffer existed is found once the node has
   run. A refused destroy (the node runs on another thread) is logged, not thrown, and
   the buffer stays attached until the node is destroyed.
-- `StaticTransformBroadcaster` keeps every transform sent through it, by child frame (a
-  later one replaces the earlier in place), and publishes one message with the whole set
-  on each `send()`: one `TransformStamped` or a `std::vector` of them. `send()` returns
-  what `Publisher::publish` returns, and `lastPublishStatus()` says why not. It is an
-  endpoint of one thread at a time. Several broadcasters may share `/tf_static`; each
-  sends its own set.
+- **A refused transform (#123).** A lookup that fails on a frame whose newest
+  transform the buffer refused (not finite, not a unit quaternion, a stamp that is no
+  time, a second parent) returns `TransformError::Refused` in place of `UnknownFrame`,
+  `NotConnected` or `AfterBuffer`: the producer is broken, not late. The frame is the
+  target, the source or a frame above either; a later transform of that frame that the
+  buffer keeps clears it. The buffer's error log line, at most once a second, names the
+  reason, and the node metrics `tf.refused` and `tf.undecodable` count every refused
+  transform and every message that does not decode, for good. `Transforms` answers the
+  same.
+- **Both broadcasters check what they send.** `send()` checks each transform with the
+  check every buffer applies on ingest (`hypha_transform_check`, below the C ABI): an
+  empty frame name, a stamp that is no time (`nsecs` of a second or more; not read for a
+  static transform), a value that is not finite, a rotation that is not a unit
+  quaternion. A refused send sends and keeps nothing of its message, returns false,
+  `lastPublishStatus()` is `InvalidArgument` and `lastRefusal()` names the child, the
+  parent and the reason (`hypha: transform refused: 'base_link' in 'map': ...`). A second
+  parent or a cycle needs the other transforms, so only a buffer refuses those. Any
+  other false is the publish's, as `Publisher::publish`, with `lastRefusal()` empty.
+- `TransformBroadcaster` publishes each `send()` (one `TransformStamped` or a
+  `std::vector` as one message) on `/tf` with the `tf` policy; an empty vector sends
+  nothing and returns true. `StaticTransformBroadcaster` keeps every transform sent
+  through it, by child frame (a later one replaces the earlier in place), and publishes
+  one latched message with the whole set on each `send()`. Each is an endpoint of one
+  thread at a time. Several static broadcasters may share `/tf_static`; each sends its
+  own set.
 
 ## 11. Logging
 

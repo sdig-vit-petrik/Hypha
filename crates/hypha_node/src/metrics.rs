@@ -13,11 +13,13 @@ use crate::subscriber::{HyphaSubscriber, emit_subscriber_metrics};
 pub type HyphaMetricCallback =
     Option<extern "C" fn(name: *const c_char, name_len: usize, value: u64, user_data: *mut c_void)>;
 
-/// Emit the metrics of `node` to `emit`: its execution counters, its schema counters
-/// and the process-wide log counters, in that order. Without a node, only the log counters.
+/// Emit the metrics of `node` to `emit`: its execution counters, its transform counters,
+/// its schema counters and the process-wide log counters, in that order. Without a node,
+/// only the log counters.
 pub fn node_metrics(node: Option<&HyphaNode>, emit: &mut dyn FnMut(&str, u64)) {
     if let Some(node) = node {
         node.health.emit_metrics(emit);
+        node.health.emit_tf_metrics(emit);
         crate::schema::emit_schema_metrics(node, emit);
     }
     crate::log::emit_log_metrics(emit);

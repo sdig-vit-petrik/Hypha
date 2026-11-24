@@ -133,7 +133,10 @@ pub fn cycle_bind_transforms(
     registration.transforms.push(TfInput {
         dynamic,
         fixed,
-        state: TfState::new(Duration::from_nanos(cache_nanos)),
+        state: TfState::new(
+            Duration::from_nanos(cache_nanos),
+            std::sync::Arc::clone(&set.node().health),
+        ),
         drops_warned: None,
     });
     Ok(index)

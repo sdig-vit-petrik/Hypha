@@ -9,6 +9,7 @@ T hypha_clock_set_sim_time
 T hypha_clock_steady_now_nanos
 T hypha_config_create
 T hypha_config_destroy
+T hypha_config_ignore
 T hypha_config_list_len
 T hypha_config_list_value
 T hypha_config_record_config
@@ -78,6 +79,7 @@ T hypha_topic_validate_public_name
 T hypha_transform_buffer_create
 T hypha_transform_buffer_destroy
 T hypha_transform_buffer_lookup
+T hypha_transform_check
 T hypha_waitset_attach
 T hypha_waitset_detach
 T hypha_waitset_request_failure

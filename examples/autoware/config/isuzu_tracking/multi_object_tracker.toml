@@ -2,8 +2,11 @@
 # multi_object_tracker_node.param.yaml over the package's own, its
 # data_association_matrix.param.yaml, and of input_channels.param.yaml the one channel this
 # launch feeds, lidar_clustering, as the rule-based detection does; converted from the YAML
-# files by a script, not by hand. The tracker tracks in map from the EKF's /tf. Left out: the polygon tracker's polygon hazard profile, which no
-# assignment matches (a polygon hazard goes to the static tracker), so the node never reads it.
+# files by a script, not by hand. The tracker tracks in map from the EKF's /tf.
+
+# The polygon tracker's polygon hazard profile: no assignment matches it (a polygon hazard
+# goes to the static tracker), so the node never reads it.
+unused = ["tracker_profiles.polygon_tracker.polygon.hazard"]
 
 # Upstream's launch file passes it as an argument, false by default.
 publish_merged_objects = false
@@ -351,6 +354,11 @@ max_area = 3.5
 min_area = 0.0
 min_iou = 0.0001
 
+[tracker_profiles.polygon_tracker.polygon.hazard]
+max_dist = 3.0
+max_area = 3.5
+min_area = 0.0
+min_iou = 0.0001
 
 [tracker_profiles.static_tracker.bounding_box.hazard]
 max_dist = 2.0

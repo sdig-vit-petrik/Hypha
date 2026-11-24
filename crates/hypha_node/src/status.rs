@@ -46,7 +46,9 @@ pub enum HyphaStatus {
     Timeout = 18,
     /// Operation invoked in invalid state.
     InvalidState = 20,
-    /// Simulated time went back under a replay or triggered cycle; a running cycle never rewinds.
+    /// A `/clock` sample went below the node's last one: a run of a `WaitSet` on simulated
+    /// time ends with it, whatever it dispatches (cycles, plain timers, plain
+    /// subscriptions); a command-line tool's node is exempt. The process restarts.
     ClockRewound = 22,
     /// The application asked for its run to fail (`hypha_waitset_request_failure`).
     ApplicationFailed = 23,

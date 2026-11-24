@@ -14,6 +14,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -72,6 +73,25 @@ class SharedConfigApp final : public hypha::ApplicationNode
     static inline std::string snapshotText;
 };
 
+/// Ignores a subtree its build has no code for, in the constructor as a ported node does.
+class IgnoringApp final : public hypha::ApplicationNode
+{
+  public:
+    IgnoringApp()
+    {
+        hypha::config().ignore("model_params", "no TensorRT in this build");
+    }
+
+    void setup(hypha::Node&) override
+    {
+        hypha::config("diagnostic_updater").ignore("period", "the period is the one code gives");
+        snapshotText = test_support::introspectionText();
+        hypha::requestStop();
+    }
+
+    static inline std::string snapshotText;
+};
+
 template <typename App, typename... Args>
 int runWithConfig(const std::filesystem::path& file, const char* name, Args&&... args)
 {
@@ -98,6 +118,77 @@ bool nodeIsOnTheBus(const std::string& name)
     return std::any_of(nodes.begin(), nodes.end(), [&name](const auto& node) {
         return node.name == name;
     });
+}
+
+TEST(IgnoredParameters, KeysSetOnPurposePassTheCheckAndAreIgnoredRowsOfTheManifest)
+{
+    const std::filesystem::path file = configFile(
+        "unused = ['vendor.stale']\n[vendor]\nstale = 0.01\n"
+        "[model_params]\nprecision = 'fp32'\nbatch_size = 32\n"
+        "[diagnostic_updater]\nperiod = 0.5\n"
+    );
+    IgnoringApp::snapshotText.clear();
+    testing::internal::CaptureStderr();
+
+    const int result = runWithConfig<IgnoringApp>(file, "ignoring_app");
+
+    const std::string log = testing::internal::GetCapturedStderr();
+    std::filesystem::remove(file);
+    ASSERT_EQ(result, 0) << log;
+    const std::string& text = IgnoringApp::snapshotText;
+    const std::string  modelRow = rowContaining(text, "model_params");
+    EXPECT_NE(modelRow.find("no TensorRT in this build"), std::string::npos) << text;
+    EXPECT_NE(modelRow.find("ignored"), std::string::npos) << text;
+    const std::string periodRow = rowContaining(text, "diagnostic_updater.period");
+    EXPECT_NE(periodRow.find("ignored"), std::string::npos) << text;
+    const std::string listedRow = rowContaining(text, "vendor.stale");
+    EXPECT_NE(listedRow.find("unused"), std::string::npos) << text;
+    EXPECT_NE(listedRow.find("ignored"), std::string::npos) << text;
+}
+
+TEST(IgnoredParameters, AnUnreadKeyBesideIgnoredOnesStillRefusesTheStart)
+{
+    const std::filesystem::path file = configFile(
+        "typo = 1\n[model_params]\nprecision = 'fp32'\n[diagnostic_updater]\nperiod = 0.5\n"
+    );
+    testing::internal::CaptureStderr();
+
+    const int result = runWithConfig<IgnoringApp>(file, "ignoring_app_typo");
+
+    const std::string errors = testing::internal::GetCapturedStderr();
+    std::filesystem::remove(file);
+    EXPECT_EQ(result, hypha::kExitConfiguration);
+    EXPECT_NE(errors.find("unread parameter(s): typo"), std::string::npos) << errors;
+}
+
+TEST(IgnoredParameters, AListedKeyTheFileDoesNotSetRefusesTheStart)
+{
+    const std::filesystem::path file = configFile(
+        "unused = ['pose_measure_uncertainty_time']\n[model_params]\nprecision = 'fp32'\n"
+    );
+    testing::internal::CaptureStderr();
+
+    const int result = runWithConfig<IgnoringApp>(file, "ignoring_app_stale");
+
+    const std::string errors = testing::internal::GetCapturedStderr();
+    std::filesystem::remove(file);
+    EXPECT_EQ(result, hypha::kExitConfiguration);
+    EXPECT_NE(errors.find("`pose_measure_uncertainty_time` is not set"), std::string::npos)
+        << errors;
+}
+
+TEST(IgnoredParameters, AnEmptyKeyOrReasonThrows)
+{
+    const std::filesystem::path file = configFile("typo = 1\n");
+    {
+        hypha::ConfigContext context(file.string());
+        EXPECT_THROW(hypha::config().ignore("", "everything"), hypha::ParameterError);
+        EXPECT_THROW(hypha::config().ignore("typo", ""), hypha::ParameterError);
+        EXPECT_EQ(hypha::config().unreadKeys(), (std::vector<std::string>{"typo"}));
+        hypha::config().ignore("typo", "kept for the next release");
+        EXPECT_TRUE(hypha::config().unreadKeys().empty());
+    }
+    std::filesystem::remove(file);
 }
 
 TEST(ApplicationConstruction, AFailureHappensBeforeTheNodeJoinsTheBus)
