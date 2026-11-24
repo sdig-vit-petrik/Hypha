@@ -892,6 +892,7 @@ dependencies = [
  "hypha_time",
  "hypha_wire",
  "iceoryx2",
+ "iceoryx2-bb-posix",
  "log",
  "rustix",
 ]

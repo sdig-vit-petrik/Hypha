@@ -6,12 +6,12 @@ in #47. Autoware 2.1.0: `autoware_core` 1.10.0, `autoware_universe` 0.53.2.
 
 | Slice | Pipeline | State |
 |---|---|---|
-| A, detection (Leo Drive Isuzu bus) | crop box → concatenate → ground filter → euclidean cluster, a voxel downsample beside it | `autoware_crop_box_filter`, the voxel grid filter of `autoware_downsample_filters`, `autoware_ground_filter`, both nodes of `autoware_euclidean_cluster_object_detector` and the concatenate-and-time-sync node of `autoware_pointcloud_preprocessor` ported; every node on synthetic inputs; ground filter → clustering, with the voxel downsample beside it, end to end on a recorded bag, deterministic (section "Slice A end to end"); the comparison against ROS 2 open |
+| A, detection (Leo Drive Isuzu bus) | crop box → concatenate → ground filter → euclidean cluster, a voxel downsample beside it | `autoware_crop_box_filter`, the voxel grid filter of `autoware_downsample_filters`, `autoware_ground_filter`, both nodes of `autoware_euclidean_cluster_object_detector` and the concatenate-and-time-sync node of `autoware_pointcloud_preprocessor` ported; every node on synthetic inputs; ground filter → clustering, with the voxel downsample beside it, end to end on a recorded bag (section "Slice A end to end"); the comparison against ROS 2 open |
 | Tracking on the Isuzu bus (#114) | ground filter → clustering (Universe) → shape estimation → feature remover → multi-object tracker in `map` | the rule-based detection of Autoware 2.1.0 and its tracker ported, every upstream unit test that needs no rosbag2 on synthetic inputs; on bag 4 in the Foxglove demo |
 | B, localization (Istanbul Open Dataset) | crop box → downsample → NDT → gyro odometer → EKF | `autoware_ekf_localizer` and `autoware_gyro_odometer` ported, on synthetic inputs; the rest open. For the Isuzu bags, `autoware_gnss_poser` and `autoware_map_projection_loader` ported too, with `autoware_geography_utils` on Lanelet2's projection and map reading; on synthetic inputs. On the Isuzu bags, which have no map, GNSS and the Applanix INS feed the EKF in place of NDT (#110) |
 
 Each node first computes on synthetic inputs in tests, and then on a recorded bag, replayed
-in lockstep (#46, #72).
+in the open loop (#46, #153).
 
 ## How it is built
 
@@ -75,7 +75,7 @@ delete it and its `[files]` line. The patch lines depend on the `diff` that writ
 | `add_on_set_parameters_callback` | kept and never called: parameters do not change while the node runs |
 | `create_publisher`, `create_subscription` on a relative name | a port: `output` is `[ports.outputs.output]`, `~/crop_box_polygon` is `[ports.outputs.crop_box_polygon]`, `a/b` is `[ports.outputs."a.b"]` |
 | the same on an absolute name (`/tf`) | a literal topic |
-| QoS depth | must fit the hypha policy of the message type (`hypha::QosOf<M>`, 32 for `default`); a larger or zero depth is refused. `TwistWithCovarianceStamped` and `Odometry` have the port's `twist` policy, depth 100 (`shim/include/hypha_rclcpp/qos_policies.hpp`), which their include paths include |
+| QoS depth | must fit the hypha policy of the message type (`hypha::QosOf<M>`, 32 for `default`); a larger or zero depth is refused. `TwistWithCovarianceStamped` and `Odometry` have the port's `twist` policy, depth 100 (`shim/include/hypha_rclcpp/qos_policies.hpp`), which `rclcpp/rclcpp.hpp` includes |
 | transient local | a latched publisher |
 | reliable, best effort | both served by the shared-memory queue, which keeps the newest `maxDepth` samples |
 | `publish` failure | logged with its status, counted in `failed_publish_count()` |
@@ -96,7 +96,7 @@ delete it and its `[files]` line. The patch lines depend on the `diff` that writ
 | `rcl_clock_type_t`, `RCL_ROS_TIME` | rcl's enum at global scope; every kind means framework time |
 | `rclcpp::create_timer(node, clock, period, callback)`, `TimerBase::cancel`/`reset`/`is_canceled`/`time_until_trigger` | a `hypha::Timer` of the node on framework time, whatever the clock passed; created and controlled from a callback too (#90), refused inside a callback on a simulated clock the node does not own; a refused call throws. `create_wall_timer` is not offered |
 | `RCLCPP_COMPONENTS_REGISTER_NODE` | registers the class with the component runner `shim/src/component_main.cpp`: one program per component, argument the TOML file, the exit codes of `hypha/application_node.h` |
-| `sensor_msgs::msg::PointCloud2` and the other ROS 2 message paths | hypha's generated ROS 1 messages under a `msg` namespace name (`shim/include/hypha_rclcpp/message_namespace.hpp`); time stamps compare with `==` |
+| `sensor_msgs::msg::PointCloud2` and the other ROS 2 message paths | hypha's generated ROS 1 messages under their ROS 2 names, from `hypha_generate_ros2_headers()` in `CMakeLists.txt`; time stamps compare with `==` |
 | `tl::expected`, `rcpputils`' copy of it | `std::expected` |
 | `fmt::format` with a literal format | `std::format` |
 | `PointCloud2_<Allocator>`, `PointField_<Allocator>` | the message itself: hypha messages use the standard allocator |
@@ -202,18 +202,17 @@ check both.
 
 ## Slice A end to end
 
-`slice_a_replay.sh` replays the recorded concatenated lidar cloud of a ROS 2 bag through
-the last three nodes of Slice A:
+Slice A's last three nodes run on the recorded concatenated lidar cloud of a ROS 2 bag:
 1. the ground filter;
 2. the voxel-grid based clustering of `autoware_core_perception`, on the ground filter's
    output;
 3. the voxel downsample, on the same output, beside the clustering.
 
-Each node runs as its own process, on simulated time, in the replay lockstep. The nodes
-take part with their callbacks (#72), so the player never runs ahead of them.
-`hypha record --sync` records the three outputs. The script replays twice, at different
-rates and chunk lengths, and `autoware_slice_a_compare` checks that the two recordings
-hold the same messages, byte for byte. The configurations are in `config/slice_a/`.
+Each node runs as its own process, on simulated time. The nodes are plain callback
+nodes, and the replay lockstep runs cycles only (#153), so they play in the open loop
+(`launch/isuzu.toml`). The deterministic replay script of #72, which compared two
+lockstep runs byte for byte, is gone with it; `autoware_slice_a_compare` still compares
+or summarizes two recordings. The configurations are in `config/slice_a/`.
 They include the deployment ones and change only the topics that the clustering and the
 voxel downsample read.
 
@@ -234,8 +233,6 @@ target/release/hypha convert data/isuzu/all-sensors-bag4/all-sensors-bag4.db3 \
     -o data/isuzu/all-sensors-bag4/slice-a.mcap --msg-path crates/hypha_msgs/msg \
     --topic /sensing/lidar/concatenated/pointcloud --topic /tf_static \
     --xyzirc /sensing/lidar/concatenated/pointcloud
-examples/autoware/slice_a_replay.sh --input data/isuzu/all-sensors-bag4/slice-a.mcap \
-    --build build/examples/autoware
 ```
 
 The recorded cloud uses the XYZI layout of 2022, which Autoware 2.1.0 does not read, so
@@ -243,8 +240,8 @@ The recorded cloud uses the XYZI layout of 2022, which Autoware 2.1.0 does not r
 rounds to 0, and `hypha convert` says so. The ground filter and the clustering do not
 read intensity.
 
-On bag 4 (macOS, 2026-11-22), each stage gave 179 frames, identical between the two
-runs:
+On bag 4 (macOS, 2026-11-22, in the lockstep before #153), each stage gave 179 frames,
+identical between the two runs:
 
 | Run | Rate, chunk | Effective rate |
 |---|---|---|
@@ -294,9 +291,11 @@ examples/autoware/launch.sh down     # stop
 - `hypha foxglove`, and `hypha play` looping `ISUZU_INPUT` at real time, 20 ms per
   `/clock` step so the EKF's 50 Hz timer runs every period.
 
-The nodes run with `HYPHA_USE_SIM_TIME=follow`: they follow the player's `/clock`
-outside the replay lockstep, as ROS nodes follow `ros2 bag play`, because the
-localization's `/tf` loop (EKF and GNSS poser) cannot replay in lockstep yet (#103).
+The launch is an open-loop playback: every unit runs with `HYPHA_REPLAY_LOCKSTEP=0`,
+and the nodes with `HYPHA_USE_SIM_TIME=1`, so they follow the player's `/clock` as ROS
+nodes follow `ros2 bag play`. The port's nodes are plain callback nodes on the rclcpp
+shim, and the lockstep cannot run the localization's `/tf` loop between them (EKF and
+GNSS poser): it has no rate cycle as its delay element.
 Each loop sends `/clock` back: the nodes exit 75 and start again at once. `launch.sh`
 puts the build's executables on `PATH` (`AUTOWARE_BUILD_DIR`, default
 `build/examples/autoware`), and `hypha` from `PATH` or else from `target/release`.

@@ -18,7 +18,7 @@ Run the tests with `./test.sh` (clippy, Rust tests, ctest, installed SDK checks)
 and the style checks with `./check.sh`. Every test runs in a bus domain of its own
 under the test root `t_`, so the gate runs beside a hypha system on the same host;
 `test.sh` removes only the test domains that no live process uses
-(`./clean-shm.sh --domain t_`).
+(`hypha clean --domain t_`).
 
 For `sccache`, set `RUSTC_WRAPPER=sccache` and `CMAKE_CXX_COMPILER_LAUNCHER=sccache`
 in your environment.
@@ -80,13 +80,17 @@ and of every dead CLI tool node (`_hyphacli_<tool>`). If the dead run of its own
 name cannot be reclaimed, the node does not start. Any other dead node
 keeps its resources until a node of its name starts again. A segment whose
 owning process is alive but stuck, or a dead node whose name does not
-return, needs the manual wipe:
+return, needs a clean of the stopped domain. `hypha clean` ships with the SDK
+(`docs/tools.md`) and kills nothing:
 
 ```sh
-./clean-shm.sh --domain t_   # the test domains nobody uses; kills nothing
-./clean-shm.sh               # every domain; refuses if a process still holds a segment
-./clean-shm.sh --force       # every domain; kills the holders first
+hypha clean --domain t_      # the test domains nobody uses
+hypha clean                  # the domain of HYPHA_DOMAIN, refused while a node of it lives
 ```
+
+A stuck process keeps its domain in use; stop it first. In the repository,
+`./clean-shm.sh` wipes every domain of the host and refuses while a process holds
+a segment, and `./clean-shm.sh --force` kills the holders first.
 
 ## Writing your own node
 

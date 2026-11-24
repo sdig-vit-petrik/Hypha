@@ -1,5 +1,7 @@
 //! `hypha_msggen`: generates C++ or Rust types from ROS `.msg` and `.srv` definitions
-//! for one package. Called by `hypha_generate_messages` in `CMake`, not by hand.
+//! for one package, or with `--language ros2` the ROS 2 alias headers of the C++ ones.
+//! Called by `hypha_generate_messages` and `hypha_generate_ros2_headers` in `CMake`,
+//! not by hand.
 
 use std::env;
 use std::error::Error;
@@ -11,12 +13,15 @@ use hypha_msgdef::parse::{parse_message, parse_service};
 use hypha_msgdef::resolve::{SpecSet, definition_text, message_identity, service_identity};
 use hypha_msgdef::spec::{ServiceSpec, TypeName};
 use hypha_msggen::emit_cpp::emit_message_with_definition;
-use hypha_msggen::naming::camel_to_snake;
+use hypha_msggen::emit_ros2::{emit_message_alias, emit_service_alias};
+use hypha_msggen::naming::{camel_to_snake, ros2_header_stem};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Language {
     Cpp,
     Rust,
+    /// `<pkg>/msg/<name>.hpp` and `<pkg>/srv/<name>.hpp` over the C++ headers.
+    Ros2,
 }
 
 struct Dependency {
@@ -34,7 +39,7 @@ struct Cli {
 }
 
 const USAGE: &str = "usage: hypha_msggen --package <name> [--msg-dir <dir>] [--srv-dir <dir>] \
-[--dependency <package>=<dir>...] --out-dir <dir> [--language cpp|rust]";
+[--dependency <package>=<dir>...] --out-dir <dir> [--language cpp|rust|ros2]";
 
 /// A package name becomes a directory and a C++ namespace, so it holds no path.
 fn is_package_name(name: &str) -> bool {
@@ -80,8 +85,9 @@ fn parse_args() -> Result<Cli, Box<dyn Error>> {
                 language = match args.next().as_deref() {
                     Some("cpp") => Language::Cpp,
                     Some("rust") => Language::Rust,
+                    Some("ros2") => Language::Ros2,
                     Some(value) => return Err(format!("unsupported language '{value}'").into()),
-                    None => return Err("--language needs cpp or rust".into()),
+                    None => return Err("--language needs cpp, rust or ros2".into()),
                 };
             }
             "--out-dir" => {
@@ -224,9 +230,10 @@ fn run() -> Result<(), Box<dyn Error>> {
         let generated = match cli.language {
             Language::Cpp => emit_message_with_definition(spec, &md5, &def),
             Language::Rust => hypha_msggen::emit_rust::emit_message(spec, &md5),
+            Language::Ros2 => emit_message_alias(&specs, spec)?,
         };
 
-        let target_dir = cli.out_dir.join(&src.package);
+        let target_dir = package_dir(&cli, &src.package, "msg");
         fs::create_dir_all(&target_dir)
             .map_err(|error| format!("creating {}: {error}", target_dir.display()))?;
 
@@ -248,26 +255,31 @@ fn generate_services(
     services: &[ServiceSpec],
 ) -> Result<(), Box<dyn Error>> {
     for service in services {
-        let identity = service_identity(specs, service)?;
-        let target_dir = cli.out_dir.join(&service.type_name.package);
+        let target_dir = package_dir(cli, &service.type_name.package, "srv");
         fs::create_dir_all(&target_dir)?;
-        let files = match cli.language {
+        let name = &service.type_name.name;
+        let halves = || [format!("{name}Request"), format!("{name}Response"), name.clone()];
+        let files: Vec<(String, String)> = match cli.language {
             Language::Cpp => {
+                let identity = service_identity(specs, service)?;
                 let output = hypha_msggen::emit_cpp::emit_service(specs, service, &identity)?;
-                [output.request, output.response, output.service]
+                halves()
+                    .into_iter()
+                    .zip([output.request, output.response, output.service])
+                    .collect()
             }
             Language::Rust => {
+                let identity = service_identity(specs, service)?;
                 let output = hypha_msggen::emit_rust::emit_service(service, &identity);
-                [output.request, output.response, output.service]
+                halves()
+                    .into_iter()
+                    .zip([output.request, output.response, output.service])
+                    .collect()
             }
+            Language::Ros2 => vec![(name.clone(), emit_service_alias(specs, service)?)],
         };
-        let names = [
-            format!("{}Request", service.type_name.name),
-            format!("{}Response", service.type_name.name),
-            service.type_name.name.clone(),
-        ];
-        for (name, generated) in names.iter().zip(files) {
-            let stem = output_stem(cli.language, name);
+        for (file_name, generated) in files {
+            let stem = output_stem(cli.language, &file_name);
             let out_path = target_dir.join(format!("{stem}.{}", extension(cli.language)));
             fs::write(&out_path, generated)?;
             println!("hypha_msggen: wrote {}", out_path.display());
@@ -277,16 +289,24 @@ fn generate_services(
     Ok(())
 }
 
+/// `<out>/<package>`, or for a ROS 2 alias `<out>/<package>/<kind>` (`msg` or `srv`).
+fn package_dir(cli: &Cli, package: &str, kind: &str) -> PathBuf {
+    let dir = cli.out_dir.join(package);
+    if cli.language == Language::Ros2 { dir.join(kind) } else { dir }
+}
+
 fn extension(language: Language) -> &'static str {
     match language {
         Language::Cpp => "h",
         Language::Rust => "rs",
+        Language::Ros2 => "hpp",
     }
 }
 
 fn output_stem(language: Language, name: &str) -> String {
-    if matches!(language, Language::Cpp) {
-        return name.to_string();
+    match language {
+        Language::Cpp => name.to_string(),
+        Language::Rust => camel_to_snake(name),
+        Language::Ros2 => ros2_header_stem(name),
     }
-    camel_to_snake(name)
 }

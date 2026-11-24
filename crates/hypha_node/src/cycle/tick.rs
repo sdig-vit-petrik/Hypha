@@ -408,7 +408,7 @@ fn report_replay_fidelity(
 /// for a step that is no replay step.
 fn replay_losses(time: CycleTime, set: &crate::waitset::HyphaWaitSet) -> Option<Losses> {
     time.replay_cut_nanos?;
-    Some(if set.node().replay_follow { Losses::Warn } else { Losses::Fail })
+    Some(if set.node().open_loop { Losses::Warn } else { Losses::Fail })
 }
 
 /// What a replay step's lost input samples do to its run.
@@ -416,7 +416,7 @@ fn replay_losses(time: CycleTime, set: &crate::waitset::HyphaWaitSet) -> Option<
 pub(crate) enum Losses {
     /// In the replay lockstep: the step is not faithful and fails the run.
     Fail,
-    /// Outside it (`HYPHA_USE_SIM_TIME=follow`, `HYPHA_REPLAY_LOCKSTEP=0`): warned of.
+    /// In an open-loop playback (`HYPHA_REPLAY_LOCKSTEP=0`): warned of.
     Warn,
 }
 

@@ -117,16 +117,14 @@ process, not to one node:
 
 - **Simulated time.** The environment variable `HYPHA_USE_SIM_TIME` alone puts a node
   on simulated time; the parameter file has no switch for it. `1` or `true` is
-  simulated time in the replay lockstep; `follow` is simulated time outside it: the
-  node reports no progress on `/clock_progress`, so no player or node waits for it, it
-  waits for no other node's report, and its plain callbacks run as their samples
-  arrive while its timers follow `/clock` (execution-model.md §11.2); `0`, `false` or
-  unset is host time, and any other value fails node creation.
-  `HYPHA_REPLAY_LOCKSTEP=0` (or `false`) turns the lockstep off for the whole launch: a
-  node that `1` or `true` puts in the lockstep follows `/clock` outside it, as with
-  `follow`, and `hypha play` waits for no node (replay-flow-control.md §4.6). `1`,
-  `true` or unset keep the lockstep, and any other value fails node creation, also on
-  host time. The first node of a
+  simulated time; `0`, `false` or unset is host time, and any other value fails node
+  creation. `follow` is refused with a line that names `HYPHA_REPLAY_LOCKSTEP=0`.
+  `HYPHA_REPLAY_LOCKSTEP=0` (or `false`) turns the replay lockstep off for the whole
+  launch: a node on simulated time reports no progress on `/clock_progress`, so no
+  player or node waits for it, it waits for no other node's report, and its plain
+  callbacks run as their samples arrive while its timers follow `/clock`; `hypha play`
+  waits for no node (replay-flow-control.md §4.6). `1`, `true` or unset keep the
+  lockstep, and any other value fails node creation, also on host time. The first node of a
   process that starts on simulated time writes one `WARN` line, target `hypha`, after
   its `[log]` table is applied:
   `simulated time is on (HYPHA_USE_SIM_TIME): this node follows /clock`. The first
@@ -145,8 +143,9 @@ process, not to one node:
   change: two domains can each carry `/odom_speed`. The value is `[a-z][a-z0-9_]`, at
   most 32 characters. An invalid value, also one that is not UTF-8, refuses the first
   call that needs the transport and names the variable; it never falls back to no
-  domain. `./clean-shm.sh` wipes every domain; `./clean-shm.sh --domain <prefix>`
-  only the domains named `<prefix>*` that no live process uses.
+  domain. `hypha clean --domain <prefix>` removes the domains named `<prefix>*` that
+  no live node uses, `hypha clean` the domain of `HYPHA_DOMAIN`; `./clean-shm.sh` in
+  the repository wipes every domain of the host.
 - **Restart when time goes back.** A timer or cycle of a `WaitSet` that sees simulated
   time go back, and a `WaitSet` of a node on simulated time (lockstep or follow, not a CLI
   tool) that reads a `/clock` lower than the node's last one, end the run with `ClockRewound`; the process exits 75 (C++ `runNode`)
@@ -219,9 +218,8 @@ time of the send; a `WaitSet` delivery also reports the age it measured
 (`HyphaDelivery.transport_age_nanos`).
 The **framework send time** is simulated time on a sim-time node, wall time
 otherwise, or the value a replayer passed to `hypha_loan_send`. Every frame a cycle
-step sends carries the step's time, and every frame a replayed plain callback sends
-carries its event's time (execution-model.md §11.2): a send without a value reads
-framework time on the sending thread. Values from different clock sources are not
+step sends carries the step's time: a send without a value reads framework time on the
+sending thread, which outside a step is the clock. Values from different clock sources are not
 comparable. On simulated time a replay cycle ages each input by the framework send
 time: a step at deadline `D` admits the samples sent before `D`, and their age is `D`
 minus the framework send time. Any other cycle ages inputs by the transport send time.
@@ -290,7 +288,7 @@ The domain also turns iceoryx2's dead-node cleanup off: `global.node.cleanup-dea
 `false` whatever a host file sets. A node that starts reclaims the nodes iceoryx2 reports as dead
 that have its own name, the runs a crash or a kill ended, and every dead CLI tool node
 (`_hyphacli_<tool>`). The dead node of an application stays listed as dead until then, so the
-tools show it, and keeps its ports; `./clean-shm.sh` wipes a stopped domain.
+tools show it, and keeps its ports; `hypha clean` removes a stopped domain.
 No host `iceoryx2.toml` is read, in `./config/`, the user directory or the system directory. The
 root path, the prefix and the timeouts are iceoryx2's defaults, or the prefix `HYPHA_DOMAIN` selects,
 in every process, whatever the working directory.
@@ -316,7 +314,7 @@ reserve nothing.
 A framework topic (`/clock`, `/clock_progress`) holds at most 32 publishers,
 32 subscribers and 64 nodes; every node that subscribes `/clock` or reports on
 `/clock_progress` counts. Any other topic holds the limits of its policy. After a change of
-these values run `./clean-shm.sh`: a stale segment keeps its old limits.
+these values run `hypha clean` with the domain stopped: a stale segment keeps its old limits.
 
 A wildcard subscriber attaches only to a publish-subscribe service that already exists.
 It never creates one, it never follows a request-response service of the same name,
@@ -477,7 +475,15 @@ while no thread does. No mutex stays held across user processing.
 One thread runs one `WaitSet`. `hypha_waitset_request_stop` and
 `hypha_waitset_request_failure` are the calls another thread may make on a
 running `WaitSet`, and a stop that arrives before
-the run starts is recorded, so the next run returns at once. Any thread may also call
+the run starts is recorded, so the next run returns at once.
+
+Every other call that names a `WaitSet`, one of its cycles or input sources, and every
+run, claims the `WaitSet` for the calling thread first, with one compare-and-swap of
+its owner, and releases it when it returns; a run holds the claim for its whole length,
+and a call from one of its callbacks is inside that claim (#83). A run or a call that
+another thread starts while one holds the claim returns `InvalidState` and changes
+nothing, so two threads never use one `WaitSet` at once undetected: a run started while
+another thread is inside a call is a refused run, not undefined behaviour. Any thread may also call
 `hypha_transform_buffer_lookup` and `hypha_subscriber_counters` while a run goes on.
 
 Attachments freeze for the duration of a run, with one exception. Create and attach

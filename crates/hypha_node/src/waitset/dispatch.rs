@@ -48,8 +48,6 @@ pub(super) struct CallbackDispatcher<'a> {
     pub(super) due: Vec<Due>,
     /// Registrations a callback detached during this run: never dispatched again.
     pub(super) detached: &'a std::cell::RefCell<Vec<AttachmentId>>,
-    /// The replay state of the plain callbacks (`callback_events`).
-    pub(super) callbacks: &'a mut super::callback_events::CallbackReplay,
 }
 
 impl Due {
@@ -156,10 +154,6 @@ impl CallbackDispatcher<'_> {
             else {
                 continue;
             };
-            // Under replay a plain timer's periods are events of `callback_events`.
-            if self.callbacks.participating && cycle.is_none() {
-                continue;
-            }
             let grid = if timer.is_grid() { cycle.as_mut() } else { None };
             if let Some(owned) = grid {
                 match grid_due(cycles, registration.id, timer, owned, now) {
@@ -167,6 +161,11 @@ impl CallbackDispatcher<'_> {
                     Ok(None) => {}
                     Err(status) => return fail_with(&mut self.failure, registration.id, status),
                 }
+                continue;
+            }
+            // On simulated time a plain timer starts on the first clock value, not on the
+            // placeholder zero a node starts with.
+            if !*run_anchored && self.node.on_sim_time() && !hypha_time::sim_time_has_value() {
                 continue;
             }
             if let Some(control) = control.as_deref() {
@@ -389,7 +388,6 @@ impl Dispatcher for CallbackDispatcher<'_> {
         let warn_interval = self.warn_interval_nanos;
         let health = self.health;
         let set = self.set;
-        let deferred = self.callbacks.participating;
 
         if self.is_detached(attachment) {
             return EventOutcome::Drained;
@@ -406,10 +404,6 @@ impl Dispatcher for CallbackDispatcher<'_> {
             let Registration { id, ref mut target, ref mut warnings, ref mut transport_failing } =
                 *registration;
             let (subscriber, callback) = match *target {
-                // Under replay the samples wait in the queue for their turn in time order.
-                Target::Subscription { .. } if deferred => {
-                    return EventOutcome::Drained;
-                }
                 Target::Subscription { ref subscriber, ref mut callback, .. } => {
                     (subscriber, callback)
                 }
@@ -499,13 +493,6 @@ impl Dispatcher for CallbackDispatcher<'_> {
         // snapshot are then among those that this turn's timers fire.
         let snapshot = if sim { self.newest_read() } else { None };
         let now = hypha_time::scheduling_now();
-        // The plain callbacks' events before the cycles: each keeps its own time order.
-        if self.decide_participation() {
-            let decision = self.run_callback_events(now.nanos());
-            if decision != Progression::Continue {
-                return decision;
-            }
-        }
         let decision = self.fire_due_timers(now);
         if decision != Progression::Continue {
             return decision;
@@ -556,7 +543,7 @@ impl Dispatcher for CallbackDispatcher<'_> {
             Target::Triggered(ref state) => state.schedule.capped(),
             _ => false,
         });
-        if sliced || self.callbacks.capped {
+        if sliced {
             return Some(std::time::Duration::ZERO);
         }
         let host_timers = !self.node.on_sim_time();

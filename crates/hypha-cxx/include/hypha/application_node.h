@@ -25,7 +25,7 @@ inline constexpr int kExitClean = 0;
 inline constexpr int kExitUsage = 2;
 /// The run failed, or start-up failed for a reason other than the configuration.
 inline constexpr int kExitRuntime = 70;
-/// Simulated time went back (a backward seek): hypha_launch restarts the unit at once.
+/// Simulated time went back (a backward seek): hypha launch restarts the unit at once.
 inline constexpr int kExitRewind = 75;
 /// The configuration was refused before the run: a restart cannot fix it.
 inline constexpr int kExitConfiguration = 78;
@@ -244,7 +244,7 @@ class ApplicationNode
         const bool      rewound = result.status() == Status::ClockRewound;
         if (rewound) {
             detail::error(
-                "simulated time went back; exiting 75 so hypha_launch restarts this unit"
+                "simulated time went back; exiting 75 so hypha launch restarts this unit"
             );
             return kExitRewind;
         }

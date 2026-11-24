@@ -3,9 +3,9 @@
 /// @file
 /// The service policies of the Autoware port, for the message types whose Autoware
 /// subscribers ask for a deeper queue than the `default` policy's 32 (docs/cpp-api.md §7).
-/// The ROS 2 include path of each type includes this header, so every ported node
-/// declares the same policy on its topics. A player or a bridge creates a topic with
-/// `default`: start the nodes first.
+/// rclcpp/rclcpp.hpp includes this header before any publisher or subscription of these
+/// types, so every ported node declares the same policy on its topics. A player or a bridge creates
+/// a topic with `default`: start the nodes first.
 
 #include <hypha/qos.h>
 

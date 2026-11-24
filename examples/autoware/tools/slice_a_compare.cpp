@@ -1,4 +1,4 @@
-/// autoware_slice_a_compare: the outputs of Slice A in recordings of hypha_record.
+/// autoware_slice_a_compare: the outputs of Slice A in recordings of hypha record.
 ///
 ///   autoware_slice_a_compare compare <a.mcap> <b.mcap>
 ///   autoware_slice_a_compare summary <run.mcap>

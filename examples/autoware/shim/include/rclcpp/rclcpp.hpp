@@ -18,6 +18,7 @@
 #include <hypha/hypha.h>
 #include <hypha/message_stamp.h>
 #include <hypha_log/hypha_log.h>
+#include <hypha_rclcpp/qos_policies.hpp>
 #include <hypha_rclcpp_msgs/ServiceCall.h>
 
 #include <builtin_interfaces/msg/time.hpp>

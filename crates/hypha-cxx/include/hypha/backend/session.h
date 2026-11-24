@@ -23,8 +23,9 @@
 
 namespace hypha::backend {
 
-/// @brief Create the process's node, or do nothing when it exists. Concurrent callers
-///        create one node.
+/// @brief Join the process's session: create its node, or share the node that exists.
+///        Concurrent callers create one node. Each successful call counts one joined
+///        Node, which leave() gives back.
 /// @param created Set to true only when this call created the node.
 inline Status
 init(const std::string& nodeName, const std::string& parameterFile, bool* created = nullptr)
@@ -41,7 +42,11 @@ init(const std::string& nodeName, const std::string& parameterFile, bool* create
     }
     if (state.node != nullptr) {
         const bool sameFile = parameterFile == state.parameterFile;
-        return sameFile ? Status::Ok : Status::InvalidState;
+        if (!sameFile) {
+            return Status::InvalidState;
+        }
+        ++state.joined;
+        return Status::Ok;
     }
     const bool conflictingConfig = state.config != nullptr && parameterFile != state.parameterFile;
     if (conflictingConfig) {
@@ -67,6 +72,7 @@ init(const std::string& nodeName, const std::string& parameterFile, bool* create
     state.name = *name;
     state.parameterFile = parameterFile;
     state.node = node;
+    state.joined = 1;
     if (created != nullptr) {
         *created = true;
     }
@@ -135,6 +141,7 @@ inline void shutdown()
         state.shuttingDown = true;
         node = state.node;
         state.node = nullptr;
+        state.joined = 0;
         ++state.generation;
     }
     if (node != nullptr) {
@@ -148,6 +155,24 @@ inline void shutdown()
             state.parameterFile.clear();
         }
         state.shuttingDown = false;
+    }
+}
+
+/// Give back one joined Node; the last one leaves the bus (shutdown()).
+inline void leave()
+{
+    ffi::Session& state = ffi::session();
+    bool          last = false;
+    {
+        const std::lock_guard<std::mutex> lock(state.mutex);
+        if (state.joined == 0) {
+            return;
+        }
+        --state.joined;
+        last = state.joined == 0;
+    }
+    if (last) {
+        shutdown();
     }
 }
 

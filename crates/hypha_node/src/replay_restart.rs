@@ -1,7 +1,7 @@
 //! Simulated time going back ends the process; nothing rewinds in place.
 //!
 //! A `/clock` sample lower than the node's last one, and a rewound timer or cycle, end
-//! the run with `ClockRewound`; `hypha_launch` restarts
+//! the run with `ClockRewound`; `hypha launch` restarts
 //! the process, which waits on its first node ([`rejoin`]) for a `/clock` sample of the
 //! new timeline before it opens any port of its own.
 

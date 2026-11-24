@@ -1,4 +1,4 @@
-// A replay participant for the restart test of hypha_play
+// A replay participant for the restart test of hypha play
 // (apps/hypha_tools/tests/play_restart.rs).
 //
 //   HYPHA_USE_SIM_TIME=1 replay_restart_peer

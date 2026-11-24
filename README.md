@@ -1,5 +1,9 @@
 # Hypha
 
+[![ci](https://github.com/sdig-vit-petrik/Hypha/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/sdig-vit-petrik/Hypha/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/sdig-vit-petrik/Hypha)](https://github.com/sdig-vit-petrik/Hypha/releases)
+[![licence](https://img.shields.io/github/license/sdig-vit-petrik/Hypha)](LICENSE)
+
 **Small, SIL0, single-host shared-memory data plane for
 mixed C++ and Rust robotics components.**
 

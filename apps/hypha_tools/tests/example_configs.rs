@@ -211,6 +211,39 @@ fn example_units_restart_on_failure() {
     }
 }
 
+/// The `HYPHA_REPLAY_LOCKSTEP` value of each unit of `units` that takes part in a replay:
+/// a node on simulated time, or the player.
+fn replay_switches(units: &str) -> Vec<Option<String>> {
+    let table: toml::Table = units.parse().expect("the units file parses");
+    let list = table.get("units").and_then(toml::Value::as_array).expect("[[units]]");
+    let mut switches = Vec::new();
+    for unit in list {
+        let env = unit.get("env").and_then(toml::Value::as_table);
+        let variable = |name: &str| env.and_then(|env| env.get(name)).and_then(toml::Value::as_str);
+        let sim_time = variable("HYPHA_USE_SIM_TIME");
+        assert_ne!(sim_time, Some("follow"), "unit {:?}: follow is gone", unit.get("name"));
+        let plays = unit.to_string().contains("hypha play");
+        let on_sim_time = sim_time.is_some_and(|value| value != "0" && value != "false");
+        if plays || on_sim_time {
+            switches.push(variable("HYPHA_REPLAY_LOCKSTEP").map(str::to_owned));
+        }
+    }
+    switches
+}
+
+#[test]
+fn an_example_launch_is_all_lockstep_or_all_open_loop() {
+    let mut launches = Vec::new();
+    files(&examples_dir(), &["toml"], &mut launches);
+    launches.retain(|path| path.parent().is_some_and(|dir| dir.ends_with("launch")));
+    assert!(!launches.is_empty(), "the examples hold launch files");
+    for path in launches {
+        let mut switches = replay_switches(&read(&path));
+        switches.dedup();
+        assert!(switches.len() <= 1, "{} mixes the modes: {switches:?}", path.display());
+    }
+}
+
 #[test]
 fn launchers_set_no_qos_and_keep_the_default_domain() {
     let mut scripts = Vec::new();

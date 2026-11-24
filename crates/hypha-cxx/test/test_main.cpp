@@ -11,7 +11,7 @@ int main(int argc, char** argv)
     // ctest runs the gtest shards in parallel processes, so each process gets a bus
     // domain of its own under the test root: t_ plus the process id, whatever domain
     // the caller runs in. Their /clock and topics never meet, the peers a test spawns
-    // inherit the domain, and `clean-shm.sh --domain t_` removes it once the process
+    // inherit the domain, and `hypha clean --domain t_` removes it once the process
     // ended. The tests write parameter files under fixed names in the temporary
     // directory, so each process gets a temporary directory of its own as well.
     const std::string pid = std::to_string(::getpid());

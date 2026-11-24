@@ -81,6 +81,13 @@
 
 #![forbid(unsafe_code)]
 
+/// `hypha clean`: removing the shared memory of the bus domains nobody uses.
+pub mod clean {
+    pub use crate::clean::{
+        CleanOutcome, CleanReport, DomainSelection, KeepReason, KeptDomain, RemovedDomain, clean,
+        domain_label,
+    };
+}
 pub mod clock;
 /// The acknowledgement rules of a lockstep `/clock`, shared with the clock driver.
 pub use hypha_runtime::clock_barrier;

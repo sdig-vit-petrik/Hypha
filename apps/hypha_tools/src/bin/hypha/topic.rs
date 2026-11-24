@@ -70,7 +70,7 @@ fn subscribe_when_open(
             return bus.subscribe_raw(topic, 0).map(Some);
         }
         if !announced {
-            eprintln!("hypha_topic {command}: waiting for '{topic}' to be published");
+            eprintln!("hypha topic {command}: waiting for '{topic}' to be published");
             announced = true;
         }
         thread::sleep(Duration::from_millis(200));
@@ -90,7 +90,7 @@ fn open_subscriber(
         Ok(Some(sub)) => Ok(sub),
         Ok(None) => Err(ExitCode::SUCCESS),
         Err(error) => {
-            eprintln!("hypha_topic {label}: {error}");
+            eprintln!("hypha topic {label}: {error}");
             Err(ExitCode::FAILURE)
         }
     }
@@ -100,7 +100,7 @@ fn open_subscriber(
 /// counts as no sample.
 fn receive_or_report(sub: &mut RawSubscriber, label: &str) -> Option<ReceivedSample> {
     sub.try_receive().unwrap_or_else(|error| {
-        eprintln!("hypha_topic {label}: {error}");
+        eprintln!("hypha topic {label}: {error}");
         None
     })
 }
@@ -109,7 +109,7 @@ fn run_list(bus: &BusNode, timeout_sec: f64) -> ExitCode {
     let mut sub = match bus.subscribe_raw("**", 0) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("hypha_topic list: {e}");
+            eprintln!("hypha topic list: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -182,7 +182,7 @@ fn run_echo(bus: &BusNode, echo: &EchoArgs) -> ExitCode {
                     Ok(columns) => columns,
                     Err(cause) => {
                         eprintln!(
-                            "hypha_topic echo: {data_type}: payload does not match its schema: {cause}"
+                            "hypha topic echo: {data_type}: payload does not match its schema: {cause}"
                         );
                         continue;
                     }
@@ -209,7 +209,7 @@ fn run_echo(bus: &BusNode, echo: &EchoArgs) -> ExitCode {
 /// A message that cannot print goes to stderr in `-p` mode, so stdout stays a clean table.
 fn report_unprinted(plot: bool, note: &str) {
     if plot {
-        eprintln!("hypha_topic echo: {note}");
+        eprintln!("hypha topic echo: {note}");
     } else {
         println!("{note}");
     }

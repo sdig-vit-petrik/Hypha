@@ -1,4 +1,4 @@
-//! The acknowledgement rules of a lockstep `/clock`, shared by `hypha_play` and the
+//! The acknowledgement rules of a lockstep `/clock`, shared by `hypha play` and the
 //! clock driver of a simulator: which nodes take part, which have acknowledged a
 //! `/clock` value, which has gone silent, and when the start barrier is met.
 //!

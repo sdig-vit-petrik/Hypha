@@ -4,6 +4,7 @@
 //! handles are opaque pointers. One create, one destroy. Callback samples live only
 //! for the callback; owning receive keeps a transport sample until its explicit release.
 
+pub mod clean;
 pub mod clock;
 pub mod config;
 pub mod cycle;

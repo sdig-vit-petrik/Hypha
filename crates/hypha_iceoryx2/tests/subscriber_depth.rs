@@ -25,7 +25,7 @@ fn subscriber_depth_above_the_service_limit_is_refused() {
         text.contains("depth 33 exceeds the 32 the service's QoS policy allows"),
         "log file holds: {text}"
     );
-    assert!(!text.contains("clean-shm"), "log file holds: {text}");
+    assert!(!text.contains("hypha clean"), "log file holds: {text}");
     std::fs::remove_dir_all(&dir).expect("remove log dir");
 }
 

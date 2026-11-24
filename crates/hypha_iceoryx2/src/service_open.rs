@@ -194,7 +194,7 @@ pub(crate) fn half_created_advice(hangs_in_creation: bool) -> String {
     );
     format!(
         "; the service looks half-created or its metadata under {root}/services is damaged; if no \
-         node is creating it right now, restart its publisher or run ./clean-shm.sh with the domain \
+         node is creating it right now, restart its publisher or run hypha clean with the domain \
          stopped"
     )
 }
@@ -261,7 +261,7 @@ pub(crate) fn publish_subscribe_open_port_error(
         | Open::DoesNotSupportRequestedAmountOfSubscribers
         | Open::DoesNotSupportRequestedAmountOfNodes => {
             log::error!(target: "hypha/transport", "hypha_iceoryx2: {cause}: a stale shared-memory segment or a different hypha \
-                     build created this service; run `./clean-shm.sh`");
+                     build created this service; run `hypha clean` with the domain stopped");
             PortError::QosMismatch
         }
         Open::InsufficientPermissions => PortError::Backend(BACKEND_SERVICE_PERMISSIONS),

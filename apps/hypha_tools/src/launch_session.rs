@@ -122,7 +122,7 @@ pub fn up_commands(
             return Err(format!("start order names unit index {unit_index}, which does not exist"));
         };
         if unit.name == SETUP_WINDOW_NAME {
-            return Err(format!("unit name '{SETUP_WINDOW_NAME}' is reserved by hypha_launch"));
+            return Err(format!("unit name '{SETUP_WINDOW_NAME}' is reserved by hypha launch"));
         }
         let window_target = format!("={session}:={}", unit.name);
         let channel = format!("hypha_launch_{}_{session}_{}", std::process::id(), unit.name);

@@ -1,7 +1,12 @@
 #include <hypha/hypha.h>
 #include <hypha/hypha_ffi.h>
 
+#include "ros2_style.h"
+#include "short_namespace.h"
+
 #include <consumer_msgs/Reading.h>
+
+#include <memory>
 
 int main()
 {
@@ -15,6 +20,12 @@ int main()
     reading.value = 1.5;
     const bool nestedTypeUsable = reading.header.stamp.secs == 7;
 
-    const bool consumerOk = validClock && nestedTypeUsable;
+    // The ROS 1 names are the native ones: <consumer_msgs/Reading.h> and its typedefs.
+    const consumer_msgs::Reading::ConstPtr shared =
+        std::make_shared<consumer_msgs::Reading>(reading);
+    const bool ros1NamesUsable = shared->value == 1.5;
+
+    const bool consumerOk = validClock && nestedTypeUsable && ros1NamesUsable
+                         && ros2StyleTypesUsable() && shortNamespaceUsable() && ownGlobalHyUsable();
     return consumerOk ? 0 : 1;
 }

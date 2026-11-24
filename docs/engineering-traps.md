@@ -29,8 +29,8 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   creator stamps its policy on the service, so every creator creates the same service
   whatever the start order. A subscriber sets only `buffer_size` (unset: the service's
   `max_depth`, 32 for `default`), and a larger one is refused with `ResourceLimit`.
-  A stale segment keeps old limits and fails the open; run `./clean-shm.sh` after changing a value
-  or upgrading hypha.
+  A stale segment keeps old limits and fails the open; run `hypha clean` with the domain stopped
+  (`./clean-shm.sh` for every domain of the host) after changing a value or upgrading hypha.
 - **A growable publisher keeps bookkeeping of 8 bytes per pool sample for each of 32 segments,
   and reserves its pool at its first slot size.** iceoryx2's `PowerOfTwo` allocation sizes its
   bookkeeping for every segment it could create: the publisher's reference counters and segment
@@ -91,10 +91,12 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   `transport.rs::reclaim_dead_nodes`). A dead application node of another name
   stays listed, so the tools show the crash, and keeps its ports: a topic whose
   slots it holds stays full until the node restarts or the domain is wiped.
-  This does not remove the need for `./clean-shm.sh`: a segment whose owning
+  This does not remove the need for `hypha clean`: a segment whose owning
   process is still alive but wedged is not `Dead`, a node iceoryx2 reports as
   `Inaccessible` is left untouched, and a dead node whose name never returns is
-  never reclaimed. All need the manual wipe.
+  never reclaimed. A dead node is removed by `hypha clean` of its stopped domain;
+  a wedged process keeps its domain in use until it is stopped (or
+  `./clean-shm.sh --force` kills it).
   A dead CLI tool node is reclaimed by any node creation in the domain, not only
   in the process that kills it. A test that kills one and inspects the registry
   can therefore be reaped early by another process's node creation in its domain,
@@ -324,12 +326,15 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   native stop, the failure flag), which the C entry reaches through the raw handle
   without a reference to the `!Sync` `WaitSet`, and the run borrows the `RefCell` fields
   (`native`, `registrations`, `cycles`, `input_sources`) for its length. Every other
-  C entry that names a `WaitSet` or a cycle asks `WaitSetShared::runs_on_another_thread`
-  first (`hypha_ffi` `waitset_here`) and returns `InvalidState` there, so a thread
-  other than the run's never forms `&HyphaWaitSet` once the run is on. The check and the
-  borrow are two steps: a call admitted just before another thread starts a run still
-  holds the `WaitSet` beside that run. The C contract forbids it (one thread at a time
-  outside a run) and no status reports it. The cycle snapshots are read
+  C entry that names a `WaitSet` or a cycle claims it first (`WaitSetShared::claim`,
+  through `hypha_ffi` `waitset_here`, whose result holds the claim until the call
+  returns) and returns `InvalidState` when another thread holds it; a run claims it for
+  its whole length (`waitset_run`). The claim is one compare-and-swap of an owner token,
+  so of a call and a run that start at once exactly one gets the `WaitSet` (#83); a
+  call from a callback of the run is inside the run's claim. A thread other than the
+  holder never forms `&HyphaWaitSet`. A Rust path that reaches a `WaitSet` without a C
+  entry (the transform buffer of a plain node, an input source's destroy) claims it
+  itself. The cycle snapshots are read
   through the C handle's `Arc<CycleSnapshots>` alone. A configuration call on the
   run's own thread checks `running` first, then `try_borrow_mut`, and reports
   `InvalidState` instead of panicking when a borrow is live. Do not add a field a
@@ -352,7 +357,7 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
     count is the output's `perStep()`, set at bind. A publisher with fewer loans is refused
     with `ResourceLimit`, because its shortfall would look like a full pool.
   - iceoryx2 reserves the loan count in each publisher's own data segment, so
-    raising it changes the segment size. Run `./clean-shm.sh` after changing it.
+    raising it changes the segment size. Run `hypha clean` with the domain stopped after changing it.
   - The sequence number is assigned at dispatch, not at reserve. A reserved message
     that is never sent therefore leaves no gap. A message dropped for lack of a loan
     still takes its number, so the subscriber counts it as a loss.
@@ -367,6 +372,16 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   adjacent pair remains in the history. Evicting those pairs restores the fast
   path; unordered histories keep the per-sample replay admission rules. A sample
   stamped exactly at a replay cut belongs to the next step.
+- **One subscriber does not read several publishers in send order.** iceoryx2 gives each
+  publisher its own queue, and a receive takes the first queue with data in the order of the
+  subscriber's connection slots; a slot freed by a publisher that left is reused by the next
+  one. Two samples of different publishers queued at one read come out in slot order, not in
+  the order they were sent. A test must not infer causality from that order: compare what the
+  samples carry, as `record_sync.rs` compares the send time a report answers (#92).
+- **A test stops a supervisor as an operator does.** `hypha launch unit` passes a SIGTERM on
+  to its node's process group and waits for it; a SIGKILL cannot be passed on, and on macOS
+  the node keeps running with parent 1. A test ends a supervisor with SIGTERM and a wait, and
+  sends SIGKILL only after the supervisor's own grace period (`play_restart.rs`, #92).
 - **A managed drain validates and copies each frame once.** Pass the parsed frame
   into history while the transport sample is borrowed. Calling `sample.bytes()`
   again takes another transport shared-state lock. Reuse one host timestamp for
@@ -388,7 +403,7 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   `scripts/private-domain.sh`, which gives it the domain
   `t_<nextest pid>_<slot>`: no two running tests share one. The
   next test in a slot reclaims only the dead CLI tool nodes of the one before;
-  `test.sh` runs `./clean-shm.sh --domain t_` before the suite, which removes the
+  `test.sh` runs `hypha clean --domain t_` before the suite, which removes the
   test domains of the runs that ended and nothing else. The C++ test
   main (`crates/hypha-cxx/test/test_main.cpp`) gives each gtest shard process,
   which ctest runs in parallel, the domain `t_<pid>` and a
@@ -429,7 +444,7 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   (`node_progress::epoch`). Only then is the clock value compared.
 - **Time going back restarts; nothing rewinds in place.** A timer or cycle that sees
   simulated time go back, and a node on simulated time that reads a `/clock` lower than
-  its last one, whatever it holds and in follow mode too (#130), end the run with
+  its last one, whatever it holds and in the open loop too (#130), end the run with
   `ClockRewound`, `runNode` exits 75, and `hypha launch` starts the process again. Do not add rewind handling: the old
   in-place rewind (abandoned samples, re-reads, re-anchored fallbacks) was the main
   source of replay bugs. The restarted process must not open a port before every old
