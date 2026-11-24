@@ -9,9 +9,12 @@
 #   examples/autoware/launch.sh up --attach
 #   examples/autoware/launch.sh down
 #
-# Executables are found on PATH; files are relative to examples/autoware. The nodes follow
-# the player's /clock outside the replay lockstep (HYPHA_USE_SIM_TIME=follow), as ROS nodes
-# follow ros2 bag play: the localization's /tf loop cannot replay in lockstep yet (#103).
+# Executables are found on PATH; files are relative to examples/autoware. This is an
+# open-loop launch: the player and every node run with HYPHA_REPLAY_LOCKSTEP=0, and the
+# nodes follow the player's /clock (HYPHA_USE_SIM_TIME=1) as ROS nodes follow
+# ros2 bag play. The nodes are plain callback nodes, and the lockstep cannot run the
+# localization's /tf loop between them: it has no rate cycle as its delay element. A
+# launch file has no launch-wide environment, so each unit sets the switch.
 # Each loop of the player sends /clock back: every node on /clock exits 75, as nothing
 # rewinds in place (#130), and its window starts it again at once. The bridge and the
 # player run on host time.
@@ -24,7 +27,8 @@ exec = "autoware_ground_filter"
 args = ["config/slice_a/ground_filter.toml"]
 restart = "on-failure"
 [units.env]
-HYPHA_USE_SIM_TIME = "follow"
+HYPHA_USE_SIM_TIME = "1"
+HYPHA_REPLAY_LOCKSTEP = "0"
 
 [[units]]
 name = "voxel_grid_downsample_filter"
@@ -32,7 +36,8 @@ exec = "autoware_voxel_grid_downsample_filter"
 args = ["config/slice_a/voxel_grid_downsample_filter.toml"]
 restart = "on-failure"
 [units.env]
-HYPHA_USE_SIM_TIME = "follow"
+HYPHA_USE_SIM_TIME = "1"
+HYPHA_REPLAY_LOCKSTEP = "0"
 
 # --- Tracking (#114): Autoware 2.1.0's rule-based detection into the tracker --------------
 # Universe's clustering, which keeps the cluster points, in place of Slice A's Core one.
@@ -43,7 +48,8 @@ exec = "autoware_universe_voxel_grid_based_euclidean_cluster"
 args = ["config/isuzu_tracking/euclidean_cluster.toml"]
 restart = "on-failure"
 [units.env]
-HYPHA_USE_SIM_TIME = "follow"
+HYPHA_USE_SIM_TIME = "1"
+HYPHA_REPLAY_LOCKSTEP = "0"
 
 [[units]]
 name = "shape_estimation"
@@ -51,7 +57,8 @@ exec = "autoware_shape_estimation"
 args = ["config/isuzu_tracking/shape_estimation.toml"]
 restart = "on-failure"
 [units.env]
-HYPHA_USE_SIM_TIME = "follow"
+HYPHA_USE_SIM_TIME = "1"
+HYPHA_REPLAY_LOCKSTEP = "0"
 
 [[units]]
 name = "detected_object_feature_remover"
@@ -59,7 +66,8 @@ exec = "autoware_detected_object_feature_remover"
 args = ["config/isuzu_tracking/detected_object_feature_remover.toml"]
 restart = "on-failure"
 [units.env]
-HYPHA_USE_SIM_TIME = "follow"
+HYPHA_USE_SIM_TIME = "1"
+HYPHA_REPLAY_LOCKSTEP = "0"
 
 [[units]]
 name = "multi_object_tracker"
@@ -67,7 +75,8 @@ exec = "autoware_multi_object_tracker"
 args = ["config/isuzu_tracking/multi_object_tracker.toml"]
 restart = "on-failure"
 [units.env]
-HYPHA_USE_SIM_TIME = "follow"
+HYPHA_USE_SIM_TIME = "1"
+HYPHA_REPLAY_LOCKSTEP = "0"
 
 # --- Localization: GNSS and the Applanix INS into the EKF (#110) --------------------------
 
@@ -77,7 +86,8 @@ exec = "autoware_map_projection_loader"
 args = ["config/isuzu_localization/map_projection_loader.toml"]
 restart = "on-failure"
 [units.env]
-HYPHA_USE_SIM_TIME = "follow"
+HYPHA_USE_SIM_TIME = "1"
+HYPHA_REPLAY_LOCKSTEP = "0"
 
 [[units]]
 name = "lvx_client"
@@ -85,7 +95,8 @@ exec = "applanix_lvx_client_replay"
 args = ["config/isuzu_localization/lvx_client.toml"]
 restart = "on-failure"
 [units.env]
-HYPHA_USE_SIM_TIME = "follow"
+HYPHA_USE_SIM_TIME = "1"
+HYPHA_REPLAY_LOCKSTEP = "0"
 
 [[units]]
 name = "gnss_poser"
@@ -93,7 +104,8 @@ exec = "autoware_gnss_poser"
 args = ["config/isuzu_localization/gnss_poser.toml"]
 restart = "on-failure"
 [units.env]
-HYPHA_USE_SIM_TIME = "follow"
+HYPHA_USE_SIM_TIME = "1"
+HYPHA_REPLAY_LOCKSTEP = "0"
 
 [[units]]
 name = "gyro_odometer"
@@ -101,7 +113,8 @@ exec = "autoware_gyro_odometer"
 args = ["config/isuzu_localization/gyro_odometer.toml"]
 restart = "on-failure"
 [units.env]
-HYPHA_USE_SIM_TIME = "follow"
+HYPHA_USE_SIM_TIME = "1"
+HYPHA_REPLAY_LOCKSTEP = "0"
 
 [[units]]
 name = "ekf_localizer"
@@ -109,7 +122,8 @@ exec = "autoware_ekf_localizer"
 args = ["config/isuzu_localization/ekf_localizer.toml"]
 restart = "on-failure"
 [units.env]
-HYPHA_USE_SIM_TIME = "follow"
+HYPHA_USE_SIM_TIME = "1"
+HYPHA_REPLAY_LOCKSTEP = "0"
 
 [[units]]
 name = "gnss_pose_initializer"
@@ -118,7 +132,8 @@ args = ["config/isuzu_localization/gnss_pose_initializer.toml"]
 restart = "on-failure"
 after = ["ekf_localizer"]
 [units.env]
-HYPHA_USE_SIM_TIME = "follow"
+HYPHA_USE_SIM_TIME = "1"
+HYPHA_REPLAY_LOCKSTEP = "0"
 
 # --- Foxglove and the player --------------------------------------------------------------
 
@@ -138,3 +153,5 @@ exec = "/bin/sh"
 restart = "on-failure"
 args = ["-c", 'exec hypha play --input "$ISUZU_INPUT" --clock --rate 1 --chunk 20 --loop']
 after = ["ground_filter", "voxel_grid_downsample_filter", "euclidean_cluster", "shape_estimation", "detected_object_feature_remover", "multi_object_tracker", "map_projection_loader", "lvx_client", "gnss_poser", "gyro_odometer", "ekf_localizer", "gnss_pose_initializer", "foxglove_bridge"]
+[units.env]
+HYPHA_REPLAY_LOCKSTEP = "0"

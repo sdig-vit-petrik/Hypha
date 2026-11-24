@@ -83,13 +83,13 @@ pub(super) const fn is_plain(target: &Target) -> bool {
 
 impl CallbackDispatcher<'_> {
     /// Decide, for this turn, whether the plain callbacks take part in the replay: the
-    /// node follows `/clock` in the lockstep (not `HYPHA_USE_SIM_TIME=follow`), is no tool
-    /// and drives no clock, and the `WaitSet` has one. A follow node's callbacks run as
+    /// node follows `/clock` in the lockstep (not `HYPHA_REPLAY_LOCKSTEP=0`), is no tool
+    /// and drives no clock, and the `WaitSet` has one. An open-loop node's callbacks run as
     /// their samples arrive, as on host time; its timers still follow `/clock`.
     pub(super) fn decide_participation(&mut self) -> bool {
         let node = self.node;
         let follows_clock = node.uses_sim_time
-            && !node.replay_follow
+            && !node.open_loop
             && !node.drives_clock.load(std::sync::atomic::Ordering::Acquire)
             && !hypha_core::port::is_cli_node_name(&node.name);
         let detached = self.detached;

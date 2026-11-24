@@ -294,9 +294,11 @@ examples/autoware/launch.sh down     # stop
 - `hypha foxglove`, and `hypha play` looping `ISUZU_INPUT` at real time, 20 ms per
   `/clock` step so the EKF's 50 Hz timer runs every period.
 
-The nodes run with `HYPHA_USE_SIM_TIME=follow`: they follow the player's `/clock`
-outside the replay lockstep, as ROS nodes follow `ros2 bag play`, because the
-localization's `/tf` loop (EKF and GNSS poser) cannot replay in lockstep yet (#103).
+The launch is an open-loop playback: every unit runs with `HYPHA_REPLAY_LOCKSTEP=0`,
+and the nodes with `HYPHA_USE_SIM_TIME=1`, so they follow the player's `/clock` as ROS
+nodes follow `ros2 bag play`. The port's nodes are plain callback nodes on the rclcpp
+shim, and the lockstep cannot run the localization's `/tf` loop between them (EKF and
+GNSS poser): it has no rate cycle as its delay element.
 Each loop sends `/clock` back: the nodes exit 75 and start again at once. `launch.sh`
 puts the build's executables on `PATH` (`AUTOWARE_BUILD_DIR`, default
 `build/examples/autoware`), and `hypha` from `PATH` or else from `target/release`.

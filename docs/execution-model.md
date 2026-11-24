@@ -829,7 +829,7 @@ host:
 - **Nothing rewinds in place.** When simulated time goes back under any timer or
   cycle of a `WaitSet`, the run ends with `ClockRewound` and logs the timer or cycle and
   the new time; `runNode` restarts the process. A node that follows `/clock` also checks
-  `/clock` itself, whatever its `WaitSet` holds and in follow mode too: a sample lower
+  `/clock` itself, whatever its `WaitSet` holds and in the open loop too: a sample lower
   than the last one it applied is not applied, the run ends with `ClockRewound`, and the
   node logs `hypha: '<node>' saw /clock go back from <a> ns to <b> ns`. A node with only
   subscriptions therefore restarts as well (#130). A CLI tool (`_hyphacli_<tool>`) follows
@@ -879,19 +879,17 @@ for one chunk of an input's samples (`replay-flow-control.md`, section 6.7). A r
 ### 11.2 Plain callbacks in a replay
 
 A node that follows `/clock` (`HYPHA_USE_SIM_TIME=1`) takes part in the replay with its
-plain callbacks too, not only with its cycles (#72). A node started with
-`HYPHA_USE_SIM_TIME=follow` takes no part: it follows `/clock` as a ROS node follows
-`ros2 bag play`, reports no progress, is waited for by no one, and runs its callbacks
-as their samples arrive. Its timers still fire against `/clock`, once per clock step
-(no burst), so a player's `--chunk` shorter than the timer's period keeps its rate, and a
-`/clock` that goes back restarts it as any node (section 11.1). It
-is for nodes in a feedback loop that cannot replay in lockstep yet (#103); its replays
-are not identical from run to run. Its replay cycles run one step per deadline but hold
-no deadline for an upstream node, and a replay input that lost samples is logged as a
-warning instead of failing the run. `HYPHA_REPLAY_LOCKSTEP=0` puts every node of a
-launch that `HYPHA_USE_SIM_TIME=1` puts in the lockstep in this mode, beside an
-open-loop player: a ROS-style playback whose result depends on the host and its load
-(`replay-flow-control.md` §4.6). In the lockstep, the plain subscriptions and plain
+plain callbacks too, not only with its cycles (#72). A replay has two modes and one
+switch. `HYPHA_REPLAY_LOCKSTEP=0`, set for the whole launch, is the open loop: every
+node on simulated time follows `/clock` as a ROS node follows `ros2 bag play`, reports
+no progress, is waited for by no one, and runs its callbacks as their samples arrive.
+Its timers still fire against `/clock`, once per clock step (no burst), so a player's
+`--chunk` shorter than the timer's period keeps its rate, and a `/clock` that goes back
+restarts it as any node (section 11.1). Its replay cycles run one step per deadline but
+hold no deadline for an upstream node, and a replay input that lost samples is logged as
+a warning instead of failing the run. Its replays depend on the host and its load
+(`replay-flow-control.md` §4.6). No node of a launch leaves the lockstep alone:
+`HYPHA_USE_SIM_TIME=follow` is refused. In the lockstep, the plain subscriptions and plain
 timers become events, and a `WaitSet` runs them in time order, so a callback node
 replays identically on any host, at any `--rate` and `--chunk`:
 
@@ -965,8 +963,8 @@ row by row, follow.
 | Input freshness, stagnation, `~/state` rows | `hypha_cycle` judges each binding at capture; `node_state.rs` reads `HyphaCycleBindingView` | none: `Target::Subscription` carries no limit, and `node_state.rs` reads cycle bindings only | **Still two.** Different by design today; see step 6. |
 | Feedback loop in lockstep | a rate cycle waits for each upstream at `D - 1 ns` (`replay.rs` `run_replay`, `UpstreamHold::settle`) and is the loop's delay element | `callback_events.rs` `settle_upstream` and `admitted`: a sample at `t` waits for every upstream at `t`, a timer for `t - 1 ns`; a loop holds until `--timeout` | **Still two.** #103 (state inputs) is the fix. Step 5 places it in the shared core. |
 | Outputs on failure | held loans, sent after the step succeeds (`image.rs` `emission_reserve`, `emission_commit`; §6.1) | `loan.rs` `loan_send`: each publish goes out at once | **Two by intent**; mapping 3 is rejected below. |
-| Follow mode, `/clock` jumping several periods | `dispatch.rs` `grid_due` runs every deadline; since #102 a follow node holds no deadline (it has no `/clock_progress` input) and warns of a lost input instead of failing (`tick.rs` `replay_losses`) | `dispatch.rs` `fire_due_timers`, non-grid branch: a plain timer fires once per turn and counts the missed periods (§11.2) | **Still two. Owner decision A.** |
-| Rewind in follow mode | `ClockRewound` from the timer check (`grid_due`, `triggered.rs`) | none without a timer | **Closed by #130.** `sim_clock.rs` `drain_sim_clock` refuses a backward `/clock` for every node on simulated time whatever its `WaitSet` holds, so there is now one rewind rule. The per-timer checks remain for clocks set from code (`setSimTime`). |
+| Open loop, `/clock` jumping several periods | `dispatch.rs` `grid_due` runs every deadline; since #102 an open-loop node holds no deadline (it has no `/clock_progress` input) and warns of a lost input instead of failing (`tick.rs` `replay_losses`) | `dispatch.rs` `fire_due_timers`, non-grid branch: a plain timer fires once per turn and counts the missed periods (§11.2) | **Still two. Owner decision A.** |
+| Rewind in the open loop | `ClockRewound` from the timer check (`grid_due`, `triggered.rs`) | none without a timer | **Closed by #130.** `sim_clock.rs` `drain_sim_clock` refuses a backward `/clock` for every node on simulated time whatever its `WaitSet` holds, so there is now one rewind rule. The per-timer checks remain for clocks set from code (`setSimTime`). |
 | Order between the two in one `WaitSet` | `dispatch.rs` `on_timers`: every due callback event runs first (`run_callback_events`), then the cycle steps (`fire_due_timers`) | | **Still two orders.** The progress report is already one: `sim_clock.rs` `progress_frontier` takes the minimum of both. Step 1 merges the orders. |
 
 Two further facts from the issue, checked:
@@ -1017,7 +1015,7 @@ admission check and one frontier.
 
 **Mapping 2: `Node::timer` as a rate step with no input.** In the lockstep this is
 already true in effect: `callback_events.rs` runs each period at its deadline, as a
-grid step runs. It differs only in follow mode and on host time. There a plain timer
+grid step runs. It differs only in the open loop and on host time. There a plain timer
 fires once per turn with a missed count, as a ROS timer does, and a cycle does the same
 on host time. What remains is owner decision A. Cancel, reset and creation from a
 callback stay specific to `Node::timer`.
@@ -1073,14 +1071,14 @@ Each step is one issue, keeps the C ABI and the C++ facade unchanged, and must n
 4. **One loss rule.** A lost replay input of a callback (`callback_events.rs`
    `fill_heads`) and of a step (`tick.rs` `report_replay_fidelity`) go through one
    function, warned of outside the lockstep since #102. Proof: the tests of
-   `replay_open_loop.rs` plus a lost callback sample in follow mode.
+   `replay_open_loop.rs` plus a lost callback sample in the open loop.
 5. **#103 on the shared core.** State inputs and the loop rule are defined once. Proof:
    #103's own tests, plus a loop of one callback node and one rate cycle.
 6. **Opt-in supervision for a plain subscription (owner decision B).** `silence_ms`
    in a subscription's port table gives a `~/state` row, judged at each delivery and
    at the run's wake-up. Proof: a stale plain input turns `~/state` to `DEGRADED` and
    back, and a subscription without the key reports nothing, as today.
-7. **The follow-mode timer rule (owner decision A).** Proof: a test of the rule chosen,
+7. **The open-loop timer rule (owner decision A).** Proof: a test of the rule chosen,
    at `--chunk` smaller and larger than the period.
 
 Steps 1, 3 and 4 remove the duplicated replay code. Steps 2, 5, 6 and 7 settle rows
@@ -1089,10 +1087,10 @@ intended.
 
 #### Owner decisions
 
-- **A. A plain timer in follow mode when `/clock` jumps several periods.** Either it
+- **A. A plain timer in the open loop when `/clock` jumps several periods.** Either it
   runs once with a missed count, as ROS does and as it does today, or it runs every
   period, as a replay cycle does. The first keeps ROS behaviour for the ported nodes;
-  the second makes follow mode one rule.
+  the second makes the open loop one rule.
 - **B. Supervision for plain subscriptions.** Either opt-in per port (step 6), or none,
   and an event-driven node that needs verdicts becomes a triggered cycle (#138). The
   migration guide follows the choice.

@@ -108,7 +108,7 @@ fn the_use_sim_time_key_does_not_switch_simulated_time() {
 
 #[test]
 fn a_variable_with_another_value_stops_node_creation() {
-    for value in ["", "yes", "2", "TRUE", " 1"] {
+    for value in ["", "yes", "2", "TRUE", " 1", "follow"] {
         let _case = Case::new(Some(value));
         assert_eq!(create_node(None), (HyphaStatus::InvalidArgument, false), "value '{value}'");
     }
