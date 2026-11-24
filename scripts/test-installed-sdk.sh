@@ -53,6 +53,12 @@ if [ -e "${PREFIX}/include/hypha_msgs/std_msgs" ]; then
   echo "ERROR: message headers are still installed under the hypha_msgs/ prefix." >&2
   exit 1
 fi
+# The install names the headers this build generated: a file an older build left in
+# the generated tree (test.sh plants this one) is not installed (#161).
+if [ -e "${PREFIX}/include/std_msgs/RemovedMessage.h" ]; then
+  echo "ERROR: a stale header of the build tree was installed." >&2
+  exit 1
+fi
 
 # The SDK owns the directory of each standard package: an application that declares
 # std_msgs from a directory of its own is refused at configure time.

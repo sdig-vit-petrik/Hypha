@@ -37,8 +37,16 @@ if [[ "$suite" == all || "$suite" == cpp ]]; then
     --output-junit ctest-junit.xml
 
   prefix="$(mktemp -d)"
-  trap 'rm -rf "$prefix"' EXIT
+  # Headers an older build left in the generated tree: the prefixed layout before #120
+  # and a message that no longer exists. The install must carry neither (#161), which
+  # test-installed-sdk.sh checks.
+  stale_tree=build/generated/include/hypha_msgs/std_msgs
+  stale_header=build/generated/include/std_msgs/RemovedMessage.h
+  trap 'rm -rf "$prefix" "$stale_tree" "$stale_header"' EXIT
+  mkdir -p "$stale_tree"
+  echo '#error a stale header was installed' | tee "$stale_tree/Header.h" >"$stale_header"
   cmake --install build --prefix "$prefix"
+  rm -rf "$stale_tree" "$stale_header"
   ./scripts/test-installed-sdk.sh "$prefix"
   # Every example builds against the installed SDK; the MRS port flies all its scenarios.
   examples/check.sh --prefix "$prefix" --build-dir "$prefix/examples-build"

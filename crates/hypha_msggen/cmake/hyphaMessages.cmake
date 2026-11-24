@@ -23,6 +23,13 @@
 # land at their ROS 1 path, <OUT_DIR>/<package>/<Name>.h, and OUT_DIR itself is
 # what goes on the include path: #include <app_msgs/Reading.h>.
 #
+# The target's HYPHA_GENERATED_HEADERS property lists the headers the call
+# generates. An application that installs its headers installs that list, not
+# OUT_DIR, which can still hold files of a renamed or removed message:
+#
+#   get_target_property(headers app_msgs HYPHA_GENERATED_HEADERS)
+#   install(FILES ${headers} DESTINATION include/app_msgs)
+#
 # Each package directory has one owner. hypha's standard packages belong to the
 # installed SDK, so a second declaration of one from another directory is
 # refused, as is any package declared twice.
@@ -199,6 +206,9 @@ function(hypha_generate_messages)
 
   add_library(${ARG_PACKAGE} INTERFACE)
   target_include_directories(${ARG_PACKAGE} INTERFACE $<BUILD_INTERFACE:${ARG_OUT_DIR}>)
+  # The headers this call generates, and nothing else of OUT_DIR: what an install
+  # names, so that a file an earlier build left there is never installed.
+  set_target_properties(${ARG_PACKAGE} PROPERTIES HYPHA_GENERATED_HEADERS "${generated_headers}")
   add_dependencies(${ARG_PACKAGE} ${ARG_PACKAGE}_generate)
   foreach(dependency ${ARG_DEPENDS})
     if(TARGET ${dependency})
