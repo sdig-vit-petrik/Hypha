@@ -35,7 +35,7 @@ pub unsafe extern "C" fn hypha_input_source_create(
         // it back below.
         let offered =
             (!subscriber.is_null()).then(|| unsafe { Arc::from_raw(subscriber.cast_const()) });
-        match input_source_create(set, offered) {
+        match input_source_create(&set, offered) {
             Ok(source) => unsafe { write_out(out, Box::into_raw(source)) },
             Err((error, refused)) => {
                 let _caller_keeps = refused.map(Arc::into_raw);

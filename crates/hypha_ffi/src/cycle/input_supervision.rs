@@ -39,7 +39,7 @@ pub unsafe extern "C" fn hypha_cycle_bind_input_supervision(
         let port_name = unsafe { borrow_str(request.name, request.name_len) }?;
         let (set, cycle) = unsafe { cycle.waitset() }?;
         let bound =
-            cycle_bind_input_supervision(set, cycle, session, &request, port_name, binding_index);
+            cycle_bind_input_supervision(&set, cycle, session, &request, port_name, binding_index);
         let (status, detail_text, result) = match bound {
             Ok(Some(result)) => (Ok(()), String::new(), Some(result)),
             Ok(None) => (Ok(()), String::new(), None),

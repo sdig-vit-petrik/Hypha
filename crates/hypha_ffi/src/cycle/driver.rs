@@ -24,7 +24,7 @@ pub unsafe extern "C" fn hypha_cycle_set_clock_driver(
     try_guard(|| {
         let options = unsafe { read_in(options) }?;
         let (set, cycle) = unsafe { CycleTarget::of(cycle)?.waitset() }?;
-        Ok(cycle_set_clock_driver(set, cycle, options)?)
+        Ok(cycle_set_clock_driver(&set, cycle, options)?)
     })
 }
 
@@ -45,6 +45,6 @@ pub unsafe extern "C" fn hypha_cycle_expect_participant(
         let cycle = unsafe { CycleTarget::of(cycle) }?;
         let name = unsafe { borrow_str(name, name_len) }?;
         let (set, cycle) = unsafe { cycle.waitset() }?;
-        Ok(cycle_expect_participant(set, cycle, name)?)
+        Ok(cycle_expect_participant(&set, cycle, name)?)
     })
 }

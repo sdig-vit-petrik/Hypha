@@ -175,9 +175,7 @@ pub fn waitset_timer_state(
 
 /// The control of the plain timer `timer`, from the registry a run does not borrow.
 fn control_of(set: &HyphaWaitSet, timer: HyphaAttachmentId) -> Result<Arc<TimerControl>, Error> {
-    if set.shared.runs_on_another_thread() {
-        return Err(Error::InvalidState);
-    }
+    let _claim = set.shared.claim()?;
     let live = set.live.try_borrow().map_err(|_| Error::InvalidState)?;
     live.iter()
         .find(|registration| registration.id == timer)

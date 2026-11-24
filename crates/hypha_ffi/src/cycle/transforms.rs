@@ -35,7 +35,7 @@ pub unsafe extern "C" fn hypha_cycle_bind_transforms(
             return Err(HyphaStatus::InvalidArgument);
         }
         let (set, cycle) = unsafe { cycle.waitset() }?;
-        let index = cycle_bind_transforms(set, cycle, tf, tf_static, cache_nanos)?;
+        let index = cycle_bind_transforms(&set, cycle, tf, tf_static, cache_nanos)?;
         unsafe { write_out(out_index, index) }
     })
 }
