@@ -7,7 +7,7 @@
 #   cmake -S . -B build -DCMAKE_PREFIX_PATH=<sdk> && cmake --build build && ./run.sh build
 
 cmake_minimum_required(VERSION 3.20)
-project(mrs_on_hypha VERSION 0.2.0 LANGUAGES CXX)
+project(mrs_on_hypha VERSION 0.3.0 LANGUAGES CXX)
 
 if(NOT TARGET hypha::sdk)
   find_package(hypha CONFIG REQUIRED)

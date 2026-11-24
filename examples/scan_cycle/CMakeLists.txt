@@ -9,7 +9,7 @@
 #   cmake -S . -B build && cmake --build build && ctest --test-dir build
 
 cmake_minimum_required(VERSION 3.20)
-project(scan_cycle VERSION 0.2.0 LANGUAGES CXX)
+project(scan_cycle VERSION 0.3.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 

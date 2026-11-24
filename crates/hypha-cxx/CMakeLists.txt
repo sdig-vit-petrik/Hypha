@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(hypha VERSION 0.2.0 LANGUAGES C CXX)
+project(hypha VERSION 0.3.0 LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
