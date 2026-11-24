@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hypha_testkit",
  "hypha_time",
@@ -1466,14 +1466,14 @@ dependencies = [
 
 [[package]]
 name = "hypha_cycle"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "hypha_ffi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "criterion",
  "hypha_core",
@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_iceoryx2"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hypha_core",
  "hypha_log",
@@ -1509,7 +1509,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_log"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hypha_time",
  "log",
@@ -1519,14 +1519,14 @@ dependencies = [
 
 [[package]]
 name = "hypha_msgdef"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "hypha_msggen"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hypha_msgdef",
  "hypha_wire",
@@ -1534,7 +1534,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_msgs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hypha_core",
  "hypha_msgdef",
@@ -1545,7 +1545,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_node"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "criterion",
  "hypha_core",
@@ -1565,7 +1565,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_ros_bridge"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "hypha_node",
@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hypha_core",
  "hypha_cycle",
@@ -1596,7 +1596,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_sys"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "memmap2",
@@ -1605,25 +1605,25 @@ dependencies = [
 
 [[package]]
 name = "hypha_testing_mcap"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "mcap",
 ]
 
 [[package]]
 name = "hypha_testkit"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "hypha_time"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rustix",
 ]
 
 [[package]]
 name = "hypha_tools"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -1644,7 +1644,7 @@ dependencies = [
 
 [[package]]
 name = "hypha_wire"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crc32c",
  "criterion",

@@ -22,7 +22,7 @@ Reference standards (background only; no compliance claim):
 | [safety-manual.md](safety-manual.md) | What an integrator must know and do to use hypha in a system with a safety function: the item, the faults it detects, the conditions of use. Draft. |
 | [safety-plan.md](safety-plan.md) | Roles, lifecycle, verification, modification, defect handling and tool classes. |
 | [release-policy.md](release-policy.md) | What a release line freezes, the supported platforms, what a release must pass, upgrade and rollback. |
-| [releases/](releases/) | The release notes, one file per release (`0.2.0.md`). |
+| [releases/](releases/) | The release notes, one file per release (`0.3.0.md`). |
 | [dependency-assessment.md](dependency-assessment.md) | The third-party software in the library: what hypha requires of each part and what shows it. |
 | [sil2-readiness.md](sil2-readiness.md) | Self-assessment against IEC 61508-3 for systematic capability SC 2: what exists, the gaps, the work in order. Claims no compliance. |
 | [architecture.md](architecture.md) | **Software Architecture Specification (SAS)**: layering, the C ABI boundary, freedom from interference. |

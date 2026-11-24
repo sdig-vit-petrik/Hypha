@@ -7,7 +7,7 @@
 #   cmake -S . -B build && cmake --build build
 
 cmake_minimum_required(VERSION 3.20)
-project(sim_twin VERSION 0.2.0 LANGUAGES CXX)
+project(sim_twin VERSION 0.3.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 

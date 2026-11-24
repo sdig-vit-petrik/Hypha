@@ -109,7 +109,7 @@ Gaps:
   reviewed. There is no review record per change.
 - G-04. No defect procedure: no severity classes, no rule for informing users of a
   safety-relevant defect, no named owner of a production-blocking defect.
-- G-05. Release baselines: the tag `0.1.0`, and `0.2.0` cut under
+- G-05. Release baselines: the tag `0.1.0`, and `0.2.0` and `0.3.0` cut under
   [release-policy.md](release-policy.md). What a release line freezes is stated in its
   §2; whether that rule is adequate is not assessed here.
 
