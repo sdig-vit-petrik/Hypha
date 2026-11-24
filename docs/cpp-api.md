@@ -37,8 +37,8 @@ parameter file (`examples/speed/src/speed_monitor.cpp` is a full one):
 
 ```cpp
 #include <hypha/hypha.h>
-#include <hypha_msgs/geometry_msgs/Pose.h>
-#include <hypha_msgs/geometry_msgs/Twist.h>
+#include <geometry_msgs/Pose.h>
+#include <geometry_msgs/Twist.h>
 
 class Follower : public hypha::CycleNode {
     hypha::Latest<geometry_msgs::Pose> pose{*this, "pose"};
@@ -72,8 +72,8 @@ message as it arrives uses callback endpoints instead:
 
 ```cpp
 #include <hypha/hypha.h>
-#include <hypha_msgs/geometry_msgs/Pose.h>
-#include <hypha_msgs/sensor_msgs/LaserScan.h>
+#include <geometry_msgs/Pose.h>
+#include <sensor_msgs/LaserScan.h>
 
 void onScan(const hypha::Subscriber<sensor_msgs::LaserScan>::ConstPtr& scan);
 
@@ -95,7 +95,7 @@ function as the callback:
 ```cpp
 #include <hypha/hypha.h>
 #include <hypha_log/hypha_log.h>
-#include <hypha_msgs/sensor_msgs/Imu.h>
+#include <sensor_msgs/Imu.h>
 
 HYPHA_LOG_MODULE_INIT("attitude_node")
 
@@ -133,8 +133,22 @@ README examples) and `test_cycle_doc_examples.cpp` (sections 5.4, 5.5, 10.1) com
 
 ### 1.1 Messages
 
-The SDK installs the standard ROS message packages under `hypha_msgs/`
-(`#include <hypha_msgs/sensor_msgs/Imu.h>`). An application generates its own `.msg` and
+The SDK installs the standard ROS message packages at their ROS 1 path,
+`<package>/<Name>.h` (`#include <sensor_msgs/Imu.h>`); hypha's own messages and
+`ros_time.h` are in `hypha_msgs/`, the directory of the `hypha_msgs` package. The SDK
+owns the directory of each standard package it ships, and an application owns the
+directories of the packages it declares: declaring a standard package a second time, from
+a directory of its own, stops the configure. A process cannot use hypha messages and a
+ROS installation's message headers together: both define the same `std_msgs::Header`
+types and `ros::serialization` templates.
+
+Up to release 0.2.0 the headers had a `hypha_msgs/` prefix
+(`<hypha_msgs/sensor_msgs/Imu.h>`). It is gone with no forwarding header: an existing
+application drops `hypha_msgs/` from each message include line
+(`<hypha_msgs/hypha_msgs/NodeState.h>` becomes `<hypha_msgs/NodeState.h>`) and removes
+any include directory it added to reach `<package>/<Name>.h` without the prefix.
+
+An application generates its own `.msg` and
 `.srv` files with one `hypha_generate_messages()` call per package, an INTERFACE library
 of the package name; link it, and the include path and build order follow
 (`examples/mrs/CMakeLists.txt`):
@@ -406,7 +420,7 @@ through `StepHarness`, the started cycle on the bus).
 
 ```cpp
 #include <hypha/hypha.h>
-#include <hypha_msgs/std_msgs/Float64.h>
+#include <std_msgs/Float64.h>
 class Controller final : public hypha::CycleNode {
   public:
     Controller() : hypha::CycleNode() {}

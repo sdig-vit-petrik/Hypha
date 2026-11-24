@@ -3,11 +3,10 @@
 /// @file
 /// The tf2_eigen conversions the port uses, on hypha's geometry_msgs.
 
-#include <hypha_msgs/geometry_msgs/Pose.h>
-#include <hypha_msgs/geometry_msgs/Transform.h>
-#include <hypha_msgs/geometry_msgs/TransformStamped.h>
-
 #include <Eigen/Geometry>
+#include <geometry_msgs/Pose.h>
+#include <geometry_msgs/Transform.h>
+#include <geometry_msgs/TransformStamped.h>
 
 namespace tf2 {
 

@@ -312,7 +312,7 @@ it in one file:
 
 ```cpp
 #include <hypha/hypha.h>
-#include <hypha_msgs/std_msgs/Float64.h>
+#include <std_msgs/Float64.h>
 
 #include "speed_controller/controller.h"
 
@@ -590,11 +590,12 @@ A service name does not resolve from the ports tables. Read it with
 
 Generated hypha messages keep the ROS package namespace, the type name, the
 field names, and the `Ptr` and `ConstPtr` aliases. Logic that uses message
-types therefore compiles with few edits. Make only these:
+types therefore compiles with few edits. The include line stays: hypha installs
+`<sensor_msgs/Imu.h>` at the ROS 1 path. The process then uses hypha's headers in place
+of ROS's own; it cannot include both. Make only these edits:
 
 | ROS 1 | hypha | Edit |
 |---|---|---|
-| `#include <sensor_msgs/Imu.h>` | `#include <hypha_msgs/sensor_msgs/Imu.h>` | The include line. |
 | `boost::array<double, 9>` | `std::array<double, 9>` | Only where the logic names the type. |
 | `header.stamp` is `ros::Time` | `header.stamp` is `hypha_msgs::RosTime{secs, nsecs}` | `stamp.sec` to `stamp.secs`, `stamp.nsec` to `stamp.nsecs`. A call such as `stamp.toSec()` needs a helper; write one free function in the node file, do not edit each use. |
 | `ros::Time`, `ros::Duration` in logic | `hypha::Time`, `hypha::Duration` | Only when the logic itself measures time. |
@@ -874,7 +875,7 @@ policy header that every node of the stack includes, and map the message type to
 ```cpp
 // my_stack/qos_policies.h: included by every node of the stack
 #include <hypha/qos.h>
-#include <hypha_msgs/sensor_msgs/Imu.h>
+#include <sensor_msgs/Imu.h>
 
 namespace my::policies {
 inline constexpr hypha::Qos imu{

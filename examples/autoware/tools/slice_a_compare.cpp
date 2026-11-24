@@ -11,9 +11,9 @@
 
 #include <hypha/backend/ros1_codec.h>
 #include <hypha/testing/mcap_replay.h>
-#include <hypha_msgs/sensor_msgs/PointCloud2.h>
 
 #include <autoware_perception_msgs/DetectedObjects.h>
+#include <sensor_msgs/PointCloud2.h>
 
 #include <algorithm>
 #include <cstdint>

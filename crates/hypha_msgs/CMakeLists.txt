@@ -9,8 +9,9 @@ if(NOT COMMAND hypha_generate_messages)
   return()
 endif()
 
-# The headers belong to the hypha_msgs/ include namespace that crates/hypha-cxx
-# owns and installs: build tree only, at the location hypha-cxx reads.
+# The headers land at <package>/<Name>.h in the package directories that
+# crates/hypha-cxx owns and installs: build tree only, at the location hypha-cxx
+# reads.
 set(HYPHA_MSGS_OUT_DIR "${CMAKE_BINARY_DIR}/generated/include")
 set(HYPHA_MSGS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/msg")
 

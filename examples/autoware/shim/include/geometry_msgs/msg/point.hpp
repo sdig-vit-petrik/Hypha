@@ -1,12 +1,12 @@
 #pragma once
 
 /// @file
-/// The ROS 2 include path of `hypha_msgs/geometry_msgs/Point.h`; see
+/// The ROS 2 include path of `geometry_msgs/Point.h`; see
 /// hypha_rclcpp/message_namespace.hpp.
 
-#include <hypha_msgs/geometry_msgs/Point.h>
 #include <hypha_rclcpp/message_namespace.hpp>
 
 #include <builtin_interfaces/msg/time.hpp>
+#include <geometry_msgs/Point.h>
 
 HYPHA_RCLCPP_MSG_NAMESPACE(geometry_msgs)

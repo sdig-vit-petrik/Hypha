@@ -5,12 +5,12 @@
 #include "hypha/cycle_node.h"
 #include "hypha/hypha.h"
 #include "hypha/testing.h"
-#include <hypha_msgs/std_msgs/Float64.h>
-#include <hypha_msgs/std_msgs/UInt32.h>
 
 #include "test_types.h"
 
 #include <gtest/gtest.h>
+#include <std_msgs/Float64.h>
+#include <std_msgs/UInt32.h>
 
 #include <chrono>
 #include <cstdint>

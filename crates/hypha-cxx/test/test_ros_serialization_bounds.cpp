@@ -3,11 +3,11 @@
 // pointer past the buffer.
 
 #include <hypha/backend/ros1_codec.h>
-#include <hypha_msgs/rosgraph_msgs/Log.h>
-#include <hypha_msgs/std_msgs/Bool.h>
 
 #include <gtest/gtest.h>
 #include <ros/serialization.h>
+#include <rosgraph_msgs/Log.h>
+#include <std_msgs/Bool.h>
 
 #include <cstdint>
 #include <cstring>

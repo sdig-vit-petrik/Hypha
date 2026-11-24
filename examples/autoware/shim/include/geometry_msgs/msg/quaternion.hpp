@@ -1,12 +1,12 @@
 #pragma once
 
 /// @file
-/// The ROS 2 include path of `hypha_msgs/geometry_msgs/Quaternion.h`; see
+/// The ROS 2 include path of `geometry_msgs/Quaternion.h`; see
 /// hypha_rclcpp/message_namespace.hpp.
 
-#include <hypha_msgs/geometry_msgs/Quaternion.h>
 #include <hypha_rclcpp/message_namespace.hpp>
 
 #include <builtin_interfaces/msg/time.hpp>
+#include <geometry_msgs/Quaternion.h>
 
 HYPHA_RCLCPP_MSG_NAMESPACE(geometry_msgs)
