@@ -8,18 +8,24 @@ set(HYPHA_APP_BINARIES
     hypha
     hypha_ros_bridge)
 
-# The old tool names. Each is a link to `hypha`, which runs the tool its name names.
-set(HYPHA_TOOL_LINKS
-    hypha_clean
-    hypha_foxglove_bridge
-    hypha_intercept
-    hypha_launch
-    hypha_node
-    hypha_param
-    hypha_play
-    hypha_record
-    hypha_top
-    hypha_topic)
+# The tools of `hypha`. Each has the link hy<tool> to `hypha`, which runs the tool its
+# name names, and `hy` is a second name of `hypha` itself.
+set(HYPHA_TOOLS
+    clean
+    convert
+    foxglove
+    intercept
+    launch
+    node
+    param
+    play
+    record
+    top
+    topic)
+set(HYPHA_TOOL_LINKS hy)
+foreach(tool IN LISTS HYPHA_TOOLS)
+  list(APPEND HYPHA_TOOL_LINKS hy${tool})
+endforeach()
 
 # Cargo's debug profile only for a Debug build: RelWithDebInfo is still optimised.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -32,9 +38,9 @@ set(HYPHA_APP_TARGET_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/../target/${HYPHA_APP_PROFILE_DIR}")
 cmake_path(NORMAL_PATH HYPHA_APP_TARGET_DIR)
 
-# hypha::<tool> (hypha::topic for hypha_topic, hypha::hypha for hypha) names each
-# executable and each link, so an application runs $<TARGET_FILE:hypha::topic>
-# without knowing cargo's layout or the prefix.
+# hypha::<tool> (hypha::topic for the link hytopic) names each tool's link, and
+# hypha::hypha and hypha::ros_bridge the executables, so an application runs
+# $<TARGET_FILE:hypha::topic> without knowing cargo's layout or the prefix.
 set(HYPHA_APP_OUTPUTS "")
 set(tools_file "${CMAKE_CURRENT_BINARY_DIR}/hyphaTools.cmake")
 file(WRITE "${tools_file}" "# The command line tools installed with the SDK.\n")
@@ -61,20 +67,19 @@ endforeach()
 add_custom_target(hypha_tool_links ALL
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${HYPHA_TOOL_LINK_DIR}"
   ${link_commands}
-  COMMENT "Linking the old tool names to hypha"
+  COMMENT "Linking hy and the hy<tool> names to hypha"
   VERBATIM)
 add_dependencies(hypha_tool_links hypha_ffi_cargo)
 
-foreach(link IN LISTS HYPHA_TOOL_LINKS)
-  string(REGEX REPLACE "^hypha_" "" tool "${link}")
+foreach(tool IN LISTS HYPHA_TOOLS)
   add_executable(hypha::${tool} IMPORTED GLOBAL)
   set_target_properties(hypha::${tool} PROPERTIES
-    IMPORTED_LOCATION "${HYPHA_TOOL_LINK_DIR}/${link}")
+    IMPORTED_LOCATION "${HYPHA_TOOL_LINK_DIR}/hy${tool}")
   add_dependencies(hypha::${tool} hypha_tool_links)
   file(APPEND "${tools_file}"
     "add_executable(hypha::${tool} IMPORTED)\n"
     "set_target_properties(hypha::${tool} PROPERTIES IMPORTED_LOCATION "
-    "\"\${PACKAGE_PREFIX_DIR}/${CMAKE_INSTALL_BINDIR}/${link}\")\n")
+    "\"\${PACKAGE_PREFIX_DIR}/${CMAKE_INSTALL_BINDIR}/hy${tool}\")\n")
 endforeach()
 
 # Its own component, so that an image stage can install the tools apart from the SDK.

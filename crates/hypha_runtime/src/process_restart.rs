@@ -1,5 +1,5 @@
 //! The rules of a restart after simulated time went back: the run ends with
-//! `ClockRewound`, the process exits 75, and `hypha_launch` restarts it with
+//! `ClockRewound`, the process exits 75, and `hypha launch` restarts it with
 //! [`REJOIN_ENV`] set; the new process reads no `/clock` sample of the old timeline.
 
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -2,12 +2,15 @@
 
 Eleven tools ship with hypha, as one executable: `hypha <tool>` with the tools
 `topic`, `top`, `node`, `record`, `play`, `convert`, `intercept`, `foxglove`, `launch`,
-`param` and `clean`; `hypha --help` lists them. The installation also links each old name
-(`hypha_topic`, `hypha_play`, ..., `hypha_foxglove_bridge` for `hypha foxglove`)
-to `hypha`, and a start under such a name runs that tool, so `hypha_play --input
-run.mcap` and `hypha play --input run.mcap` are the same command. Messages name
-the tool as `hypha play: ...`. `hypha_ros_bridge` and `hypha_msggen` stay
-executables of their own.
+`param` and `clean`; `hypha --help` lists them. Two shorter names run the same
+executable. `hy` is `hypha`: `hy play --input run.mcap` is `hypha play --input
+run.mcap`. Each tool has a link of its own, `hy<tool>`: `hytopic`, `hytop`,
+`hynode`, `hyrecord`, `hyplay`, `hyconvert`, `hyintercept`, `hyfoxglove`, `hylaunch`,
+`hyparam` and `hyclean`, so `hyplay --input run.mcap` is the same command again. The
+installation makes `hy` and these links; the old names `hypha_<tool>` are gone.
+Usage and messages name the tool as `hypha play: ...` whatever name started it. In
+CMake, `hypha::<tool>` (`hypha::topic`, ...) runs a tool's link. `hypha_ros_bridge`
+and `hypha_msggen` stay executables of their own.
 
 The tools are ordinary bus nodes: each one joins the
 bus through the framework, and none of them reaches around it to the transport.
@@ -22,7 +25,7 @@ that died. `hypha play`, `hypha record --sync`, `hypha intercept` and
 with the same name in a domain is refused.
 
 Build them with `./build.sh`; `hypha` lands in `target/release/`, and the build
-tree links the old names to it in `build/apps/tool-links/`.
+tree links `hy` and the `hy<tool>` names to it in `build/apps/tool-links/`.
 
 Run any tool with `--help` for its exact options. This page is a map, not a
 manual — the binaries are the authority on their own flags.

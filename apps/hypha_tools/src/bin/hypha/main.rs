@@ -1,7 +1,8 @@
 //! `hypha` -- the command line tools of hypha in one executable.
 //!
-//! `hypha <tool> [arguments]` runs one tool. A start under an old name linked to this
-//! executable (`hypha play`, `hypha topic`, ...) runs that tool.
+//! `hypha <tool> [arguments]` runs one tool, and so does `hy <tool> [arguments]`: `hy`
+//! is a link to this executable. A start under the link `hy<tool>` (`hyplay`,
+//! `hytopic`, ...) runs that tool. Usage and messages name the tool `hypha <tool>`.
 
 #![forbid(unsafe_code)]
 
@@ -25,80 +26,52 @@ use std::process::ExitCode;
 /// What a tool's entry point is: the whole command line in, the exit code out.
 type ToolMain = fn(Vec<String>) -> ExitCode;
 
-/// One tool: its subcommand, the old executable name linked to `hypha`, its entry
-/// point and its line in `hypha --help`.
+/// One tool: its subcommand, its entry point and its line in `hypha --help`. Its
+/// linked name is `hy` and the subcommand.
 struct Tool {
     subcommand: &'static str,
-    linked_name: &'static str,
     main: ToolMain,
     summary: &'static str,
 }
 
 /// Every tool, in the order `hypha --help` lists them.
 const TOOLS: [Tool; 11] = [
-    Tool {
-        subcommand: "topic",
-        linked_name: "hypha_topic",
-        main: topic::main,
-        summary: "list, echo, hz and bw of topics",
-    },
+    Tool { subcommand: "topic", main: topic::main, summary: "list, echo, hz and bw of topics" },
     Tool {
         subcommand: "top",
-        linked_name: "hypha_top",
         main: top::main,
         summary: "interactive bus monitor and node inspector",
     },
-    Tool {
-        subcommand: "node",
-        linked_name: "hypha_node",
-        main: node::main,
-        summary: "list the nodes and show one",
-    },
+    Tool { subcommand: "node", main: node::main, summary: "list the nodes and show one" },
     Tool {
         subcommand: "record",
-        linked_name: "hypha_record",
         main: record::main,
         summary: "record bus traffic into an MCAP file",
     },
-    Tool {
-        subcommand: "play",
-        linked_name: "hypha_play",
-        main: play::main,
-        summary: "replay an MCAP recording onto the bus",
-    },
+    Tool { subcommand: "play", main: play::main, summary: "replay an MCAP recording onto the bus" },
     Tool {
         subcommand: "convert",
-        linked_name: "hypha_convert",
         main: convert::main,
         summary: "turn a ROS 2 bag into an MCAP recording",
     },
     Tool {
         subcommand: "intercept",
-        linked_name: "hypha_intercept",
         main: intercept::main,
         summary: "rewrite fields of topics in flight",
     },
     Tool {
         subcommand: "foxglove",
-        linked_name: "hypha_foxglove_bridge",
         main: foxglove::main,
         summary: "WebSocket bridge to Foxglove Studio",
     },
     Tool {
         subcommand: "launch",
-        linked_name: "hypha_launch",
         main: launch::main,
         summary: "run a set of nodes in one tmux session",
     },
-    Tool {
-        subcommand: "param",
-        linked_name: "hypha_param",
-        main: param::main,
-        summary: "inspect a TOML parameter file",
-    },
+    Tool { subcommand: "param", main: param::main, summary: "inspect a TOML parameter file" },
     Tool {
         subcommand: "clean",
-        linked_name: "hypha_clean",
         main: clean::main,
         summary: "remove the shared memory of bus domains nobody uses",
     },
@@ -113,10 +86,11 @@ fn usage() -> String {
     text
 }
 
-/// The tool a start under `program` (argv\[0]) names directly, through its link.
+/// The tool a start under `program` (argv\[0]) names directly, through its link
+/// `hy<tool>`. `hy` and `hypha` name none.
 fn tool_of_linked_name(program: &str) -> Option<&'static Tool> {
-    let file_name = Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or("");
-    TOOLS.iter().find(|tool| tool.linked_name == file_name)
+    let file_name = Path::new(program).file_name().and_then(|name| name.to_str())?;
+    tool_of_subcommand(file_name.strip_prefix("hy")?)
 }
 
 fn tool_of_subcommand(word: &str) -> Option<&'static Tool> {
