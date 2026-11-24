@@ -1,7 +1,7 @@
 // The session is shared by every Node that joined it and left by the last of them (#97).
 
 #include "hypha/hypha.h"
-#include <hypha_msgs/std_msgs/UInt32.h>
+#include <std_msgs/UInt32.h>
 
 #include <gtest/gtest.h>
 
