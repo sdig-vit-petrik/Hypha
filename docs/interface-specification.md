@@ -474,7 +474,15 @@ while no thread does. No mutex stays held across user processing.
 One thread runs one `WaitSet`. `hypha_waitset_request_stop` and
 `hypha_waitset_request_failure` are the calls another thread may make on a
 running `WaitSet`, and a stop that arrives before
-the run starts is recorded, so the next run returns at once. Any thread may also call
+the run starts is recorded, so the next run returns at once.
+
+Every other call that names a `WaitSet`, one of its cycles or input sources, and every
+run, claims the `WaitSet` for the calling thread first, with one compare-and-swap of
+its owner, and releases it when it returns; a run holds the claim for its whole length,
+and a call from one of its callbacks is inside that claim (#83). A run or a call that
+another thread starts while one holds the claim returns `InvalidState` and changes
+nothing, so two threads never use one `WaitSet` at once undetected: a run started while
+another thread is inside a call is a refused run, not undefined behaviour. Any thread may also call
 `hypha_transform_buffer_lookup` and `hypha_subscriber_counters` while a run goes on.
 
 Attachments freeze for the duration of a run, with one exception. Create and attach

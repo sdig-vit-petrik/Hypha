@@ -202,8 +202,7 @@ fn registration_limit(set: &HyphaWaitSet) -> usize {
 /// the run's own thread. The dispatcher takes it before its next wait; its first call
 /// comes one period after now. `InvalidState` for anything else.
 fn defer_attach(set: &HyphaWaitSet, request: Request) -> Result<HyphaAttachmentId, Error> {
-    let from_the_run = set.shared.run_owner() == Some(std::thread::current().id());
-    if !from_the_run {
+    if !set.shared.runs_on_this_thread() {
         return Err(Error::InvalidState);
     }
     // A refused request drops here and leaves its C context to the caller.
@@ -402,8 +401,7 @@ pub fn waitset_detach(set: &HyphaWaitSet, attachment: HyphaAttachmentId) -> Resu
 
 /// A detach during a run: accepted only from the run's own thread, a callback.
 fn defer_detach(set: &HyphaWaitSet, attachment: HyphaAttachmentId) -> Result<(), Error> {
-    let from_the_run = set.shared.run_owner() == Some(std::thread::current().id());
-    if !from_the_run {
+    if !set.shared.runs_on_this_thread() {
         return Err(Error::InvalidState);
     }
     // The dispatcher holds the registrations for the run, so the id is checked against
@@ -477,11 +475,12 @@ fn remove_registration(set: &HyphaWaitSet, attachment: HyphaAttachmentId) -> Res
 /// # Errors
 /// `InvalidArgument` for an unknown kind, a missing callback or subscriber, or a field
 /// the kind does not use; the error of `reach`; an attach error.
-pub fn waitset_attach_foreign<'set, C: ForeignCallbacks>(
-    reach: impl FnOnce() -> Result<&'set HyphaWaitSet, Error>,
+pub fn waitset_attach_foreign<C: ForeignCallbacks, S: std::ops::Deref<Target = HyphaWaitSet>>(
+    reach: impl FnOnce() -> Result<S, Error>,
     attachment: &HyphaAttachment,
     share: impl FnOnce(*mut HyphaSubscriber) -> Arc<HyphaSubscriber>,
 ) -> Result<HyphaAttachmentId, Error> {
     let request = Request::decode::<C>(attachment, share)?;
-    attach(reach()?, request)
+    let set = reach()?;
+    attach(&set, request)
 }

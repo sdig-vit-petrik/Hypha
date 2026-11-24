@@ -52,7 +52,7 @@ pub unsafe extern "C" fn hypha_cycle_create(
         let set = unsafe { waitset_here(waitset) }?;
         let mut handle = std::ptr::null_mut();
         let adopt = CStep::adopter(callback, context, release, waitset, &mut handle);
-        cycle_create(set, name, period_nanos, adopt)?;
+        cycle_create(&set, name, period_nanos, adopt)?;
         unsafe { write_out(out, handle) }
     })
 }
@@ -78,7 +78,7 @@ pub unsafe extern "C" fn hypha_cycle_bind_input(
         let selected = unsafe { read_in(options) }?;
         unsafe { write_out(out_index, 0) }?;
         let (set, cycle) = unsafe { cycle.waitset() }?;
-        let index = cycle_bind_input(set, cycle, input, &selected)?;
+        let index = cycle_bind_input(&set, cycle, input, &selected)?;
         unsafe { write_out(out_index, index) }
     })
 }
@@ -108,7 +108,7 @@ pub unsafe extern "C" fn hypha_cycle_bind_output(
         unsafe { write_out(out_index, 0) }?;
         let (set, cycle) = unsafe { cycle.waitset() }?;
         let owned = unsafe { take_box(publisher) }.ok_or(HyphaStatus::InvalidArgument)?;
-        match cycle_bind_output(set, cycle, owned, policy, max_messages_per_step) {
+        match cycle_bind_output(&set, cycle, owned, policy, max_messages_per_step) {
             Ok(index) => unsafe { write_out(out_index, index) },
             Err((error, refused)) => {
                 let _caller_keeps = Box::into_raw(refused);
@@ -133,7 +133,7 @@ pub unsafe extern "C" fn hypha_cycle_set_trigger(
 ) -> HyphaStatus {
     try_guard(|| {
         let (set, cycle) = unsafe { CycleTarget::of(cycle)?.waitset() }?;
-        Ok(cycle_set_trigger(set, cycle, binding_index)?)
+        Ok(cycle_set_trigger(&set, cycle, binding_index)?)
     })
 }
 
@@ -152,7 +152,7 @@ pub unsafe extern "C" fn hypha_cycle_set_host_clock(
 ) -> HyphaStatus {
     try_guard(|| {
         let (set, cycle) = unsafe { CycleTarget::of(cycle)?.waitset() }?;
-        Ok(cycle_set_host_clock(set, cycle, binding_index)?)
+        Ok(cycle_set_host_clock(&set, cycle, binding_index)?)
     })
 }
 
@@ -176,7 +176,7 @@ pub unsafe extern "C" fn hypha_cycle_set_class_based(
             _ => return Err(HyphaStatus::InvalidArgument),
         };
         let (set, cycle) = unsafe { cycle.waitset() }?;
-        Ok(cycle_set_class_based(set, cycle, class_based)?)
+        Ok(cycle_set_class_based(&set, cycle, class_based)?)
     })
 }
 
@@ -196,7 +196,7 @@ pub unsafe extern "C" fn hypha_cycle_commit(cycle: *mut HyphaCycle) -> HyphaStat
         // Mirror `cycle_commit`, which clears the last error first.
         hypha_node::last_error::clear();
         let (set, cycle) = unsafe { cycle.waitset() }?;
-        Ok(cycle_commit(set, cycle)?)
+        Ok(cycle_commit(&set, cycle)?)
     })
 }
 
@@ -211,6 +211,6 @@ pub unsafe extern "C" fn hypha_cycle_commit(cycle: *mut HyphaCycle) -> HyphaStat
 pub unsafe extern "C" fn hypha_cycle_destroy(cycle: *mut HyphaCycle) -> HyphaStatus {
     try_guard(|| {
         let (set, cycle) = unsafe { CycleTarget::of(cycle)?.waitset() }?;
-        Ok(cycle_destroy(set, cycle)?)
+        Ok(cycle_destroy(&set, cycle)?)
     })
 }

@@ -29,6 +29,8 @@ pub struct HyphaPublisher {
     pub(crate) next_sequence: Arc<std::sync::atomic::AtomicU64>,
     /// The publisher row of the node introspection, removed with this publisher.
     pub(crate) introspection: crate::introspection::IntrospectionRow,
+    /// Set when the node that made this publisher left the bus: nothing is sent then.
+    pub(crate) node_left: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Endpoint options of a publisher, passed to `hypha_publish_with_qos`.
@@ -159,6 +161,7 @@ pub(crate) fn open_publisher(
             std::process::id(),
         ),
         next_sequence: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        node_left: Arc::clone(&node.left),
         introspection: crate::introspection::IntrospectionRow::new(
             &node.introspection,
             crate::introspection::Row::Publisher(hypha_core::introspection::EndpointRow {

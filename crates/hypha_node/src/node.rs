@@ -50,6 +50,9 @@ pub struct HyphaNode {
     pub(crate) health: std::sync::Arc<crate::node_health::ExecutionHealth>,
     /// The rows of the node introspection. Endpoints keep a handle to it.
     pub(crate) introspection: std::sync::Arc<crate::introspection::IntrospectionRegistry>,
+    /// Set once by [`node_destroy`]: the node has left the bus. Every publisher of the node
+    /// holds a share and sends nothing afterwards (#97).
+    pub(crate) left: std::sync::Arc<AtomicBool>,
     /// Declared last so every port owned by `HyphaNode` drops before the iceoryx2 node.
     pub(crate) transport: hypha_iceoryx2::Iox2Transport,
 }
@@ -378,6 +381,7 @@ pub fn node_create(
         schema: crate::schema::SchemaState::default(),
         health: std::sync::Arc::default(),
         introspection,
+        left: std::sync::Arc::default(),
         transport,
     };
     // A process that a backward seek restarted waits here, before any port of its own.
@@ -391,9 +395,11 @@ pub fn node_create(
 }
 
 /// Stop `node` and release its default `WaitSet`, with its cycles and every registration
-/// context. Simulated time outlives the node, so the other nodes keep their clock.
+/// context; its publishers refuse every later loan and send with `InvalidState`.
+/// Simulated time outlives the node, so the other nodes keep their clock.
 pub fn node_destroy(node: &HyphaNode) {
     node.running.store(false, Ordering::Release);
+    node.left.store(true, Ordering::Release);
     // The default `WaitSet` owns a share of the node, so it goes first.
     let default_waitset = crate::locked(&node.default_waitset).close();
     drop(default_waitset);

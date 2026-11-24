@@ -80,6 +80,14 @@ hypha_generate_messages(PACKAGE visualization_msgs
   OUT_DIR "${AUTOWARE_MSG_OUT}"
   DEPENDS std_msgs geometry_msgs sensor_msgs)
 
+# The ROS 2 include paths the upstream nodes use: <sensor_msgs/msg/point_cloud2.hpp> and
+# sensor_msgs::msg::PointCloud2, over the ROS 1 headers above and the SDK's.
+hypha_generate_ros2_headers(autoware_ros2_headers PACKAGES
+  std_msgs geometry_msgs sensor_msgs nav_msgs diagnostic_msgs tf2_msgs std_srvs
+  autoware_internal_debug_msgs autoware_internal_msgs autoware_map_msgs
+  autoware_perception_msgs autoware_sensing_msgs applanix_msgs geographic_msgs
+  logging_demo pcl_msgs tier4_perception_msgs unique_identifier_msgs visualization_msgs)
+
 # autoware_patched(<package> <upstream dir> <out var>): a copy of the upstream package in
 # the build directory with upstream/patches/<package>.patch applied. The vendored files
 # stay unchanged; the patch is the whole edit of the port.
@@ -114,7 +122,7 @@ target_include_directories(hypha_rclcpp PUBLIC
   "${AUTOWARE_UPSTREAM_DIR}/geometry2/tf2/include")
 target_link_libraries(hypha_rclcpp PUBLIC
   hypha::sdk autoware_internal_debug_msgs autoware_internal_msgs hypha_rclcpp_msgs std_srvs
-  logging_demo visualization_msgs Eigen3::Eigen)
+  logging_demo visualization_msgs autoware_ros2_headers Eigen3::Eigen)
 target_compile_features(hypha_rclcpp PUBLIC cxx_std_23)
 
 add_library(hypha_rclcpp_component_main OBJECT shim/src/component_main.cpp)
