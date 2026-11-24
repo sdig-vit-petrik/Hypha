@@ -1,0 +1,10 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/ros2/demos"
+ref = "jazzy"
+commit = "37e25e0dece32f972b3cc8677b6aab3e891a9365"
+
+# Path here = SHA-256 of the file.
+[files]
+"LICENSE" = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+"logging_demo/srv/ConfigLogger.srv" = "7a64b744df40f27e60a434e45064fa0dde71d27d0bb1160d2611bd202b5663e7"

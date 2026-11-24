@@ -1,0 +1,17 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/autowarefoundation/applanix"
+ref = "main"
+commit = "6689c1ba2796b2c6cc77a6e9c5dd1c1507d8f862"
+
+# Path here = SHA-256 of the file.
+[files]
+"LICENSE" = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+"applanix_driver/config/lvx_client_params.param.yaml" = "93d2605964eb636e3adb27636f2608528f3330374e699e69649fc534ea91c703"
+"applanix_driver/include/applanix_driver/gsof/gsof.h" = "96625f8b9d679ffe473a196f4454163d36ed305f5390d479291e2eb04b5a9f39"
+"applanix_driver/include/applanix_driver/gsof/message.h" = "bb9dc3b62e4ac5806bfc433978e4640266f64bd4d7e9a6f74270862ff7362ad3"
+"applanix_driver/include/applanix_driver/math.h" = "c14130ebdca31a2ad50d3b3e7d957f20002bcfe611564dfc73369a2606987951"
+"applanix_driver/include/applanix_driver/utils/byteswap.h" = "4127c6de5d099303f82796937ff30d2f98c7c4b7d6fce98a69b6176631991e9a"
+"applanix_driver/include/applanix_driver_ros/conversions.h" = "17e2037b584865532ea94f03c49f3e5e76442ce47e4bf838952effa5107ddeb6"
+"applanix_driver/package.xml" = "a50f136cb61028ec4fb3acd8d7c664abb5db62b8119912602ad45da1e03fcc5f"
+"applanix_driver/src/applanix_driver_ros/conversions.cpp" = "fc488dde67734ec04ead3be565438f36f8ebda9ecb6f0a7729bf5c09c8a0205a"

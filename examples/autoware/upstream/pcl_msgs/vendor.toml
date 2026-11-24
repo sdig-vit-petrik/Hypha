@@ -1,0 +1,13 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/ros-perception/pcl_msgs"
+ref = "noetic-devel"
+commit = "89b072539778246218e94b608f9f294987bb6d0a"
+
+# Path here = SHA-256 of the file.
+[files]
+"msg/ModelCoefficients.msg" = "518585a0078b5b628321561f86fc547588a04b527f175081339ba14667d7d449"
+"msg/PointIndices.msg" = "327165c50add1b5a1c5a09040acd0a6cb5cdca04ce90b53505228e4116f64290"
+"msg/PolygonMesh.msg" = "a851a47b4a7af3862a315c9b4ce23a6d898e71a8a0d9fdfb93d5dac7c862bbc1"
+"msg/Vertices.msg" = "71d83e95a0e6bb45a0a8538357020ccbdbb5af4e19b10ba9ec277aa043787931"
+"package.xml" = "5af0c234d61c98f557a0dfe32f9796e4253518aea186df8c125afde0924bf140"

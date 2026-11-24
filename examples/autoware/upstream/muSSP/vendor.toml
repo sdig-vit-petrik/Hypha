@@ -1,0 +1,17 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/tier4/muSSP"
+commit = "c79e98fd5e658f4f90c06d93472faa977bc873b9"
+
+# Path here = SHA-256 of the file.
+[files]
+"LICENSE" = "e6ad4f2cd3674fa1b81dce5036ef4a0aeaea27895b2e8d3025be2f13c006388d"
+"muSSP/Graph.cpp" = "bfabd45e5f9c54f07f2396e701c0d5bdb9eab33fb029ca54caea0cd03173b88e"
+"muSSP/Graph.h" = "24ea4e0a34dad9ba929a191dade0f9587cda6f670d4ebcd44fc90063bbdbb631"
+"muSSP/Node.cpp" = "89a806ef2bfe2043fb1f6897ce1424bff97b60d0c928fade12b5f1545875ac51"
+"muSSP/Node.h" = "aba0f719285b8a03cf005dabb6941d9cb0f0c7773760ab450c3596a1ee8770fb"
+"muSSP/Sink.cpp" = "9187085d7b0057776965122d34b3981ab13e17dcca76c39a7260168b4aad4632"
+"muSSP/Sink.h" = "fa6c7d5a75e68047284a50fe0538341ad1efd271b522844045ab953ae083e0c3"
+"muSSP/mussp.cpp" = "b275c7cfc0165b06994dde8f1405367a2c80d0873a965625801fa09faaffc2d4"
+"muSSP/mussp.h" = "9f98785fed0022d36fbd53a505c4b3f921d592fc4d916c5a034edbc973f65ae2"
+"package.xml" = "de0214dd43a20015cd43ed476a21840e23229e611d3b991a97169f9c4f67286a"

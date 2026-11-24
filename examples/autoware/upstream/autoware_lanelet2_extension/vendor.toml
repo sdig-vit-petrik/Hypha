@@ -1,0 +1,17 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/autowarefoundation/autoware_lanelet2_extension"
+ref = "1.3.0"
+commit = "b1df9ed04d361562b08b1a0ac33451c2031b8f8c"
+
+# Path here = SHA-256 of the file.
+[files]
+"LICENSE" = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+"autoware_lanelet2_extension/include/autoware_lanelet2_extension/io/autoware_osm_parser.hpp" = "705f1a315d83b38c7889dab037db5c903f868b9a1054b968559a1c1c2b15fdb1"
+"autoware_lanelet2_extension/include/autoware_lanelet2_extension/projection/mgrs_projector.hpp" = "28ee32cf16301a147a7033e666274ddda272f48d46b6780927a66fe69ec09f0d"
+"autoware_lanelet2_extension/include/autoware_lanelet2_extension/projection/transverse_mercator_projector.hpp" = "9a0dab8fcff88e5ec7155f5250a9b3fc3eacb1bee0237abc663fcbfc315cb17d"
+"autoware_lanelet2_extension/include/autoware_lanelet2_extension/version.hpp" = "037baa896863d3fd60e3baac1b012744d57f00a1e0c2d081e6fb389ed9d31b4e"
+"autoware_lanelet2_extension/lib/autoware_osm_parser.cpp" = "256005e5664caabe8034ad21c2045599826b35678b5352905656ef19903138a9"
+"autoware_lanelet2_extension/lib/mgrs_projector.cpp" = "082a17008dea8d5eec03e82e35c6a643c86029ada1019ffc42bae8ee889ab0ac"
+"autoware_lanelet2_extension/lib/transverse_mercator_projector.cpp" = "675279b1792cfe643b078f9fd2cd673554f340dd05a5d3d67c9eedd22175a0f4"
+"autoware_lanelet2_extension/package.xml" = "7c47c2f71247a2a760dd7df6fa808713730f134bab4378411ea7f3af0cf923a9"

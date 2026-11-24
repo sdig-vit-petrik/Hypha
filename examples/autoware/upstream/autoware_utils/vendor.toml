@@ -1,0 +1,26 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/autowarefoundation/autoware_utils"
+ref = "1.11.0"
+commit = "9cb6f102ab4fce01a1ba1b847c9a57e822184268"
+
+# Path here = SHA-256 of the file.
+[files]
+"LICENSE" = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+"autoware_utils/include/autoware_utils/geometry/geometry.hpp" = "c5d85b9b9d27fd073360331550f38866a99edd9c33ac4f756fe777013c9c58a7"
+"autoware_utils/include/autoware_utils/math/unit_conversion.hpp" = "e7cf071f1b2fa22bb2acba9f36b2d9e712dd9f7d13c63d08c84aa539d501aeee"
+"autoware_utils/include/autoware_utils/ros/debug_publisher.hpp" = "f2662e08604a57b3ad0f93508334e25b43ab1d17e6c366788e2d3803fe57797e"
+"autoware_utils/include/autoware_utils/ros/diagnostics_interface.hpp" = "d869faf39935d3fb83b5fce3c831944d971d30a864d14ef58e40f686cce6d18a"
+"autoware_utils/include/autoware_utils/ros/published_time_publisher.hpp" = "ce1faf6352debad02266677795014fed5128d64105adacb5e7836b6e1a1e3f93"
+"autoware_utils/include/autoware_utils/system/stop_watch.hpp" = "f92ad8cf7822ea3fc1657d7f9916da9b8d416414127fde0d1f04eb5ab128440b"
+"autoware_utils_debug/include/autoware_utils_debug/time_keeper.hpp" = "22f762997d93b090df10e70f66c37884ad56187ebc0d72a65471adf340a68097"
+"autoware_utils_debug/src/time_keeper.cpp" = "c5fd58022e0bc79c3ad02e04e7ad393a25ee1dce7bae5de2c45372f12801ad5b"
+"autoware_utils_diagnostics/include/autoware_utils_diagnostics/diagnostics_interface.hpp" = "6ca0001fe50cc8e3b937df86ee6631dff943b01bd405cbbd8a783bbfc1190baa"
+"autoware_utils_geometry/include/autoware_utils_geometry/boost_geometry.hpp" = "17dba8ca48d2f22752c20884fc170fbf6175512b85121f6dd982b19abe92855f"
+"autoware_utils_geometry/include/autoware_utils_geometry/boost_polygon_utils.hpp" = "cc1441f3d95e05264c7b743e5dc148179e55332fdcc7b62ee6a1e26c79bf41d4"
+"autoware_utils_geometry/include/autoware_utils_geometry/msg/covariance.hpp" = "0d40ef2fb1fa1e018da083617c9fd43545e577a70a5beaff5dd5e9e487572401"
+"autoware_utils_geometry/src/geometry/boost_polygon_utils.cpp" = "26c62967f7f9ef4f6d2e33370eb1bfa1d3a92a3bdb09db81202ef7c63ea18165"
+"autoware_utils_math/include/autoware_utils_math/constants.hpp" = "23fc1bf5a81f7ef0eab26c7c8016f9a2c3639c604f0eb2da2d2a407bc225ccbe"
+"autoware_utils_math/include/autoware_utils_math/normalization.hpp" = "c9442b491f8cb5f05defb141aa0ee41e26d58ca9b5cc982398adf5535b1bf1f9"
+"autoware_utils_math/include/autoware_utils_math/unit_conversion.hpp" = "de11b388ad720c4b25a922421e168f6b69f08b03fec8bb17a390367673aef6ee"
+"autoware_utils_system/include/autoware_utils_system/stop_watch.hpp" = "8b0cb21e344c33074b08be354aa7de3b11f7a2fade29eaf0aae267b9f0c69f8a"
