@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security or safety defect
+    url: https://github.com/sdig-vit-petrik/Hypha/security/advisories/new
+    about: Report privately a vulnerability, or a defect that lets wrong, old or missing data through without a fault indication.
