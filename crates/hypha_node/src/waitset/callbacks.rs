@@ -32,12 +32,25 @@ pub(super) fn invoke_data(
 pub(crate) fn apply_sim_clock_sample(
     sample: &hypha_iceoryx2::Iox2Sample,
 ) -> Result<ClockRead, crate::status::Error> {
+    let read = read_sim_clock_sample(sample)?;
+    apply_sim_clock_read(read)?;
+    Ok(read)
+}
+
+/// What one `/clock` sample carries; `CorruptPayload` for one that is no clock.
+pub(super) fn read_sim_clock_sample(
+    sample: &hypha_iceoryx2::Iox2Sample,
+) -> Result<ClockRead, crate::status::Error> {
     let nanos = hypha_wire::ros_time::RosTime::decode_clock(sample.payload())
         .map(hypha_wire::ros_time::RosTime::as_nanos)
         .ok_or(crate::status::Error::CorruptPayload)?;
-    let signed = i64::try_from(nanos).map_err(|_| crate::status::Error::CorruptPayload)?;
-    crate::clock::clock_set_sim_time(signed)?;
     Ok(ClockRead { nanos, sent_nanos: sample.header().metadata.transport_sent_nanos })
+}
+
+/// Set simulated time to the value of `read`.
+pub(super) fn apply_sim_clock_read(read: ClockRead) -> Result<(), crate::status::Error> {
+    let signed = i64::try_from(read.nanos).map_err(|_| crate::status::Error::CorruptPayload)?;
+    crate::clock::clock_set_sim_time(signed)
 }
 
 /// Call a C timer callback for one due period; nothing for a released one.

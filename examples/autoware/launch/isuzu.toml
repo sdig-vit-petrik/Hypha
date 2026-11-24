@@ -12,8 +12,9 @@
 # Executables are found on PATH; files are relative to examples/autoware. The nodes follow
 # the player's /clock outside the replay lockstep (HYPHA_USE_SIM_TIME=follow), as ROS nodes
 # follow ros2 bag play: the localization's /tf loop cannot replay in lockstep yet (#103).
-# Each loop of the player sends /clock back: the nodes exit 75 and their windows start
-# them again at once. The bridge and the player run on host time.
+# Each loop of the player sends /clock back: every node on /clock exits 75, as nothing
+# rewinds in place (#130), and its window starts it again at once. The bridge and the
+# player run on host time.
 
 # --- Detection: Slice A -----------------------------------------------------------------
 

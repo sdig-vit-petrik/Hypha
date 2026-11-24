@@ -328,8 +328,9 @@ every 200 ms.
 With `--clock`, `--loop` and the restart key start a pass again from the start of
 the window, which sends `/clock` back. That restarts the participants: no node
 rewinds in place. The player sends the first `/clock` value once, waits until every
-participant that runs cycles has left the bus (each C++ node built on
-`hypha::runNode` exits 75 and its `hypha launch` supervisor starts it again), opens its publishers again, and waits for the
+participant has left the bus (each C++ node built on
+`hypha::runNode` exits 75 and its `hypha launch` supervisor starts it again; a node in
+follow mode exits 75 too, though the player does not wait for it), opens its publishers again, and waits for the
 same participants to rejoin before the pass sends data. A `hypha record --sync`
 recorder stays through it. A participant that is still on the bus or has not
 rejoined after 30 s stops the replay; a node with its own `main`, or a Rust node,

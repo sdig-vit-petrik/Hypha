@@ -417,7 +417,8 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   answers a `/clock` sample sent at or after the one it rejoined on
   (`node_progress::epoch`). Only then is the clock value compared.
 - **Time going back restarts; nothing rewinds in place.** A timer or cycle that sees
-  simulated time go back, ends the run with
+  simulated time go back, and a node on simulated time that reads a `/clock` lower than
+  its last one, whatever it holds and in follow mode too (#130), end the run with
   `ClockRewound`, `runNode` exits 75, and `hypha launch` starts the process again. Do not add rewind handling: the old
   in-place rewind (abandoned samples, re-reads, re-anchored fallbacks) was the main
   source of replay bugs. The restarted process must not open a port before every old

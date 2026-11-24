@@ -144,8 +144,9 @@ key plays the rest of one chunk, sends its `/clock` and pauses again.
 **A backward seek restarts the participants.** No node rewinds in place. A pass that goes back runs
 in this order:
 
-1. The player sends the pass's first `/clock` value once. Each participant's replay and triggered
-   cycles see the clock go back and end the run with `ClockRewound`.
+1. The player sends the pass's first `/clock` value once. Each node on simulated time reads a
+   `/clock` lower than its last one and ends the run with `ClockRewound`, whatever its `WaitSet`
+   holds; a timer or cycle that sees the clock go back does the same.
 2. `hypha::runNode` (C++) destroys the node, so it leaves the bus, and exits 75. Its supervisor,
    `hypha launch` (or systemd with `RestartForceExitStatus=75`), starts it again at once; `hypha launch`
    sets `HYPHA_REJOIN_AFTER_NANOS` to its steady time when it saw the exit. A participant that no
@@ -164,8 +165,8 @@ Every old participant has left before any new one reads its first `/clock`, so n
 a sample of the old timeline. Determinism comes from the fresh start, not from bookkeeping inside a
 running cycle. A participant that does not restart itself (a Rust node, or a C++ program with its
 own `main`) ends its run with `ClockRewound`, and the player fails when it does not rejoin. A node
-on simulated time that has no replay or triggered cycle, such as a bridge, keeps running and follows
-the clock back.
+on simulated time that takes no part, such as a bridge or a node in follow mode, ends its run the
+same way (#130); only a CLI tool follows the clock back.
 
 A forward jump of `/clock` is not announced. Each period that the jump passes runs one step, in
 order, as a chunk is stepped. No node reads an announcement, so none can disagree about the gap. The

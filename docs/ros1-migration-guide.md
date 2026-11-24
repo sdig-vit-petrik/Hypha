@@ -634,8 +634,10 @@ or 1.
   with a different table fails with `InvalidState`.
 - **Stale shared memory after a crash** can look like a code fault. Run
   `./clean-shm.sh` before you look for a bug.
-- **A backward seek or a loop of `hypha play --clock` restarts the node.** A cycle
-  that sees simulated time go back ends the run with `ClockRewound`, the process
+- **A backward seek or a loop of `hypha play --clock` restarts the node.** A node
+  that reads a `/clock` lower than its last one ends the run with `ClockRewound`, with
+  or without a timer and in follow mode too, as does a cycle that sees simulated time go
+  back; the process
   exits 75 and its supervisor starts it again
   ([execution-model.md](execution-model.md) §11.1). Every member is built anew, so
   the node needs no reset code; do not write one.
