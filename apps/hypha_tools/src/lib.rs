@@ -10,6 +10,7 @@
 //! | `hypha play` | Replays an MCAP file onto the bus in log-time order, paced by the recording's own timeline. Keys pause, single-step, change the rate, and restart. |
 //! | `hypha convert` | Turns a ROS 2 bag (rosbag2 SQLite) into an MCAP recording that `hypha play` replays, with ROS 1 serialization from the definitions of the message paths. |
 //! | `hypha launch` | Runs a set of processes from a TOML file, each in its own window of one tmux session, with a restart policy per unit. |
+//! | `hypha load` | Drives publisher and subscriber processes from a workload file and writes one report: latency, loss, missed periods and memory, checked against pass limits. |
 //! | `hypha param` | Reads and edits a configuration file on disk. It does not touch the bus. |
 //! | `hypha foxglove` | Serves the bus to Foxglove Studio over a WebSocket. |
 pub mod cdr;
@@ -23,6 +24,7 @@ pub mod launch_session;
 pub mod launch_supervisor;
 pub mod launch_tmux;
 pub mod launch_units;
+pub mod load;
 pub mod msg_library;
 pub mod msg_patch;
 pub mod msg_plot;
@@ -30,6 +32,7 @@ pub mod msg_reflect;
 pub mod play_session;
 pub mod player;
 pub mod point_layout;
+pub mod proc_usage;
 pub mod record_session;
 pub mod record_sync;
 pub mod recorder;

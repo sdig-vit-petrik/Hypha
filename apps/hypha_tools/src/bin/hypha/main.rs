@@ -12,6 +12,7 @@ mod convert;
 mod foxglove;
 mod intercept;
 mod launch;
+mod load;
 mod node;
 mod param;
 mod play;
@@ -35,7 +36,7 @@ struct Tool {
 }
 
 /// Every tool, in the order `hypha --help` lists them.
-const TOOLS: [Tool; 11] = [
+const TOOLS: [Tool; 12] = [
     Tool { subcommand: "topic", main: topic::main, summary: "list, echo, hz and bw of topics" },
     Tool {
         subcommand: "top",
@@ -74,6 +75,11 @@ const TOOLS: [Tool; 11] = [
         subcommand: "clean",
         main: clean::main,
         summary: "remove the shared memory of bus domains nobody uses",
+    },
+    Tool {
+        subcommand: "load",
+        main: load::main,
+        summary: "run a workload and report latency, loss and memory",
     },
 ];
 

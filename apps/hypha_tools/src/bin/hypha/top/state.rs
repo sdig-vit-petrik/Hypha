@@ -163,7 +163,7 @@ pub(crate) struct AppState {
     /// Scroll position of the node list.
     pub nodes_table: ratatui::widgets::TableState,
     /// CPU and memory of the node processes.
-    pub proc_usage: crate::top::proc_usage::ProcSampler,
+    pub proc_usage: hypha_tools::proc_usage::ProcSampler,
     /// The Graph tab.
     pub graph: crate::top::graph_ui::GraphView,
     /// Every node seen in the registry since start, by name. A node that left the
@@ -197,7 +197,7 @@ impl AppState {
             intercept: crate::top::intercept::InterceptView::default(),
             topics_table: ratatui::widgets::TableState::default(),
             nodes_table: ratatui::widgets::TableState::default(),
-            proc_usage: crate::top::proc_usage::ProcSampler::default(),
+            proc_usage: hypha_tools::proc_usage::ProcSampler::default(),
             graph: crate::top::graph_ui::GraphView::default(),
             seen_nodes: BTreeMap::new(),
         }

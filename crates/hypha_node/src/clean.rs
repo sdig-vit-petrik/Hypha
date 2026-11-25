@@ -199,6 +199,17 @@ fn keep_reason(selection: &DomainSelection, domain: &str) -> Result<Option<KeepR
     }))
 }
 
+/// The bytes of shared memory the domain `domain` (empty for the domain "none") has
+/// written: the blocks its shared-memory objects hold, not the size they reserve. A
+/// domain with no objects holds 0. `None` on a system that does not tell it (every
+/// system but Linux, whose objects are sparse `/dev/shm` files).
+///
+/// # Errors
+/// A message for a domain name that is not one, or for an object that cannot be read.
+pub fn domain_shared_memory(domain: &str) -> Result<Option<u64>, String> {
+    host_resources::domain_shared_memory(domain)
+}
+
 /// `domain t_1_2`, or `the domain "none"` for the empty name.
 #[must_use]
 pub fn domain_label(domain: &str) -> String {

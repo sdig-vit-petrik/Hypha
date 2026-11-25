@@ -1,12 +1,12 @@
 # Command-line tools
 
-Eleven tools ship with hypha, as one executable: `hypha <tool>` with the tools
+Twelve tools ship with hypha, as one executable: `hypha <tool>` with the tools
 `topic`, `top`, `node`, `record`, `play`, `convert`, `intercept`, `foxglove`, `launch`,
-`param` and `clean`; `hypha --help` lists them. Two shorter names run the same
+`param`, `clean` and `load`; `hypha --help` lists them. Two shorter names run the same
 executable. `hy` is `hypha`: `hy play --input run.mcap` is `hypha play --input
 run.mcap`. Each tool has a link of its own, `hy<tool>`: `hytopic`, `hytop`,
 `hynode`, `hyrecord`, `hyplay`, `hyconvert`, `hyintercept`, `hyfoxglove`, `hylaunch`,
-`hyparam` and `hyclean`, so `hyplay --input run.mcap` is the same command again. The
+`hyparam`, `hyclean` and `hyload`, so `hyplay --input run.mcap` is the same command again. The
 installation makes `hy` and these links; the old names `hypha_<tool>` are gone.
 Usage and messages name the tool as `hypha play: ...` whatever name started it. In
 CMake, `hypha::<tool>` (`hypha::topic`, ...) runs a tool's link. `hypha_ros_bridge`
@@ -744,6 +744,125 @@ the producer restarts with another schema, the interception stops forwarding
 file rebuilds a stopped interception on the current schema (in `hypha top`, press
 `a` twice). Inputs wake the relay
 on each sample.
+
+---
+
+## Measuring the framework
+
+### `hypha load` — latency, loss and memory under a defined load
+
+```sh
+hypha load examples/load/smoke.toml --report smoke.json [--recording smoke.mcap]
+```
+
+A workload file names worker processes, the topics each one publishes and subscribes
+to, the run's times, the recorder and the pass limits. `hypha load` starts one worker
+per `[[process]]` (this executable again, in a hidden worker mode), leads them through
+the run, samples their memory, writes one JSON report and prints a short summary. Each
+worker is an ordinary bus node, `load_<process>`, so the workload decides which
+publishers and subscribers share a process. The run uses a domain of its own,
+`load_<pid>` (`<HYPHA_DOMAIN>_ld<pid>` when the caller set one), so it cannot touch a
+running stack; it removes that domain's shared memory at the end and names a domain it
+had to keep. A coordinator killed with SIGKILL ends no child: on Linux each worker and
+the recorder get SIGTERM from the parent-death signal, and a worker also stops when its
+stdin closes, but on macOS the recorder keeps running. Stop it by the pid the
+coordinator printed (`hypha load: the recorder runs as pid N`), then run
+`hypha clean --domain load_`.
+
+Exit codes: `0` every limit passed, `1` a limit failed, `70` the run itself failed: an
+invalid command line or workload, a worker that died, a worker silent for more than
+three sample intervals (at least 10 s), a start-up or end phase longer than 30 s, an
+interrupt, or a recorder that died during the run, ended by a signal, exited with a code
+other than 0 or 1, or left a recording that cannot be read. `hypha record` exits 1 when
+it lost samples; with a readable recording that is no failed run, and the limit
+`max_unrecorded` judges the loss. The report's `recorder.exit_code` says how it ended.
+The report path is removed when the run starts, and the report is written beside it and
+renamed into place, so the path holds this run's whole report or nothing. A failed run
+still writes its report when it can, with `"outcome": "run_failed"` and the reason; an
+invalid workload writes none. The summary is printed after the report is written; a
+report that cannot be written prints `hypha load: RUN FAILED` and exits 70.
+
+The workers use the Rust SDK. The runtime below the C ABI is the one a C++ node uses;
+the thin C++ layer is not in the measured path.
+
+#### Workload
+
+| Key | Required | Meaning |
+|---|---|---|
+| `[run] duration_s`, `warmup_s`, `cooldown_s` | yes | The measuring window, the time before it that no statistic counts, and the time after it in which publishers go on sending so that a lost last frame of the window shows as a gap |
+| `[run] sample_interval_s` | yes | The period of the time series and of the workers' heartbeat |
+| `[run] bounded_memory` | yes | Runs the workers as a bounded deployment (`HYPHA_BOUNDED_MEMORY`) |
+| `[recorder] enabled`, `compression` | no (off, `lz4`) | A real `hypha record` child that records every topic of the run |
+| `[[process]] name` | yes | A worker, `[a-z][a-z0-9_]*`; `recorder` is the report's name of the recorder and is refused |
+| `[[topic]] name`, `bytes`, `rate_hz`, `publisher`, `subscribers` | yes | One topic: its message size (at least 20 bytes, the probe header), its rate (messages per second, or `"max"` for back to back), its publishing process and its subscribers |
+| `[[topic]] burst = { count, every_s }` | no (none) | `count` extra messages back to back every `every_s` seconds |
+| subscriber `process` | yes | The process it runs in |
+| subscriber `depth`, `work_us` | no (0, 0) | Its queue depth (0: the deepest the topic's service admits, 32 for the `default` policy that a load publisher creates) and the busy work per sample that makes a slow reader |
+| subscriber `limits` | no (the run's) | Subscriber limits of its own, which replace those of `[limits]` |
+
+An unknown key is refused, and so is a process with nothing to do, a topic with two
+subscribers in one process, and a topic with more than three subscribers, the recorder
+counted: a topic admits three subscribers that declare no policy, as the workers and the
+recorder do. A process is refused when the full queues of its subscribers times their
+`work_us` reach the heartbeat bound: one turn of its `WaitSet` would then hold its
+heartbeat, and the message names both numbers. A slow reader shares the `WaitSet` of its
+process, so it holds up every other callback there: give it a process of its own.
+Each message is a `hypha_load/Probe` (`uint64 sent_nanos`, `uint64
+sequence`, `uint8[] fill`), so a recording of the run decodes like any other.
+
+#### Limits
+
+Every key is optional, and an absent key is not checked. A limit whose value was not
+measured fails.
+
+| Key | Checked on | Fails when |
+|---|---|---|
+| `latency_p99_us` | each subscriber | the 99th percentile over the window exceeds it |
+| `max_interval_latency_p99_us` | each subscriber | the 99th percentile of any one sample interval of the window exceeds it, taken from every interval as it ends |
+| `max_loss` | each subscriber | the frames lost exceed it: the framework's missing sequences from the window's start to the stop (the cool-down included), or the window's messages not received when that is more. A message of the window still queued at the stop counts as lost |
+| `loss_accounted` | each subscriber | the framework's missing-sequence count differs from the harness's own count of skipped probe sequences, or a probe came out of order or was no probe; it reports that difference plus those probes, against a limit of 0 |
+| `max_refused_publishes` | each publisher | more publishes than this were refused over the run |
+| `max_publish_call_us` | each publisher | the longest publish call of the window exceeds it |
+| `max_missed_periods` | each periodic publisher | more of the window's deadlines than this were missed; a `"max"` topic has no periods and no result |
+| `max_unrecorded` | each topic | more messages than this, of all the run sent, are missing from the recording; without the recorder it is not measured and fails |
+| `max_rss_growth_bytes` | each process | its largest resident memory from the window's start to the end of publishing exceeds the one at the window's start by more |
+| `max_shm_growth_bytes` | the domain | its written shared memory grows by more over the same span |
+
+#### How it measures
+
+- **Latency** is send call to callback entry. The publisher reads `CLOCK_MONOTONIC`
+  just before its publish call and writes it into the probe; the subscriber's
+  `WaitSet` callback reads the same clock first. Every process of a host shares that
+  clock, and it never steps. A histogram of 3,776 fixed log-linear buckets (64 per
+  power of two, at most 1/64 or about 1.6 % wide) keeps it; a quantile is the upper
+  bound of its bucket, clamped to the exact maximum, so it never reads low and at most
+  about 1.6 % high. The publish call's own duration has a histogram per publisher.
+- **Loss** is the subscriber's missing-sequence count (`RawSubscriber::counters`), read
+  at the window's start and at the stop. The harness counts the gaps of the probe's own
+  sequence beside it, and the messages sent and received in the window, by send stamp.
+  A refused publish moves the probe's sequence as the framework's: the framework takes a
+  sequence number for a publish its pool or its send refused, so it is a gap for both.
+- **Missed periods**: a publisher keeps absolute deadlines `start + k * period`. When
+  it gets to send, it sends one message for the latest deadline that passed and counts
+  the earlier ones as missed, the way a timer does; it does not catch up. A deadline
+  counts when it lies in the window, whenever the publisher noticed it, and a deadline of
+  the window that was never reached because publishing ended counts too. A burst adds
+  messages and has no deadlines of its own; the time it takes can make the next deadline
+  late. A sleep that wakes a period late (a loaded host, macOS timer coalescing at 1 kHz)
+  is a missed period of the host, not of the harness.
+- **Memory**: the coordinator reads each process every sample interval. Linux gives
+  `VmRSS` and `RssShmem` from `/proc/<pid>/status`, and the domain's written shared
+  memory as the allocated blocks of its `/dev/shm` objects. macOS gives the resident
+  size from `ps` only; the report marks the shared-memory values `null` and says why
+  under `not_measured`.
+- **The report** holds the host (name, OS, kernel, CPUs, build profile), the parsed
+  workload and its MD5, the domain, each topic's publisher and subscriber results, each
+  process's memory, the recorder's counts, a time series and every checked limit. The
+  series keeps at most 512 points: when it is full, neighbouring points merge, keeping
+  the larger values. Neither the harness nor the report grows with the run's length.
+
+A latency figure is a property of the host it was taken on: the report says which one,
+and the test suite asserts no latency or speed (#64).
 
 ---
 

@@ -85,7 +85,7 @@
 pub mod clean {
     pub use crate::clean::{
         CleanOutcome, CleanReport, DomainSelection, KeepReason, KeptDomain, RemovedDomain, clean,
-        domain_label,
+        domain_label, domain_shared_memory,
     };
 }
 pub mod clock;
@@ -108,7 +108,9 @@ pub mod sys {
     pub use hypha_sys::{ReadOnlyMap, map_read_only};
 }
 
-pub use loan::{RawSample, RawSubscriber, ReceiveError, ReceivedSample, SampleIdentity};
+pub use loan::{
+    RawSample, RawSubscriber, ReceiveError, ReceivedSample, SampleIdentity, SubscriberCounters,
+};
 pub use options::{PayloadCapacity, PublisherOptions, SubscriberOptions};
 pub use raw::{
     BusNode, NodeInfo, RawPublisher, TopicInfo, WaitResult, domain, is_cli_node_name, list_nodes,
@@ -120,6 +122,12 @@ pub use waitset::{AttachmentId, Delivery, RunResult, StopReason, WaitSet};
 pub use hypha_core::message;
 /// The parameter-file loader a node uses: includes, `${NAME}`, duplicate refusal.
 pub use hypha_core::parameters;
+/// The queue depth of hypha's `default` policy, which a publisher that declares no policy
+/// creates its topic with: what a subscriber depth of 0 keeps on such a topic.
+pub use hypha_iceoryx2::qos::DEFAULT_MAX_DEPTH;
+/// Subscribers a topic admits beyond its policy from endpoints that declare no policy:
+/// tools, bridges, `hypha load` workers. A further undeclared subscriber is refused.
+pub use hypha_iceoryx2::qos::RESERVED_OBSERVER_SUBSCRIBERS as UNDECLARED_SUBSCRIBER_SLOTS;
 pub use hypha_msgdef as msgdef;
 pub use hypha_msgdef::md5;
 /// The standard message types (`std_msgs`, `geometry_msgs`, ..., `hypha_msgs`).
