@@ -175,8 +175,7 @@ impl CallbackDispatcher<'_> {
                     && (!control.is_canceled()
                         || super::TimerControl::follow_while_canceled(timer, now));
                 if !followed {
-                    let subject = timer_subject(registration.id, timer.period().nanos());
-                    let status = crate::replay_restart::refuse_rewind(&subject, now.nanos());
+                    let status = refuse_timer_rewind(None, registration.id, timer, now);
                     return fail_with(&mut self.failure, registration.id, status);
                 }
                 // A canceled timer calls nothing and counts no missed period.
@@ -196,11 +195,7 @@ impl CallbackDispatcher<'_> {
                 None => None,
             };
             if rewound {
-                // Nothing rewinds in place: the run ends and the process restarts.
-                let plain_timer = timer_subject(registration.id, timer.period().nanos());
-                let subject =
-                    owner.map_or(plain_timer, |cycle| format!("cycle '{}'", cycle.name()));
-                let status = crate::replay_restart::refuse_rewind(&subject, now.nanos());
+                let status = refuse_timer_rewind(owner, registration.id, timer, now);
                 return fail_with(&mut self.failure, registration.id, status);
             }
             if let Some(cycle) = owner
@@ -601,8 +596,7 @@ fn grid_due(
     let (hypha_core::timer::Observation { fired, rewound }, missed_delta) =
         observe_with_delta(timer, now);
     if rewound {
-        let subject = format!("cycle '{}'", cycle.name());
-        return Err(crate::replay_restart::refuse_rewind(&subject, now.nanos()));
+        return Err(refuse_timer_rewind(Some(cycle), attachment, timer, now));
     }
     // A held cycle runs its backlog, and a sliced one the deadlines its last turn did not
     // reach, on a turn with no new deadline.
@@ -647,6 +641,22 @@ pub(crate) fn status_from_code(code: i32) -> HyphaStatus {
         return HyphaStatus::Backend;
     }
     HyphaStatus::from_i32(code)
+}
+
+/// The status that ends the run when the timer of registration `id` saw simulated time
+/// go back to `now`. Nothing rewinds in place: the run ends and the process restarts
+/// (FSR-37). The line names the cycle `owner` that the timer steps, or the plain timer.
+fn refuse_timer_rewind(
+    owner: Option<&Cycle>,
+    id: AttachmentId,
+    timer: &hypha_core::timer::Timer,
+    now: hypha_time::Time,
+) -> HyphaStatus {
+    let subject = owner.map_or_else(
+        || timer_subject(id, timer.period().nanos()),
+        |cycle| format!("cycle '{}'", cycle.name()),
+    );
+    crate::replay_restart::refuse_rewind(&subject, now.nanos())
 }
 
 /// How a rewind line names a plain timer: by its attachment id and period.
