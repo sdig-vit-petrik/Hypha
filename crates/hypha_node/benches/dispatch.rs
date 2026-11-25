@@ -5,7 +5,9 @@
 //! the iceoryx2 notification, one `WaitSet` turn and the callback. The
 //! subscription is a waking one, so the run ends as soon as the sample is
 //! delivered and no deadline is measured. The callback counts the deliveries and
-//! the iteration checks that each run delivered exactly one.
+//! the iteration checks that each run delivered exactly one. A second measurement
+//! attaches 32 idle subscriptions beside the measured one: the difference is what the
+//! run loop pays per registration and turn.
 //!
 //! The cycle tick with one input and one output is measured through the C ABI, as
 //! the cycle tests do: `cargo bench -p hypha_ffi --bench cycle`.
@@ -29,7 +31,10 @@ const DEFINITION: &str = "uint32 value\n";
 /// The longest a run may wait for its one sample; the run ends at the delivery.
 const RUN_LIMIT: Duration = Duration::from_secs(1);
 
-fn publish_to_callback(c: &mut Criterion) {
+/// One sample from publish to callback, with `idle` more subscriptions of other topics
+/// attached to the same `WaitSet`. They receive nothing: what they add is what a turn
+/// of the run loop costs for each registration it holds.
+fn publish_to_callback_beside(c: &mut Criterion, name: &str, idle: usize) {
     let node = BusNode::new(&unique_name("bench_dispatch")).expect("node");
     let topic = format!("/{}", unique_name("bench_dispatch"));
     let mut publisher = node
@@ -47,9 +52,24 @@ fn publish_to_callback(c: &mut Criterion) {
             Ok(())
         })
         .expect("attach");
+    // Each idle subscription has a topic and a publisher of its own, which stay silent.
+    let mut idle_publishers = Vec::with_capacity(idle);
+    for index in 0..idle {
+        let idle_topic = format!("{topic}/idle_{index}");
+        let options = PublisherOptions::default();
+        let publisher =
+            node.publish_raw_configured(&idle_topic, DATA_TYPE, MD5, DEFINITION, options);
+        idle_publishers.push(publisher.expect("idle publisher"));
+        let options = SubscriberOptions::default().keeping(8);
+        let subscriber =
+            node.subscribe_raw_with_options(&idle_topic, options).expect("idle subscriber");
+        waitset
+            .attach_waking_subscription(subscriber, |_| Ok(()))
+            .expect("attach an idle subscription");
+    }
 
     let mut value: u32 = 0;
-    c.bench_function("dispatch/publish_to_callback", |b| {
+    c.bench_function(name, |b| {
         b.iter(|| {
             value = value.wrapping_add(1);
             let before = delivered.load(Ordering::Relaxed);
@@ -62,5 +82,47 @@ fn publish_to_callback(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, publish_to_callback);
+/// A bounded run that finds nothing to do: what starting and ending a run costs with
+/// `subscriptions` silent subscriptions attached, before any sample is dispatched.
+fn empty_run_with(c: &mut Criterion, name: &str, subscriptions: usize) {
+    let node = BusNode::new(&unique_name("bench_empty_run")).expect("node");
+    let topic = format!("/{}", unique_name("bench_empty_run"));
+    let mut waitset = WaitSet::new(&node).expect("waitset");
+    let mut publishers = Vec::with_capacity(subscriptions);
+    for index in 0..subscriptions {
+        let silent = format!("{topic}/silent_{index}");
+        let options = PublisherOptions::default();
+        let publisher = node.publish_raw_configured(&silent, DATA_TYPE, MD5, DEFINITION, options);
+        publishers.push(publisher.expect("publisher"));
+        let options = SubscriberOptions::default().keeping(8);
+        let subscriber = node.subscribe_raw_with_options(&silent, options).expect("subscriber");
+        waitset.attach_waking_subscription(subscriber, |_| Ok(())).expect("attach");
+    }
+    c.bench_function(name, |b| {
+        b.iter(|| {
+            let result = waitset.run_for(Duration::ZERO);
+            assert!(result.ok(), "{:?}", result.err());
+        });
+    });
+}
+
+fn empty_run(c: &mut Criterion) {
+    empty_run_with(c, "dispatch/empty_run_1_subscription", 1);
+    empty_run_with(c, "dispatch/empty_run_33_subscriptions", 33);
+}
+
+fn publish_to_callback(c: &mut Criterion) {
+    publish_to_callback_beside(c, "dispatch/publish_to_callback", 0);
+}
+
+fn publish_to_callback_beside_32_idle_subscriptions(c: &mut Criterion) {
+    publish_to_callback_beside(c, "dispatch/publish_to_callback_beside_32_idle", 32);
+}
+
+criterion_group!(
+    benches,
+    publish_to_callback,
+    publish_to_callback_beside_32_idle_subscriptions,
+    empty_run
+);
 criterion_main!(benches);
