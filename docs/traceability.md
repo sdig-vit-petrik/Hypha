@@ -40,7 +40,7 @@ of every row from a test run.
 | FSR-24 | `hypha_tools/test_recorder_player_core`, `hypha_tools/record_sync`, `hypha_tools/utc_replay_bus`, `hypha_tools/play_flow_control`, `hypha_ffi/replay_callbacks` |  |
 | FSR-25 | `hypha_iceoryx2/start_order_matrix` |  |
 | FSR-26 | `hypha_iceoryx2/schema_retention`, `cxx:test_handle_lifetime`; `schema_retention`: a closed topic leaves no record; an MRS flight leaves nothing in `/tmp/iceoryx2` | No test checks that a clean shutdown leaves no segment. |
-| FSR-27 | `hypha_iceoryx2/stale_resource_reclaim`, `hypha_node/peer_kill_isolation`; `peer_kill_isolation`: SIGKILL of a publisher, of a reader and of a reader that holds samples, and a restarted publisher: no loss, no rejection, no refused publish for the survivors; R3 harness, by hand | No test kills a publisher that holds an unsent loan, or a process between two sends of one cycle step. |
+| FSR-27 | `hypha_iceoryx2/stale_resource_reclaim`, `hypha_node/peer_kill_isolation`; `peer_kill_isolation`: SIGKILL of a publisher, of a reader, of a reader that holds samples, of a publisher that holds an unsent loan and of a peer that reproduces a cycle between the two sends of one step, and a restarted publisher: no loss, no rejection, no refused publish for the survivors; R3 harness, by hand |  |
 | FSR-40 | `hypha_iceoryx2/domain_isolation`, `hypha_node/domain` |  |
 | FSR-28 | `hypha_ros_bridge/direction_routing`, `hypha_ros_bridge/packet_framing`, `hypha_ros_bridge/automatic_typed_ros_ingress` |  |
 | FSR-29 | `hypha_ros_bridge/manifest_validation`, `hypha_ros_bridge/automatic_routing` |  |
