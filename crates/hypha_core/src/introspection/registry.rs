@@ -1,6 +1,6 @@
 //! Safe registry for one node's introspection rows.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::{
     ConfigRow, CycleOutputRow, CycleRow, EndpointRow, Identity, InputBindingRow, InputMode,
@@ -47,7 +47,7 @@ impl IntrospectionRegistry {
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        crate::locked(&self.state)
     }
 
     fn add(&self, row: Row) -> u64 {

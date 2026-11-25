@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
 use toml::Table;
 
@@ -16,17 +16,17 @@ struct ReadSet(Mutex<BTreeSet<String>>);
 
 impl ReadSet {
     fn insert(&self, name: &str) {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
+        crate::locked(&self.0).insert(name.to_string());
     }
 
     fn contains(&self, name: &str) -> bool {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).contains(name)
+        crate::locked(&self.0).contains(name)
     }
 }
 
 impl Clone for ReadSet {
     fn clone(&self) -> Self {
-        let cloned = self.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let cloned = crate::locked(&self.0).clone();
         Self(Mutex::new(cloned))
     }
 }
@@ -57,7 +57,7 @@ struct IgnoreSet(Mutex<Vec<IgnoredKey>>);
 impl IgnoreSet {
     /// Adds `entry` unless its key is already ignored; true when it was added.
     fn insert(&self, entry: IgnoredKey) -> bool {
-        let mut entries = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut entries = crate::locked(&self.0);
         if entries.iter().any(|known| known.key == entry.key) {
             return false;
         }
@@ -66,11 +66,11 @@ impl IgnoreSet {
     }
 
     fn snapshot(&self) -> Vec<IgnoredKey> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        crate::locked(&self.0).clone()
     }
 
     fn covers(&self, key: &str) -> bool {
-        let entries = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let entries = crate::locked(&self.0);
         entries.iter().any(|entry| key_is_under(key, &entry.key))
     }
 }
@@ -103,7 +103,7 @@ pub(crate) fn key_is_under(key: &str, prefix: &str) -> bool {
 
 impl fmt::Debug for ReadSet {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let set = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let set = crate::locked(&self.0);
         fmt::Debug::fmt(&*set, out)
     }
 }

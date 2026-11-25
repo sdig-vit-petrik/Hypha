@@ -137,8 +137,7 @@ impl FrameValidator {
             return Err(FrameRejection::Future);
         }
 
-        let mut sequences =
-            self.sequences.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sequences = crate::locked(&self.sequences);
         if sequences.accept(frame.publisher_id(), frame.sequence()) {
             self.missing_sequences.store(sequences.missing_sequences(), Ordering::Release);
             return Ok(frame);

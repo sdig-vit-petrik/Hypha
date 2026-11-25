@@ -166,7 +166,7 @@ impl SchemaIdentityCache {
     /// Returns an already-resolved identity without asking the bus.
     #[must_use]
     pub fn cached(&self, topic: &str, schema_hash: u64) -> Option<Arc<ResolvedSchema>> {
-        let entries = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = crate::locked(&self.entries);
         match entries.get(topic)?.get(&schema_hash)? {
             Entry::Resolved(identity) => Some(Arc::clone(identity)),
             Entry::RetryAfter(_) => None,
@@ -190,7 +190,7 @@ impl SchemaIdentityCache {
             return Ok(None);
         }
         {
-            let entries = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entries = crate::locked(&self.entries);
             match entries.get(topic).and_then(|by_hash| by_hash.get(&schema_hash)) {
                 Some(Entry::Resolved(identity)) => return Ok(Some(Arc::clone(identity))),
                 Some(Entry::RetryAfter(deadline)) if *deadline > now => return Ok(None),
@@ -207,7 +207,7 @@ impl SchemaIdentityCache {
             Ok(None) => (Entry::RetryAfter(retry_deadline(now)), Ok(None)),
             Err(cause) => (Entry::RetryAfter(retry_deadline(now)), Err(cause)),
         };
-        let mut entries = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut entries = crate::locked(&self.entries);
         entries.entry(topic.to_owned()).or_default().insert(schema_hash, entry);
         result
     }
@@ -241,7 +241,7 @@ impl SchemaIdentityCache {
     }
 
     fn clear_retry(&self, topic: &str, schema_hash: u64) {
-        let mut entries = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut entries = crate::locked(&self.entries);
         if let Some(by_hash) = entries.get_mut(topic)
             && matches!(by_hash.get(&schema_hash), Some(Entry::RetryAfter(_)))
         {

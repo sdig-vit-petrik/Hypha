@@ -112,7 +112,7 @@ impl CycleInputSource {
         }
         drain_at_most(limit, || {
             let received = subscriber.receive_validated_with(&mut now, |frame| {
-                let mut history = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut history = crate::locked(history);
                 history.push_from(
                     frame.payload(),
                     frame.transport_sent_nanos(),
@@ -139,7 +139,7 @@ impl CycleInputSource {
         limit: usize,
         now: &mut u64,
     ) -> Result<(), Error> {
-        let mut newest = self.newest.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut newest = crate::locked(&self.newest);
         newest.frames = 0;
         drain_at_most(limit, || {
             let received = subscriber.receive_validated_with(now, |frame| {
@@ -161,7 +161,7 @@ impl CycleInputSource {
         if newest.frames == 0 {
             return Ok(());
         }
-        let mut history = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut history = crate::locked(history);
         history.count_unstored(newest.frames.saturating_sub(1));
         history.push_from(
             &newest.payload,

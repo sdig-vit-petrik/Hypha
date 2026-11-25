@@ -5,8 +5,6 @@
 //! binding is not ok, else `INPUTS_USABLE`. Bindings of one topic give one input with the
 //! worst verdict. Reading the state has no side effect.
 
-use std::sync::PoisonError;
-
 use hypha_core::introspection::{InputBindingRow, InputRole};
 use hypha_msgs::hypha_msgs::{CycleState, NodeState, RequiredInput};
 
@@ -120,14 +118,14 @@ fn judged_from(topic: &str, view: &HyphaCycleBindingView, counts: InputCounts) -
 /// The judgement of every required, wired binding at its cycle's last capture, and one
 /// row per committed cycle. A binding whose cycle cannot be read counts as never arrived.
 fn judge(node: &HyphaNode, bindings: &[InputBindingRow]) -> (Vec<Judged>, Vec<CycleState>) {
-    let waitset = node.default_waitset.lock().unwrap_or_else(PoisonError::into_inner);
+    let waitset = crate::locked(&node.default_waitset);
     let cycles = waitset.held().and_then(|set| set.cycles().ok());
     let mut rows = Vec::new();
     for cycle in cycles.iter().flat_map(|cycles| cycles.iter()) {
         if !cycle.is_committed() {
             continue;
         }
-        let health = *cycle.snapshots.health.lock().unwrap_or_else(PoisonError::into_inner);
+        let health = *crate::locked(&cycle.snapshots.health);
         rows.push(CycleState {
             name: cycle.name().to_owned(),
             steps: health.steps,
@@ -141,9 +139,9 @@ fn judge(node: &HyphaNode, bindings: &[InputBindingRow]) -> (Vec<Judged>, Vec<Cy
     let view_of = |row: &InputBindingRow| -> Option<Judged> {
         let cycle = cycles.as_ref()?.iter().find(|cycle| cycle.name() == row.cycle)?;
         let index = usize::try_from(row.index).ok()?;
-        let views = cycle.snapshots.bindings.lock().unwrap_or_else(PoisonError::into_inner);
+        let views = crate::locked(&cycle.snapshots.bindings);
         let view = views.get(index)?;
-        let counts = cycle.snapshots.input_counts.lock().unwrap_or_else(PoisonError::into_inner);
+        let counts = crate::locked(&cycle.snapshots.input_counts);
         let source = counts.get(index).copied().unwrap_or_default();
         Some(judged_from(&row.topic, view, source))
     };

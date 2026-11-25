@@ -179,7 +179,7 @@ impl ffi::SubscriptionHandler for SubscriptionContext {
             }
             Err(message) => message,
         };
-        let mut slot = self.failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = crate::locked(&self.failure);
         *slot = Some(message);
         drop(slot);
         ffi::CallbackAction::Fail(ffi::Error::Backend)
@@ -281,7 +281,7 @@ impl<'node> WaitSet<'node> {
             Err(status) => return RunResult::api_failure(status),
         };
         let mut result = RunResult::from_report(&report);
-        let mut slot = self.failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = crate::locked(&self.failure);
         result.callback_error = slot.take().filter(|_| !result.ok());
         result
     }

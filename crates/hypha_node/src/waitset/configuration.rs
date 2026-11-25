@@ -91,7 +91,7 @@ pub fn with_default_waitset<R>(
     node: &Arc<HyphaNode>,
     read: impl FnOnce(&HyphaWaitSet) -> R,
 ) -> Result<R, Error> {
-    let mut slot = node.default_waitset.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut slot = crate::locked(&node.default_waitset);
     let set = slot.held_or_built(node)?;
     Ok(read(set))
 }
@@ -135,7 +135,7 @@ impl Drop for WaitSetLease<'_> {
 /// # Errors
 /// The error of its creation, or `InvalidState` while another lease holds it.
 pub fn node_default_waitset(node: &Arc<HyphaNode>) -> Result<WaitSetLease<'_>, Error> {
-    let mut slot = node.default_waitset.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut slot = crate::locked(&node.default_waitset);
     slot.held_or_built(node)?;
     match std::mem::replace(&mut *slot, WaitSetSlot::Lent) {
         WaitSetSlot::Held(set) => Ok(WaitSetLease { node, set: Some(set) }),
