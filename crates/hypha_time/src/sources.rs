@@ -61,9 +61,12 @@ impl SimulatedClock {
     }
 }
 
-/// Monotonic elapsed time since process initialization.
+/// The host's monotonic clock (`CLOCK_MONOTONIC`).
 ///
-/// Ignores simulated time. The origin is process-local: use differences.
+/// Ignores simulated time. The origin is the system's, the same for every process of
+/// the host, so a reading of one process compares with a reading of another: a
+/// subscriber compares a frame's send stamp with its own clock. The origin itself
+/// means nothing: use differences. Zero on a system that is not Unix.
 #[must_use]
 pub fn steady_now() -> Time {
     #[cfg(unix)]
