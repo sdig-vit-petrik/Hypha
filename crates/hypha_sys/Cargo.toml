@@ -10,8 +10,6 @@ repository.workspace = true
 
 [dependencies]
 libc = "0.2"
-memmap2 = "0.9.11"
-nix = { version = "0.29", features = ["process", "signal"] }
 
 # The workspace forbids `unsafe`. This crate holds the operating-system calls that
 # cannot be made without it, so it cannot. Each `unsafe` block does one operation and
