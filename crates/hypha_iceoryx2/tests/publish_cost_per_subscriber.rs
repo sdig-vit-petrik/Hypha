@@ -8,12 +8,17 @@
 //!
 //! Every subscriber maps the publisher's segment at an address of its own, so the
 //! addresses differ and the offsets into the segment are what is equal:
-//! - on every system, a subscriber's view of two samples is the publisher's view of
-//!   them shifted by one constant, and
+//! - on every system, each publish takes a slot of its own, reaches each subscriber
+//!   once, and a subscriber's view of two samples is the publisher's view of them
+//!   shifted by one constant. That rules out a copy on the heap for each receive; it
+//!   does not rule out a copy into a pool laid out like the publisher's segment.
 //! - on Linux, `/proc/self/maps` names the file and the offset behind each address,
-//!   and they are the publisher's for every subscriber.
+//!   and they are the publisher's for every subscriber. This is the proof of one
+//!   shared sample, and it runs on Linux only.
 
 #![allow(clippy::expect_used, reason = "a failed setup or receive is a test failure")]
+
+use std::collections::BTreeSet;
 
 use hypha_core::port::{PayloadCapacity, QosPolicy, QosRequest, TopicSpec};
 use hypha_iceoryx2::{
@@ -105,13 +110,12 @@ fn every_subscriber_reads_a_sample_in_the_slot_its_publisher_wrote() {
     for count in SUBSCRIBER_COUNTS {
         let topic = Topic::with_subscribers(count, &listening);
         let published = topic.publish_samples();
-        let slots: std::collections::BTreeSet<usize> =
-            published.iter().map(|sent| sent.address).collect();
+        let slots: BTreeSet<usize> = published.iter().map(|sent| sent.address).collect();
         assert_eq!(slots.len(), published.len(), "each publish took a slot of its own");
 
         for subscriber in &topic.subscribers {
             let samples = receive_each(subscriber, &published);
-            let shifts: std::collections::BTreeSet<usize> =
+            let shifts: BTreeSet<usize> =
                 samples.iter().zip(&published).map(|(sample, sent)| shift(sample, sent)).collect();
             assert_eq!(
                 shifts.len(),

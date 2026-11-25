@@ -28,7 +28,7 @@ evidence = "`framework_stamp_cross_language` runs a C++ and a Rust process"
 [[requirement]]
 id = "FSR-02"
 tests = ["hypha_iceoryx2/publish_cost_per_subscriber"]
-evidence = "`publish_cost_per_subscriber`: for 1, 2, 4 and 8 subscribers a publish takes one slot of the publisher's segment, reaches each subscriber once, and each reads it at the publisher's offset (on Linux: the same file and offset in `/proc/self/maps`); analysis: iceoryx2 appends one offset per connection, so the publish is O(s). No test measures time: a test does not depend on the speed of its host"
+evidence = "`publish_cost_per_subscriber`: for 1, 2, 4 and 8 subscribers each publish takes a slot of its own and reaches each subscriber once, and each subscriber reads it at a constant shift from the publisher's addresses; on Linux only, at the publisher's file and offset (`/proc/self/maps`), which shows one shared sample and no copy; analysis: iceoryx2 appends one offset per connection, so the publish is O(s). No test measures time: a test does not depend on the speed of its host"
 
 [[requirement]]
 id = "FSR-03"
