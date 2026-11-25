@@ -363,6 +363,13 @@ calling thread.
   Run independent work on separate `WaitSet` objects.
 - Sends are not atomic. A later failure cannot undo an earlier send or a state
   change.
+- A process that dies between two sends of one step has sent the first output of
+  that step and not the second. A consumer receives the first, never the second,
+  and no loss is counted for it: the unsent frame took no sequence number. Each
+  of the consumer's inputs then turns `Stale` after its own silence limit; the
+  second input's newest sample is one step older than the first's. Two outputs of one step carry the same
+  framework send stamp, so a consumer that needs both from one step compares
+  the stamps.
 - A failed step never replays its captured ranges.
 - The framework never calls `exit()` and never invents a safe output. It cannot
   promise that an actuator stop command reaches the bus after a failure. A

@@ -96,7 +96,7 @@ Classes:
 
 | ID | Failure mode | Cause | Effect and measure | Evidence | Class | Covered by |
 |---|---|---|---|---|---|---|
-| FM-40 | A process dies | Crash, kill, abort (FM-35), SIGBUS (FM-50) | No surviving node fails, loses data or has a publish refused. The dead node keeps its ports until a node of the same name starts. Not tested: a publisher killed with an unsent loan, a kill between two sends of one step. | FSR-27; `hypha_node/peer_kill_isolation`, `hypha_iceoryx2/stale_resource_reclaim` | F | AoU-01, AoU-16 |
+| FM-40 | A process dies | Crash, kill, abort (FM-35), SIGBUS (FM-50) | No surviving node fails, loses data or has a publish refused. The dead node keeps its ports until a node of the same name starts. A frame it had on loan and not sent never arrives and is not counted as lost. Killed between two sends of one step, it has sent the first output of that step and not the second; both inputs of a consumer then go `Stale` after their silence limit. | FSR-27; `hypha_node/peer_kill_isolation`, `hypha_iceoryx2/stale_resource_reclaim` | F | AoU-01, AoU-16 |
 | FM-41 | A process restarts for ever | A fault that returns at every start | Outside the item. hypha's own launcher gives up after repeated restarts, and it is a tool. | — | U | AoU-16 |
 | FM-42 | Two nodes take one name | Deployment error | The second node is refused while the first is alive. | `hypha_node/node_identity` | C | |
 | FM-43 | Nodes start in another order | Deployment, restart | No effect on what connects. | FSR-25; `hypha_iceoryx2/start_order_matrix` | C | |

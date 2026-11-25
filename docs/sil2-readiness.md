@@ -426,7 +426,8 @@ cannot disturb another in memory, in time or through shared resources.
 Has: one process per node; no shared mutable memory between hypha nodes except the
 connection segments; a publisher never waits for a reader; a full queue drops for its
 own subscriber; a killed peer does not disturb the survivors (FSR-27, tested with
-SIGKILL of a publisher, a reader and a loan holder).
+SIGKILL of a publisher, a reader, a reader that holds samples, a publisher that
+holds an unsent loan, and a publisher between the two sends of one cycle step).
 
 Gaps:
 
@@ -434,8 +435,8 @@ Gaps:
   with SIGBUS, and the writer can be the safety-related node.
 - G-41. Callbacks of one `WaitSet` share one thread; a slow callback delays every
   other. A stalled callback is not detected inside the process.
-- G-42. The kill tests do not cover a publisher killed with an unsent loan, or a
-  process killed between two sends of one cycle step (FSR-27 gap).
+- G-42. Closed on 2026-11-25: `hypha_node/peer_kill_isolation` kills a publisher that
+  holds an unsent loan, and one between the two sends of one cycle step (#11).
 
 ## 5. Techniques
 
@@ -524,7 +525,7 @@ The order puts first what decides whether the rest is worth doing.
 | 9 | Coverage: add `hypha_node` and the C++ SDK, measure branches, justify the rest. | G-23, G-24 | Open; engineering |
 | 10 | CI jobs for coverage, Miri, fuzzing and the sanitizers; the report attached to a release; tool versions pinned in the builder image. | G-25, G-31, G-43 | CI job nightly on `develop` (#14, #71); the report attached to a release (release-policy.md §4); the rest open; engineering |
 | 11 | Audit of the `unsafe` code by a second person; a C++ subset and a checker for the SDK. | G-18, G-19 | Open; engineering, external |
-| 12 | The remaining kill tests; a fault-injection test that corrupts shared memory. | G-42, TR-04, TR-11 | Open; engineering |
+| 12 | The remaining kill tests; a fault-injection test that corrupts shared memory. | G-42, TR-04, TR-11 | Kill tests done (#11). Fault injection open; engineering |
 | 13 | The missing parts of the safety communication layer. The owner chose the topic-bound checksum only (2026-11-19): no payload size limit, no 64-bit checksum, no channel monitor. Left: the residual error calculation, a binding of the frame to its sender, a rule for the first frame of a publisher. | G-36 to G-38 | Topic-bound checksum done (G-37 for addressing); the rest open; engineering |
 | 14 | Qualified compiler, or the argument from tests. | G-15, G-17 | Open; external |
 | 15 | Review records for every document and for the code. | G-30 | Open; needs a verifier |
