@@ -161,7 +161,7 @@ together they are the core of a safety manual.
 | O-1 | The effect of damage to iceoryx2's connection and discovery segments on a surviving node: can it block, crash or deliver wrong data past the frame checks? Needs a fault-injection test. | FM-23 |
 | O-2 | Behaviour when allocation fails, in the library and in the C++ SDK. | FM-53 |
 | O-3 | Behaviour of two hypha versions in one domain beyond the frame format: service creation, discovery, limits. | FM-72 |
-| O-4 | The two untested kill cases: a publisher with an unsent loan, a kill between two sends of one step. | FM-40 |
+| O-4 | Closed 2026-11-25. The two kill cases, a publisher with an unsent loan and a kill between two sends of one step, are tested (`hypha_node/peer_kill_isolation`). The second is a peer that reproduces a cycle's emission on the bus: a cycle itself offers no point to kill it between two sends. | FM-40 |
 | O-5 | The repository has no test that corrupts shared memory from another process. The frame checks of FM-10 to FM-14 and FM-18 were exercised that way by hand only (`traceability.md`, FSR-10). | 3.2 |
 | O-6 | Failure modes of the C++ SDK layer on its own (decoding, the transform buffer, the parameter views) are not broken down here. | 1 |
 | O-8 | Closed 2026-11-20. Destroying a started cycle node from a callback of the running `WaitSet` leaked about 84 kB: the handle of an input source was refused during a run although its cycle still owned the source, and the C++ SDK then dropped it. The handle of a bound source is now released at any time (`hypha_ffi/waitset_cross_thread_refusals`). | Sanitizer run |

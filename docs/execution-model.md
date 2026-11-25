@@ -367,7 +367,7 @@ calling thread.
   that step and not the second. A consumer receives the first, never the second,
   and no loss is counted for it: the unsent frame took no sequence number. Each
   of the consumer's inputs then turns `Stale` after its own silence limit; the
-  second input's newest sample is one step older than the first's. Two outputs of one step carry the same
+  second input's newest sample is from the step before. Two outputs of one step carry the same
   framework send stamp, so a consumer that needs both from one step compares
   the stamps.
 - A failed step never replays its captured ranges.

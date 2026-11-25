@@ -237,7 +237,8 @@ fn a_restarted_publisher_is_accepted_as_a_new_publisher() {
     survivors.assert_intact();
 }
 
-/// The frames the `loan` peer publishes before the loan it keeps (`kill_peer.rs`).
+/// The frames the `loan` peer publishes before the loan it keeps; it publishes one more
+/// after it (`kill_peer.rs`).
 const FRAMES_BEFORE_THE_LOAN: u64 = 10;
 
 #[test]
@@ -250,17 +251,20 @@ fn a_publisher_killed_with_an_unsent_loan_costs_the_survivors_nothing() {
     let mut peer = Peer::start("loan", &peer_node, &topic, "a");
     survivors.publish_and_read(100, Duration::from_millis(1));
     peer.expect_line("loaned");
-    survivors.read_until("frame the peer sent before its loan", |seen| {
-        seen.peer_frames.len() >= usize::try_from(FRAMES_BEFORE_THE_LOAN).expect("a few frames")
+    survivors.read_until("frame the peer sent after its loan", |seen| {
+        seen.peer_frames.len() > usize::try_from(FRAMES_BEFORE_THE_LOAN).expect("a few frames")
     });
 
     peer.kill();
     survivors.publish_and_read(FRAMES_AFTER_THE_KILL, Duration::ZERO);
 
-    // The frame on loan was never sent: it does not arrive, and it is not counted as lost.
-    let sent_before_the_loan: Vec<(u8, u64)> =
-        (0..FRAMES_BEFORE_THE_LOAN).map(|counter| (b'a', counter)).collect();
-    assert_eq!(survivors.peer_frames, sent_before_the_loan, "the frames of the killed publisher");
+    // The frame on loan was never sent: it does not arrive. It took no sequence number
+    // either, so the frame sent after it leaves no gap.
+    let sent: Vec<(u8, u64)> = (0..FRAMES_BEFORE_THE_LOAN)
+        .chain([FRAMES_BEFORE_THE_LOAN.saturating_add(1)])
+        .map(|counter| (b'a', counter))
+        .collect();
+    assert_eq!(survivors.peer_frames, sent, "the frames of the killed publisher");
     survivors.assert_intact();
     assert_eq!(survivors.subscriber.missing_sequences().expect("count"), 0);
 
@@ -309,7 +313,7 @@ fn consumer_node() -> std::sync::Arc<safe::HyphaNode> {
 }
 
 /// Binds a latest input of `cycle` to `topic` as the supervised port `port`.
-#[allow(
+#[expect(
     clippy::unnecessary_box_returns,
     reason = "the library hands out the box and takes it back"
 )]
@@ -390,7 +394,7 @@ fn a_cycle_killed_between_two_sends_leaves_its_first_output_and_then_silence() {
     let first_source = bind_supervised_input(&node, set, cycle, &first_topic, "first");
     let second_source = bind_supervised_input(&node, set, cycle, &second_topic, "second");
     safe::cycle_commit(set, cycle).expect("cycle committed");
-    // A plain reader of each output; the peer starts when both outputs have two readers.
+    // A plain reader of each output; the peer sends when both outputs have two readers.
     let bus = BusNode::new(&unique_name("kill_step_reader")).expect("node");
     let mut first_reader = bus.subscribe_raw(&first_topic, 0).expect("subscriber");
     let mut second_reader = bus.subscribe_raw(&second_topic, 0).expect("subscriber");
@@ -414,7 +418,6 @@ fn a_cycle_killed_between_two_sends_leaves_its_first_output_and_then_silence() {
         let report = safe::waitset_run(set, Some(CONSUMER_PERIOD)).expect("run");
         assert_eq!(report.status, 0, "a dead producer fails no step of its consumer");
         let (first, second) = (binding(0), binding(1));
-        assert!(second.held.received_total <= COMPLETE_STEPS, "the unsent frame never arrives");
         let all_arrived = first.held.received_total == COMPLETE_STEPS.saturating_add(1)
             && second.held.received_total == COMPLETE_STEPS;
         if all_arrived && stale(&first) && stale(&second) {

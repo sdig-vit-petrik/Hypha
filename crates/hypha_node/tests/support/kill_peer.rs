@@ -13,15 +13,17 @@
 //! keeps two samples, the most a subscriber may borrow. A frame of `flood` is nine
 //! bytes: the tag, then a counter from zero, little endian.
 //!
-//! `loan` publishes [`FRAMES_BEFORE_THE_LOAN`] such frames, takes one more loan,
-//! prints `loaned` and keeps that loan for ever.
+//! `loan` publishes [`FRAMES_BEFORE_THE_LOAN`] such frames, takes a loan for the next
+//! counter and keeps it for ever, publishes one frame with the counter after that, and
+//! prints `loaned`.
 //!
 //! `step` is a cycle with two outputs, `<topic>/first` and `<topic>/second`, as the
 //! bus sees it: a step borrows a frame for each output, then sends them in order, both
 //! stamped with the step's time. Its frames carry the step number as their counter. It
 //! waits for [`STEP_READERS`] subscribers on each output, sends [`COMPLETE_STEPS`] whole steps, sends
 //! the first output of one more step, prints `between` and keeps the second output's
-//! frame unsent for ever.
+//! frame unsent for ever. A real cycle also gives both frames of a step one transport
+//! send stamp; here each send reads the clock, which no test of this peer looks at.
 
 #![allow(clippy::expect_used, reason = "a failed setup ends the peer, and the test reports it")]
 
@@ -127,6 +129,9 @@ fn loan(node: &safe::HyphaNode, topic: &str, tag: u8) -> ! {
         std::thread::sleep(FLOOD_PERIOD);
     }
     let _unsent = borrow_frame(&publisher, tag, FRAMES_BEFORE_THE_LOAN);
+    // A frame after the loan: a reader sees a gap here if the loan took a sequence number.
+    let after = FRAMES_BEFORE_THE_LOAN.saturating_add(1);
+    safe::loan_send(borrow_frame(&publisher, tag, after), -1).expect("send");
     say("loaned");
     sleep_for_ever()
 }

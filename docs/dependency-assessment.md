@@ -46,7 +46,7 @@ does not cover.
 | TR-01 | never blocks a publisher on a slow or dead reader | `hypha_iceoryx2/subscriber_depth`, `hypha_node/peer_kill_isolation` | No analysis of its lock-free algorithms; no test under scheduling stress |
 | TR-02 | refuses a loan at once when the pool is empty | `hypha_iceoryx2/payload_capacity`, `hypha_ffi/publisher_payload_capacity` | |
 | TR-03 | uses no more shared memory than the declared limits of a bounded topic | `hypha_iceoryx2/shm_capacity`, `hypha_iceoryx2/resource_qos` | Memory over time under sustained overload is not measured |
-| TR-04 | lets survivors continue, without loss or refusal, when a participant is killed at any point | `hypha_iceoryx2/stale_resource_reclaim`, `hypha_node/peer_kill_isolation` | A publisher killed with an unsent loan; a kill between two sends |
+| TR-04 | lets survivors continue, without loss or refusal, when a participant is killed at any point | `hypha_iceoryx2/stale_resource_reclaim`, `hypha_node/peer_kill_isolation` | |
 | TR-05 | reclaims the resources of a dead participant when a node of the same name starts | `hypha_iceoryx2/stale_resource_reclaim` | |
 | TR-06 | establishes the same connections whatever the start order | `hypha_iceoryx2/start_order_matrix` | |
 | TR-07 | keeps two domains apart | `hypha_iceoryx2/domain_isolation` | |
@@ -84,7 +84,7 @@ type or a configuration path is linked and unreachable has not been checked.
 
 In order of cost:
 
-1. Tests for TR-04 (the two missing kill cases) and a fault-injection test for TR-11.
+1. A fault-injection test for TR-11.
 2. A list of the system calls in use, from the operating-system crates.
 3. For TR-11 and TR-12: an assessment of iceoryx2 as pre-existing software, or a
    certified variant from its vendor if one exists, or the system-level argument

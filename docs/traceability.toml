@@ -186,7 +186,7 @@ gap = "No test checks that a clean shutdown leaves no segment."
 [[requirement]]
 id = "FSR-27"
 tests = ["hypha_iceoryx2/stale_resource_reclaim", "hypha_node/peer_kill_isolation"]
-evidence = "`peer_kill_isolation`: SIGKILL of a publisher, of a reader, of a reader that holds samples, of a publisher that holds an unsent loan and of a publisher between the two sends of one cycle step, and a restarted publisher: no loss, no rejection, no refused publish for the survivors; R3 harness, by hand"
+evidence = "`peer_kill_isolation`: SIGKILL of a publisher, of a reader, of a reader that holds samples, of a publisher that holds an unsent loan and of a peer that reproduces a cycle between the two sends of one step, and a restarted publisher: no loss, no rejection, no refused publish for the survivors; R3 harness, by hand"
 
 [[requirement]]
 id = "FSR-40"
