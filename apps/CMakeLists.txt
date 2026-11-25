@@ -16,6 +16,7 @@ set(HYPHA_TOOLS
     foxglove
     intercept
     launch
+    load
     node
     param
     play

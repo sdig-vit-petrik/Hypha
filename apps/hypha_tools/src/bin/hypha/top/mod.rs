@@ -8,7 +8,6 @@ mod graph_ui;
 mod inspector;
 mod intercept;
 mod intercept_ui;
-mod proc_usage;
 mod state;
 mod ui;
 

@@ -64,10 +64,9 @@ fn a_subscription_failure_is_reported() {
         .publish_raw(&topic, "std_msgs/Type", "d9d213e8c146065ec958333c617eb1a6", "")
         .expect("publisher");
     let mut subscribers = Vec::new();
-    // An undeclared subscriber (a tool) holds only the service's three reserved observer
-    // slots (`RESERVED_OBSERVER_SUBSCRIBERS` in hypha_iceoryx2): the fourth is refused. Tools
-    // depend on the SDK only, so the count is written here.
-    for _ in 0..3 {
+    // An undeclared subscriber (a tool) holds only the service's reserved observer slots:
+    // the one after them is refused.
+    for _ in 0..hypha_node::sdk::UNDECLARED_SUBSCRIBER_SLOTS {
         subscribers.push(bus.subscribe_raw(&topic, 1).expect("subscriber"));
     }
 

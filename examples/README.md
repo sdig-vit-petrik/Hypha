@@ -18,6 +18,7 @@ application node.
 | [mrs](mrs/README.md) | nothing | A port of upstream ROS code behind a shim, kept close to the original. Its inputs are `unsupervised` with the upstream's own checks, which is why it reads `has()`; new code declares `silence_ms` and reads `usable()`. |
 | [autoware](autoware/README.md) | nothing | A port of upstream Autoware (ROS 2) nodes on an rclcpp shim over a plain `hypha::Node`. The upstream sources are vendored unchanged; the port's edits are patch files. |
 | `sim_twin`, `bench`, `large_payload` | nothing | Measurements of the framework, driven by scripts that read 0 or 1. |
+| `load` | a workload file of `hypha load` | `smoke.toml`: three processes, a slow reader and the recorder; `hypha load examples/load/smoke.toml --report smoke.json` ([tools](../docs/tools.md)). |
 
 What a reference shows, and where to find the rule:
 

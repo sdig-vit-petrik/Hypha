@@ -1,4 +1,5 @@
-//! CPU and memory of the node processes, read from the operating system.
+//! CPU and memory of processes, read from the operating system: the node processes of
+//! `hypha top` and the workers of `hypha load`.
 //!
 //! CPU is the CPU time a process used between two samples over the wall time between
 //! them, like `htop` (100 % is one core). Memory is the resident set size.
@@ -8,7 +9,7 @@ use std::time::{Duration, Instant};
 
 /// What one process uses.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Usage {
+pub struct Usage {
     /// Percent of one core over the last sample interval; `None` until two samples.
     pub cpu_percent: Option<f64>,
     /// Resident memory in bytes.
@@ -17,27 +18,28 @@ pub(crate) struct Usage {
 
 /// One reading: total CPU time used and resident bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Reading {
+struct Reading {
     pub cpu: Duration,
     pub rss_bytes: u64,
 }
 
 /// Keeps the previous reading of each PID to turn CPU time into a rate.
 #[derive(Debug, Default)]
-pub(crate) struct ProcSampler {
+pub struct ProcSampler {
     previous: BTreeMap<i32, (Reading, Instant)>,
     usage: BTreeMap<i32, Usage>,
 }
 
 impl ProcSampler {
     /// The newest usage of `pid`, or `None` when the process could not be read.
-    pub(crate) fn usage(&self, pid: i32) -> Option<Usage> {
+    #[must_use]
+    pub fn usage(&self, pid: i32) -> Option<Usage> {
         self.usage.get(&pid).copied()
     }
 
     /// Reads `pids` now. A PID that cannot be read (gone, not permitted) loses its
     /// usage rather than keeping an old one.
-    pub(crate) fn sample(&mut self, pids: &[i32], now: Instant) {
+    pub fn sample(&mut self, pids: &[i32], now: Instant) {
         let readings = read(pids);
         self.update(&readings, now);
     }
@@ -112,14 +114,60 @@ fn read_ps(pids: &[i32]) -> BTreeMap<i32, Reading> {
 }
 
 /// The `VmRSS` of a `/proc/<pid>/status` text, in bytes.
-pub(crate) fn parse_vm_rss(text: &str) -> Option<u64> {
-    let line = text.lines().find(|line| line.starts_with("VmRSS:"))?;
+fn parse_vm_rss(text: &str) -> Option<u64> {
+    parse_status_kib(text, "VmRSS:")
+}
+
+/// The field `key` (such as `VmRSS:`) of a `/proc/<pid>/status` text, given in KiB, in bytes.
+fn parse_status_kib(text: &str, key: &str) -> Option<u64> {
+    let line = text.lines().find(|line| line.starts_with(key))?;
     let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
     kib.checked_mul(1024)
 }
 
+/// The memory of one process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Memory {
+    /// Resident bytes, shared pages included.
+    pub rss_bytes: u64,
+    /// Resident shared memory (`RssShmem`, Linux only): the shared-memory pages the
+    /// process has mapped and touched. `None` where the system does not separate it.
+    pub shared_bytes: Option<u64>,
+}
+
+/// Where the shared part of a process's resident memory is not told: every system but
+/// Linux.
+pub const SHARED_MEMORY_UNAVAILABLE: &str =
+    "only Linux separates the resident shared memory of a process (RssShmem)";
+
+/// The memory of `pid` now, or `None` when it cannot be read (gone, not permitted).
+/// Linux reads `/proc/<pid>/status`; any other system runs `ps`.
+#[must_use]
+pub fn memory(pid: i32) -> Option<Memory> {
+    if cfg!(target_os = "linux") {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        parse_status_memory(&status)
+    } else {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        let kib: u64 = String::from_utf8_lossy(&output.stdout).trim().parse().ok()?;
+        Some(Memory { rss_bytes: kib.checked_mul(1024)?, shared_bytes: None })
+    }
+}
+
+/// The memory a `/proc/<pid>/status` text names: `VmRSS` and `RssShmem`.
+fn parse_status_memory(text: &str) -> Option<Memory> {
+    Some(Memory {
+        rss_bytes: parse_vm_rss(text)?,
+        shared_bytes: Some(parse_status_kib(text, "RssShmem:")?),
+    })
+}
+
 /// Lines of `ps -o pid=,cputime=,rss=`: PID, `[[dd-]hh:]mm:ss.cc` and KiB.
-pub(crate) fn parse_ps(text: &str) -> BTreeMap<i32, Reading> {
+fn parse_ps(text: &str) -> BTreeMap<i32, Reading> {
     text.lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
@@ -132,7 +180,7 @@ pub(crate) fn parse_ps(text: &str) -> BTreeMap<i32, Reading> {
 }
 
 /// `[[dd-]hh:]mm:ss[.ff]` as a duration.
-pub(crate) fn parse_cputime(text: &str) -> Option<Duration> {
+fn parse_cputime(text: &str) -> Option<Duration> {
     let (days, clock) = match text.split_once('-') {
         Some((days, clock)) => (days.parse::<u64>().ok()?, clock),
         None => (0, text),
@@ -150,7 +198,8 @@ pub(crate) fn parse_cputime(text: &str) -> Option<Duration> {
 }
 
 /// Bytes as `12.3M` style text, binary units.
-pub(crate) fn format_memory(bytes: u64) -> String {
+#[must_use]
+pub fn format_memory(bytes: u64) -> String {
     let units = ["B", "K", "M", "G", "T"];
     // The float conversion loses precision above 2^53 bytes, far beyond any RSS.
     #[allow(clippy::cast_precision_loss)]
@@ -179,6 +228,24 @@ mod tests {
         let status = "Name:\tnode\nVmPeak:\t  9000 kB\nVmRSS:\t   2048 kB\nThreads:\t3\n";
         assert_eq!(parse_vm_rss(status), Some(2048 * 1024));
         assert_eq!(parse_vm_rss("Name:\tkernel_thread\n"), None);
+    }
+
+    #[test]
+    fn status_memory_reads_the_resident_and_the_shared_part() {
+        let status = "VmRSS:\t   2048 kB\nRssAnon:\t 1024 kB\nRssShmem:\t  512 kB\n";
+        assert_eq!(
+            parse_status_memory(status),
+            Some(Memory { rss_bytes: 2048 * 1024, shared_bytes: Some(512 * 1024) })
+        );
+        assert_eq!(parse_status_memory("VmRSS:\t 1 kB\n"), None, "a missing field is no reading");
+    }
+
+    #[test]
+    fn this_process_memory_can_be_read() {
+        let pid = i32::try_from(std::process::id()).unwrap();
+        let memory = memory(pid).expect("own memory");
+        assert!(memory.rss_bytes > 0);
+        assert_eq!(memory.shared_bytes.is_some(), cfg!(target_os = "linux"));
     }
 
     #[test]

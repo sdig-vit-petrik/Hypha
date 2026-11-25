@@ -124,6 +124,16 @@ impl RawSubscriber {
         Ok(self.subscriber.missing_sequences())
     }
 
+    /// A handle to this subscriber's counters. It stays readable after the subscriber
+    /// moved into a [`crate::sdk::WaitSet`] attachment, and while the subscriber lives
+    /// it reads the same counts as [`RawSubscriber::missing_sequences`] and
+    /// [`RawSubscriber::metrics`]. It keeps the subscriber's counts alive, not the
+    /// subscription: after a detach it reads the final counts.
+    #[must_use]
+    pub fn counters(&self) -> SubscriberCounters {
+        SubscriberCounters { subscriber: Arc::clone(&self.subscriber) }
+    }
+
     /// Counts the publishers currently connected to this subscriber's topic.
     ///
     /// # Errors
@@ -131,6 +141,28 @@ impl RawSubscriber {
     pub fn publisher_count(&self) -> Result<usize, String> {
         ffi::subscriber_publisher_count(&self.subscriber)
             .map_err(|error| named_error("cannot read the publisher count", error))
+    }
+}
+
+/// The counters of one [`RawSubscriber`], readable from any thread while the
+/// subscriber itself is owned elsewhere, such as by a [`crate::sdk::WaitSet`].
+#[derive(Clone)]
+pub struct SubscriberCounters {
+    subscriber: Arc<ffi::HyphaSubscriber>,
+}
+
+impl SubscriberCounters {
+    /// The subscriber's missing-sequence count, as [`RawSubscriber::missing_sequences`].
+    #[must_use]
+    pub fn missing_sequences(&self) -> u64 {
+        self.subscriber.missing_sequences()
+    }
+
+    /// Every metric of the subscriber, as [`RawSubscriber::metrics`].
+    #[must_use]
+    pub fn metrics(&self) -> Vec<(String, u64)> {
+        let subscriber = &self.subscriber;
+        crate::sdk::metrics::collect(|emit| ffi::subscriber_metrics(subscriber, emit))
     }
 }
 
