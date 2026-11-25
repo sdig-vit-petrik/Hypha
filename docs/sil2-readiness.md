@@ -172,7 +172,7 @@ integrity.
 | Process isolation and non-blocking publication | `architecture.md` §3.1, §3.2 |
 | Frame checks on every receive, no optional profile | `architecture.md` §3.4, FSR-09, FSR-10 |
 | No thread created by the framework | FSR-14, `hypha_iceoryx2/housekeeping_creates_no_thread` |
-| Bounded queues and pools | NFR-05, `interface-specification.md` (service limits) |
+| Bounded queues and pools | NFR-05, `interface-specification.md` (service limits); the overload run measures memory, loss and refusals under sustained overload, not yet on Linux (G-28) |
 
 Gaps:
 
@@ -291,8 +291,11 @@ configuration, including timing and capacity.
 Gap G-28: no measurement of latency, of rated load or of endurance on Linux
 (NFR-03, NFR-04, NFR-06), and no measurement of memory under sustained overload
 (NFR-05, second half). This is the largest technical gap. The load harness
-(`hypha load`) and the rated-load run exist; they have not run on Linux or on a
-reference platform.
+(`hypha load`), the rated-load run and the overload run (`examples/load/overload.toml`,
+the measurement `overload` of `scripts/qualify.sh`) exist; they have not run on Linux or
+on a reference platform. The overload run's limits are counted facts, not speeds, but
+the written shared memory is measured on Linux only, so it becomes evidence of NFR-05
+only after a Linux run confirms them.
 
 ### 4.10 Modification (7.8)
 
@@ -526,7 +529,7 @@ The order puts first what decides whether the rest is worth doing.
 | 5 | Safety plan: roles, lifecycle, verification, modification, defects; release policy. | G-01, G-04 to G-06, G-29 | Drafted: [safety-plan.md](safety-plan.md), [release-policy.md](release-policy.md). The roles of verifier, validator and assessor are vacant. |
 | 6 | Tool classification and justification. | G-16 | Drafted: [safety-plan.md](safety-plan.md) §8. Found G-43. |
 | 7 | Dependency assessment: requirements on the transport and the tests that show them. | G-32, G-34 | Drafted: [dependency-assessment.md](dependency-assessment.md). TR-11 and TR-12 have no evidence. |
-| 8 | Reference platform and workload; load harness; latency, overload and endurance runs. | G-10, G-11, G-28 | Load harness and rated-load run done; platform, overload and endurance runs open; engineering |
+| 8 | Reference platform and workload; load harness; latency, overload and endurance runs. | G-10, G-11, G-28 | Load harness, rated-load and overload runs done (the overload run not yet on Linux); platform, Linux runs and endurance run open; engineering |
 | 9 | Coverage: add `hypha_node` and the C++ SDK, measure branches, justify the rest. | G-23, G-24 | Open; engineering |
 | 10 | CI jobs for coverage, Miri, fuzzing and the sanitizers; the report attached to a release; tool versions pinned in the builder image. | G-25, G-31, G-43 | CI job nightly on `develop` (#14, #71); the report attached to a release (release-policy.md §4); the rest open; engineering |
 | 11 | Audit of the `unsafe` code by a second person; a C++ subset and a checker for the SDK. | G-18, G-19 | Open; engineering, external |
