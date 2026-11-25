@@ -257,3 +257,68 @@ fn the_rated_workload_has_the_totals_of_nfr_04_and_the_limits_of_nfr_03_and_nfr_
     assert_eq!(limits.max_missed_periods, Some(0), "the rated load was offered");
     assert_eq!(workload.run.duration_s, 60.0);
 }
+
+fn example(name: &str) -> Workload {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/load").join(name);
+    let text = std::fs::read_to_string(&path).expect("an example workload");
+    Workload::from_toml(&text).expect("the example workload parses")
+}
+
+#[test]
+fn the_overload_workload_bounds_memory_counts_every_loss_and_isolates_the_control_topics() {
+    let workload = example("overload.toml");
+    assert!(workload.run.bounded_memory, "a bounded deployment, the condition of NFR-05");
+    assert!(!workload.recorder_enabled());
+    let limits = workload.limits;
+    assert_eq!(limits.max_refused_publishes, Some(0), "a slow reader refuses no publish");
+    assert_eq!(limits.max_rss_growth_bytes, Some(1_048_576));
+    assert_eq!(limits.max_shm_growth_bytes, Some(1_048_576));
+    assert_eq!(limits.latency_p99_us, None, "a latency is no fact of NFR-05");
+    assert_eq!(limits.max_publish_call_us, None, "a call's duration is a speed");
+    assert_eq!(limits.max_missed_periods, None);
+
+    for topic in &workload.topics {
+        for subscriber in &topic.subscribers {
+            let own = subscriber.limits.unwrap_or_else(|| limits.subscriber_part());
+            assert_eq!(own.loss_accounted, Some(true), "{}@{}", topic.name, subscriber.process);
+            assert_eq!(own.latency_p99_us, None, "{}@{}", topic.name, subscriber.process);
+        }
+    }
+
+    // The control topics share no process with the flood, its publisher or its readers.
+    let is_control = |name: &str| name == "/overload/control" || name == "/overload/state";
+    let mut flooding = std::collections::BTreeSet::new();
+    let mut control = std::collections::BTreeSet::new();
+    for topic in &workload.topics {
+        let processes = std::iter::once(topic.publisher.as_str())
+            .chain(topic.subscribers.iter().map(|subscriber| subscriber.process.as_str()));
+        if is_control(&topic.name) {
+            control.extend(processes);
+            for subscriber in &topic.subscribers {
+                let own = subscriber.limits.expect("a control reader has its own limits");
+                assert_eq!(own.max_loss, Some(0), "{} keeps pace", topic.name);
+                assert_eq!(subscriber.work_us, 0);
+            }
+        } else {
+            flooding.extend(processes);
+        }
+    }
+    assert_eq!(control.len(), 2, "{control:?}");
+    assert!(flooding.is_disjoint(&control), "{flooding:?} and {control:?}");
+    assert!(workload.topics.iter().any(|topic| matches!(topic.rate_hz, Rate::Max(_))));
+}
+
+#[test]
+fn the_isolation_latency_workload_is_the_overload_one_with_control_latency_limits() {
+    let overload = example("overload.toml");
+    let mut latency = example("isolation-latency.toml");
+    for topic in &mut latency.topics {
+        for subscriber in &mut topic.subscribers {
+            if let Some(own) = subscriber.limits.as_mut() {
+                assert_eq!(own.latency_p99_us, Some(500), "{}", topic.name);
+                own.latency_p99_us = None;
+            }
+        }
+    }
+    assert_eq!(latency, overload, "the two files differ only in the control latency limits");
+}

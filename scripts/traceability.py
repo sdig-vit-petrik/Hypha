@@ -4,7 +4,7 @@
 usage: scripts/traceability.py render [--verify]
        scripts/traceability.py report --output FILE [--nextest-junit FILE]...
                                       [--gtest-xml DIR] [--run NAME=pass|fail]...
-                                      [--run rated_load=pass|limits-fail|fail]
+                                      [--run MEASUREMENT=pass|limits-fail|fail]...
 
 render writes docs/traceability.md from docs/traceability.toml; with --verify it
 writes nothing and fails when the file differs. Both refuse a requirement of
@@ -17,9 +17,9 @@ JUnit files of cargo nextest, the directory of gtest XML files that ctest fills
 when every one of its references ran and none failed, or when its method is not a test
 and its evidence is stated.
 
-A measurement run (rated_load, `hypha load` of the rated workload) is reported but
-verifies no requirement: it ran on no reference platform, so no reference may name it.
-Its limits failing changes no exit status; the run itself failing (`fail`) does.
+A measurement run (rated_load, overload, overload_latency: `hypha load` of a workload)
+is reported but verifies no requirement yet, so no reference may name it. Its limits
+failing changes no exit status; the run itself failing (`fail`) does.
 
 Exit status: 0 done (report: every requirement verified), 1 the generated file differs,
 a measurement run failed, or a requirement is not verified for another reason than a
@@ -50,15 +50,19 @@ SPECIFICATION = REPO / "docs" / "requirements-specification.md"
 RUST_ROOTS = ("crates", "apps")
 CXX_TEST_DIRS = ("crates/hypha-cxx/test", "crates/hypha-cxx/base/test")
 RUN_NAMES = ("check", "coverage", "miri", "fuzz", "asan", "tsan")
-# Runs that measure on a host that is no reference platform (docs/sil2-readiness.md
-# G-10): reported with their outcome, never a reference of a requirement.
-MEASUREMENT_RUNS = ("rated_load",)
+# Runs that are reported with their outcome but are no reference of a requirement yet:
+# what each still lacks is its note.
+MEASUREMENT_NOTES = {
+    "rated_load": "on a development host: no reference platform is defined (G-10)",
+    "overload": "not evidence until a Linux run confirms its limits (NFR-05, R8)",
+    "overload_latency": "on a development host: no reference platform is defined (G-10)",
+}
+MEASUREMENT_RUNS = tuple(MEASUREMENT_NOTES)
 MEASUREMENT_OUTCOMES = {
     "pass": "limits pass",
     "limits-fail": "limits FAIL",
     "fail": "run FAIL",
 }
-MEASUREMENT_NOTE = "on a development host: no reference platform is defined (G-10)"
 ENTRY_KEYS = ("id", "tests", "evidence", "gap")
 METHOD_NAMES = {"T": "test", "A": "analysis", "I": "inspection", "D": "demonstration"}
 
@@ -219,8 +223,7 @@ def reference_error(repo: Path, reference: str) -> str | None:
         name = reference.removeprefix("run:")
         if name in MEASUREMENT_RUNS:
             return (
-                f"'{name}' is a measurement on no reference platform and verifies no "
-                "requirement (G-10)"
+                f"'{name}' is a measurement and verifies no requirement: {MEASUREMENT_NOTES[name]}"
             )
         if name not in RUN_NAMES:
             return f"unknown run '{name}' (known: {', '.join(RUN_NAMES)})"
@@ -490,7 +493,7 @@ def build_report(
         lines.append(f"| {name} | {outcome} |")
     for name in MEASUREMENT_RUNS:
         outcome = MEASUREMENT_OUTCOMES.get(results.measurements.get(name, ""), "not run")
-        lines.append(f"| {name} | {outcome}, {MEASUREMENT_NOTE} |")
+        lines.append(f"| {name} | {outcome}, {MEASUREMENT_NOTES[name]} |")
 
     lines += [
         "",

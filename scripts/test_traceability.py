@@ -163,8 +163,9 @@ class SourceChecks(unittest.TestCase):
         self.assertIn("unknown run 'lint'", message)
 
     def test_a_measurement_run_is_refused_as_a_reference(self) -> None:
-        message = self.refused(SOURCE.replace("cxx:test_send", "run:rated_load"))
-        self.assertIn("'rated_load' is a measurement on no reference platform", message)
+        for name in ("rated_load", "overload", "overload_latency"):
+            message = self.refused(SOURCE.replace("cxx:test_send", f"run:{name}"))
+            self.assertIn(f"'{name}' is a measurement and verifies no requirement", message)
 
 
 class Rendering(unittest.TestCase):
@@ -304,6 +305,17 @@ class Report(unittest.TestCase):
         traceability.read_run("rated_load=fail", results)
         self.assertEqual(traceability.exit_status(0, 0, results), 1)
         self.assertEqual(traceability.exit_status(1, 0, results), 1)
+
+    def test_the_overload_measurement_says_what_it_waits_for(self) -> None:
+        tree = Tree(self)
+        requirements = traceability.load_checked(tree.root)
+        results = tree.results()
+        traceability.read_run("overload=limits-fail", results)
+        text, _, _ = traceability.build_report(tree.root, requirements, results)
+        note = "not evidence until a Linux run confirms its limits (NFR-05, R8)"
+        self.assertIn(f"| overload | limits FAIL, {note} |", text)
+        self.assertIn("| overload_latency | not run, on a development host", text)
+        self.assertEqual(traceability.exit_status(0, 0, results), 0)
 
     def test_the_runs_table_marks_the_measurement_as_taken_on_a_development_host(self) -> None:
         tree = Tree(self)

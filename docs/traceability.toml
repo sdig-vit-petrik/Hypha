@@ -273,7 +273,7 @@ tests = [
   "hypha_iceoryx2/shm_capacity",
   "hypha_cycle/cycle_history",
 ]
-gap = "Growth under sustained overload is not measured (R8)."
+gap = "The overload run exists (examples/load/overload.toml, scripts/overload.sh, measurement `overload` of the qualification); its counted limits passed on a development host. It has not run on Linux, where alone written shared memory is measured; after a Linux run confirms its limits it becomes the reference `run:overload` (R8)."
 
 [[requirement]]
 id = "NFR-06"
