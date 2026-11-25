@@ -16,7 +16,7 @@ of every row from a test run.
 | ID | Verified by | Gap |
 |---|---|---|
 | FSR-01 | `hypha_iceoryx2/conformance`, `hypha_node/framework_stamp_cross_language`, `hypha_iceoryx2/domain_isolation`; `framework_stamp_cross_language` runs a C++ and a Rust process |  |
-| FSR-02 | Analysis: iceoryx2 writes a sample once and appends an offset per connection | No test measures publish time against subscriber count (R7). |
+| FSR-02 | `hypha_iceoryx2/publish_cost_per_subscriber`; `publish_cost_per_subscriber`: for 1, 2, 4 and 8 subscribers each publish takes a slot of its own and reaches each subscriber once, and each subscriber reads it at a constant shift from the publisher's addresses; on Linux only, at the publisher's file and offset (`/proc/self/maps`), which shows one shared sample and no copy; analysis: iceoryx2 appends one offset per connection, so the publish is O(s). No test measures time: a test does not depend on the speed of its host |  |
 | FSR-03 | `hypha_ffi/cycle_single_copy`, `hypha_ffi/pubsub_framed_samples`, `hypha_wire/frame` |  |
 | FSR-04 | `hypha_msgdef/golden_md5`, `cxx:test_ros1_codec_encode`, `hypha_msgs/messages`, `hypha_wire/schema_record`; `golden_md5` covers every repository message |  |
 | FSR-05 | `hypha_core/frame_validation`, `cxx:test_typed_schema_identity`, `hypha_node/client_facade_round_trip`; R4 harness, by hand (wrong schema hash: all rejected and counted) |  |
