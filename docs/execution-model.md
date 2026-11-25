@@ -78,16 +78,14 @@ background.
 
 Consequences you must plan for:
 
-- **Housekeeping only progresses while a `WaitSet` runs.** Latched replay and
-  schema answers are attachments. A node that never runs one answers no
-  schema query and wakes no late subscriber of a latched topic. A latched
+- **Housekeeping only progresses while a `WaitSet` runs.** Latched replay is an
+  attachment. A node that never runs its `WaitSet` wakes no late subscriber of a
+  latched topic. A latched
   topic's last sample reaches a new subscriber when the node's `WaitSet` hears
   the domain graph event that a subscriber creation fires (`hypha/hk/graph/v1`),
-  or when the publisher next sends, and only that subscriber receives it. A publisher that carries a
-  message definition invites those queries, so a process that publishes such
-  a topic and never runs the executor reports the usage error once per
-  publisher as one log line. Readers see the topic as undescribed until the
-  publishing loop runs the executor.
+  or when the publisher next sends, and only that subscriber receives it. A
+  schema needs no run: an endpoint that carries a message definition writes its
+  schema record when it opens, and a reader reads that record.
 - **Attachments freeze during a run.** Create every subscription and cycle
   before you call `run()`. A subscription created during a run is refused
   with `InvalidState`. A timer is the exception: a callback may create one when
@@ -95,9 +93,11 @@ Consequences you must plan for:
   the run next waits. On a simulated clock the node does not own, it is refused.
   A callback may also cancel and reset a timer (`Timer::cancel()`,
   `Timer::reset()`; [cpp-api.md](cpp-api.md) section 3).
-- **One `WaitSet` has one thread.** Two `WaitSet`s may run at the same time on
-  two threads you created. Their callbacks then run concurrently with each
-  other, so shared state needs your own synchronisation.
+- **One `WaitSet` has one thread.** A node has one `WaitSet`, so its callbacks
+  never run concurrently with each other, and a slow callback delays every other
+  one of the node. Work that must not wait for them runs in a thread you create,
+  outside the `WaitSet`, with your own synchronisation of the state it shares, or
+  in another process.
 
 ---
 
@@ -353,14 +353,15 @@ calling thread.
 | An input is missing or stale | The step runs with the explicit verdict. The application chooses its response. The framework never supplies a default value. |
 | An output is not marked | Nothing is published for it. |
 | The step throws | The iteration fails with `Panic`, or `ResourceLimit` for `std::bad_alloc`. No output is sent. |
-| A selected payload passes the CRC and the schema check but does not deserialize | The C++ port fails the iteration with `InvalidFrame` before the step. The consumed ranges stay consumed. The step does not run, so no application state changes. |
+| A selected payload passes the CRC and the schema check but does not deserialize | The C++ port rejects the sample: it is counted (`RequiredInput.undecodable`), logged at most once per 10 s per input, and the input is judged without it. The step and the run go on. |
 | An emission is refused, or a payload is larger than its publisher allows | The library checks the message at reserve time and validates every staged message before it sends the first one. The iteration fails and no output is sent. |
 | The transport has no free loan for a message (`PoolExhausted`) | The message is dropped at reserve, and the step continues. The run fails at dispatch unless the output is `diagnostic` (C ABI `DropPoolExhausted`), which drops and counts this refusal only (`output_pool_drops`). A dropped message takes its sequence number, so the subscriber counts the loss. |
 | The transport reports `Disconnected` or `Backend`, or a send reports `InvalidArgument` or `InvalidState` | The run fails. The recoverability of the fault is not known. |
 
 - The owning `WaitSet` is one failure domain. A terminal failure stops the
   remaining outputs and the run, other cycles of the same `WaitSet` included.
-  Run independent work on separate `WaitSet` objects.
+  A node has one `WaitSet`: work that must survive such a failure runs in
+  another process.
 - Sends are not atomic. A later failure cannot undo an earlier send or a state
   change.
 - A failed step never replays its captured ranges.
@@ -934,9 +935,9 @@ attach returns `InvalidState` until the first registration is detached or its
 
 ## 13. What will surprise you
 
-- **Nothing progresses until you run a `WaitSet`.** Schema queries go
-  unanswered and latched topics are not replayed until then. A node that only
-  publishes still needs a run for its housekeeping.
+- **Nothing progresses until you run a `WaitSet`.** Latched topics are not
+  replayed to a late subscriber until then. A node that only publishes a
+  latched topic still needs a run for its housekeeping.
 - **You cannot subscribe during a run.** Attachments freeze at run entry; only a
   timer on host time or on the node's own simulated clock may be created from a
   callback.
