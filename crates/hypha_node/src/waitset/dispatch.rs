@@ -537,7 +537,7 @@ fn timer_due(
     }
     if let Some(control) = control.as_deref() {
         // A reset or a canceled timer that finds time gone back is a rewind, as for any
-        // timer.
+        // timer: the run ends and the process restarts (FSR-37).
         let followed = control.apply_reset(timer, run_anchored)
             && (!control.is_canceled() || super::TimerControl::follow_while_canceled(timer, now));
         if !followed {
