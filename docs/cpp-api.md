@@ -252,7 +252,8 @@ or topic and status (`hypha: ports.outputs.command failed: NotAvailable`). Bad b
 is counted, logged at a bounded rate and dropped, never fatal. No exception crosses the
 C ABI; `hypha::require()` turns a `std::expected` into one (`hypha/status.h`).
 
-Readers ask the publishing process for a schema, so it must run its executor
+A late subscriber of a latched topic gets its sample from the publisher's
+housekeeping, so the publishing process must run its executor
 (execution-model.md §3); a process with its own loop runs bounded turns:
 
 ```cpp
@@ -270,8 +271,8 @@ while (hypha::ok()) {
 }
 ```
 
-A timer with `node.run()` serves them too (`examples/sim_twin/src/sim_clock.cpp`). A
-process that never runs its executor warns once per schema-bearing publisher after 2 s.
+A timer with `node.run()` serves it too (`examples/sim_twin/src/sim_clock.cpp`). A
+schema needs no executor: the publisher writes its schema record when it is created.
 
 ### 2.4 Metrics
 
