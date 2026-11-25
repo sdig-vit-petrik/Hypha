@@ -864,6 +864,40 @@ measured fails.
 A latency figure is a property of the host it was taken on: the report says which one,
 and the test suite asserts no latency or speed (#64).
 
+#### The rated load
+
+`examples/load/rated.toml` is the rated load of NFR-04 (46 topics, 72.5 MB/s, 9,960
+messages/s, MB = 10^6 bytes) with the limits of NFR-03 (p99 below 500 µs, send call to
+callback entry) and NFR-04 (zero loss for readers that keep pace, every loss
+accounted, no refused publish), and no missed period, so that the run offered the load
+it names. The requirement gives only the totals; the per-topic split of the file is
+constructed, and `load_workload.rs` recomputes the totals from it.
+
+```sh
+./build.sh
+scripts/rated-load.sh [report.json]    # default target/rated-load.json
+```
+
+The script runs the release build `target/release/hypha` and does not build it; it
+forwards the exit status of `hypha load`. `scripts/qualify.sh` runs it too, after the
+C++ tests, as the measurement `rated_load` of the qualification report: its limits
+failing turns nothing red, the run failing (exit 70, or no report) does, and no
+requirement takes it as evidence.
+
+A run counts for NFR-03 and NFR-04 only on the reference platform, which is not
+defined yet ([sil2-readiness.md](sil2-readiness.md) G-10, G-11). Any other host is a
+development host, and its report is a measurement of that host. Read it so:
+
+- `host`: the host name, `os` and `os_release`, `arch` and `cpus` say which machine
+  was measured; another load on it (a running stack, a build) is not recorded and
+  shows as latency and missed periods.
+- `host.build`: `release` or `debug`. A debug build measures unoptimised code; its
+  latency says nothing about a release.
+- `not_measured`: the quantities this host could not measure (on macOS the shared
+  memory), each with its reason.
+- A publisher's `missed_periods` above 0 means the rated load was not offered in
+  full: the latency and loss of that run belong to a lower load.
+
 ---
 
 ## Bridging

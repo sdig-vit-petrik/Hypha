@@ -162,6 +162,10 @@ class SourceChecks(unittest.TestCase):
         message = self.refused(SOURCE.replace("cxx:test_send", "run:lint"))
         self.assertIn("unknown run 'lint'", message)
 
+    def test_a_measurement_run_is_refused_as_a_reference(self) -> None:
+        message = self.refused(SOURCE.replace("cxx:test_send", "run:rated_load"))
+        self.assertIn("'rated_load' is a measurement on no reference platform", message)
+
 
 class Rendering(unittest.TestCase):
     def test_the_document_has_one_row_per_requirement_under_its_section(self) -> None:
@@ -206,7 +210,7 @@ class ReferenceResults(unittest.TestCase):
         self.assertEqual(count, traceability.Count(1, 1))
 
     def test_a_malformed_run_argument_is_refused(self) -> None:
-        for argument in ("miri", "miri=ok", "lint=pass"):
+        for argument in ("miri", "miri=ok", "lint=pass", "rated_load=ok", "miri=limits-fail"):
             with self.assertRaises(traceability.InputError):
                 traceability.read_run(argument, traceability.Results())
 
@@ -285,6 +289,38 @@ class Report(unittest.TestCase):
             tree.root, requirements, tree.results()
         )
         self.assertEqual((open_count, regressions), (1, 1), "an open requirement without a gap")
+
+    def test_a_measurement_whose_limits_failed_changes_no_exit_status(self) -> None:
+        for outcome in ("pass", "limits-fail"):
+            results = traceability.Results()
+            traceability.read_run(f"rated_load={outcome}", results)
+            self.assertEqual(traceability.exit_status(0, 0, results), 0, outcome)
+            self.assertEqual(
+                traceability.exit_status(1, 0, results), traceability.EXIT_ONLY_KNOWN_GAPS
+            )
+
+    def test_a_measurement_that_failed_to_run_fails_the_report(self) -> None:
+        results = traceability.Results()
+        traceability.read_run("rated_load=fail", results)
+        self.assertEqual(traceability.exit_status(0, 0, results), 1)
+        self.assertEqual(traceability.exit_status(1, 0, results), 1)
+
+    def test_the_runs_table_marks_the_measurement_as_taken_on_a_development_host(self) -> None:
+        tree = Tree(self)
+        requirements = traceability.load_checked(tree.root)
+        note = "on a development host: no reference platform is defined (G-10)"
+        expected = {
+            "pass": "limits pass",
+            "limits-fail": "limits FAIL",
+            "fail": "run FAIL",
+            None: "not run",
+        }
+        for outcome, shown in expected.items():
+            results = tree.results()
+            if outcome is not None:
+                traceability.read_run(f"rated_load={outcome}", results)
+            text, _, _ = traceability.build_report(tree.root, requirements, results)
+            self.assertIn(f"| rated_load | {shown}, {note} |", text)
 
     def test_the_report_names_the_builder_image_by_its_content_digest(self) -> None:
         image = {"HYPHA_BUILDER_IMAGE": "hypha-builder:ci", "HYPHA_BUILDER_IMAGE_ID": "sha256:ab12"}

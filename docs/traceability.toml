@@ -259,11 +259,11 @@ gap = "Miri and the sanitizers are not in CI; Miri cannot run a node, `hypha_ffi
 
 [[requirement]]
 id = "NFR-03"
-gap = "No automated evidence. macOS 3-hop p99 2–6 ms; no Linux measurement (R7)."
+gap = "The rated-load run (examples/load/rated.toml, scripts/rated-load.sh, measurement `rated_load` of the qualification) checks the 500 µs p99, but on no reference platform, so it verifies nothing yet (G-10, G-11). No Linux measurement (R7)."
 
 [[requirement]]
 id = "NFR-04"
-gap = "No automated evidence (R7)."
+gap = "The rated-load run (examples/load/rated.toml, scripts/rated-load.sh, measurement `rated_load` of the qualification) checks zero loss at the rated load, but on no reference platform, so it verifies nothing yet (G-10, G-11); its per-topic split is constructed from the three totals (R7)."
 
 [[requirement]]
 id = "NFR-05"

@@ -4,6 +4,7 @@
 usage: scripts/traceability.py render [--verify]
        scripts/traceability.py report --output FILE [--nextest-junit FILE]...
                                       [--gtest-xml DIR] [--run NAME=pass|fail]...
+                                      [--run rated_load=pass|limits-fail|fail]
 
 render writes docs/traceability.md from docs/traceability.toml; with --verify it
 writes nothing and fails when the file differs. Both refuse a requirement of
@@ -16,8 +17,13 @@ JUnit files of cargo nextest, the directory of gtest XML files that ctest fills
 when every one of its references ran and none failed, or when its method is not a test
 and its evidence is stated.
 
-Exit status: 0 done (report: every requirement verified), 1 the generated file differs
-or a requirement is not verified for another reason than a test not yet written, 2 an
+A measurement run (rated_load, `hypha load` of the rated workload) is reported but
+verifies no requirement: it ran on no reference platform, so no reference may name it.
+Its limits failing changes no exit status; the run itself failing (`fail`) does.
+
+Exit status: 0 done (report: every requirement verified), 1 the generated file differs,
+a measurement run failed, or a requirement is not verified for another reason than a
+test not yet written, 2 an
 input is invalid, 3 (report) the only requirements not verified have no test yet and a
 recorded gap.
 """
@@ -44,6 +50,15 @@ SPECIFICATION = REPO / "docs" / "requirements-specification.md"
 RUST_ROOTS = ("crates", "apps")
 CXX_TEST_DIRS = ("crates/hypha-cxx/test", "crates/hypha-cxx/base/test")
 RUN_NAMES = ("check", "coverage", "miri", "fuzz", "asan", "tsan")
+# Runs that measure on a host that is no reference platform (docs/sil2-readiness.md
+# G-10): reported with their outcome, never a reference of a requirement.
+MEASUREMENT_RUNS = ("rated_load",)
+MEASUREMENT_OUTCOMES = {
+    "pass": "limits pass",
+    "limits-fail": "limits FAIL",
+    "fail": "run FAIL",
+}
+MEASUREMENT_NOTE = "on a development host: no reference platform is defined (G-10)"
 ENTRY_KEYS = ("id", "tests", "evidence", "gap")
 METHOD_NAMES = {"T": "test", "A": "analysis", "I": "inspection", "D": "demonstration"}
 
@@ -93,6 +108,7 @@ class Results:
     rust: dict[str, Count] = field(default_factory=dict)
     gtest: dict[str, Count] = field(default_factory=dict)
     runs: dict[str, bool] = field(default_factory=dict)
+    measurements: dict[str, str] = field(default_factory=dict)
 
 
 # --- the sources ---------------------------------------------------------------
@@ -201,6 +217,11 @@ def reference_error(repo: Path, reference: str) -> str | None:
     """Why the reference names no test in the tree, or None when it names one."""
     if reference.startswith("run:"):
         name = reference.removeprefix("run:")
+        if name in MEASUREMENT_RUNS:
+            return (
+                f"'{name}' is a measurement on no reference platform and verifies no "
+                "requirement (G-10)"
+            )
         if name not in RUN_NAMES:
             return f"unknown run '{name}' (known: {', '.join(RUN_NAMES)})"
         return None
@@ -319,6 +340,11 @@ def read_gtest_xml(directory: Path, results: Results) -> None:
 
 def read_run(argument: str, results: Results) -> None:
     name, separator, outcome = argument.partition("=")
+    if name in MEASUREMENT_RUNS:
+        if separator != "=" or outcome not in MEASUREMENT_OUTCOMES:
+            raise InputError(f"--run {argument}: expected {name}=pass|limits-fail|fail")
+        results.measurements[name] = outcome
+        return
     well_formed = separator == "=" and name in RUN_NAMES and outcome in ("pass", "fail")
     if not well_formed:
         raise InputError(f"--run {argument}: expected <{'|'.join(RUN_NAMES)}>=pass|fail")
@@ -462,6 +488,9 @@ def build_report(
         else:
             outcome = "FAIL"
         lines.append(f"| {name} | {outcome} |")
+    for name in MEASUREMENT_RUNS:
+        outcome = MEASUREMENT_OUTCOMES.get(results.measurements.get(name, ""), "not run")
+        lines.append(f"| {name} | {outcome}, {MEASUREMENT_NOTE} |")
 
     lines += [
         "",
@@ -538,7 +567,13 @@ def command_report(arguments: argparse.Namespace) -> int:
     Path(arguments.output).write_text(text, encoding="utf-8")
     verified = len(requirements) - open_count
     print(f"{arguments.output}: {verified} of {len(requirements)} requirements verified")
-    if regressions > 0:
+    return exit_status(open_count, regressions, results)
+
+
+def exit_status(open_count: int, regressions: int, results: Results) -> int:
+    """The report's exit status. A measurement run whose limits failed changes nothing:
+    it ran on no reference platform; one that failed to run is a failure."""
+    if regressions > 0 or "fail" in results.measurements.values():
         return 1
     if open_count > 0:
         return EXIT_ONLY_KNOWN_GAPS

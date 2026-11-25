@@ -90,7 +90,9 @@ Not yet. Validation needs a reference platform (hardware, kernel, scheduling set
 and a reference workload. Neither is defined, so NFR-03, NFR-04 and NFR-06 are
 targets. The validation plan is written when the platform is chosen; its content is:
 the configuration, the workload file, the runs (rated load, sustained overload,
-endurance), the pass limits, and who signs.
+endurance), the pass limits, and who signs. The rated-load workload and its limits exist
+(`examples/load/rated.toml`, run by `scripts/rated-load.sh` and in `scripts/qualify.sh`);
+the configuration and who signs do not.
 
 ### 5.4 Reviews
 

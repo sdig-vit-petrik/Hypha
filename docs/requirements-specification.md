@@ -170,6 +170,9 @@ serialization, MCAP, the Foxglove protocol.
 NFR-03, NFR-04 and NFR-06 are targets. They become verifiable when a reference platform
 (hardware, kernel, scheduling setup) and a reference workload are defined; neither is
 yet. hypha gives no deadline guarantee ([execution-model.md](execution-model.md) §6.2).
+The rated load of NFR-04 with the limits of NFR-03 and NFR-04 is the workload
+`examples/load/rated.toml` of `hypha load`; its per-topic split is constructed from the
+three totals, and a run of it counts only on the reference platform.
 
 ---
 
@@ -201,3 +204,4 @@ An ID is not used again.
 | 2026-11-19 | NFR-03, NFR-04, NFR-06 are marked as targets. Withdrawn IDs are listed. |
 | 2026-11-20 | FSR-10: a frame sealed for another topic is rejected. |
 | 2026-11-21 | The owner confirmed the classes. |
+| 2026-11-25 | The note on NFR-03, NFR-04 and NFR-06 names the rated-load workload; no requirement changed. |

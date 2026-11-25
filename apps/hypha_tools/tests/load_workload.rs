@@ -215,3 +215,45 @@ fn a_slow_reader_that_would_hold_the_heartbeat_is_refused_with_both_numbers() {
     let message = error.to_string();
     assert!(message.contains("12800040") && message.contains("10000000"), "{message}");
 }
+
+#[test]
+#[expect(clippy::float_cmp, reason = "whole numbers below 2^53 add and compare exactly")]
+fn the_rated_workload_has_the_totals_of_nfr_04_and_the_limits_of_nfr_03_and_nfr_04() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/load/rated.toml");
+    let text = std::fs::read_to_string(&path).expect("examples/load/rated.toml");
+    let workload = Workload::from_toml(&text).expect("the rated workload parses");
+
+    assert_eq!(workload.topics.len(), 46);
+    // Every rate and size is a whole number well below 2^53, so the sums are exact.
+    let rated: Vec<(f64, f64)> = workload
+        .topics
+        .iter()
+        .filter_map(|topic| match topic.rate_hz {
+            Rate::Hz(rate) => {
+                let size = u32::try_from(topic.bytes).expect("a size of the rated load");
+                Some((rate, rate * f64::from(size)))
+            }
+            Rate::Max(_) => None,
+        })
+        .collect();
+    assert_eq!(rated.len(), 46, "every topic has a rate");
+    let messages: f64 = rated.iter().map(|(rate, _)| rate).sum();
+    let bytes: f64 = rated.iter().map(|(_, bytes)| bytes).sum();
+    assert_eq!(messages, 9_960.0, "messages per second");
+    assert_eq!(bytes, 72_500_000.0, "bytes per second: 72.5 MB/s, MB = 10^6 bytes");
+
+    let keeps_pace = workload
+        .topics
+        .iter()
+        .flat_map(|topic| &topic.subscribers)
+        .all(|subscriber| subscriber.work_us == 0 && subscriber.limits.is_none());
+    assert!(keeps_pace, "every reader keeps pace and takes the run's limits");
+    assert!(!workload.recorder_enabled(), "NFR-04 names no recorder");
+    let limits = workload.limits;
+    assert_eq!(limits.latency_p99_us, Some(500), "NFR-03");
+    assert_eq!(limits.max_loss, Some(0), "NFR-04");
+    assert_eq!(limits.loss_accounted, Some(true));
+    assert_eq!(limits.max_refused_publishes, Some(0));
+    assert_eq!(limits.max_missed_periods, Some(0), "the rated load was offered");
+    assert_eq!(workload.run.duration_s, 60.0);
+}

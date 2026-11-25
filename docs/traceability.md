@@ -60,8 +60,8 @@ of every row from a test run.
 |---|---|---|
 | NFR-01 | Inspection: `libhypha_ffi` is the one deliverable; the C++ SDK uses it through `include/hypha/backend/` |  |
 | NFR-02 | `run:miri`, `run:asan`, `run:tsan`; Rust core; `unsafe` forbidden by lint level outside `hypha_ffi` (the C boundary), `hypha_sys` (OS calls), the test-only `hypha_testkit/src/env.rs` and the C boundary module `hypha_testing_mcap/src/ffi.rs` of the test-only MCAP reader; `hypha_node` and the tools forbid it; sanitizer and Miri runs, 2026-11-11 (R1); `scripts/miri.sh` (Miri over the crates without transport and the node-free `hypha_node` tests); `scripts/sanitize.sh` (C++ tests) | Miri and the sanitizers are not in CI; Miri cannot run a node, `hypha_ffi` or `hypha_sys` (P4). |
-| NFR-03 | None | No automated evidence. macOS 3-hop p99 2–6 ms; no Linux measurement (R7). |
-| NFR-04 | None | No automated evidence (R7). |
+| NFR-03 | None | The rated-load run (examples/load/rated.toml, scripts/rated-load.sh, measurement `rated_load` of the qualification) checks the 500 µs p99, but on no reference platform, so it verifies nothing yet (G-10, G-11). No Linux measurement (R7). |
+| NFR-04 | None | The rated-load run (examples/load/rated.toml, scripts/rated-load.sh, measurement `rated_load` of the qualification) checks zero loss at the rated load, but on no reference platform, so it verifies nothing yet (G-10, G-11); its per-topic split is constructed from the three totals (R7). |
 | NFR-05 | `hypha_iceoryx2/subscriber_depth`, `hypha_iceoryx2/resource_qos`, `hypha_iceoryx2/shm_capacity`, `hypha_cycle/cycle_history` | Growth under sustained overload is not measured (R8). |
 | NFR-06 | None | No evidence (R8). |
 | NFR-07 | Inspection: iceoryx2 is brokerless; no hypha daemon exists |  |

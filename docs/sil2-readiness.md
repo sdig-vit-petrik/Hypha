@@ -143,7 +143,11 @@ Gaps:
   of the element and the assumptions of use. It is a first issue and unreviewed.
 - G-09. Several requirements are not verifiable as written, contradict another
   requirement, or describe a past state. Section 7 lists them.
-- G-10. Three requirements have no evidence at all: NFR-03, NFR-04, NFR-06.
+- G-10. Three requirements have no evidence at all: NFR-03, NFR-04, NFR-06. For NFR-03
+  and NFR-04 a workload and a run exist (`examples/load/rated.toml`,
+  `scripts/rated-load.sh`, the measurement `rated_load` of `scripts/qualify.sh`), but
+  no reference platform: a run on any other host verifies nothing, and the
+  qualification report says so.
 
 ### 4.4 Validation plan (7.3)
 
@@ -286,7 +290,9 @@ configuration, including timing and capacity.
 
 Gap G-28: no measurement of latency, of rated load or of endurance on Linux
 (NFR-03, NFR-04, NFR-06), and no measurement of memory under sustained overload
-(NFR-05, second half). This is the largest technical gap.
+(NFR-05, second half). This is the largest technical gap. The load harness
+(`hypha load`) and the rated-load run exist; they have not run on Linux or on a
+reference platform.
 
 ### 4.10 Modification (7.8)
 
@@ -504,7 +510,7 @@ Still open:
 | all | The owner confirmed the class of each requirement on 2026-11-21. An integrator may still need another split. |
 | NFR-02 | Asks that the `unsafe` part is independently audited. No audit exists (G-18). |
 | NFR-10 | 80 % line coverage; below a SIL 2 expectation and not applied to `hypha_node` or the C++ SDK (G-23, G-24). |
-| NFR-03, NFR-04, NFR-06 | Need a reference platform and a reference workload. The rated load of NFR-04 is still the figures of one application. |
+| NFR-03, NFR-04, NFR-06 | Need a reference platform and a reference workload. The rated load of NFR-04 is still the figures of one application; `examples/load/rated.toml` constructs a per-topic split from its three totals. |
 | FSR-06 | Holds for a topic with a payload limit; a deployment mode that refuses a topic without one would turn AoU-06 into a check. |
 
 ## 8. Work, in order
@@ -520,7 +526,7 @@ The order puts first what decides whether the rest is worth doing.
 | 5 | Safety plan: roles, lifecycle, verification, modification, defects; release policy. | G-01, G-04 to G-06, G-29 | Drafted: [safety-plan.md](safety-plan.md), [release-policy.md](release-policy.md). The roles of verifier, validator and assessor are vacant. |
 | 6 | Tool classification and justification. | G-16 | Drafted: [safety-plan.md](safety-plan.md) §8. Found G-43. |
 | 7 | Dependency assessment: requirements on the transport and the tests that show them. | G-32, G-34 | Drafted: [dependency-assessment.md](dependency-assessment.md). TR-11 and TR-12 have no evidence. |
-| 8 | Reference platform and workload; load harness; latency, overload and endurance runs. | G-10, G-11, G-28 | Open; engineering |
+| 8 | Reference platform and workload; load harness; latency, overload and endurance runs. | G-10, G-11, G-28 | Load harness and rated-load run done; platform, overload and endurance runs open; engineering |
 | 9 | Coverage: add `hypha_node` and the C++ SDK, measure branches, justify the rest. | G-23, G-24 | Open; engineering |
 | 10 | CI jobs for coverage, Miri, fuzzing and the sanitizers; the report attached to a release; tool versions pinned in the builder image. | G-25, G-31, G-43 | CI job nightly on `develop` (#14, #71); the report attached to a release (release-policy.md §4); the rest open; engineering |
 | 11 | Audit of the `unsafe` code by a second person; a C++ subset and a checker for the SDK. | G-18, G-19 | Open; engineering, external |
