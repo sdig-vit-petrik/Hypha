@@ -864,6 +864,82 @@ measured fails.
 A latency figure is a property of the host it was taken on: the report says which one,
 and the test suite asserts no latency or speed (#64).
 
+#### The rated load
+
+`examples/load/rated.toml` is the rated load of NFR-04 (46 topics, 72.5 MB/s, 9,960
+messages/s, MB = 10^6 bytes) with the limits of NFR-03 (p99 below 500 µs, send call to
+callback entry) and NFR-04 (zero loss for readers that keep pace, every loss
+accounted, no refused publish), and no missed period, so that the run offered the load
+it names. The requirement gives only the totals; the per-topic split of the file is
+constructed, and `load_workload.rs` recomputes the totals from it.
+
+```sh
+./build.sh
+scripts/rated-load.sh [report.json]    # default target/rated-load.json
+```
+
+The script runs the release build `target/release/hypha` and does not build it; it
+forwards the exit status of `hypha load`. `scripts/qualify.sh` runs it too, after the
+C++ tests, as the measurement `rated_load` of the qualification report: its limits
+failing turns nothing red, the run failing (exit 70, or no report) does, and no
+requirement takes it as evidence.
+
+A run counts for NFR-03 and NFR-04 only on the reference platform, which is not
+defined yet ([sil2-readiness.md](sil2-readiness.md) G-10, G-11). Any other host is a
+development host, and its report is a measurement of that host. Read it so:
+
+- `host`: the host name, `os` and `os_release`, `arch` and `cpus` say which machine
+  was measured; another load on it (a running stack, a build) is not recorded and
+  shows as latency and missed periods.
+- `host.build`: `release` or `debug`. A debug build measures unoptimised code; its
+  latency says nothing about a release.
+- `not_measured`: the quantities this host could not measure (on macOS the shared
+  memory), each with its reason.
+- A publisher's `missed_periods` above 0 means the rated load was not offered in
+  full: the latency and loss of that run belong to a lower load.
+
+#### The overload run
+
+`examples/load/overload.toml` is a sustained overload for NFR-05: a topic sent back to
+back to a slow reader, a 1 MiB topic to a slower one, bursts into a short queue, and two
+control topics at 100 Hz between two processes that share nothing with the flood, for a
+10 s warm-up and a 60 s window. Its limits are counted or bounded facts, not speeds:
+
+- `max_refused_publishes = 0`: a slow reader makes the publisher discard that reader's
+  oldest sample and never empties its pool, so no publish is refused. A publish call
+  cannot block; its duration is a speed and is not limited.
+- `loss_accounted` on every subscriber, the flooded ones included, and `max_loss = 0`
+  on the control readers, which keep pace (a queue of 32 at 100 Hz loses a sample only
+  when its reader is not scheduled for 320 ms).
+- `max_rss_growth_bytes` per process and `max_shm_growth_bytes` for the domain, both
+  1 MiB: memory after the warm-up stays flat. Every publisher is bounded, and
+  `bounded_memory = true` runs the workers as a bounded deployment, the condition of
+  NFR-05. The warm-up is long enough for every pool slot of every topic to have been
+  written once (the file's header has the arithmetic); the shared-memory limit is
+  unverified on Linux.
+
+`examples/load/isolation-latency.toml` is the same workload with a latency limit on the
+control topics (p99 below 500 µs); `load_workload.rs` checks that nothing else differs.
+It is a measurement of the host, like the rated load.
+
+```sh
+./build.sh
+scripts/overload.sh overload [report.json]            # default target/overload.json
+scripts/overload.sh isolation-latency [report.json]
+```
+
+`scripts/qualify.sh` runs both after the rated load, as the measurements `overload` and
+`overload_latency`: their limits failing turns nothing red, the run failing does. The
+overload run is no evidence of NFR-05 until a Linux run confirms its limits; then it
+becomes the reference `run:overload`.
+
+Only Linux measures the written shared memory. On macOS that value is `null`, the
+`not_measured` list names it, and `max_shm_growth_bytes` fails as not measured: there
+the run exits 1 by design. Read the counted limits from the report's `limits` list
+instead: every entry other than `max_shm_growth_bytes` with `pass: true`. On macOS the
+resident memory includes shared pages, so `max_rss_growth_bytes` there also holds the
+shared memory a process touched.
+
 ---
 
 ## Bridging

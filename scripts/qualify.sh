@@ -6,7 +6,11 @@
 # docs/traceability.toml names for it. The runs, each with its log beside the report:
 # check.sh, the build, the Rust tests, the C++ tests, the coverage gate, Miri, the
 # fuzz targets (default 60 s each), AddressSanitizer with UndefinedBehaviorSanitizer,
-# and ThreadSanitizer. A failed run does not stop the next one; the report states it.
+# ThreadSanitizer, and, after the C++ tests, the measurements of hypha load: the rated
+# load (scripts/rated-load.sh) and the overload with its latency variant
+# (scripts/overload.sh), each report beside the others. A failed run does not stop the
+# next one; the report states it. A measurement verifies no requirement yet: its limits
+# failing changes no exit status, the run failing does.
 #
 # Exit status: 0 every requirement is verified (a release needs it), 3 every one is
 # verified but those with no test yet and a recorded gap (CI accepts it), 1 a test or a
@@ -39,6 +43,20 @@ outcome_of() {
   fi
 }
 
+# The outcome of a hypha load measurement from its exit status and its report: 1 is a
+# limit that failed; any other failure, or no report, is a run that failed.
+measurement_of() {
+  if [[ ! -f "$2" ]]; then
+    echo fail
+  elif [[ "$1" -eq 0 ]]; then
+    echo pass
+  elif [[ "$1" -eq 1 ]]; then
+    echo limits-fail
+  else
+    echo fail
+  fi
+}
+
 run_step check ./check.sh
 check_status=$?
 
@@ -56,6 +74,13 @@ fi
 # A result file of an earlier run would count as a result of this one.
 rm -rf build/gtest-xml
 run_step cxx ctest --test-dir build -j "$(getconf _NPROCESSORS_ONLN)" --output-on-failure
+# The release hypha of the build above, before a later step builds again.
+run_step rated_load scripts/rated-load.sh "$out/rated-load.json"
+rated_load_status=$?
+run_step overload scripts/overload.sh overload "$out/overload.json"
+overload_status=$?
+run_step overload_latency scripts/overload.sh isolation-latency "$out/isolation-latency.json"
+overload_latency_status=$?
 
 run_step coverage scripts/coverage.sh
 coverage_status=$?
@@ -75,4 +100,7 @@ python3 -I scripts/traceability.py report --output "$out/report.md" \
   --run "miri=$(outcome_of "$miri_status")" \
   --run "fuzz=$(outcome_of "$fuzz_status")" \
   --run "asan=$(outcome_of "$asan_status")" \
-  --run "tsan=$(outcome_of "$tsan_status")"
+  --run "tsan=$(outcome_of "$tsan_status")" \
+  --run "rated_load=$(measurement_of "$rated_load_status" "$out/rated-load.json")" \
+  --run "overload=$(measurement_of "$overload_status" "$out/overload.json")" \
+  --run "overload_latency=$(measurement_of "$overload_latency_status" "$out/isolation-latency.json")"
