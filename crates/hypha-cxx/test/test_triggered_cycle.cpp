@@ -253,7 +253,9 @@ class OnEither final : public hypha::CycleNode
     void step(const hypha::CycleTime&) override
     {
         this->seen.push_back(
-            SeenTwo{this->a.samples().size(), this->b.samples().size(), this->a.stale(), this->b.stale()}
+            SeenTwo{
+                this->a.samples().size(), this->b.samples().size(), this->a.stale(), this->b.stale()
+            }
         );
     }
 };
@@ -481,7 +483,7 @@ namespace {
 class UsableArrivals final : public hypha::CycleNode
 {
   public:
-    hypha::Arrivals<Float64>  port{*this, "trig"};
+    hypha::Arrivals<Float64>                          port{*this, "trig"};
     std::vector<std::pair<bool, hypha::InputVerdict>> seen;
 
     void step(const hypha::CycleTime&) override

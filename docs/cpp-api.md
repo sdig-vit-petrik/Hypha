@@ -506,9 +506,9 @@ from the constructor or `setup()` to exit 78; `failRun()` gives 70. A bad `node.
 an invalid `[log]` table or a bad `HYPHA_USE_SIM_TIME` or `HYPHA_REPLAY_LOCKSTEP` fails *node creation* and
 gives 70. A program with its own `main` returns 75 itself after `ClockRewound` to be
 restarted (`replay-flow-control.md` §4.4). Derive an application that owns worker
-threads, whose callbacks publish on more than one input, or that composes cycles
-(`examples/sensor_fusion/src/fusion_main.cpp`) from `ApplicationNode`; one that steps at a
-rate or on one trigger from `CycleNode`.
+threads or composes cycles (`examples/sensor_fusion/src/fusion_main.cpp`) from
+`ApplicationNode`; one that steps at a rate or on the samples of its triggers from
+`CycleNode`.
 
 - The rate has one source: `rate_hz` under `[cycle]`, `setRate()` in `setup()`, or one
   or more triggers, `setTrigger(port)` once per trigger port ("Triggered cycles"). `rate_hz` with `setRate()` fails the start
@@ -541,7 +541,7 @@ commit) in its `[cycle]` table, beside `rate_hz`:
   budget share it in equal parts among the ports with work; a port that needs less
   frees the rest. A remainder smaller than the port count goes one sample each, from
   a port that rotates every step.
-- A `Latest` port, an idle port, the trigger and a `Transforms` port take nothing
+- A `Latest` port, an idle port, the triggers and a `Transforms` port take nothing
   from the budget. Without a budget each port uses only its `perStep()`.
 - `rate_hz` and `arrival_budget` are the only keys of `[cycle]`; another key or a
   value out of range fails the commit, and the log names the key and the value.

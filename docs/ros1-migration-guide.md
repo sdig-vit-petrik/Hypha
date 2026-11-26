@@ -27,7 +27,7 @@ of each input, and a test at each of three levels. The reference for an `Applica
 A node is a `hypha::CycleNode` with its ports as members, started by
 `hypha::runNode<App>()` (see [cpp-api.md](cpp-api.md) §5.4). A node whose ports
 are built at run time uses `hypha::Cycle` ([cpp-api.md](cpp-api.md) §5.5). A node that
-owns worker threads, or whose callbacks publish on more than one input, is a
+owns worker threads, or a shim of a ROS client library, is a
 `hypha::ApplicationNode`, started by the same call ([section 10.1](#101-which-target)).
 
 ---
@@ -38,11 +38,11 @@ Use it for one ROS 1 C++ node that subscribes, computes and publishes, with or
 without timers, parameters and services. The procedure ends in a `CycleNode`:
 
 - A node whose work runs from a timer becomes a **rate cycle** (`rate_hz`).
-- A node whose work runs on each sample of one input becomes a **triggered cycle**:
-  `setTrigger(port)` on that input's `Arrivals` port, one step per sample at the
-  sample's time ([Step 2](#step-2-design-the-cycle)).
-- A `hypha::ApplicationNode` is only for a node whose callbacks publish on more than one
-  input, a node that owns worker threads, and a shim of a ROS client library: see
+- A node whose work runs on each sample of one or several inputs becomes a **triggered
+  cycle**: `setTrigger(port)` on the `Arrivals` port of each of those inputs, one step
+  per sample at the sample's time ([Step 2](#step-2-design-the-cycle)).
+- A `hypha::ApplicationNode` is only for a node that owns worker threads and a shim of a
+  ROS client library: see
   [section 10](#10-porting-an-event-driven-node-an-applicationnode).
 
 Do not use it, and ask the user first, when the node needs one of the items in
@@ -162,15 +162,16 @@ If the table has an item of section 7, stop and ask.
 
 ### Step 2: Design the cycle
 
-Map the inventory to one cycle for each timer rate or for its one event input. A node
-with one timer has one rate cycle. A node with no timer, whose work runs in the callback
-of one subscription, has one triggered cycle on that input. One process has one
-`CycleNode`; a second rate is a composed `hypha::Cycle` with its own name.
+Map the inventory to one cycle for each timer rate or for its event inputs. A node with
+one timer has one rate cycle. A node with no timer, whose work runs in the callbacks of
+one or several subscriptions, has one triggered cycle with those inputs as its
+triggers. One process has one `CycleNode`; a second rate is a composed `hypha::Cycle`
+with its own name.
 
 | ROS 1 | hypha cycle |
 |---|---|
 | Timer callback that computes and publishes | The `step()` method of the cycle node, at `rate_hz` under `[cycle]` in the TOML file. |
-| The one subscription whose callback computes and publishes, in a node with no timer | A `hypha::Arrivals<T>` member made the trigger with `setTrigger(port)` in `setup()`, and no `rate_hz`. `step()` runs once for each sample, which `samples()` holds alone; it calls the original callback with it. |
+| Each subscription whose callback computes and publishes, in a node with no timer | A `hypha::Arrivals<T>` member made a trigger with `setTrigger(port)` in `setup()`, one call per such subscription, and no `rate_hz`. `step()` runs once for each sample of any trigger: the port that fired holds that sample alone in `samples()`, and every other trigger holds none. The step calls the original callback of the port whose `samples()` is not empty. |
 | Subscription whose callback only stores the latest value | A `hypha::Latest<T>` member. |
 | Subscription whose callback does work for each message (counts, integrates, buffers, filters) | A `hypha::Arrivals<T>` member. The step calls the original callback once for each sample, in order. |
 | Publisher | A `hypha::Output<T>` member. Call `send(message)`. |
@@ -197,18 +198,27 @@ effect for each message (a counter, an integrator, a queue) must use an
   trigger in `setup()` with `this->setTrigger(this->ground_truth)`. Its table in
   `examples/mrs/config/estimation_manager.toml` has a `silence_ms` (100), and no
   `[cycle]` table sets `rate_hz`: a rate and a trigger exclude each other.
-- The trigger needs a `silence_ms`, also when the port is `unsupervised`; `start()`
-  fails without one. Carry the old timeout of the input when the node had one, else
-  the longest gap the input may have.
-- When no trigger sample came for `silence_ms`, one **fallback step** runs with
-  `samples().empty()` and the port `stale()`, and repeats every `silence_ms`. Handle it
-  in `step()`: `estimation_manager` publishes no estimate and logs the input as stale.
-- A step at the trigger's send time T sees every other input cut before T on simulated
-  time, and its outputs carry T. The other subscriptions become `Latest` or `Arrivals`
-  ports as in the table above, and a TF listener a `hypha::Transforms` port.
+- Each trigger needs its own `silence_ms`, also when the port is `unsupervised`;
+  `start()` fails without one and names the port. Carry the old timeout of the input
+  when the node had one, else the longest gap the input may have.
+- When no step ran for the shortest `silence_ms` of the triggers, one **fallback step**
+  runs with every trigger's `samples().empty()`, and each trigger past its own limit
+  `stale()`; it repeats every shortest `silence_ms`. Handle it in `step()`:
+  `estimation_manager` publishes no estimate and logs the input as stale.
+- In every step each trigger is judged by its newest sample against its own limit, so
+  `usable()` of a trigger that did not fire says whether its last sample is still
+  valid. A trigger that may be idle for long, such as a joystick, is `advisory`, so that
+  its silence does not degrade `~/state`.
+- A step at the send time T of its trigger sample sees every other input cut before T
+  on simulated time, and its outputs carry T. The other subscriptions become `Latest` or
+  `Arrivals` ports as in the table above, and a TF listener a `hypha::Transforms` port.
 
-A node with two inputs whose callbacks each publish is not one triggered cycle: it
-becomes an `ApplicationNode` (section 10).
+A node with several inputs whose callbacks each publish is one triggered cycle with
+one trigger per input. Samples at one instant step in the construction order of the
+ports, so a node that chooses between its inputs, as `twist_mux` does by priority,
+decides with `usable()` of every trigger and forwards only the sample of the port that
+fired; its output is then the same in either order
+(`crates/hypha-cxx/test/test_twist_mux_shape.cpp`).
 
 **Check:** each subscription has one input port, and each publication has one
 output port.
@@ -834,8 +844,7 @@ items do. The names below are in [cpp-api.md](cpp-api.md) §1, §3, §4, §5, §
 | The ROS node | Target |
 |---|---|
 | Its work runs from a timer | A rate `CycleNode` (Step 2) |
-| Its work runs on each sample of one input | A triggered `CycleNode`: `setTrigger(port)` (Step 2) |
-| Its callbacks publish on more than one input | An `ApplicationNode` |
+| Its work runs on each sample of one or several inputs | A triggered `CycleNode`: `setTrigger(port)` once per input (Step 2) |
 | It owns worker threads | An `ApplicationNode` |
 | It is a shim of a ROS client library (#59) | An `ApplicationNode` |
 
@@ -843,10 +852,10 @@ What a triggered cycle adds over an `ApplicationNode`, and what it costs:
 
 | A triggered cycle adds | It costs |
 |---|---|
-| A verdict for each input (`stale()`, `Latest::usable()`), and the input rows of `~/state` | A `silence_ms` for each supervised input, the trigger's included |
-| Outputs held until the step succeeds: a failed step publishes nothing ([execution-model.md](execution-model.md) §6.1) | A fallback step to handle when the trigger is silent |
+| A verdict for each input (`stale()`, `usable()`), and the input rows of `~/state` | A `silence_ms` for each supervised input, every trigger's included |
+| Outputs held until the step succeeds: a failed step publishes nothing ([execution-model.md](execution-model.md) §6.1) | A fallback step to handle when every trigger is silent for the shortest `silence_ms` |
 | Replay order: under simulated time the step runs at the sample's time, with the other inputs cut before it, and waits for its upstream nodes ([execution-model.md](execution-model.md) §6.6) | One decode of each sample into its port before the step, and a payload copy in the input's history ([execution-model.md](execution-model.md) §6.2) |
-| | On host time, a trigger older than its `silence_ms` runs no step and counts in `age_rejections_total` |
+| | On host time, a trigger older than its port's `silence_ms` runs no step and counts in that port's `age_rejections_total` |
 
 `runNode` gives both targets `~/introspection`, `~/state`, the refusal of an unread
 parameter key and the exit codes of §10.2. An `ApplicationNode` has none of the first
