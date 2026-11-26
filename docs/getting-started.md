@@ -50,6 +50,7 @@ running on the host never share a node name, topic or `/clock`:
 
 ```cmake
 enable_testing()
+find_package(GTest REQUIRED)
 add_executable(my_node_test test/my_node_test.cpp)
 target_link_libraries(my_node_test PRIVATE hypha::sdk GTest::gtest_main)
 hypha_add_test(my_node_test)
