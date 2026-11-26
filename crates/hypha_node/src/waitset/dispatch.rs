@@ -136,92 +136,19 @@ impl CallbackDispatcher<'_> {
     /// simulation pause and jump. The native interval only supplies wake-ups.
     fn fire_due_timers(&mut self, now: hypha_time::Time) -> Progression {
         self.due.clear();
-        let cycles = self.cycles;
+        let (cycles, node) = (self.cycles, self.node);
         // A registration a callback detached is not observed: it neither fires nor fails.
         let live = self.registrations.iter_mut().filter(|r| !is_detached_in(self.detached, r.id));
         for registration in live {
-            if let Some(item) = self_scheduled(registration) {
-                self.due.push(item);
-                continue;
-            }
-            let Target::Timer {
-                ref mut timer,
-                ref mut cycle,
-                ref mut run_anchored,
-                ref control,
-                ..
-            } = registration.target
-            else {
-                continue;
+            let due = match self_scheduled(registration) {
+                Some(item) => Ok(Some(item)),
+                None => timer_due(cycles, node, registration.id, &mut registration.target, now),
             };
-            let grid = if timer.is_grid() { cycle.as_mut() } else { None };
-            if let Some(owned) = grid {
-                match grid_due(cycles, registration.id, timer, owned, now) {
-                    Ok(Some(due)) => self.due.push(due),
-                    Ok(None) => {}
-                    Err(status) => return fail_with(&mut self.failure, registration.id, status),
-                }
-                continue;
+            match due {
+                Ok(Some(item)) => self.due.push(item),
+                Ok(None) => {}
+                Err(status) => return fail_with(&mut self.failure, registration.id, status),
             }
-            // On simulated time a plain timer starts on the first clock value, not on the
-            // placeholder zero a node starts with.
-            if !*run_anchored && self.node.on_sim_time() && !hypha_time::sim_time_has_value() {
-                continue;
-            }
-            if let Some(control) = control.as_deref() {
-                // A reset or a canceled timer that finds time gone back is a rewind, as
-                // for any timer: the run ends and the process restarts (FSR-37).
-                let followed = control.apply_reset(timer, run_anchored)
-                    && (!control.is_canceled()
-                        || super::TimerControl::follow_while_canceled(timer, now));
-                if !followed {
-                    let subject = timer_subject(registration.id, timer.period().nanos());
-                    let status = crate::replay_restart::refuse_rewind(&subject, now.nanos());
-                    return fail_with(&mut self.failure, registration.id, status);
-                }
-                // A canceled timer calls nothing and counts no missed period.
-                if control.is_canceled() {
-                    continue;
-                }
-            }
-            let scheduled = anchor_at_first_run(timer, run_anchored, now);
-            let (hypha_core::timer::Observation { fired, rewound }, missed_delta) =
-                observe_with_delta(timer, now);
-            if let Some(control) = control.as_deref() {
-                control.observed(timer.next_due());
-            }
-            let owner = match cycle.as_ref().map(|timer| find_cycle(cycles, timer.cycle)) {
-                Some(Ok(cycle)) => Some(cycle),
-                Some(Err(status)) => return fail_with(&mut self.failure, registration.id, status),
-                None => None,
-            };
-            if rewound {
-                // Nothing rewinds in place: the run ends and the process restarts.
-                let plain_timer = timer_subject(registration.id, timer.period().nanos());
-                let subject =
-                    owner.map_or(plain_timer, |cycle| format!("cycle '{}'", cycle.name()));
-                let status = crate::replay_restart::refuse_rewind(&subject, now.nanos());
-                return fail_with(&mut self.failure, registration.id, status);
-            }
-            if let Some(cycle) = owner
-                && fired != 0
-            {
-                let Some(deadline) =
-                    callback_deadline(scheduled, missed_delta, timer.period().nanos())
-                else {
-                    let status = HyphaStatus::InvalidState;
-                    return fail_with(&mut self.failure, registration.id, status);
-                };
-                match cycle.step_mut() {
-                    Ok(mut step) => step.scheduled_nanos = deadline,
-                    Err(status) => return fail_with(&mut self.failure, registration.id, status),
-                }
-            }
-            if fired == 0 {
-                continue;
-            }
-            let cycle = owner.map(|cycle| cycle.id);
-            self.due.push(Due::Timer { attachment: registration.id, cycle, missed: missed_delta });
         }
         self.run_due(now)
     }
@@ -579,6 +506,74 @@ pub(super) fn observe_with_delta(
     (observation, timer.missed_count().wrapping_sub(previous_missed))
 }
 
+/// What the timer of registration `id` is due for at `now`: the replay call of a cycle's
+/// grid timer, or one call of a timer on the node's clock. `None` when it has nothing to
+/// run, or when `target` is no timer.
+///
+/// # Errors
+/// The status that ends the run: a rewind of simulated time (FSR-37), an unknown cycle,
+/// or a deadline outside the range of the clock.
+fn timer_due(
+    cycles: &[Cycle],
+    node: &HyphaNode,
+    id: AttachmentId,
+    target: &mut Target,
+    now: hypha_time::Time,
+) -> Result<Option<Due>, HyphaStatus> {
+    let Target::Timer { ref mut timer, ref mut cycle, ref mut run_anchored, ref control, .. } =
+        *target
+    else {
+        return Ok(None);
+    };
+    if timer.is_grid()
+        && let Some(owned) = cycle.as_mut()
+    {
+        return grid_due(cycles, id, timer, owned, now);
+    }
+    // On simulated time a plain timer starts on the first clock value, not on the
+    // placeholder zero a node starts with.
+    if !*run_anchored && node.on_sim_time() && !hypha_time::sim_time_has_value() {
+        return Ok(None);
+    }
+    if let Some(control) = control.as_deref() {
+        // A reset or a canceled timer that finds time gone back is a rewind, as for any
+        // timer: the run ends and the process restarts (FSR-37).
+        let followed = control.apply_reset(timer, run_anchored)
+            && (!control.is_canceled() || super::TimerControl::follow_while_canceled(timer, now));
+        if !followed {
+            return Err(refuse_timer_rewind(None, id, timer, now));
+        }
+        // A canceled timer calls nothing and counts no missed period.
+        if control.is_canceled() {
+            return Ok(None);
+        }
+    }
+    let scheduled = anchor_at_first_run(timer, run_anchored, now);
+    let (hypha_core::timer::Observation { fired, rewound }, missed_delta) =
+        observe_with_delta(timer, now);
+    if let Some(control) = control.as_deref() {
+        control.observed(timer.next_due());
+    }
+    let owner = cycle.as_ref().map(|owned| find_cycle(cycles, owned.cycle)).transpose()?;
+    if rewound {
+        return Err(refuse_timer_rewind(owner, id, timer, now));
+    }
+    if fired == 0 {
+        return Ok(None);
+    }
+    // A cycle's step learns the deadline it runs for.
+    if let Some(cycle) = owner {
+        let deadline = callback_deadline(scheduled, missed_delta, timer.period().nanos())
+            .ok_or(HyphaStatus::InvalidState)?;
+        cycle.step_mut()?.scheduled_nanos = deadline;
+    }
+    Ok(Some(Due::Timer {
+        attachment: id,
+        cycle: owner.map(|cycle| cycle.id),
+        missed: missed_delta,
+    }))
+}
+
 /// The replay call of the grid timer of a cycle at `now`, `None` when it has nothing to
 /// run; the status that ends the run for an unknown cycle or a rewind.
 fn grid_due(
@@ -601,8 +596,7 @@ fn grid_due(
     let (hypha_core::timer::Observation { fired, rewound }, missed_delta) =
         observe_with_delta(timer, now);
     if rewound {
-        let subject = format!("cycle '{}'", cycle.name());
-        return Err(crate::replay_restart::refuse_rewind(&subject, now.nanos()));
+        return Err(refuse_timer_rewind(Some(cycle), attachment, timer, now));
     }
     // A held cycle runs its backlog, and a sliced one the deadlines its last turn did not
     // reach, on a turn with no new deadline.
@@ -647,6 +641,22 @@ pub(crate) fn status_from_code(code: i32) -> HyphaStatus {
         return HyphaStatus::Backend;
     }
     HyphaStatus::from_i32(code)
+}
+
+/// The status that ends the run when the timer of registration `id` saw simulated time
+/// go back to `now`. Nothing rewinds in place: the run ends and the process restarts
+/// (FSR-37). The line names the cycle `owner` that the timer steps, or the plain timer.
+fn refuse_timer_rewind(
+    owner: Option<&Cycle>,
+    id: AttachmentId,
+    timer: &hypha_core::timer::Timer,
+    now: hypha_time::Time,
+) -> HyphaStatus {
+    let subject = owner.map_or_else(
+        || timer_subject(id, timer.period().nanos()),
+        |cycle| format!("cycle '{}'", cycle.name()),
+    );
+    crate::replay_restart::refuse_rewind(&subject, now.nanos())
 }
 
 /// How a rewind line names a plain timer: by its attachment id and period.
