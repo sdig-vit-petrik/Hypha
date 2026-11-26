@@ -235,7 +235,8 @@ void step(const hypha::CycleTime& time);
 ```
 
 A `CycleNode` takes its rate from `rate_hz` under `[cycle]` in the parameter file,
-or from `setRate()` in `setup()`, and a trigger from `setTrigger(port)`. The
+or from `setRate()` in `setup()`, and its triggers from `setTrigger(port)`, once per
+trigger port. The
 cycle has the node's name. A composed `hypha::Cycle` has its own name and uses
 `setRate()`.
 
@@ -320,7 +321,7 @@ calling thread.
   not zero-copy end to end. The history limit counts samples, not bytes, and it
   does not bound the objects that the SDK decodes from them. Never reinterpret a
   serialized payload as a C++ message that holds vectors or strings.
-- Managed cycle inputs do not wake the `WaitSet` between ticks, except the trigger
+- Managed cycle inputs do not wake the `WaitSet` between ticks, except the triggers
   of a triggered cycle (section 6.6). Each tick drains
   every bound source's transport queue into its bounded history before capture.
   Cycles sharing a source also share that history; the first tick drains it and
@@ -463,8 +464,8 @@ input takes none. Without a budget, no cycle-wide limit applies.
 
 A queued input has one overflow behaviour, and no option selects another: the
 pending samples beyond its share are the oldest, so it discards them, examines
-the newest, and counts each discard. Only the trigger of a triggered cycle keeps
-its pending samples for later steps (section 6.6).
+the newest, and counts each discard. Only the triggers of a triggered cycle keep
+their pending samples for later steps (section 6.6).
 
 Each cause of loss has its own counter:
 
@@ -479,18 +480,28 @@ Section 5.4 of the C++ API page gives the fields, the TOML keys and the rules.
 
 ### 6.6 Triggered cycles
 
-A cycle runs either on a rate or on a trigger, never both. The trigger is one of
-the cycle's `Arrivals` inputs (`Cycle::setTrigger`, C ABI `hypha_cycle_set_trigger`
-on a cycle created with period 0). A cycle with both a rate and a trigger, with
-neither, or whose trigger has no positive silence limit is refused at start with
-`InvalidArgument`, and one log line names the cycle and the reason.
+A cycle runs either on a rate or on triggers, never both. A trigger is one of the
+cycle's `Arrivals` inputs (`Cycle::setTrigger(port)`, C ABI `hypha_cycle_set_trigger`
+on a cycle created with period 0); each call adds one trigger, a repeat adds nothing,
+and the order of the calls has no meaning. A trigger is queued and wired and has its
+own positive silence limit. Two triggers may not read one topic through `sharing()`,
+since each sample would step twice: `setTrigger` refuses the second with
+`InvalidArgument`. A cycle has at most 64 triggers. A cycle with both a rate and a
+trigger, with neither, or with a trigger that has no positive silence limit is refused
+at start with `InvalidArgument`, and one log line names the cycle and the reason, and
+the trigger that has no limit.
 
-1. **One step per trigger sample**, oldest first. The trigger port holds exactly
-   that sample in the step. A turn runs every trigger sample that is due; the
-   trigger subscriber's queue depth bounds them, and a queue overflow is a counted
-   transport loss as for any input. The arrivals limit, the cycle budget and the
-   overflow discard do not apply to the trigger, which keeps each sample for its
-   own step; they apply to the other `Arrivals` inputs.
+1. **One step per trigger sample.** The samples of all triggers run in one order:
+   by framework send stamp, a tie by port (the binding index of the port, which is
+   its construction order in C++), and each port's samples in the order they
+   arrived. In a step the port that fires holds exactly its sample; every other
+   trigger holds none, and its samples stay pending for their own steps. The step
+   tells the port that fired by its `samples()`, the one that is not empty. Two
+   steps at one time give `dt = 0`. A turn runs every trigger sample that is due;
+   each trigger subscriber's queue depth bounds them, and a queue overflow is a
+   counted transport loss of that port, as for any input. The arrivals limit, the
+   cycle budget and the overflow discard do not apply to a trigger, which keeps each
+   sample for its own step; they apply to the other `Arrivals` inputs.
 2. **What the step sees.** `CycleTime::now` is the framework send time T of the
    trigger sample. The sample is delivered without a second age check: the schedule
    judged it once (item 3), so a trigger step holds it even when the capture finds it
@@ -502,36 +513,42 @@ neither, or whose trigger has no positive silence limit is refused at start with
    every other input is cut strictly before T, as a grid step is cut at its deadline,
    and the outputs carry T as their framework send stamp. In host time the other
    inputs are captured as a host-time rate step captures them.
-3. **Fallback.** When no trigger sample was sent for the trigger's silence limit
-   (`silence_ms`), counted from the last step, one step
-   runs without a trigger sample, with the trigger stale. It repeats
-   every silence limit until a trigger arrives. Before the first trigger it counts
-   from the cycle's first evaluation. A trigger stamped exactly at the fallback time
-   runs instead of the fallback. In host time a trigger already older than its limit on
-   the wall clock, or stamped before the last step on its port, runs no step: it is
-   consumed and counted in `age_rejections_total`. A step's time never goes back: a
-   trigger stamped before a fallback that ran steps at the fallback's time, and the next
-   fallback counts from there.
+3. **Fallback.** When no step ran for the shortest silence limit (`silence_ms`) of
+   the triggers, counted from the last step, one step runs without a trigger sample.
+   It repeats every shortest limit until a trigger arrives. Before the first trigger
+   it counts from the cycle's first evaluation. In the fallback step every trigger is
+   empty; a trigger without a sample for its own limit, since its last step or the
+   first evaluation, is stale, and the others keep the verdict of item 2. A trigger
+   stamped exactly at the fallback time runs instead of the fallback. In host time a
+   trigger sample already older than its port's limit on the wall clock, or stamped
+   before the last step on its port, runs no step: it is consumed and counted in its
+   port's `age_rejections_total`. A sample of one port drained after a later step of
+   another port still steps. A step's time never goes back: a trigger stamped before
+   the step that ran last steps at that step's time, and the next fallback counts
+   from there.
    The send stamp is aged once, when the trigger is received, and its silence then
    runs on the monotonic clock: a later step of the wall clock moves no fallback. The
    fallbacks that a late turn missed run as one step at the latest due time, as a rate
    cycle counts missed periods instead of a burst. Under
    simulated time each fallback runs, at the last trigger stamp plus multiples of
    the limit, so replays repeat them.
-4. **Wake-up.** The trigger wakes the `WaitSet` when its publisher notifies, which
+4. **Wake-up.** Each trigger wakes the `WaitSet` when its publisher notifies, which
    every publisher does, and the `WaitSet` wakes at the cycle's next fallback
-   deadline, so a fallback runs on its deadline. A wildcard
-   trigger has no listener and is polled every millisecond, as a wildcard subscription
-   is. Under simulated time the wake follows the rule of a cycle timer (section 11.1).
+   deadline, so a fallback runs on its deadline. A wildcard trigger has no listener: a
+   cycle with one polls its triggers every tenth of its shortest silence limit, at
+   least every millisecond. Under simulated time the wake follows the rule of a cycle
+   timer (section 11.1).
 5. **Simulated time.** A step at T, for a trigger or a fallback, runs when the node's
    clock is at least T and every upstream of the cycle has reported at least T on
    `/clock_progress`, so no trigger stamped T can still come. A grid replay cycle needs
    T − 1 ns (section 11.1): it cuts its inputs strictly before T, while a triggered step
    reads its triggers through T. A held step waits for as long as its
-   upstream does not report; the player's `--timeout` is the bound. The trigger stamps must
-   ascend in arrival order: a trigger stamped before the step that ran last, from a
-   publisher that does not report progress or from several publishers whose samples
-   arrive out of order, fails the run with `SequenceGap`, and the log names both times.
+   upstream does not report; the player's `--timeout` is the bound. The trigger stamps of
+   each port must ascend in arrival order: a trigger stamped before the step that ran
+   last, from a publisher that does not report progress or from several publishers on
+   one topic whose samples arrive out of order, fails the run with `SequenceGap`, and
+   the log names both times. A publisher that reports no progress, such as a plain
+   callback, is not waited for, so a tie with its samples runs in arrival order.
 6. **Progress and loops.** A triggered cycle cannot know when its next trigger
    comes. It reports at most the lowest clock its upstreams reported, and stays
    below its earliest pending trigger or fallback. A feedback loop made only of
@@ -613,7 +630,7 @@ a setting on either end:
 | Reader | Wakes on a sample? |
 |---|---|
 | Callback subscription (`node.subscribe<T>(topic, cb)`, `subscribeRaw`, a Rust `WaitSet::attach_subscription`) | Yes. The `WaitSet` opens a listener for it, so `run()` wakes at once. |
-| Triggered cycle's trigger input | Yes. The cycle's `WaitSet` listens on the trigger topic. |
+| Triggered cycle's trigger inputs | Yes. The cycle's `WaitSet` listens on each trigger topic. |
 | Cycle input of a rate cycle (scan → process → output) | No. It is drained at the cycle's tick; it has no listener, so its publishers signal nobody. |
 | Wildcard pattern | No event service spans a pattern, so it is polled (section 8). |
 

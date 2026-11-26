@@ -121,8 +121,8 @@ pub struct CycleRow {
     pub inputs: usize,
     /// The number of output bindings.
     pub outputs: usize,
-    /// The topic a triggered cycle runs on, `None` for a rate cycle.
-    pub trigger: Option<String>,
+    /// The topics a triggered cycle runs on, in port order; empty for a rate cycle.
+    pub triggers: Vec<String>,
 }
 
 /// Required or optional role of one cycle input binding.

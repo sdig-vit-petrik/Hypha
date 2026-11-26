@@ -90,17 +90,17 @@ pub(crate) enum Request {
         callback: Option<Adoption<dyn IntervalHandler>>,
         cycle: Option<CycleId>,
     },
-    /// The periodic wake of a triggered cycle, whose trigger falls silent after
-    /// `silence_nanos`.
+    /// The periodic wake of a triggered cycle, whose trigger ports fall silent after
+    /// `silences_nanos`, in port order.
     Triggered {
         cycle: CycleId,
-        silence_nanos: i64,
-        /// Whether the trigger topic has a listener that wakes the `WaitSet`.
+        silences_nanos: Vec<i64>,
+        /// Whether every trigger topic has a listener that wakes the `WaitSet`.
         notified: bool,
     },
     /// A cycle that drives `/clock`.
     Driver(Box<super::clock_driver::DriverCycle>),
-    /// The listener on the trigger topic of a triggered cycle.
+    /// The listener on one trigger topic of a triggered cycle.
     TriggerWake {
         listener: Box<hypha_iceoryx2::Iox2Listener>,
     },
@@ -308,10 +308,11 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
             let run_anchored = sim_time && (cycle.is_some() || hypha_time::sim_time_has_value());
             Ok((id, Target::Timer { timer, callback, cycle, run_anchored, control }))
         }
-        Request::Triggered { cycle, silence_nanos, notified } => {
-            let schedule = hypha_runtime::trigger_schedule::TriggerSchedule::new(&[silence_nanos])
+        Request::Triggered { cycle, silences_nanos, notified } => {
+            let schedule = hypha_runtime::trigger_schedule::TriggerSchedule::new(&silences_nanos)
                 .ok_or(Error::InvalidArgument)?;
-            let wake = triggered_wake(set, silence_nanos, notified);
+            let shortest = silences_nanos.iter().copied().min().ok_or(Error::InvalidArgument)?;
+            let wake = triggered_wake(set, shortest, notified);
             let id = set.native_attach(None, wake)?;
             let state = super::triggered::TriggeredCycle::new(cycle, schedule);
             Ok((id, Target::Triggered(state)))
@@ -339,9 +340,9 @@ fn timer_wake(period: Duration, node_clock: bool, sim_time: bool) -> Trigger {
     Trigger::Periodic(period.min(Duration::from_millis(1)))
 }
 
-/// The wake of a triggered cycle. An unnotified cycle has no listener and polls its
-/// triggers at a tenth of its limit.
-fn triggered_wake(set: &HyphaWaitSet, silence_nanos: i64, notified: bool) -> Trigger {
+/// The wake of a triggered cycle whose shortest silence limit is `shortest_nanos`. A
+/// cycle with a trigger that has no listener polls its triggers at a tenth of that limit.
+fn triggered_wake(set: &HyphaWaitSet, shortest_nanos: i64, notified: bool) -> Trigger {
     // A node on its own simulated clock is woken by its `/clock` listener.
     if set.node().uses_sim_time {
         return Trigger::Timed;
@@ -352,28 +353,34 @@ fn triggered_wake(set: &HyphaWaitSet, silence_nanos: i64, notified: bool) -> Tri
     if notified {
         return Trigger::Timed;
     }
-    let tenth = u64::try_from(silence_nanos / 10).unwrap_or(0);
+    let tenth = u64::try_from(shortest_nanos / 10).unwrap_or(0);
     Trigger::Periodic(Duration::from_nanos(tenth).max(WILDCARD_POLL_PERIOD))
 }
 
-/// Attach a committed triggered cycle: its periodic wake, and `listener` on its trigger
-/// topic when there is one. Returns both registrations, zero without a listener. On
-/// failure nothing stays attached.
+/// Attach a committed triggered cycle: its periodic wake, and the listener of each
+/// trigger topic that has one (a wildcard has none). Returns the wake and the listener
+/// registrations. On failure nothing stays attached.
 pub(crate) fn attach_triggered_cycle(
     set: &HyphaWaitSet,
     cycle: &Cycle,
-    silence_nanos: i64,
-    listener: Option<Box<hypha_iceoryx2::Iox2Listener>>,
-) -> Result<(HyphaAttachmentId, HyphaAttachmentId), Error> {
-    let request =
-        Request::Triggered { cycle: cycle.id, silence_nanos, notified: listener.is_some() };
-    let wake = attach(set, request)?;
-    let Some(listener) = listener else {
-        return Ok((wake, 0));
-    };
-    attach(set, Request::TriggerWake { listener }).map(|id| (wake, id)).inspect_err(|_| {
-        let _ = waitset_detach(set, wake);
-    })
+    silences_nanos: Vec<i64>,
+    listeners: Vec<Option<Box<hypha_iceoryx2::Iox2Listener>>>,
+) -> Result<(HyphaAttachmentId, Vec<HyphaAttachmentId>), Error> {
+    let notified = listeners.iter().all(Option::is_some);
+    let wake = attach(set, Request::Triggered { cycle: cycle.id, silences_nanos, notified })?;
+    let mut attached = Vec::with_capacity(listeners.len());
+    for listener in listeners.into_iter().flatten() {
+        match attach(set, Request::TriggerWake { listener }) {
+            Ok(id) => attached.push(id),
+            Err(error) => {
+                for id in attached.into_iter().chain([wake]) {
+                    let _ = waitset_detach(set, id);
+                }
+                return Err(error);
+            }
+        }
+    }
+    Ok((wake, attached))
 }
 
 /// Attach the framework-time timer of `cycle`, a cycle of `set`. The cycle is its owner.

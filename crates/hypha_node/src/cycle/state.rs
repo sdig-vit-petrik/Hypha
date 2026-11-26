@@ -79,9 +79,9 @@ pub(crate) struct InputCounts {
 #[derive(Default)]
 pub(crate) struct CycleStep {
     pub(crate) attachment: HyphaAttachmentId,
-    /// The listener registration that wakes a triggered cycle. Zero for a rate cycle, and
-    /// for a wildcard trigger.
-    pub(crate) trigger_attachment: HyphaAttachmentId,
+    /// The listener registrations that wake a triggered cycle, one per trigger topic that
+    /// has a listener (a wildcard has none). Empty for a rate cycle.
+    pub(crate) trigger_attachments: Vec<HyphaAttachmentId>,
     /// The step callback with its context. `None` only while the cycle drops.
     pub(crate) callback: Option<Box<dyn CycleStepHandler>>,
     pub(crate) runtime: hypha_cycle::CycleRuntime,

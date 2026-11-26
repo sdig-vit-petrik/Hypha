@@ -4,7 +4,7 @@
 mod common;
 use crate::common::c_text;
 use crate::common::create_node;
-use crate::common::introspection::{binding, introspection_text, publisher, subscriber};
+use crate::common::introspection::{binding, cycle, introspection_text, publisher, subscriber};
 use crate::common::supervision::{bind, node_with_parameter_text};
 use crate::common::unique;
 
@@ -149,6 +149,65 @@ fn a_cycle_row_follows_its_bindings_and_leaves_on_destruction() {
     let after = introspection_text(node);
     assert!(row_cells(&after, &cycle_name).is_none());
     assert!(row_cells(&after, &topic).is_none());
+    unsafe { hypha_node_destroy(node) };
+}
+
+#[test]
+fn a_cycle_row_lists_every_trigger() {
+    let node = node_with_parameter_text(
+        "introspection_triggers",
+        "[ports.inputs.joy]\nsilence_ms = 500\n\n[ports.inputs.nav]\nsilence_ms = 1000\n",
+    );
+    let waitset = create_waitset(node);
+    let cycle_name = unique("mux");
+    let name = c_text(&cycle_name);
+    let mut created = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            hypha_cycle_create(
+                waitset,
+                name.as_ptr(),
+                name.as_bytes().len(),
+                0,
+                Some(empty_step),
+                ptr::null_mut(),
+                None,
+                &raw mut created,
+            )
+        },
+        HyphaStatus::Ok
+    );
+    let queued = HyphaCycleBindingOptions {
+        mode: HyphaCycleInputMode::Queued as u32,
+        max_samples_per_iteration: 1,
+        optional: 0,
+    };
+    let topics = ["nav", "joy"].map(|port| {
+        let topic = format!("/{}", unique(port));
+        let mut source = ptr::null_mut();
+        let subscriber_handle = subscribe_typed(node, &topic);
+        assert_eq!(
+            unsafe { hypha_input_source_create(waitset, subscriber_handle, &raw mut source) },
+            HyphaStatus::Ok
+        );
+        let mut index = 0_u32;
+        assert_eq!(
+            unsafe { hypha_cycle_bind_input(created, source, &raw const queued, &raw mut index) },
+            HyphaStatus::Ok
+        );
+        let bound = unsafe { bind(created, node, index, port, (true, false, true)) };
+        assert_eq!(bound.status, HyphaStatus::Ok, "{}", bound.detail);
+        topic
+    });
+    // Port order is binding order, whatever the order of the calls.
+    for index in [1, 0] {
+        assert_eq!(unsafe { hypha_cycle_set_trigger(created, index) }, HyphaStatus::Ok);
+    }
+    assert_eq!(unsafe { hypha_cycle_commit(created) }, HyphaStatus::Ok);
+    let row = cycle(node, &cycle_name).expect("cycle row");
+    assert_eq!(row.triggers, topics);
+    assert!(!row.has_period);
+    assert_eq!(unsafe { hypha_cycle_destroy(created) }, HyphaStatus::Ok);
     unsafe { hypha_node_destroy(node) };
 }
 
