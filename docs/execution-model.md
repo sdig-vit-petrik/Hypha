@@ -491,11 +491,17 @@ neither, or whose trigger has no positive silence limit is refused at start with
    transport loss as for any input. The arrivals limit, the cycle budget and the
    overflow discard do not apply to the trigger, which keeps each sample for its
    own step; they apply to the other `Arrivals` inputs.
-2. **What the step sees.** `CycleTime::now` is the trigger's framework send
-   time T. Under simulated time every other input is cut strictly before T, as a
-   grid step is cut at its deadline, and the outputs carry T as their framework
-   send stamp. In host time the other inputs are captured as a host-time rate step
-   captures them.
+2. **What the step sees.** `CycleTime::now` is the framework send time T of the
+   trigger sample. The sample is delivered without a second age check: the schedule
+   judged it once (item 3), so a trigger step holds it even when the capture finds it
+   past its limit, and is empty only when the sample does not decode. Every trigger
+   port is judged at each step by its newest sample against its own limit: under
+   simulated time the samples sent at or before T count, and the age is T − sent, so
+   a sample exactly at its limit is usable; in host time every retained sample counts,
+   as for a `Latest` input, one stamped after the step included. Under simulated time
+   every other input is cut strictly before T, as a grid step is cut at its deadline,
+   and the outputs carry T as their framework send stamp. In host time the other
+   inputs are captured as a host-time rate step captures them.
 3. **Fallback.** When no trigger sample was sent for the trigger's silence limit
    (`silence_ms`), counted from the last step, one step
    runs without a trigger sample, with the trigger stale. It repeats

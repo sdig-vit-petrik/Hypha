@@ -26,6 +26,37 @@ impl TriggerPorts {
     }
 }
 
+/// What the trigger ports of a triggered cycle hold in one step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerStep {
+    /// A step on the oldest pending sample of trigger port `port`; every other trigger
+    /// port holds none.
+    Sample {
+        /// The port that fires.
+        port: usize,
+    },
+    /// A step without a trigger sample: every trigger port is empty, and the ports in
+    /// `due` read stale.
+    Fallback {
+        /// The ports whose own silence limit has passed.
+        due: TriggerPorts,
+    },
+}
+
+impl TriggerStep {
+    /// Whether trigger port `port` takes its oldest pending sample in this step.
+    #[must_use]
+    pub const fn fires(self, port: usize) -> bool {
+        matches!(self, Self::Sample { port: firing } if firing == port)
+    }
+
+    /// Whether trigger port `port` reads stale in this step.
+    #[must_use]
+    pub fn is_due(self, port: usize) -> bool {
+        matches!(self, Self::Fallback { due } if due.contains(port))
+    }
+}
+
 /// The bit of `port`, `None` past the capacity.
 fn bit(port: usize) -> Option<u64> {
     u32::try_from(port).ok().and_then(|shift| 1_u64.checked_shl(shift))

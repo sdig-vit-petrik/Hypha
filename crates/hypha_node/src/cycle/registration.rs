@@ -319,8 +319,8 @@ pub fn cycle_commit(set: &HyphaWaitSet, cycle: CycleId) -> Result<(), Error> {
     let attach = match silence {
         None if driver => Attach::Driver(registration.driver.clone().ok_or(Error::InvalidState)?),
         Some(silence) => {
-            let trigger =
-                registration.runtime.trigger().and_then(|index| registration.inputs.get(index));
+            let first = registration.runtime.triggers().first();
+            let trigger = first.and_then(|&index| registration.inputs.get(index));
             let subscriber = trigger
                 .and_then(|source| source.subscriber.as_deref())
                 .ok_or(Error::InvalidState)?;
@@ -346,7 +346,8 @@ pub fn cycle_commit(set: &HyphaWaitSet, cycle: CycleId) -> Result<(), Error> {
     registration.trigger_attachment = trigger_attachment;
     node.committed_cycles.fetch_add(1, Ordering::AcqRel);
     node.drives_clock.fetch_or(driver, Ordering::AcqRel);
-    if let Some(source) = registration.runtime.trigger().and_then(|i| registration.inputs.get(i)) {
+    let first = registration.runtime.triggers().first();
+    if let Some(source) = first.and_then(|&index| registration.inputs.get(index)) {
         cycle.introspection.set_cycle_trigger(&source.topic);
     }
     cycle.snapshots.committed.store(true, Ordering::Release);
@@ -392,7 +393,7 @@ fn trigger_silence(cycle: &Cycle, registration: &CycleStep) -> Result<Option<i64
             &format!("cycle '{name}' is refused: {reason}"),
         )
     };
-    let Some(trigger) = registration.runtime.trigger() else {
+    let Some(&trigger) = registration.runtime.triggers().first() else {
         if cycle.period_nanos() == 0 {
             return Err(refuse("it has neither a rate nor a trigger"));
         }

@@ -243,11 +243,11 @@ impl CycleHistory {
         usize::try_from(offset).unwrap_or(usize::MAX).min(self.samples.len())
     }
 
-    /// The exclusive end of the admitted prefix, when timestamps are ordered.
-    /// Equal timestamps belong to the next replay step.
-    pub(crate) fn replay_end(&self, cut_nanos: u64) -> Option<usize> {
+    /// The exclusive end of the prefix of samples whose framework send time `admits`, when
+    /// timestamps are ordered.
+    pub(crate) fn replay_end(&self, admits: impl Fn(u64) -> bool) -> Option<usize> {
         (self.timestamp_inversions == 0)
-            .then(|| self.samples.partition_point(|sample| sample.framework_sent_nanos < cut_nanos))
+            .then(|| self.samples.partition_point(|sample| admits(sample.framework_sent_nanos)))
     }
 
     /// The retained samples stamped more than `bound_nanos` after `cut_nanos`; a high

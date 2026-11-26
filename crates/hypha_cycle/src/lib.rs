@@ -24,7 +24,7 @@ pub use runtime::{
     StagedMessage,
 };
 pub use supervision::{FAULT_STAGNANT, FAULT_STALE, Supervision, SupervisionLimits};
-pub use trigger::TriggerPorts;
+pub use trigger::{TriggerPorts, TriggerStep};
 
 /// The guard of `mutex`, taken as it is when a holder panicked. A shipped build aborts
 /// on a panic, so no lock is ever poisoned there: the recovery serves test builds,
