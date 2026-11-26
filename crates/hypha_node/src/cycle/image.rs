@@ -320,7 +320,7 @@ pub fn image_reject_sample(
     let history = input.history.as_ref().ok_or(Error::NotAvailable)?;
     let cell = view.supervision.get(index).ok_or(Error::InvalidArgument)?;
     let mut copy = cell.try_borrow_mut().map_err(|_| Error::InvalidState)?;
-    let history = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let history = crate::locked(history);
     let newly = history_reject(history, sequence, capture, &mut copy);
     if newly {
         copy.newly_rejected = copy.newly_rejected.wrapping_add(1);

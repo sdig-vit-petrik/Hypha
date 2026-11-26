@@ -81,7 +81,7 @@ pub(crate) fn open_within_window<T, E: Copy + core::fmt::Debug>(
     let mut window = OpenWindow::start(what);
     loop {
         let outcome = {
-            let locked_node = node.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let locked_node = crate::locked(node);
             let node_ref = locked_node.as_ref().ok_or(node_gone)?;
             attempt(node_ref)
         };

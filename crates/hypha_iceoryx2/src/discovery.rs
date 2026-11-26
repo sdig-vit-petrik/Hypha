@@ -130,7 +130,7 @@ fn count_service_ports(
     };
     // The node lock covers the open only.
     let opened = {
-        let locked_node = node.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let locked_node = crate::locked(node);
         let node_ref = locked_node.as_ref().ok_or(PortError::Backend(1))?;
         let node_id = *node_ref.id();
         let service = crate::transport::data_service_builder(node_ref, &service_name).open();

@@ -44,6 +44,18 @@ if grep -rn 'decltype(auto)' "${sdk_roots[@]}"; then
   exit 1
 fi
 
+# A poisoned lock is recovered once per crate and kind of lock, in the crate's helper
+# (docs/rust-style.md, "Locks"), not at a call site.
+lock_helpers='crates/hypha_core/src/lib.rs crates/hypha_cycle/src/lib.rs crates/hypha_iceoryx2/src/lib.rs
+crates/hypha_log/src/engine.rs crates/hypha_node/src/lib.rs crates/hypha_runtime/src/schema.rs
+crates/hypha_time/src/registry.rs'
+spelled_out="$(git grep -l 'PoisonError::into_inner' -- 'crates/*/src/*' | grep -vxF -f <(tr ' ' '\n' <<<"$lock_helpers") || true)"
+if [[ -n "$spelled_out" ]]; then
+  echo "a poisoned lock is recovered outside the crate's lock helper (docs/rust-style.md, Locks):" >&2
+  echo "$spelled_out" >&2
+  exit 1
+fi
+
 ./scripts/check-links.sh
 
 ./scripts/check-deps.sh

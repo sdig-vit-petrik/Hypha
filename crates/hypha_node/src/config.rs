@@ -37,7 +37,7 @@ impl HyphaConfig {
     }
 
     pub(crate) fn introspection_rows(&self) -> Vec<ConfigRow> {
-        self.introspection_rows.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        crate::locked(&self.introspection_rows).clone()
     }
 }
 

@@ -96,7 +96,7 @@ impl Iox2Transport {
     /// Hand the last sample of each latched topic to the subscribers that joined
     /// since the last call, and wake them.
     pub fn replay_latched(&self) {
-        let mut latched = self.latched.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut latched = crate::locked(&self.latched);
         latched.retain_mut(LatchedPort::replay);
     }
 
@@ -221,8 +221,7 @@ impl Iox2Transport {
         )?);
 
         if spec.latch {
-            let mut latched =
-                self.latched.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut latched = crate::locked(&self.latched);
             latched.push(LatchedPort {
                 publisher: Arc::downgrade(&publisher),
                 notifier: Arc::clone(&notifier),
@@ -249,7 +248,7 @@ impl Iox2Transport {
 pub(crate) fn node_port_name(
     node: &SharedNode,
 ) -> Result<iceoryx2::port::port_name::PortName, PortError> {
-    let locked_node = node.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let locked_node = crate::locked(node);
     let node_ref = locked_node.as_ref().ok_or(PortError::Backend(1))?;
     iceoryx2::port::port_name::PortName::new(node_ref.name().as_str())
         .map_err(|_| PortError::InvalidTopic)
@@ -551,8 +550,7 @@ impl Iox2Transport {
 
     fn notify_graph_change(&self) -> Result<(), PortError> {
         let cached = {
-            let guard =
-                self.graph_notifier.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let guard = crate::locked(&self.graph_notifier);
             guard.as_ref().map(Arc::clone)
         };
         // Opened without any lock held: the open may wait for another endpoint.
@@ -560,8 +558,7 @@ impl Iox2Transport {
             notifier
         } else {
             let created = Arc::new(create_notifier(&self.node, GRAPH_EVENT, None)?);
-            let mut guard =
-                self.graph_notifier.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut guard = crate::locked(&self.graph_notifier);
             Arc::clone(guard.get_or_insert(created))
         };
         notifier.notify().map(|_| ()).map_err(|_| PortError::Disconnected)
@@ -570,9 +567,8 @@ impl Iox2Transport {
 
 impl Drop for Iox2Transport {
     fn drop(&mut self) {
-        let _ =
-            self.graph_notifier.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        self.latched.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
-        let _ = self.node.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let _ = crate::locked(&self.graph_notifier).take();
+        crate::locked(&self.latched).clear();
+        let _ = crate::locked(&self.node).take();
     }
 }

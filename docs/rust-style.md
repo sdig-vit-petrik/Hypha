@@ -31,6 +31,12 @@ These are not visible from the lint configuration alone.
   `Result<T, E>` with an `E` that names each failure as a variant carrying the
   data a caller needs. A `String` or `Box<dyn Error>` error is for a tool's
   `main` at most. A message is formatted where the error is displayed.
+- **Locks.** A lock is taken through the crate's `locked` helper, never with a
+  recovery from poisoning written at the call site. A shipped build aborts on a
+  panic (`panic = "abort"`, NFR-09), so no lock is ever poisoned there; the helper's
+  recovery serves the test builds, which unwind. A crate has one such helper for a
+  mutex and one place for each other kind of lock it uses, and `check.sh` refuses a
+  recovery anywhere else under `crates/*/src`.
 - **No `unwrap`, `expect`, `panic!`, `unreachable!`, `todo!` or
   `unimplemented!` in shipped code.** Clippy denies them. A test may suppress
   `unwrap_used` / `expect_used` for itself (with a reason, see below); a test

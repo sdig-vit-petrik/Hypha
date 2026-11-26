@@ -23,3 +23,11 @@ pub use runtime::{
     StagedMessage,
 };
 pub use supervision::{FAULT_STAGNANT, FAULT_STALE, Supervision, SupervisionLimits};
+
+/// The guard of `mutex`, taken as it is when a holder panicked. A shipped build aborts
+/// on a panic, so no lock is ever poisoned there: the recovery serves test builds,
+/// which unwind (`docs/rust-style.md`, "Locks").
+#[inline]
+pub(crate) fn locked<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}

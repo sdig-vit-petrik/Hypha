@@ -2,7 +2,7 @@
 //! the reads of `/clock` the node has seen and the offers of its `WaitSet`s. The rules are
 //! in `hypha_runtime::replay_progress`.
 
-use std::sync::{MutexGuard, PoisonError};
+use std::sync::MutexGuard;
 
 use hypha_msgs::hypha_msgs::ReplayProgress;
 
@@ -25,23 +25,23 @@ pub(crate) struct NodeProgress {
 
 /// Record a `/clock` sample that a `WaitSet` of the node has read. The record is node-wide.
 pub(crate) fn record_clock_read(node: &HyphaNode, read: ClockRead) {
-    node.progress.lock().unwrap_or_else(PoisonError::into_inner).rules.note_read(read);
+    crate::locked(&node.progress).rules.note_read(read);
 }
 
 /// Record `read`, the `/clock` sample a restarted process rejoins the replay on.
 pub(crate) fn record_rejoin(node: &HyphaNode, read: ClockRead) {
-    let mut reporter = node.progress.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut reporter = crate::locked(&node.progress);
     reporter.rules.rejoin(read);
 }
 
 /// The send time of the `/clock` sample this restarted process rejoined on, or zero.
 pub(crate) fn epoch(node: &HyphaNode) -> u64 {
-    node.progress.lock().unwrap_or_else(PoisonError::into_inner).rules.epoch()
+    crate::locked(&node.progress).rules.epoch()
 }
 
 /// The newest `/clock` sample that any `WaitSet` of the node has read, if any.
 pub(crate) fn newest_read(node: &HyphaNode) -> Option<ClockRead> {
-    node.progress.lock().unwrap_or_else(PoisonError::into_inner).rules.newest()
+    crate::locked(&node.progress).rules.newest()
 }
 
 /// Offer `read` as the progress of the `WaitSet` at `waitset`, and send the node's report
@@ -50,7 +50,7 @@ pub(crate) fn report_progress(node: &HyphaNode, waitset: usize, read: ClockRead)
     if node.open_loop {
         return;
     }
-    let mut reporter = node.progress.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut reporter = crate::locked(&node.progress);
     reporter.rules.offer(waitset, read);
     let mut reporter = open_if_due(node, reporter);
     send_due(node, &mut reporter);
@@ -61,7 +61,7 @@ pub(crate) fn withdraw_progress(node: &HyphaNode, waitset: usize) {
     if node.open_loop {
         return;
     }
-    let mut reporter = node.progress.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut reporter = crate::locked(&node.progress);
     if reporter.rules.withdraw(waitset) {
         let mut reporter = open_if_due(node, reporter);
         send_due(node, &mut reporter);
@@ -82,7 +82,7 @@ fn open_if_due<'a>(
     }
     drop(reporter);
     let opened = open_progress_publisher(node);
-    let mut reporter = node.progress.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut reporter = crate::locked(&node.progress);
     match opened {
         Ok(publisher) => {
             if reporter.publisher.is_none() {
@@ -122,12 +122,12 @@ pub(crate) fn ensure_publisher(node: &HyphaNode) -> Result<(), HyphaStatus> {
     if node.open_loop {
         return Ok(());
     }
-    let is_open = node.progress.lock().unwrap_or_else(PoisonError::into_inner).publisher.is_some();
+    let is_open = crate::locked(&node.progress).publisher.is_some();
     if is_open {
         return Ok(());
     }
     let publisher = open_progress_publisher(node)?;
-    let mut reporter = node.progress.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut reporter = crate::locked(&node.progress);
     if reporter.publisher.is_none() {
         reporter.publisher = Some(publisher);
     }
@@ -179,7 +179,7 @@ pub(crate) fn accept_report(
     let report =
         decode_report(&node.name, sample.payload()).map_err(|_| HyphaStatus::CorruptPayload)?;
     if let Some((name, report)) = report {
-        node.upstream.lock().unwrap_or_else(PoisonError::into_inner).store(name, report);
+        crate::locked(&node.upstream).store(name, report);
     }
     Ok(())
 }
@@ -194,10 +194,10 @@ pub(crate) fn note_progress_gaps(node: &HyphaNode) {
     let Some(missing) = missing else {
         return;
     };
-    node.upstream.lock().unwrap_or_else(PoisonError::into_inner).note_missing(missing);
+    crate::locked(&node.upstream).note_missing(missing);
 }
 
 /// The clock node `name` reported for a sample sent at or after `epoch`, if it has.
 pub(crate) fn valid_clock(node: &HyphaNode, name: &str, epoch: u64) -> Option<u64> {
-    node.upstream.lock().unwrap_or_else(PoisonError::into_inner).valid_clock(name, epoch)
+    crate::locked(&node.upstream).valid_clock(name, epoch)
 }

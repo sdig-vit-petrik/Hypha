@@ -1,7 +1,7 @@
 //! Production cycle capture, emission validation, and output failure policy.
 
 use std::fmt;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 mod arrivals;
 mod helpers;
@@ -312,7 +312,7 @@ impl CycleRuntime {
         let (Some(history), Some(capture)) = (history, self.captures.get(index)) else {
             return Err(STATUS_INVALID_ARGUMENT);
         };
-        let history = history.lock().unwrap_or_else(PoisonError::into_inner);
+        let history = crate::locked(history);
         for stamp in capture.pending_stamps(&history) {
             out.push(i64::try_from(stamp).map_err(|_| STATUS_INVALID_ARGUMENT)?);
         }
@@ -330,7 +330,7 @@ impl CycleRuntime {
         history: Arc<Mutex<CycleHistory>>,
         options: BindingOptions,
     ) -> Result<u32, i32> {
-        let held = history.lock().unwrap_or_else(PoisonError::into_inner);
+        let held = crate::locked(&history);
         let capture = BindingCapture::new(&held, options.mode, options.max_samples_per_iteration)
             .ok_or(STATUS_INVALID_ARGUMENT)?;
         drop(held);
@@ -511,7 +511,7 @@ impl CycleRuntime {
             if self.bindings.iter().take(first).any(|earlier| shares_history(earlier, slot)) {
                 continue;
             }
-            let guard = history.lock().unwrap_or_else(PoisonError::into_inner);
+            let guard = crate::locked(history);
             for (index, (other, capture)) in
                 self.bindings.iter().zip(&mut self.captures).enumerate().skip(first)
             {
@@ -593,7 +593,7 @@ impl CycleRuntime {
         let (Some(history), Some(capture)) = (history, self.captures.get_mut(index)) else {
             return Err(STATUS_INVALID_ARGUMENT);
         };
-        let history = history.lock().unwrap_or_else(PoisonError::into_inner);
+        let history = crate::locked(history);
         if capture.refuse_pending(&history) { Ok(()) } else { Err(STATUS_INVALID_ARGUMENT) }
     }
 
@@ -643,7 +643,7 @@ impl CycleRuntime {
         let Some(capture) = self.captures.get_mut(index) else {
             return;
         };
-        let history = history.lock().unwrap_or_else(PoisonError::into_inner);
+        let history = crate::locked(history);
         capture.reject(&history, sequence);
     }
 

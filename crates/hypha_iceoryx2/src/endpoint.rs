@@ -197,10 +197,7 @@ impl Iox2Publisher {
             || (loaned.is_ok() && self.pool_refusing.load(std::sync::atomic::Ordering::Relaxed));
         let persists = tracked && {
             self.pool_refusing.store(pool_refused, std::sync::atomic::Ordering::Relaxed);
-            self.pool_refusals
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .observe(pool_refused, std::time::Instant::now)
+            crate::locked(&self.pool_refusals).observe(pool_refused, std::time::Instant::now)
         };
         if persists {
             log::warn!(target: "hypha/transport",

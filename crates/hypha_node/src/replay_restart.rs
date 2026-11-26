@@ -5,7 +5,6 @@
 //! the process, which waits on its first node ([`rejoin`]) for a `/clock` sample of the
 //! new timeline before it opens any port of its own.
 
-use std::sync::PoisonError;
 use std::time::{Duration, Instant};
 
 use hypha_runtime::clock_barrier::NAMED_START_TIMEOUT;
@@ -74,7 +73,7 @@ pub(crate) fn rejoin(node: &HyphaNode) -> Result<(), Error> {
 
 /// Apply the first queued `/clock` sample sent after `after` and drop the ones before it.
 fn clock_sent_after(node: &HyphaNode, after: u64) -> Result<Option<ClockRead>, Error> {
-    let mut guard = node.sim_clock_subscriber.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut guard = crate::locked(&node.sim_clock_subscriber);
     let Some(subscriber) = guard.as_deref_mut() else {
         return Err(Error::InvalidState);
     };
