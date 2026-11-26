@@ -52,6 +52,22 @@ inline void* StepHarness::storeFor(const Port& port, void* (*make)(), void (*des
     return this->stores_.back().sent;
 }
 
+/// A disabled input never receives a sample in a started cycle, so a test that gives it
+/// one tests a state that cannot occur: refuse it, and say what enables the port.
+template <typename M>
+void StepHarness::requireEnabled(const Input<M>& port)
+{
+    if (port.enabled()) {
+        return;
+    }
+    const std::string table = port.slot_->topic.describe();
+    throw std::logic_error(
+        "hypha: deliver() to input " + table + ", which is disabled: the parameter file gives ["
+        + table + "] no non-empty `topic`, so a started cycle would give it no sample; set `topic` "
+        + "there, in the file that a Node or a ConfigContext holds before the harness is built"
+    );
+}
+
 /// @brief The silence limit of @p port in nanoseconds; zero when it has none.
 template <typename M>
 int64_t StepHarness::silenceOf(const Input<M>& port)

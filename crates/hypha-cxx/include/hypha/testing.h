@@ -15,7 +15,10 @@
 ///    port that requires its topic or sits on a Topic literal is enabled; an optionalTopic
 ///    port is enabled when its table sets a non-empty `topic`;
 ///  - the verdict of a delivered input, by the rule of the capture, from `silence_ms`;
-///  - the bound of perStep() on the sends of a step.
+///  - the bound of perStep() on the sends of a step;
+///  - what a disabled port does: deliver() to a disabled input is refused, since a started
+///    cycle would give it no sample, and a disabled output counts the sends of a step and
+///    keeps none.
 /// What it leaves out: the node, the transport (no subscriber or publisher is opened, no
 /// sample crosses a bus), the clock, and every key of a table but `topic` and `silence_ms`.
 /// set(), setStale() and setNeverArrived() state a verdict and read no file.
@@ -89,12 +92,14 @@ class StepHarness final : private detail::CaptureStore
 
     /// @brief The port receives @p value, sent at @p sentAt. Each later step() judges it as
     ///        a capture does: usable while (step time - sentAt) <= silence_ms, stale after.
-    /// @throws std::logic_error when the port reads a table and no configuration is loaded.
+    /// @throws std::logic_error when the port is disabled, or reads a table and no
+    ///         configuration is loaded.
     /// @throws ParameterError when `silence_ms` is not a whole number of milliseconds
     ///         from 1 to the limitMax() of the port.
     template <typename M>
     void deliver(Latest<M>& port, M value, Time sentAt)
     {
+        StepHarness::requireEnabled(port);
         const int64_t silenceNanos = StepHarness::silenceOf(port);
         this->forget(port);
         port.candidate_ = std::move(value);
@@ -109,6 +114,7 @@ class StepHarness final : private detail::CaptureStore
     template <typename M>
     void deliver(Arrivals<M>& port, std::vector<M> samples, Time newestSentAt)
     {
+        StepHarness::requireEnabled(port);
         const int64_t silenceNanos = StepHarness::silenceOf(port);
         this->forget(port);
         port.sampleCount_ = samples.size();
@@ -286,6 +292,8 @@ class StepHarness final : private detail::CaptureStore
     void        wirePorts();
     static bool wiredByFile(const detail::TopicSource& topic);
     void*       storeFor(const Port& port, void* (*make)(), void (*destroy)(void*)) override;
+    template <typename M>
+    static void requireEnabled(const Input<M>& port);
     template <typename M>
     static int64_t  silenceOf(const Input<M>& port);
     static bool     withinSilence(int64_t silenceNanos, int64_t sentNanos, int64_t nowNanos);

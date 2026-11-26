@@ -128,8 +128,11 @@ class Output final : public Port
                 HYPHA_STATUS_RESOURCE_LIMIT, "hypha: output exceeded its perStep() bound"
             );
         }
-        void* store = harness.storeFor(*this, &Output::newSent, &Output::deleteSent);
-        static_cast<std::vector<M>*>(store)->push_back(message);
+        // A disabled output counts the send and keeps nothing, as in a started cycle.
+        if (this->enabled_) {
+            void* store = harness.storeFor(*this, &Output::newSent, &Output::deleteSent);
+            static_cast<std::vector<M>*>(store)->push_back(message);
+        }
         this->messagesSentThisStep_ += 1;
         this->sent_ = true;
         this->sentCount_ += 1;

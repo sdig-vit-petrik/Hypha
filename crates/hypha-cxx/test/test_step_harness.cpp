@@ -866,11 +866,59 @@ TEST_F(OptionalPortsFixture, AWiredOptionalLatestPortGivesEachOfTheThreeVerdicts
     EXPECT_DOUBLE_EQ(node.tilt.lastKnown().data, 0.5);
 }
 
+TEST_F(OptionalPortsFixture, ADeliverToADisabledPortIsRefusedWithTheReason)
+{
+    Optionals                   node;
+    hypha::testing::StepHarness harness{node};
+    const auto                  reasonOf = [](const auto& deliver) {
+        try {
+            deliver();
+        } catch (const std::logic_error& error) {
+            return std::string(error.what());
+        }
+        return std::string{};
+    };
+
+    const std::string noTable = reasonOf([&]() {
+        harness.deliver(node.absent, Float64{1.0}, Time::fromNanos(kStartNanos));
+    });
+    EXPECT_NE(noTable.find("deliver()"), std::string::npos) << noTable;
+    EXPECT_NE(noTable.find("ports.inputs.absent"), std::string::npos) << noTable;
+    EXPECT_NE(noTable.find("disabled"), std::string::npos) << noTable;
+    EXPECT_NE(noTable.find("`topic`"), std::string::npos) << noTable;
+
+    const std::string emptyTopic = reasonOf([&]() {
+        harness.deliver(node.aux, {Float64{1.0}}, Time::fromNanos(kStartNanos));
+    });
+    EXPECT_NE(emptyTopic.find("ports.inputs.aux"), std::string::npos) << emptyTopic;
+
+    harness.step(node, stepAt(kStartNanos + 1));
+    EXPECT_EQ(node.absent.verdict(), InputVerdict::NeverArrived);
+    EXPECT_FALSE(node.absent.has());
+    EXPECT_TRUE(node.aux.samples().empty());
+}
+
+TEST_F(OptionalPortsFixture, AnOutputTheFileWiresKeepsItsSendsAndOneItLeavesOutDropsThem)
+{
+    Optionals                   node;
+    hypha::testing::StepHarness harness{node};
+    harness.step(node, stepAt(kStartNanos));
+
+    ASSERT_EQ(harness.sent(node.debug).size(), 1U);
+    EXPECT_DOUBLE_EQ(harness.sent(node.debug)[0].data, 1.0);
+    EXPECT_TRUE(harness.sent(node.tf).empty()) << "a disabled output sends nothing";
+    EXPECT_TRUE(node.tf.sent()) << "yet the step did send, and the port counts it";
+    EXPECT_EQ(node.tf.sentCount(), 1U);
+}
+
 TEST(StepHarnessOptionalPorts, WithoutAParameterFileEveryOptionalPortIsDisabled)
 {
     Optionals                   node;
     hypha::testing::StepHarness harness{node};
     EXPECT_EQ(node.enabledPorts(), std::vector<bool>(6, false));
+    EXPECT_THROW(
+        harness.deliver(node.mag, {Float64{1.0}}, Time::fromNanos(kStartNanos)), std::logic_error
+    );
 }
 
 TEST(StepHarnessOptionalPorts, APortThatRequiresItsTopicIsEnabledWithOrWithoutAFile)
