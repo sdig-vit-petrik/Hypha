@@ -429,7 +429,8 @@ sharing port no `Qos`. Any other combination does not compile. What each tag doe
 `InvalidArgument` and a missing key or table with `NotAvailable`; with it both disable
 the port. An invalid name (`InvalidTopic`), a number or a bool, and a plain string
 entry `name = "/x"` (`InvalidArgument`) fail either way. Each of these is a refused configuration:
-`runNode` exits 78.
+`runNode` exits 78. `Node::subscribe` and `Node::advertise` throw `hypha::ConfigError` for it, so a
+port table refused in `setup()` exits 78 as it does in a cycle.
 
 Three tags of an input answer three separate questions; none implies another:
 

@@ -41,15 +41,18 @@ endforeach()
 
 install(TARGETS ${SENSOR_PIPELINE_TARGETS} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
-# A parameter file that is missing or malformed ends each node with exit 78, which a
-# supervisor never restarts. The check needs no bus.
+# A parameter file that is missing or malformed, or one without its ports tables, ends
+# each node with exit 78, which a supervisor never restarts. The check needs no bus.
 if(COMMAND hypha_add_test AND NOT (DEFINED HYPHA_BUILD_TESTS AND NOT HYPHA_BUILD_TESTS))
+  set(hypha_cloud_processor_config processor.toml)
+  set(hypha_sensor_source_config source.toml)
   foreach(node IN ITEMS hypha_cloud_processor hypha_sensor_source)
-    foreach(case IN ITEMS missing malformed)
+    foreach(case IN ITEMS missing malformed noports)
       hypha_add_test(${node}_startup_${case}
         COMMAND ${CMAKE_COMMAND}
           -DNODE=$<TARGET_FILE:${node}>
           -DCASE=${case}
+          -DCONFIG=${CMAKE_CURRENT_SOURCE_DIR}/config/${${node}_config}
           -DEXPECTED=78
           -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
           -P "${CMAKE_CURRENT_SOURCE_DIR}/startup_exit_code.cmake")

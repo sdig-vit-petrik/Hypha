@@ -69,12 +69,20 @@ class Publisher
   private:
     friend class Node;
 
-    /// @throws std::runtime_error naming the port or topic when the endpoint is refused.
+    /// @throws ConfigError naming the port when its table is missing or refused (QosMismatch
+    ///         too); std::runtime_error naming the port or topic when the endpoint is otherwise
+    ///         refused.
     Publisher(const detail::TopicSource& source, const detail::EndpointSettings& settings)
     {
         const std::expected<std::string, Status> topic = source.resolve();
         if (!topic) {
-            throw std::runtime_error(detail::failureText(source.describe(), topic.error()));
+            const std::string text = detail::failureText(source.describe(), topic.error());
+            // A port table that is missing or refused is a configuration fault: a restart
+            // cannot fix it.
+            if (source.fromParam()) {
+                throw ConfigError(text);
+            }
+            throw std::runtime_error(text);
         }
         if (topic->empty()) {
             return;

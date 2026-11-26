@@ -137,6 +137,19 @@ TEST_F(ParameterFixture, ARequiredPortWithoutATableIsRefusedAndTheRefusalNamesIt
     EXPECT_NE(refusal.find("NotAvailable"), std::string::npos) << refusal;
 }
 
+TEST_F(ParameterFixture, AMissingPortTableIsAConfigurationFaultForBothEndpoints)
+{
+    // runNode returns 78 for a ConfigError and 70 for any other exception.
+    EXPECT_THROW(
+        static_cast<void>(hypha::Node().advertise<hypha_test::Reading>("unwired")),
+        hypha::ConfigError
+    );
+    EXPECT_THROW(
+        static_cast<void>(hypha::Node().subscribe<hypha_test::Reading>("unwired")),
+        hypha::ConfigError
+    );
+}
+
 TEST_F(ParameterFixture, AnEmptyLiteralTopicIsRefused)
 {
     const std::string refusal = hypha_test::refusalOf([] {

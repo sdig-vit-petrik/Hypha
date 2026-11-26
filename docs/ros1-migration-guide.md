@@ -894,7 +894,9 @@ bus, calls `setup()`, refuses an unread parameter key, publishes `~/introspectio
 | 70 | `kExitRuntime` | anything else, and `failRun()` | the unit's restart policy |
 
 - The constructor and `setup()` throw `hypha::ConfigError` or `hypha::ParameterError` for
-  a refused configuration (78); any other exception is 70.
+  a refused configuration (78); any other exception is 70. `subscribe` and `advertise` throw
+  `ConfigError` for a port whose table is missing or refused, so a missing
+  `[ports.inputs.<name>]` exits 78.
 - `started(hypha::Node&)` runs after every check, just before the run. Start worker
   threads and send latched messages there. Throw to refuse the run (70).
 - `failRun("reason")` ends the run as failed from any thread (70).

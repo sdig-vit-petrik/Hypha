@@ -186,7 +186,8 @@ class Node
     /// @brief A publisher on the topic of `[ports.outputs.<port>]`. Options: optionalTopic,
     ///        latched, maxPayloadDynamic(), a Qos. With optionalTopic a table without a
     ///        topic gives a disabled publisher. Create endpoints before run().
-    /// @throws std::runtime_error naming the port when the endpoint is refused.
+    /// @throws ConfigError naming the port when its table is missing or refused (QosMismatch
+    ///         too); std::runtime_error when the endpoint is otherwise refused.
     template <typename M, PublisherOption... Options>
     [[nodiscard]] Publisher<M> advertise(std::string port, Options... options)
     {
@@ -214,7 +215,8 @@ class Node
     ///        @p callback for each sample. Options: optionalTopic, a Qos. With
     ///        optionalTopic a table without a topic gives a disabled subscriber. Create
     ///        endpoints before run().
-    /// @throws std::runtime_error naming the port when the endpoint is refused.
+    /// @throws ConfigError naming the port when its table is missing or refused (QosMismatch
+    ///         too); std::runtime_error when the endpoint is otherwise refused.
     template <typename M, SubscriberOption... Options>
     [[nodiscard]] Subscriber<M>
     subscribe(std::string port, typename Subscriber<M>::Callback callback = {}, Options... options)
