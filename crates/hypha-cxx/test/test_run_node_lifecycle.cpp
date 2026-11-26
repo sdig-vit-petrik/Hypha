@@ -279,6 +279,19 @@ class QosMismatchApp final : public hypha::ApplicationNode
     hypha::Publisher<std_msgs::Float64> second_;
 };
 
+/// Subscribes to a port that has no table in the parameter file.
+class MissingPortTableApp final : public hypha::ApplicationNode
+{
+  public:
+    void setup(hypha::Node& node) override
+    {
+        this->input_ = node.subscribe<std_msgs::Float64>("k8_unwired");
+    }
+
+  private:
+    hypha::Subscriber<std_msgs::Float64> input_;
+};
+
 /// A cycle port that declares another policy than the topic its setup() opened.
 class CyclePortQosMismatchApp final : public hypha::CycleNode
 {
@@ -465,6 +478,15 @@ TEST(RunNodeLifecycle, AQosMismatchReturnsTheConfigurationCode)
     const std::string output = ::testing::internal::GetCapturedStderr();
     EXPECT_EQ(exitCode, hypha::kExitConfiguration);
     EXPECT_NE(output.find("QosMismatch"), std::string::npos) << output;
+}
+
+TEST(RunNodeLifecycle, AMissingPortTableReturnsTheConfigurationCode)
+{
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithoutArguments(&hypha::runNode<MissingPortTableApp>);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    EXPECT_EQ(exitCode, hypha::kExitConfiguration);
+    EXPECT_NE(output.find("ports.inputs.k8_unwired"), std::string::npos) << output;
 }
 
 TEST(RunNodeLifecycle, AQosMismatchOfACyclePortReturnsTheConfigurationCode)

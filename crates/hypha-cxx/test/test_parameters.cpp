@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <stdexcept>
 
 namespace {
 
@@ -156,6 +157,18 @@ TEST_F(ParameterFixture, AnEmptyLiteralTopicIsRefused)
         static_cast<void>(hypha::Node().subscribe<hypha_test::Reading>(hypha::Topic{}));
     });
     EXPECT_NE(refusal.find("InvalidArgument"), std::string::npos) << refusal;
+}
+
+TEST_F(ParameterFixture, AnEmptyLiteralTopicIsARuntimeErrorAndNoConfigurationFault)
+{
+    try {
+        static_cast<void>(hypha::Node().subscribe<hypha_test::Reading>(hypha::Topic{}));
+        FAIL() << "the empty topic was accepted";
+    } catch (const hypha::ConfigError& error) {
+        FAIL() << "a literal topic is no configuration fault: " << error.what();
+    } catch (const std::runtime_error&) {
+        SUCCEED();
+    }
 }
 
 TEST_F(ParameterFixture, AValueKeepsItsTypeAndAReadOfAnotherTypeThrows)

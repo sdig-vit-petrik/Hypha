@@ -126,9 +126,8 @@ class Subscriber
   private:
     friend class Node;
 
-    /// @throws ConfigError naming the port when its table is missing or refused (QosMismatch
-    ///         too); std::runtime_error naming the port or topic when the endpoint is otherwise
-    ///         refused.
+    /// @throws ConfigError when its port table is missing or refused, or the policy
+    ///         mismatches (QosMismatch); std::runtime_error for any other refusal.
     Subscriber(
         const detail::TopicSource&      source,
         Callback                        callback,
@@ -136,28 +135,19 @@ class Subscriber
     )
         : shared(std::make_shared<State>())
     {
-        const std::expected<std::string, Status> topic = source.resolve();
-        if (!topic) {
-            const std::string text = detail::failureText(source.describe(), topic.error());
-            // A port table that is missing or refused is a configuration fault: a restart
-            // cannot fix it.
-            if (source.fromParam()) {
-                throw ConfigError(text);
-            }
-            throw std::runtime_error(text);
-        }
+        const std::string topic = source.resolveOrThrow();
         this->shared->userCallback = std::move(callback);
-        if (topic->empty()) {
+        if (topic.empty()) {
             return;
         }
-        const bool isPattern = topic->find('*') != std::string::npos;
+        const bool isPattern = topic.find('*') != std::string::npos;
         if (!isPattern) {
-            require(validateTopicName(*topic), source.describe());
+            require(validateTopicName(topic), source.describe());
         }
-        this->shared->topicName = *topic;
+        this->shared->topicName = topic;
         this->handle = std::make_shared<backend::SubscriberHandle>(require(
             backend::subscribeWithQos<M>(
-                *topic,
+                topic,
                 backend::declaredSubscriberOptions(backend::policyOf<M>(settings.qos), 0),
                 MessageForwarder{this->shared}
             ),

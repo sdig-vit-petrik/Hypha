@@ -7,10 +7,12 @@
 #include "hypha/backend/config_readers.h"
 #include "hypha/backend/session.h"
 #include "hypha/raw.h"
+#include "hypha/status.h"
 #include "hypha_base/clock.h"
 
 #include <cstdint>
 #include <expected>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -87,6 +89,22 @@ struct TopicSource
             return std::unexpected(Status::InvalidArgument);
         }
         return this->literal;
+    }
+
+    /// @return The topic; empty for a disabled port.
+    /// @throws ConfigError when a port table is missing or refused: a restart cannot fix it.
+    ///         std::runtime_error for a literal topic that is refused.
+    std::string resolveOrThrow() const
+    {
+        const std::expected<std::string, Status> topic = this->resolve();
+        if (topic) {
+            return *topic;
+        }
+        const std::string text = failureText(this->describe(), topic.error());
+        if (this->fromParam()) {
+            throw ConfigError(text);
+        }
+        throw std::runtime_error(text);
     }
 };
 
