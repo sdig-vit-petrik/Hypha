@@ -158,6 +158,32 @@ fn report_invalid(cause: &str) -> Error {
     Error::InvalidArgument
 }
 
+/// The `node.name` parameter, or `None` when the file does not set it.
+pub(crate) fn configured_node_name(
+    parameters: &hypha_core::parameters::Parameters,
+) -> Result<Option<&str>, Error> {
+    match parameters.value("node.name") {
+        None => Ok(None),
+        Some(hypha_core::parameters::ParamValue::Text(text)) => Ok(Some(text.as_str())),
+        Some(_) => {
+            log::error!(target: "hypha", "hypha: the parameter node.name must be text");
+            Err(Error::InvalidArgument)
+        }
+    }
+}
+
+/// Refuse a name that is neither a node name nor a CLI tool name.
+pub(crate) fn check_node_name(node_name: &str) -> Result<(), Error> {
+    let is_valid_name =
+        hypha_core::port::is_cli_node_name(node_name) || hypha_core::port::is_node_name(node_name);
+    if !is_valid_name {
+        log::error!(target: "hypha", "hypha: '{node_name}' is not a node name: use [a-z][a-z0-9_], at most {} characters, \
+                 or {}<name> for a CLI tool", hypha_core::port::MAX_NODE_NAME_LENGTH, hypha_core::port::CLI_NODE_PREFIX);
+        return Err(Error::InvalidArgument);
+    }
+    Ok(())
+}
+
 /// The node name: the `node.name` parameter when the file sets it, else the name from
 /// code. Refuses an invalid name, and one an alive node of another process in this
 /// domain holds; a CLI tool name is never held.
@@ -165,21 +191,9 @@ fn effective_node_name(
     code_name: &str,
     parameters: &hypha_core::parameters::Parameters,
 ) -> Result<String, Error> {
-    let node_name = match parameters.value("node.name") {
-        None => code_name,
-        Some(hypha_core::parameters::ParamValue::Text(text)) => text.as_str(),
-        Some(_) => {
-            log::error!(target: "hypha", "hypha: the parameter node.name must be text");
-            return Err(Error::InvalidArgument);
-        }
-    };
+    let node_name = configured_node_name(parameters)?.unwrap_or(code_name);
+    check_node_name(node_name)?;
     let is_cli_name = hypha_core::port::is_cli_node_name(node_name);
-    let is_valid_name = is_cli_name || hypha_core::port::is_node_name(node_name);
-    if !is_valid_name {
-        log::error!(target: "hypha", "hypha: '{node_name}' is not a node name: use [a-z][a-z0-9_], at most {} characters, \
-                 or {}<name> for a CLI tool", hypha_core::port::MAX_NODE_NAME_LENGTH, hypha_core::port::CLI_NODE_PREFIX);
-        return Err(Error::InvalidArgument);
-    }
     if is_cli_name {
         return Ok(node_name.to_string());
     }

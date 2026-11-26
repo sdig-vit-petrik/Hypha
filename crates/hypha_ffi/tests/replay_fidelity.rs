@@ -199,6 +199,87 @@ pub(crate) fn a_latest_step_with_replay_loss_fails_the_run_and_is_counted() {
     }
 }
 
+/// What a `Latest` input on a 100 ms cycle sees when `hypha play --chunk 100` replays a
+/// 100 Hz topic whose chunk grid starts 10 ms past the deadline grid: the status of each
+/// run, the binding's losses and the steps.
+fn replay_a_latest_input_off_the_deadline_grid(queue: usize) -> (Vec<i32>, u64, Vec<Step>) {
+    const CYCLE_PERIOD: i64 = 100 * MILLISECOND;
+    let _clock = SimulatedClock::start(10 * MILLISECOND);
+    let node = create_node(&unique("replay_sizing_latest"));
+    let waitset = unsafe { create_waitset(node) };
+    let topic = format!("/{}", unique("replay_sizing_latest"));
+    let (publisher, subscriber) = unsafe { create_pubsub(node, &topic, queue) };
+    let mut source = ptr::null_mut();
+    assert_eq!(
+        unsafe { hypha_input_source_create(waitset, subscriber, &raw mut source) },
+        HyphaStatus::Ok
+    );
+    let recorder = Box::new(Recorder::new(Duration::ZERO));
+    let name = c_text(&unique("sizing_cycle_latest"));
+    let mut cycle = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            hypha_cycle_create(
+                waitset,
+                name.as_ptr(),
+                name.as_bytes().len(),
+                u64::try_from(CYCLE_PERIOD).expect("period"),
+                Some(record_step),
+                (&raw const *recorder).cast_mut().cast(),
+                None,
+                &raw mut cycle,
+            )
+        },
+        HyphaStatus::Ok
+    );
+    let bind = HyphaCycleBindingOptions {
+        mode: HyphaCycleInputMode::Latest as u32,
+        max_samples_per_iteration: 1,
+        optional: 0,
+    };
+    let mut index = 0_u32;
+    assert_eq!(
+        unsafe { hypha_cycle_bind_input(cycle, source, &raw const bind, &raw mut index) },
+        HyphaStatus::Ok
+    );
+    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
+
+    // The player's order: the start barrier's clock at 10 ms, then each chunk's samples,
+    // its own boundary included, before the clock that closes it.
+    let mut statuses = Vec::new();
+    for close in [110, 210, 310, 410] {
+        for stamp in (close - 100..=close).step_by(10).filter(|stamp| *stamp >= 10) {
+            let value = u8::try_from(stamp / 10).expect("a small value");
+            unsafe { send_stamped(publisher, value, stamp * MILLISECOND) };
+        }
+        set_clock(close * MILLISECOND);
+        statuses.push(run_status(waitset, 5_000_000));
+    }
+
+    let mut binding = HyphaCycleBindingView::default();
+    assert_eq!(unsafe { hypha_cycle_binding(cycle, 0, &raw mut binding) }, HyphaStatus::Ok);
+    let steps = recorder.steps();
+    assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
+    assert_eq!(unsafe { hypha_input_source_destroy(source) }, HyphaStatus::Ok);
+    unsafe {
+        hypha_publisher_destroy(publisher);
+        hypha_node_destroy(node);
+    }
+    (statuses, binding.health.overrun_total, steps)
+}
+
+#[test]
+pub(crate) fn a_latest_input_sized_for_a_chunk_and_a_period_keeps_up_off_the_deadline_grid() {
+    // (100 ms chunk + 100 ms period) x 100 Hz: the documented size of a `Latest` input.
+    let (statuses, overruns, steps) = replay_a_latest_input_off_the_deadline_grid(20);
+    assert!(statuses.iter().all(|status| *status == HyphaStatus::Ok as i32), "{statuses:?}");
+    assert_eq!(overruns, 0, "no sample is lost");
+    let seen: Vec<(i64, Option<u8>)> =
+        steps.iter().map(|step| (step.scheduled / MILLISECOND, step.newest)).collect();
+    // Each step takes the newest sample before its deadline.
+    assert_eq!(seen, [(100, Some(9)), (200, Some(19)), (300, Some(29)), (400, Some(39))]);
+}
+
 #[test]
 pub(crate) fn a_plain_timer_still_fires_once_and_counts_the_missed_periods() {
     extern "C" fn count(missed: u64, context: *mut c_void) -> HyphaCallbackResult {

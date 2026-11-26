@@ -429,6 +429,15 @@ pub fn prepare(table: &toml::Table, parameter_file: &Path) -> Result<PreparedCon
     })
 }
 
+/// Validate `table`, the `log` table of `parameter_file`, without opening a file.
+///
+/// # Errors
+///
+/// `InvalidArgument` for an invalid table.
+pub fn validate(table: &toml::Table, parameter_file: &Path) -> Result<(), LogError> {
+    config::parse(table, parameter_file).map(drop)
+}
+
 /// Make a prepared configuration the process configuration until the process ends.
 ///
 /// # Errors
