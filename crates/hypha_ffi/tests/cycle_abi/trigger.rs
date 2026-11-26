@@ -969,3 +969,230 @@ fn a_step_cannot_destroy_its_cycle_and_the_destroy_after_the_run_detaches_every_
     destroy(cycle, &publishers);
     assert_eq!(spare_registrations(fixture.waitset), spare);
 }
+
+/// What one step held, binding by binding in binding order: the first byte of each
+/// payload, in the order the step reads them.
+type Held = Vec<Vec<u8>>;
+
+#[derive(Default)]
+struct Contents {
+    steps: Mutex<Vec<Held>>,
+}
+
+impl Contents {
+    fn steps(&self) -> Vec<Held> {
+        self.steps.lock().map_or_else(|_| Vec::new(), |steps| steps.clone())
+    }
+}
+
+/// The first byte of every payload binding `binding` of `image` holds; `None` past the
+/// last binding.
+unsafe fn payloads_held_by(image: *const HyphaCycleImage, binding: u32) -> Option<Vec<u8>> {
+    let mut view = HyphaCycleBindingView::default();
+    if unsafe { hypha_cycle_image_binding(image, binding, &raw mut view) } != HyphaStatus::Ok {
+        return None;
+    }
+    let held = (0..view.health.capture.sample_count)
+        .map(|index| {
+            let mut sample = HyphaCycleSampleView {
+                payload: ptr::null(),
+                payload_len: 0,
+                transport_sent_nanos: 0,
+                sequence: 0,
+                publisher_id: 0,
+                publisher_sequence: 0,
+            };
+            let status =
+                unsafe { hypha_cycle_image_sample(image, binding, index, &raw mut sample) };
+            assert_eq!(status, HyphaStatus::Ok);
+            let payload = unsafe { std::slice::from_raw_parts(sample.payload, sample.payload_len) };
+            payload.first().copied().expect("a payload of one byte")
+        })
+        .collect();
+    Some(held)
+}
+
+extern "C" fn record_contents(
+    image: *const HyphaCycleImage,
+    _time: *const HyphaCycleTime,
+    _emission: *mut HyphaCycleEmission,
+    context: *mut c_void,
+) -> HyphaCallbackResult {
+    let contents = unsafe { &*context.cast::<Contents>() };
+    let held: Held =
+        (0..).map_while(|binding| unsafe { payloads_held_by(image, binding) }).collect();
+    if let Ok(mut steps) = contents.steps.lock() {
+        steps.push(held);
+    }
+    HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
+}
+
+/// A committed cycle on `fixture`'s `WaitSet` that records what each step held, and its
+/// two inputs. Binding 0 is the trigger and takes one sample a step; binding 1 is a queued
+/// input that is no trigger and takes up to eight samples a step.
+struct Pairing {
+    cycle: *mut HyphaCycle,
+    trigger: TriggerInput,
+    partner: TriggerInput,
+}
+
+impl Pairing {
+    fn new(fixture: &Fixture, contents: &Contents, silence_nanos: i64) -> Self {
+        let trigger = trigger_input(fixture, 8);
+        let partner = trigger_input(fixture, 8);
+        let cycle = period_less_cycle(fixture, Some(record_contents), contents_context(contents));
+        let index = bind_queued(cycle, trigger.source, 1);
+        add_trigger(fixture, cycle, index, silence_nanos);
+        bind_queued(cycle, partner.source, 8);
+        assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
+        Self { cycle, trigger, partner }
+    }
+
+    fn destroy(self) {
+        destroy(self.cycle, &[self.trigger.publisher, self.partner.publisher]);
+    }
+}
+
+fn contents_context(contents: &Contents) -> *mut c_void {
+    (&raw const *contents).cast_mut().cast()
+}
+
+/// Run `fixture`'s `WaitSet` until `count` steps ran, then for one more turn, so that a
+/// step too many shows.
+fn run_steps(fixture: &Fixture, contents: &Contents, count: usize) -> Vec<Held> {
+    assert!(run_until(fixture.waitset, POLL_BOUND, || contents.steps().len() >= count));
+    run_waitset_for(fixture.waitset, 20_000_000);
+    contents.steps()
+}
+
+#[test]
+fn two_pairs_drained_in_one_turn_each_find_their_partner() {
+    let fixture = Fixture::new();
+    let contents = Contents::default();
+    let pairing = Pairing::new(&fixture, &contents, 10_000 * MILLIS);
+    // All four are queued before the loop turns, so one turn drains them together. The
+    // partner of each trigger sample is the one sent just before it.
+    unsafe { send_sample(pairing.partner.publisher, &[11]) };
+    unsafe { send_sample(pairing.trigger.publisher, &[1]) };
+    unsafe { send_sample(pairing.partner.publisher, &[12]) };
+    unsafe { send_sample(pairing.trigger.publisher, &[2]) };
+    let steps = run_steps(&fixture, &contents, 2);
+    assert_eq!(steps, [[vec![1], vec![11]], [vec![2], vec![12]]], "{steps:?}");
+    pairing.destroy();
+}
+
+#[test]
+fn a_partner_sent_after_the_trigger_sample_waits_for_the_next_step() {
+    let fixture = Fixture::new();
+    let contents = Contents::default();
+    let pairing = Pairing::new(&fixture, &contents, 10_000 * MILLIS);
+    unsafe { send_sample(pairing.trigger.publisher, &[1]) };
+    unsafe { send_sample(pairing.partner.publisher, &[11]) };
+    unsafe { send_sample(pairing.trigger.publisher, &[2]) };
+    let steps = run_steps(&fixture, &contents, 2);
+    assert_eq!(steps, [[vec![1], vec![]], [vec![2], vec![11]]], "{steps:?}");
+    pairing.destroy();
+}
+
+#[test]
+fn a_fallback_step_takes_every_arrival_of_the_other_input() {
+    let fixture = Fixture::new();
+    let contents = Contents::default();
+    let pairing = Pairing::new(&fixture, &contents, 50 * MILLIS);
+    for value in [21, 22, 23] {
+        unsafe { send_sample(pairing.partner.publisher, &[value]) };
+    }
+    // The trigger stays silent, so the first step is a fallback, and it runs only after
+    // the partner's samples were published.
+    let steps = run_steps(&fixture, &contents, 1);
+    assert_eq!(steps.first(), Some(&vec![vec![], vec![21, 22, 23]]), "{steps:?}");
+    let every: Vec<u8> = steps.iter().flat_map(|step| step[1].iter().copied()).collect();
+    assert_eq!(every, [21, 22, 23], "each sample comes once: {steps:?}");
+    pairing.destroy();
+}
+
+/// How many pairs the upstream cycle sends.
+const PAIRS: u32 = 3;
+
+/// The upstream cycle's step counter. Each of its first [`PAIRS`] steps sends the number
+/// of the step on output 0 and 100 more on output 1.
+struct Emitter {
+    steps: AtomicU32,
+}
+
+extern "C" fn send_pair(
+    _image: *const HyphaCycleImage,
+    _time: *const HyphaCycleTime,
+    emission: *mut HyphaCycleEmission,
+    context: *mut c_void,
+) -> HyphaCallbackResult {
+    let emitter = unsafe { &*context.cast::<Emitter>() };
+    let number = emitter.steps.fetch_add(1, Ordering::SeqCst) + 1;
+    if number <= PAIRS {
+        let value = u8::try_from(number).expect("a few pairs");
+        assert_eq!(unsafe { emit_message(emission, 0, &[value]) }, HyphaStatus::Ok);
+        assert_eq!(unsafe { emit_message(emission, 1, &[value + 100]) }, HyphaStatus::Ok);
+    }
+    HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
+}
+
+#[test]
+fn a_partner_sent_by_the_same_upstream_step_is_in_the_trigger_step() {
+    let fixture = Fixture::new();
+    let contents = Contents::default();
+    let pairing = Pairing::new(&fixture, &contents, 10_000 * MILLIS);
+
+    // The upstream cycle runs on a node of its own, and finishes before the downstream
+    // loop turns once: its three steps each send both samples with one send time.
+    let upstream = create_node(&unique("cyc_trig_up"));
+    let upstream_waitset = unsafe { create_waitset(upstream) };
+    let md5 = "d9d213e8c146065ec958333c617eb1a6";
+    let outputs = [&pairing.trigger, &pairing.partner].map(|input| unsafe {
+        crate::common::replay::open_publisher(upstream, &input.topic, "std_msgs/Counter", md5, "")
+    });
+    let emitter = Emitter { steps: AtomicU32::new(0) };
+    let name = c_text(&unique("upstream_pair"));
+    let mut sender = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            hypha_cycle_create(
+                upstream_waitset,
+                name.as_ptr(),
+                name.as_bytes().len(),
+                5_000_000,
+                Some(send_pair),
+                (&raw const emitter).cast_mut().cast(),
+                None,
+                &raw mut sender,
+            )
+        },
+        HyphaStatus::Ok
+    );
+    for output in outputs {
+        let mut index = u32::MAX;
+        assert_eq!(
+            unsafe {
+                hypha_cycle_bind_output(
+                    sender,
+                    output,
+                    HyphaCycleOutputFailure::FailRun as u32,
+                    1,
+                    &raw mut index,
+                )
+            },
+            HyphaStatus::Ok
+        );
+    }
+    assert_eq!(unsafe { hypha_cycle_commit(sender) }, HyphaStatus::Ok);
+    assert!(run_until(upstream_waitset, POLL_BOUND, || {
+        emitter.steps.load(Ordering::SeqCst) >= PAIRS
+    }));
+
+    let steps = run_steps(&fixture, &contents, 3);
+    let expected: Vec<Held> = (1..=3_u8).map(|n| vec![vec![n], vec![n + 100]]).collect();
+    assert_eq!(steps, expected, "each step holds the partner of its own upstream step");
+
+    assert_eq!(unsafe { hypha_cycle_destroy(sender) }, HyphaStatus::Ok);
+    unsafe { hypha_node_destroy(upstream) };
+    pairing.destroy();
+}

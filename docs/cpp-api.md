@@ -567,7 +567,9 @@ of the sample, or reads `port.sentAt(0)`, its host-monotonic send time, which is
 wall time (execution-model.md §6.6 item 2). Each trigger has its own `silence_ms`: `usable()` and
 `stale()` of every trigger port judge its newest sample against it in every step. After
 the shortest `silence_ms` without a step a fallback step runs with every trigger empty
-and each trigger that is past its own limit `stale()`. The rules are in
+and each trigger that is past its own limit `stale()`. On host time an `Arrivals`
+port that is no trigger holds, in a trigger step, the samples sent up to the trigger
+sample; a later one is in a later step. The rules are in
 execution-model.md §6.6. `examples/mrs/managers/estimation_manager.cpp` and
 `control_manager.cpp` are triggered cycles. `start()` fails for a rate with a trigger
 ("a rate and a trigger exclude each other"), a `Latest` trigger ("the trigger must be
