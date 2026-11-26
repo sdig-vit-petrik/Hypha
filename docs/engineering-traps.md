@@ -371,7 +371,15 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   publishers interleave. Timestamp binary search is valid only while no descending
   adjacent pair remains in the history. Evicting those pairs restores the fast
   path; unordered histories keep the per-sample replay admission rules. A sample
-  stamped exactly at a replay cut belongs to the next step.
+  stamped exactly at a replay cut belongs to the next step, except on a trigger port of
+  a triggered cycle, which admits it at its own step ("replay through T").
+- **A wall clock that steps back inside one host turn makes a fresh trigger late.** The
+  trigger schedule maps each pending stamp onto the monotonic clock by the turn's one
+  wall reading, and a stamp from the future counts as sent now. When a port holds a
+  sample stamped before a backward wall step and one stamped after it, the earlier one
+  maps to now and the later-sent one before it, so the later-sent one is consumed as
+  `Late` and counted although it is fresh. It happens only across a
+  backward step of the wall clock.
 - **One subscriber does not read several publishers in send order.** iceoryx2 gives each
   publisher its own queue, and a receive takes the first queue with data in the order of the
   subscriber's connection slots; a slot freed by a publisher that left is reused by the next

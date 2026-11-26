@@ -12,8 +12,9 @@ use std::ptr;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use hypha_core::message::DecodeOwned as _;
+use hypha_core::message::{DecodeOwned as _, EncodeInto as _};
 use hypha_msgs::hypha_msgs::ReplayProgress;
+use hypha_runtime::replay_progress::REPLAY_PROGRESS_DEFINITION;
 
 mod common;
 use crate::common::emit_message;
@@ -46,6 +47,9 @@ enum Kind {
     Sum,
     /// Emits its own deadline, and reads the newest value captured.
     Echo,
+    /// Emits the sample of the trigger port that fired plus a million times the port's
+    /// position plus one; 0 on a fallback.
+    Tag,
 }
 
 /// One step as the test reads it back.
@@ -62,11 +66,15 @@ struct Context {
     steps: Mutex<Vec<Record>>,
 }
 
-unsafe fn captured(image: *const HyphaCycleImage) -> Vec<Vec<u8>> {
-    let mut binding = HyphaCycleBindingView::default();
-    assert_eq!(unsafe { hypha_cycle_image_binding(image, 0, &raw mut binding) }, HyphaStatus::Ok);
+/// The payloads binding `binding` of `image` captured, in order; `None` past the last
+/// binding.
+unsafe fn captured_by(image: *const HyphaCycleImage, binding: u32) -> Option<Vec<Vec<u8>>> {
+    let mut view = HyphaCycleBindingView::default();
+    if unsafe { hypha_cycle_image_binding(image, binding, &raw mut view) } != HyphaStatus::Ok {
+        return None;
+    }
     let mut payloads = Vec::new();
-    for index in 0..binding.health.capture.sample_count {
+    for index in 0..view.health.capture.sample_count {
         let mut view = HyphaCycleSampleView {
             payload: ptr::null(),
             payload_len: 0,
@@ -75,12 +83,30 @@ unsafe fn captured(image: *const HyphaCycleImage) -> Vec<Vec<u8>> {
             publisher_id: 0,
             publisher_sequence: 0,
         };
-        let status = unsafe { hypha_cycle_image_sample(image, 0, index, &raw mut view) };
+        let status = unsafe { hypha_cycle_image_sample(image, binding, index, &raw mut view) };
         assert_eq!(status, HyphaStatus::Ok);
         payloads
             .push(unsafe { std::slice::from_raw_parts(view.payload, view.payload_len) }.to_vec());
     }
-    payloads
+    Some(payloads)
+}
+
+/// The payloads the first binding of `image` captured.
+unsafe fn captured(image: *const HyphaCycleImage) -> Vec<Vec<u8>> {
+    unsafe { captured_by(image, 0) }.expect("the first binding")
+}
+
+/// The binding of `image` that holds a sample, with that sample: the trigger port that fired.
+unsafe fn fired(image: *const HyphaCycleImage) -> Option<(u64, Vec<u8>)> {
+    (0..)
+        .map_while(|binding| unsafe { captured_by(image, binding) })
+        .zip(0_u64..)
+        .find_map(|(payloads, port)| payloads.into_iter().next().map(|payload| (port, payload)))
+}
+
+/// A payload of up to eight bytes as a little-endian value: a player byte or a stage word.
+fn little_endian(payload: &[u8]) -> u64 {
+    payload.iter().rev().fold(0, |value, byte| value << 8 | u64::from(*byte))
 }
 
 fn word(payload: &[u8]) -> u64 {
@@ -115,6 +141,11 @@ extern "C" fn run_step(
             let newest = payloads.last().map(|payload| word(payload));
             (newest, u64::try_from(scheduled).unwrap_or(0))
         }
+        Kind::Tag => {
+            let tagged = unsafe { fired(image) }
+                .map(|(port, payload)| (port + 1) * 1_000_000 + little_endian(&payload));
+            (tagged, tagged.unwrap_or(0))
+        }
     };
     context.steps.lock().expect("steps").push(Record { scheduled, seen });
     let status = unsafe { emit_message(emission, 0, &emitted.to_le_bytes()) };
@@ -122,40 +153,56 @@ extern "C" fn run_step(
     HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
 }
 
-/// One node with a cycle that reads `input` and writes `output`; the cycle owns the
+/// One node with a cycle that reads its inputs and writes `output`; the cycle owns the
 /// output publisher.
 struct Stage {
     name: String,
     node: *mut HyphaNode,
     waitset: *mut HyphaWaitSet,
-    source: *mut HyphaInputSource,
+    /// The input source of each binding, with the publisher that declared its topic.
+    inputs: Vec<(*mut HyphaInputSource, *mut HyphaPublisher)>,
     cycle: *mut HyphaCycle,
     context: Box<Context>,
-    input_declarer: *mut HyphaPublisher,
+}
+
+/// One input of a stage: its topic, the silence limit of its port when it is a trigger,
+/// and the depth of its subscriber.
+#[derive(Clone, Copy)]
+struct Input<'a> {
+    topic: &'a str,
+    silence: u64,
+    depth: usize,
+}
+
+impl<'a> Input<'a> {
+    /// An input on `topic` with a silence limit of `silence` and a queue of `DEPTH`.
+    fn on(topic: &'a str, silence: u64) -> Self {
+        Self { topic, silence, depth: DEPTH }
+    }
 }
 
 impl Stage {
     fn new(label: &str, kind: Kind, input: &str, output: &str) -> Self {
-        Self::build(label, kind, input, output, false)
+        Self::build(label, kind, &[Input::on(input, 0)], output, false)
     }
 
     /// A stage whose cycle runs on each sample of `input`, falling back after `SILENCE`.
     fn triggered(label: &str, kind: Kind, input: &str, output: &str) -> Self {
-        Self::build(label, kind, input, output, true)
+        Self::triggers(label, kind, &[Input::on(input, SILENCE)], output)
     }
 
-    fn build(label: &str, kind: Kind, input: &str, output: &str, triggered: bool) -> Self {
+    /// A stage whose cycle runs on each sample of any of `triggers`.
+    fn triggers(label: &str, kind: Kind, triggers: &[Input<'_>], output: &str) -> Self {
+        Self::build(label, kind, triggers, output, true)
+    }
+
+    fn build(label: &str, kind: Kind, inputs: &[Input<'_>], output: &str, triggered: bool) -> Self {
         let name = unique(label);
-        let silence_ms = i64::try_from(SILENCE / 1_000_000).unwrap();
-        let node = create_sim_node_with_triggers(&name, &[silence_ms]);
+        let millis = |silence: u64| i64::try_from(silence / MS).unwrap();
+        let triggers = inputs.iter().filter(|_| triggered);
+        let tables: Vec<i64> = triggers.map(|input| millis(input.silence)).collect();
+        let node = create_sim_node_with_triggers(&name, &tables);
         let waitset = unsafe { create_waitset(node) };
-        // The input is created here by a publisher that declares the test policy, so the
-        // subscriber may keep DEPTH samples. The player feeds the topic later, undeclared.
-        let input_declarer = unsafe { open_declared_publisher(node, input, CHAIN_TYPE, CHAIN_MD5) };
-        let subscriber = unsafe { open_subscriber(node, input, CHAIN_MD5, DEPTH) };
-        let mut source = ptr::null_mut();
-        let status = unsafe { hypha_input_source_create(waitset, subscriber, &raw mut source) };
-        assert_eq!(status, HyphaStatus::Ok);
         let output = unsafe { open_declared_publisher(node, output, CHAIN_TYPE, CHAIN_MD5) };
         let context = Box::new(Context { kind, steps: Mutex::new(Vec::new()) });
         let label = c_text(&name);
@@ -173,21 +220,37 @@ impl Stage {
             )
         };
         assert_eq!(status, HyphaStatus::Ok);
-        let bind = HyphaCycleBindingOptions {
-            mode: HyphaCycleInputMode::Queued as u32,
-            max_samples_per_iteration: DEPTH,
-            optional: 0,
-        };
-        let mut index = 0_u32;
-        let status =
-            unsafe { hypha_cycle_bind_input(cycle, source, &raw const bind, &raw mut index) };
-        assert_eq!(status, HyphaStatus::Ok);
-        if triggered {
-            let silence_ms = i64::try_from(SILENCE / 1_000_000).unwrap();
-            let bound = unsafe { bind_trigger(cycle, node, index, silence_ms) };
-            assert_eq!(bound.status, HyphaStatus::Ok, "{}", bound.detail);
-            assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, index) }, HyphaStatus::Ok);
-        }
+        let inputs = inputs
+            .iter()
+            .map(|input| {
+                // The input is created here by a publisher that declares the test policy, so
+                // the subscriber may keep its depth. The player feeds the topic later.
+                let declarer =
+                    unsafe { open_declared_publisher(node, input.topic, CHAIN_TYPE, CHAIN_MD5) };
+                let subscriber =
+                    unsafe { open_subscriber(node, input.topic, CHAIN_MD5, input.depth) };
+                let mut source = ptr::null_mut();
+                let status =
+                    unsafe { hypha_input_source_create(waitset, subscriber, &raw mut source) };
+                assert_eq!(status, HyphaStatus::Ok);
+                let bind = HyphaCycleBindingOptions {
+                    mode: HyphaCycleInputMode::Queued as u32,
+                    max_samples_per_iteration: input.depth,
+                    optional: 0,
+                };
+                let mut index = 0_u32;
+                let status = unsafe {
+                    hypha_cycle_bind_input(cycle, source, &raw const bind, &raw mut index)
+                };
+                assert_eq!(status, HyphaStatus::Ok);
+                if triggered {
+                    let bound = unsafe { bind_trigger(cycle, node, index, millis(input.silence)) };
+                    assert_eq!(bound.status, HyphaStatus::Ok, "{}", bound.detail);
+                    assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, index) }, HyphaStatus::Ok);
+                }
+                (source, declarer)
+            })
+            .collect();
         let mut out_index = 0_u32;
         let status = unsafe {
             hypha_cycle_bind_output(
@@ -200,7 +263,7 @@ impl Stage {
         };
         assert_eq!(status, HyphaStatus::Ok);
         assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
-        Self { name, node, waitset, source, cycle, context, input_declarer }
+        Self { name, node, waitset, inputs, cycle, context }
     }
 
     fn steps(&self) -> Vec<Record> {
@@ -212,8 +275,10 @@ impl Drop for Stage {
     fn drop(&mut self) {
         unsafe {
             hypha_cycle_destroy(self.cycle);
-            hypha_input_source_destroy(self.source);
-            hypha_publisher_destroy(self.input_declarer);
+            for &(source, declarer) in &self.inputs {
+                hypha_input_source_destroy(source);
+                hypha_publisher_destroy(declarer);
+            }
             hypha_node_destroy(self.node);
         }
     }
@@ -258,6 +323,17 @@ impl Bus {
 
     fn add_triggered(&mut self, label: &str, kind: Kind, input: &str, output: &str) -> usize {
         self.stages.push(Stage::triggered(label, kind, input, output));
+        self.stages.len() - 1
+    }
+
+    fn add_triggers(
+        &mut self,
+        label: &str,
+        kind: Kind,
+        triggers: &[Input<'_>],
+        output: &str,
+    ) -> usize {
+        self.stages.push(Stage::triggers(label, kind, triggers, output));
         self.stages.len() - 1
     }
 
@@ -319,11 +395,18 @@ impl Bus {
 
     /// A case: the anchor, then the clock in steps of `chunk` periods.
     fn replay(&mut self, chunk: u64, order: &[usize]) {
+        self.replay_with(chunk, order, || {});
+    }
+
+    /// [`Bus::replay`], calling `after` once every stage acknowledged each clock value.
+    fn replay_with(&mut self, chunk: u64, order: &[usize], mut after: impl FnMut()) {
         self.advance(BASE, order);
+        after();
         let mut at = 0;
         while at < PERIODS {
             at = (at + chunk).min(PERIODS);
             self.advance(BASE + at * PERIOD, order);
+            after();
         }
     }
 
@@ -539,4 +622,207 @@ fn a_rewind_of_the_bus_clock_ends_the_run_of_a_triggered_cycle() {
     bus.tick(BASE + 2 * PERIOD);
     let status = run_status(bus.stage(stage).waitset, 20 * MS);
     assert_eq!(status, HyphaStatus::ClockRewound as i32);
+}
+
+/// A node that publishes one input of a stage and reports its progress by hand: an
+/// upstream that has run up to the clock it reports.
+struct Upstream {
+    name: String,
+    node: *mut HyphaNode,
+    data: *mut HyphaPublisher,
+    progress: *mut HyphaPublisher,
+}
+
+impl Upstream {
+    fn new(label: &str, topic: &str) -> Self {
+        let name = unique(label);
+        let node = create_node(&name);
+        let data = unsafe { open_publisher(node, topic, CHAIN_TYPE, CHAIN_MD5, "") };
+        let progress = unsafe {
+            open_publisher(
+                node,
+                "/clock_progress",
+                ReplayProgress::TYPE_NAME,
+                ReplayProgress::SCHEMA_HASH,
+                REPLAY_PROGRESS_DEFINITION,
+            )
+        };
+        Self { name, node, data, progress }
+    }
+
+    /// Send `value` stamped `stamp`.
+    fn send(&self, value: u8, stamp: u64) {
+        unsafe { send_stamped(self.data, value, i64::try_from(stamp).unwrap()) };
+    }
+
+    /// Report that this node ran up to `clock_nanos`.
+    fn report(&self, clock_nanos: u64) {
+        let message =
+            ReplayProgress { node: self.name.clone(), clock_nanos, clock_sent_nanos: clock_nanos };
+        let mut payload = vec![0_u8; message.encoded_len()];
+        message.encode_into(&mut payload).expect("a report encodes");
+        unsafe { send_payload(self.progress, &payload) };
+    }
+}
+
+impl Drop for Upstream {
+    fn drop(&mut self) {
+        unsafe {
+            hypha_publisher_destroy(self.progress);
+            hypha_publisher_destroy(self.data);
+            hypha_node_destroy(self.node);
+        }
+    }
+}
+
+#[test]
+fn a_single_trigger_waits_for_its_upstream_to_report_the_stamp() {
+    let mut bus = Bus::new();
+    let stage = bus.add_triggered("hold_t", Kind::Tag, "/hold_in", "/hold_out");
+    let upstream = Upstream::new("hold_up", "/hold_in");
+    let stamp = BASE + PERIOD;
+    upstream.send(1, stamp);
+    upstream.report(stamp - 1);
+    bus.tick(BASE + 2 * PERIOD);
+    let turns = |bus: &Bus| {
+        for _ in 0..25 {
+            run_for(bus.stage(stage).waitset, 2 * MS);
+        }
+    };
+    turns(&bus);
+    // At `stamp - 1` the upstream may still send another trigger stamped `stamp`.
+    assert!(bus.stage(stage).steps().is_empty(), "{:?}", bus.stage(stage).steps());
+    upstream.report(stamp);
+    turns(&bus);
+    let scheduled: Vec<i64> = bus.stage(stage).steps().iter().map(|step| step.scheduled).collect();
+    assert_eq!(scheduled, [i64::try_from(stamp).unwrap()]);
+}
+
+/// The output of a cycle that steps on the outputs of two rate stages, which read one
+/// player input and so tie at every deadline; `mux_first` runs it before them.
+fn two_trigger_output(chunk: u64, mux_first: bool) -> Vec<(u64, u64)> {
+    let mut bus = Bus::new();
+    let a = bus.add_stage("tt_a", Kind::Relay, "/tt_in", "/tt_a");
+    let b = bus.add_stage("tt_b", Kind::Relay, "/tt_in", "/tt_b");
+    let triggers = [Input::on("/tt_a", SILENCE), Input::on("/tt_b", 2 * SILENCE)];
+    let mux = bus.add_triggers("tt_mux", Kind::Tag, &triggers, "/tt_out");
+    let observer = unsafe { open_subscriber(bus.player, "/tt_out", CHAIN_MD5, DEPTH) };
+    bus.feed("/tt_in", PERIODS);
+    let order = if mux_first { [mux, a, b] } else { [a, b, mux] };
+    let mut seen = Vec::new();
+    bus.replay_with(chunk, &order, || seen.extend(Bus::observed(observer)));
+    unsafe { hypha_subscriber_destroy(observer) };
+    seen
+}
+
+#[test]
+fn two_triggers_give_the_same_output_in_any_turn_order() {
+    let reference = two_trigger_output(1, false);
+    assert_eq!(reference.len(), 2 * usize::try_from(PERIODS).unwrap(), "{reference:?}");
+    for chunk in [1, 3, 7] {
+        for mux_first in [false, true] {
+            let seen = two_trigger_output(chunk, mux_first);
+            assert_eq!(seen, reference, "chunk {chunk}, mux first {mux_first}");
+        }
+    }
+}
+
+#[test]
+fn a_tie_runs_in_port_order_after_both_upstreams_report() {
+    let output = two_trigger_output(3, true);
+    assert_eq!(output.len(), 2 * usize::try_from(PERIODS).unwrap(), "{output:?}");
+    let (pairs, rest) = output.as_chunks::<2>();
+    assert!(rest.is_empty());
+    for pair in pairs {
+        let [(first, first_stamp), (second, second_stamp)] = pair;
+        assert_eq!(first_stamp, second_stamp, "{pair:?}");
+        assert_eq!((first / 1_000_000, second / 1_000_000), (1, 2), "port 0 first: {pair:?}");
+    }
+}
+
+fn two_trigger_fallback_times(chunk: u64) -> Vec<i64> {
+    let mut bus = Bus::new();
+    let triggers = [Input::on("/ttf_a", SILENCE), Input::on("/ttf_b", 2 * SILENCE)];
+    let stage = bus.add_triggers("ttf", Kind::Tag, &triggers, "/ttf_out");
+    bus.feed("/ttf_a", 10);
+    bus.feed("/ttf_b", 5);
+    bus.replay(chunk, &[stage]);
+    bus.stage(stage).steps().iter().map(|step| step.scheduled).collect()
+}
+
+#[test]
+fn a_two_trigger_cycle_falls_back_at_deterministic_times() {
+    let base = i64::try_from(BASE).unwrap();
+    let period = i64::try_from(PERIOD).unwrap();
+    let silence = i64::try_from(SILENCE).unwrap();
+    // Both ports send at the first five periods, port 0 alone at the next five; then the
+    // fallbacks count the shorter limit, port 0's.
+    let mut expected: Vec<i64> = (0..10)
+        .flat_map(|index| std::iter::repeat_n(base + index * period, if index < 5 { 2 } else { 1 }))
+        .collect();
+    let last_trigger = base + 9 * period;
+    let end = base + i64::try_from(PERIODS).unwrap() * period;
+    expected.extend((1..).map(|k| last_trigger + k * silence).take_while(|time| *time <= end));
+    for chunk in [1, 4] {
+        assert_eq!(two_trigger_fallback_times(chunk), expected, "chunk {chunk}");
+    }
+}
+
+#[test]
+fn a_loop_of_a_rate_cycle_and_a_two_trigger_cycle_does_not_deadlock() {
+    let mut bus = Bus::new();
+    let rate = bus.add_stage("lp_rate", Kind::Echo, "/lp_mux_out", "/lp_rate_out");
+    let triggers = [Input::on("/lp_rate_out", SILENCE), Input::on("/lp_player", 2 * SILENCE)];
+    let mux = bus.add_triggers("lp_mux", Kind::Tag, &triggers, "/lp_mux_out");
+    bus.feed("/lp_player", PERIODS);
+    bus.replay(1, &[rate, mux]);
+    let rate_steps = bus.stage(rate).steps();
+    assert_eq!(rate_steps.len(), usize::try_from(PERIODS).unwrap(), "{rate_steps:?}");
+    // One step per rate output and one per player sample.
+    let mux_steps = bus.stage(mux).steps();
+    let fired = mux_steps.iter().filter(|step| step.seen.is_some()).count();
+    assert_eq!(fired, 2 * usize::try_from(PERIODS).unwrap(), "{mux_steps:?}");
+}
+
+#[test]
+fn a_rewind_ends_the_run_of_a_two_trigger_cycle() {
+    let mut bus = Bus::new();
+    let triggers = [Input::on("/trw_a", SILENCE), Input::on("/trw_b", 2 * SILENCE)];
+    let stage = bus.add_triggers("trw", Kind::Tag, &triggers, "/trw_out");
+    bus.advance(BASE + 10 * PERIOD, &[stage]);
+    bus.tick(BASE + 2 * PERIOD);
+    assert_eq!(run_status(bus.stage(stage).waitset, 20 * MS), HyphaStatus::ClockRewound as i32);
+}
+
+#[test]
+fn a_trigger_port_overflow_fails_with_sequence_gap_on_that_port() {
+    let mut bus = Bus::new();
+    let small = Input { depth: 4, ..Input::on("/tov_b", 2 * SILENCE) };
+    let stage =
+        bus.add_triggers("tov", Kind::Tag, &[Input::on("/tov_a", SILENCE), small], "/tov_out");
+    let player = |topic| unsafe { open_publisher(bus.player, topic, CHAIN_TYPE, CHAIN_MD5, "") };
+    let (a, b) = (player("/tov_a"), player("/tov_b"));
+    for publisher in [a, b] {
+        unsafe { send_stamped(publisher, 1, i64::try_from(BASE).unwrap()) };
+    }
+    bus.advance(BASE, &[stage]);
+    // Ten samples into a queue of four, before the step that reads them.
+    for index in 1..=10_u8 {
+        let stamp = BASE + u64::from(index) * PERIOD;
+        unsafe { send_stamped(b, index, i64::try_from(stamp).unwrap()) };
+    }
+    bus.tick(BASE + 20 * PERIOD);
+    let cycle = bus.stage(stage).cycle;
+    assert_eq!(run_status(bus.stage(stage).waitset, 20 * MS), HyphaStatus::SequenceGap as i32);
+    let overrun = |index: u32| {
+        let mut view = HyphaCycleBindingView::default();
+        assert_eq!(unsafe { hypha_cycle_binding(cycle, index, &raw mut view) }, HyphaStatus::Ok);
+        view.health.overrun_total
+    };
+    assert_eq!(overrun(0), 0, "port 0 lost nothing");
+    assert!(overrun(1) > 0, "port 1 lost its oldest samples");
+    unsafe {
+        hypha_publisher_destroy(a);
+        hypha_publisher_destroy(b);
+    }
 }

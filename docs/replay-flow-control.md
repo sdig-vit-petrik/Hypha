@@ -368,8 +368,16 @@ turn.
   answers a `/clock` sample sent at or after the one the process rejoined on: an older one describes
   the timeline that the seek left. In any other process the epoch is zero. Send times decide this;
   clock values are compared only against `D - 1 ns`.
+- **Triggered cycles.** A triggered cycle's step at `t`, for a trigger sample or a fallback, needs a
+  clock of at least `t` from each upstream node, not `t - 1 ns`: the step reads its trigger samples
+  stamped at or before `t`, so all of them must have arrived. A tie of two samples from upstream
+  nodes stamped `t` then always runs in the same order (`execution-model.md` §6.6). The player is no
+  upstream and sends messages stamped `T` after `/clock = T`, so a tie on player data runs in arrival
+  order; #219 makes it deterministic.
 - **Feedback loops.** Input cuts are strict (`stamp < D`). Two nodes that read each other each need
-  only the other's deadlines before `D`, so a loop does not deadlock. Tested with two nodes.
+  only the other's deadlines before `D`, so a loop does not deadlock. Tested with two nodes. A loop of
+  a rate cycle and a triggered cycle does not deadlock either: the rate cycle reports `D' - 1 ns`
+  while it holds its next deadline `D'`, which is at least the stamp `D` of the trigger it sent.
 - **Partial reports** release the deadlines below them, so a node that holds its later deadlines
   does not block its downstream nodes.
 - **No timeout in the node.** A held deadline waits for as long as its upstream does not report. The

@@ -270,7 +270,7 @@ fn node_ends(node: &NodeFacts<'_>, universe: &BTreeSet<String>) -> NodeEnds {
     let Some(manifest) = node.manifest else { return ends };
 
     for cycle in &manifest.cycles {
-        let periodic = cycle.has_period && cycle.trigger.is_empty();
+        let periodic = cycle.has_period && cycle.triggers.is_empty();
         ends.event_driven.push(!periodic);
     }
     let unit_count = ends.event_driven.len();
@@ -300,8 +300,9 @@ fn node_ends(node: &NodeFacts<'_>, universe: &BTreeSet<String>) -> NodeEnds {
         }
         let pattern = resolve(node.name, &row.topic);
         for (position, cycle) in manifest.cycles.iter().enumerate() {
-            let triggers_here = resolve(node.name, &cycle.trigger) == pattern;
-            if triggers_here && !cycle.trigger.is_empty() {
+            let triggers_here =
+                cycle.triggers.iter().any(|trigger| resolve(node.name, trigger) == pattern);
+            if triggers_here {
                 units.push(position.saturating_add(1));
             }
         }

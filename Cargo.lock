@@ -1591,6 +1591,7 @@ dependencies = [
  "hypha_msgs",
  "hypha_wire",
  "log",
+ "proptest",
  "transforms",
 ]
 

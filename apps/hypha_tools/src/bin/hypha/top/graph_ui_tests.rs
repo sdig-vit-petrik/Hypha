@@ -25,7 +25,7 @@ fn manifest(name: &str, input: &str, output: &str) -> NodeIntrospection {
         }],
         cycles: vec![IntrospectedCycle {
             name: "on_input".to_string(),
-            trigger: input.to_string(),
+            triggers: vec![input.to_string()],
             ..IntrospectedCycle::default()
         }],
         input_bindings: vec![IntrospectedInput {

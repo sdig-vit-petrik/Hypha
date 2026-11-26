@@ -93,7 +93,6 @@ void StepHarness::judgeDelivery(Delivery& delivery, Time now, std::vector<Pendin
         delivery.unseen = false;
         running.push_back(Pending{&port, &StepHarness::keepFresh<M>, &StepHarness::endFresh<M>});
     }
-    port.usable_ = usable;
     port.verdict_ = usable ? InputVerdict::Usable : InputVerdict::Stale;
     port.ageNanos_ = StepHarness::ageOf(sent, now.nanos());
     StepHarness::judge(

@@ -23,7 +23,7 @@ namespace hypha {
 /// @brief A node whose work is one step: its ports are members, step() is a method.
 ///
 /// The cycle takes the node's name. Its rate is `rate_hz` of the `[cycle]` table, or
-/// setRate() in setup(), or setTrigger().
+/// setRate() in setup(); or it steps on each sample of its setTrigger() ports.
 ///
 ///     class Fusion : public hypha::CycleNode {
 ///         Latest<Imu>     imu{*this, "imu"};  // [ports.inputs.imu] silence_ms = 50

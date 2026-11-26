@@ -87,9 +87,9 @@ pub(crate) fn cycle_timer_tick(
     };
     let replay_cut = state.input_cut.take();
     // A triggered step finds its inputs drained by the dispatcher.
-    let trigger_samples = state.trigger_take.take();
+    let trigger_step = state.trigger_step.take();
     if replay_cut.is_none()
-        && trigger_samples.is_none()
+        && trigger_step.is_none()
         && let Err(status) = drain_sources(&state.inputs)
     {
         return HyphaCallbackResult::fail(status as i32);
@@ -112,7 +112,7 @@ pub(crate) fn cycle_timer_tick(
         capture_steady_nanos: hypha_time::steady_now().nanos(),
         missed_periods,
         replay_cut_nanos,
-        trigger_samples,
+        trigger_step,
         ..CycleTime::default()
     };
     let inputs = &state.inputs;

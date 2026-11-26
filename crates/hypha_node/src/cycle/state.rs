@@ -79,9 +79,9 @@ pub(crate) struct InputCounts {
 #[derive(Default)]
 pub(crate) struct CycleStep {
     pub(crate) attachment: HyphaAttachmentId,
-    /// The listener registration that wakes a triggered cycle. Zero for a rate cycle, and
-    /// for a wildcard trigger.
-    pub(crate) trigger_attachment: HyphaAttachmentId,
+    /// The listener registrations that wake a triggered cycle, one per trigger topic that
+    /// has a listener (a wildcard has none). Empty for a rate cycle.
+    pub(crate) trigger_attachments: Vec<HyphaAttachmentId>,
     /// The step callback with its context. `None` only while the cycle drops.
     pub(crate) callback: Option<Box<dyn CycleStepHandler>>,
     pub(crate) runtime: hypha_cycle::CycleRuntime,
@@ -103,9 +103,9 @@ pub(crate) struct CycleStep {
     /// The data-time cut of the replay step that runs next, set by the dispatcher. `None`
     /// for a step in host time, which drains its own inputs.
     pub(crate) input_cut: Option<i64>,
-    /// The trigger samples the next step of a triggered cycle takes: one for a trigger
-    /// step, zero for a fallback step.
-    pub(crate) trigger_take: Option<usize>,
+    /// What the trigger ports hold in the next step of a triggered cycle, set by the
+    /// dispatcher.
+    pub(crate) trigger_step: Option<hypha_cycle::TriggerStep>,
     /// The `/clock` driver settings of a simulator cycle. `None` for any other cycle.
     pub(crate) driver: Option<super::DriverSetup>,
 }

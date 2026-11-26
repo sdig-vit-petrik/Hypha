@@ -6,7 +6,8 @@ use std::ptr;
 use hypha_core::message::DecodeOwned as _;
 use hypha_ffi::{HyphaNode, HyphaStatus, hypha_node_introspect};
 use hypha_msgs::hypha_msgs::{
-    IntrospectedConfig, IntrospectedEndpoint, IntrospectedInput, NodeIntrospection,
+    IntrospectedConfig, IntrospectedCycle, IntrospectedEndpoint, IntrospectedInput,
+    NodeIntrospection,
 };
 
 /// The snapshot of `node`, read with one size probe and one copy.
@@ -114,6 +115,10 @@ pub(crate) fn subscriber(node: *const HyphaNode, topic: &str) -> Option<Introspe
 
 pub(crate) fn publisher(node: *const HyphaNode, topic: &str) -> Option<IntrospectedEndpoint> {
     snapshot(node).publishers.into_iter().find(|row| row.topic == topic)
+}
+
+pub(crate) fn cycle(node: *const HyphaNode, name: &str) -> Option<IntrospectedCycle> {
+    snapshot(node).cycles.into_iter().find(|row| row.name == name)
 }
 
 pub(crate) fn binding(

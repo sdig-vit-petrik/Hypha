@@ -27,7 +27,7 @@ impl CycleRuntime {
         for (index, (slot, capture)) in self.bindings.iter().zip(&self.captures).enumerate() {
             let capacity = match (&slot.history, slot.options.mode) {
                 // The trigger and exempt bindings take their samples outside the budget.
-                _ if self.trigger == Some(index) || slot.exempt => 0,
+                _ if self.triggers.contains(&index) || slot.exempt => 0,
                 (Some(history), CaptureMode::Queued) => {
                     let history = crate::locked(history);
                     capture

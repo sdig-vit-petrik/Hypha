@@ -135,7 +135,7 @@ fn cycle_message(row: &CycleRow) -> IntrospectedCycle {
         period_nanos: row.period_nanos.unwrap_or(0),
         inputs: u32::try_from(row.inputs).unwrap_or(u32::MAX),
         outputs: u32::try_from(row.outputs).unwrap_or(u32::MAX),
-        trigger: row.trigger.clone().unwrap_or_default(),
+        triggers: row.triggers.clone(),
     }
 }
 

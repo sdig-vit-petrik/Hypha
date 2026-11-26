@@ -18,7 +18,7 @@ pub enum CaptureMode {
 
 /// Action when a queued binding has more pending samples than its assigned work.
 ///
-/// `Carry` is the capture of a cycle's trigger; a C ABI binding always drops.
+/// `Carry` is the capture of a cycle's trigger ports; a C ABI binding always drops.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum QueueOverflowPolicy {
     /// Discard oldest excess samples, then examine newest assigned samples; the only
@@ -41,6 +41,12 @@ pub enum CaptureClock {
     /// each judged by `cut_nanos - framework_sent_nanos`.
     Replay {
         /// The deadline of the step, in framework nanoseconds.
+        cut_nanos: u64,
+    },
+    /// Data time for a trigger port of a replay step: the samples sent at or before
+    /// `cut_nanos` are admitted, each judged by `cut_nanos - framework_sent_nanos`.
+    ReplayThrough {
+        /// The time of the step, in framework nanoseconds.
         cut_nanos: u64,
     },
 }
@@ -286,8 +292,9 @@ impl BindingCapture {
         }
     }
 
-    /// Mark this capture stale when `silence_nanos` is a limit: a triggered cycle's
-    /// fallback step. An input that never arrived stays `NeverArrived`.
+    /// Mark this capture stale when `silence_nanos` is a limit: a trigger port the
+    /// fallback step of a triggered cycle found silent. An input that never arrived stays
+    /// `NeverArrived`.
     pub(crate) fn mark_stale(&mut self, silence_nanos: u64) {
         if silence_nanos == 0 {
             return;
@@ -385,7 +392,14 @@ impl BindingCapture {
             }
             CaptureMode::Queued => {
                 let assigned = options.max_samples_per_iteration;
-                self.capture_queued(history, high_water, options, assigned, clock);
+                self.capture_queued(
+                    history,
+                    high_water,
+                    options,
+                    assigned,
+                    clock,
+                    Examine::WithinLimit,
+                );
             }
         }
     }
@@ -456,7 +470,7 @@ impl BindingCapture {
         clock: CaptureClock,
     ) {
         let high_water = self.begin_capture(history, options, clock);
-        self.capture_queued(history, high_water, options, assigned, clock);
+        self.capture_queued(history, high_water, options, assigned, clock, Examine::WithinLimit);
     }
 
     /// Capture for a binding with no source at `clock`: what an empty history gives.
@@ -469,7 +483,7 @@ impl BindingCapture {
     }
 
     fn capture_latest(&mut self, history: &CycleHistory, high_water: u64, clock: CaptureClock) {
-        if matches!(clock, CaptureClock::Replay { .. })
+        if clock.is_replay()
             && let Some(oldest) = history.samples().front().map(|sample| sample.sequence)
         {
             self.skip_evicted(oldest);
@@ -491,8 +505,7 @@ impl BindingCapture {
             Some(sample) => {
                 // The cursor never moves back: a rejected newer sample was passed already.
                 let next = sample.sequence.wrapping_add(1);
-                let replay_advance =
-                    matches!(clock, CaptureClock::Replay { .. }) && before(self.cursor, next);
+                let replay_advance = clock.is_replay() && before(self.cursor, next);
                 if replay_advance {
                     self.cursor = next;
                 }
@@ -516,6 +529,26 @@ impl BindingCapture {
         self.previous_latest_verdict = Some(self.verdict);
     }
 
+    /// Capture a trigger port of a triggered cycle on `clock`, judged as any input. When
+    /// it `fires` it takes its oldest pending sample, delivered without a second age check:
+    /// the schedule judged it. Its other samples stay pending.
+    pub(crate) fn capture_trigger(
+        &mut self,
+        history: &CycleHistory,
+        options: BindingOptions,
+        fires: bool,
+        clock: CaptureClock,
+    ) {
+        let high_water = self.begin_capture(history, options, clock);
+        let options = BindingOptions {
+            max_samples_per_iteration: 1,
+            overflow_policy: QueueOverflowPolicy::Carry,
+            ..options
+        };
+        let take = usize::from(fires);
+        self.capture_queued(history, high_water, options, take, clock, Examine::Every);
+    }
+
     fn capture_queued(
         &mut self,
         history: &CycleHistory,
@@ -523,6 +556,7 @@ impl BindingCapture {
         options: BindingOptions,
         assigned: usize,
         clock: CaptureClock,
+        examine: Examine,
     ) {
         let Some(oldest) = history.samples().front().map(|sample| sample.sequence) else {
             return;
@@ -571,7 +605,11 @@ impl BindingCapture {
             if history.is_rejected(sample.sequence) {
                 continue;
             }
-            if clock.usable(options.silence_nanos, sample) {
+            let usable = match examine {
+                Examine::WithinLimit => clock.usable(options.silence_nanos, sample),
+                Examine::Every => true,
+            };
+            if usable {
                 self.samples.push(Arc::clone(sample));
             } else {
                 self.stale_since_capture = self.stale_since_capture.wrapping_add(1);
@@ -607,6 +645,15 @@ impl BindingCapture {
         self.counters.latest_unavailable_iterations =
             self.counters.latest_unavailable_iterations.wrapping_add(1);
     }
+}
+
+/// Which examined samples a queued capture delivers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Examine {
+    /// Those within the silence limit; an older one is an age rejection.
+    WithinLimit,
+    /// Every one: the sample of a trigger step, which the schedule judged.
+    Every,
 }
 
 /// The facts of one binding's held report.

@@ -30,7 +30,7 @@ pub fn cycle_set_clock_driver(
         || !factor.is_finite()
         || factor < 0.0
         || cycle.period_nanos() == 0
-        || registration.runtime.trigger().is_some();
+        || !registration.runtime.triggers().is_empty();
     if refused {
         return Err(Error::InvalidArgument);
     }
