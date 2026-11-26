@@ -85,9 +85,10 @@ tests = [
   "hypha_wire/sequence_validator",
   "hypha_node/subscriber_integrity_stats",
   "hypha_ffi/delivery_transport_age",
+  "hypha_cycle/trigger_capture",
 ]
-evidence = "R4 harness, by hand (corrupt, future, reordered frames from a peer process)"
-gap = "The zero-copy window after the check is accepted (architecture §3.4)."
+evidence = "R4 harness, by hand (corrupt, future, reordered frames from a peer process). A trigger sample of a triggered cycle is judged by age once, by the trigger schedule when its turn drains it (`hypha_runtime::trigger_schedule`, Late: excluded and counted in `age_rejections_total`); the capture delivers it without a second check, so a step that runs later in the turn holds it although the capture judges the port Stale (execution-model §6.6 item 2; `the_firing_sample_is_delivered_even_past_its_limit_at_capture`)."
+gap = "The zero-copy window after the check is accepted (architecture §3.4). The trigger schedule's age check is a unit test of `hypha_runtime`, which a test reference cannot name."
 
 [[requirement]]
 id = "FSR-11"
