@@ -171,10 +171,11 @@ impl Session<'_> {
         let target = match self.halted_at {
             // The clock never goes back within a pass: a restart at its first instant sends
             // the start's clock again.
-            Some(log_time) => log_time.saturating_sub(1).max(self.last_boundary),
+            Some(log_time) => log_time.saturating_sub(1).max(self.pass_start_log),
             None => match self.close_tail() {
-                Ok(None) => return,
-                Ok(Some(end)) => end,
+                Ok(Flow::Go) => return,
+                // A restart halted the tail: the end still closes, without its pacing.
+                Ok(Flow::Halt) => self.end_of_pass(),
                 Err(error) => {
                     self.failure = Some(error);
                     return;
@@ -191,23 +192,21 @@ impl Session<'_> {
         }
     }
 
-    /// Closes the chunks after the last message of a pass: a boundary at that message, as a
-    /// message one nanosecond later would close it, then the next boundary, which ends the
-    /// pass, so that a step after the last message runs. The final `/clock` is capped at
-    /// the window's exclusive end, which may be off the grid. Returns the end when a restart
-    /// halted the closing, for a barrier that still closes it.
-    fn close_tail(&mut self) -> Result<Option<u64>, String> {
-        let after_last = self.last_log_time.saturating_add(1);
-        let flow = self.close_boundaries_before(after_last)?;
-        let Some(end) =
-            self.plan.as_ref().map(|plan| plan.end_boundary(self.config.utc_range.end()))
-        else {
-            return Ok(None);
-        };
-        if flow == Flow::Go && self.close_chunk(end)? == Flow::Go {
-            return Ok(None);
+    /// Closes the boundary at the last message, if it is on the grid, then the boundary
+    /// after it, which ends the pass.
+    fn close_tail(&mut self) -> Result<Flow, String> {
+        if self.close_boundaries_before(self.last_log_time.saturating_add(1))? == Flow::Halt {
+            return Ok(Flow::Halt);
         }
-        Ok(Some(end))
+        let end = self.end_of_pass();
+        self.close_chunk(end)
+    }
+
+    /// The last `/clock` of the pass: the next boundary, capped at the window's exclusive
+    /// end, which may be off the grid.
+    fn end_of_pass(&self) -> u64 {
+        let range_end = self.config.utc_range.end();
+        self.plan.as_ref().map_or(self.last_boundary, |plan| plan.end_boundary(range_end))
     }
 
     pub(super) fn counters_in_order(&self) -> Vec<(String, u64)> {

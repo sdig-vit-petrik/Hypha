@@ -182,16 +182,6 @@ fn a_gap_is_taken_one_boundary_at_a_time() {
 }
 
 #[test]
-fn the_pass_ends_at_the_first_boundary_after_its_last_message() {
-    let mut plan = ChunkPlan::new(0, 100).expect("a plan");
-    assert_eq!(closed_before(&mut plan, 300), vec![100, 200]);
-    // The last message is at 300, on the grid. The player closes what lies at or before
-    // it, as if a message followed one nanosecond later, and ends the pass after it.
-    assert_eq!(closed_before(&mut plan, 301), vec![300]);
-    assert_eq!(plan.end_boundary(None), 400);
-}
-
-#[test]
 fn the_final_boundary_stops_at_the_end_of_the_window() {
     let mut plan = ChunkPlan::new(0, 100).expect("a plan");
     assert_eq!(closed_before(&mut plan, 250), vec![100, 200]);
@@ -220,39 +210,60 @@ fn a_zero_chunk_is_refused() {
     assert!(ChunkPlan::new(u64::MAX, 1).is_err());
 }
 
-/// Replays `log_times` the way the player does and checks, at every boundary, that
-/// no message stamped at or before it is still unpublished and that none after it went out.
-fn replay_keeps_the_rule(log_times: &[u64], start: u64, chunk: u64) -> bool {
+/// What the player sends for `log_times` (sorted, none before `start`): the closes in
+/// order, each with how many messages had gone out. A message whose `shorten` flag is set
+/// is the one past a full subscriber queue.
+fn replay(log_times: &[u64], shorten: &[bool], start: u64, chunk: u64) -> Vec<(u64, usize)> {
     let mut plan = ChunkPlan::new(start, chunk).expect("a plan");
-    let mut published = 0_usize;
-    let check = |boundary: u64, published: usize| {
-        let all_held_out =
-            log_times.iter().enumerate().all(|(index, &time)| time > boundary || index < published);
-        let none_later_out = log_times
-            .iter()
-            .enumerate()
-            .all(|(index, &time)| time <= boundary || index >= published);
-        all_held_out && none_later_out
-    };
-    for (index, &time) in log_times.iter().enumerate() {
-        for boundary in closed_before(&mut plan, time) {
-            if !check(boundary, published) {
-                return false;
-            }
+    let mut closes = Vec::new();
+    for (published, &time) in log_times.iter().enumerate() {
+        closes.extend(closed_before(&mut plan, time).into_iter().map(|close| (close, published)));
+        if shorten.get(published).copied().unwrap_or(false)
+            && let Some(close) = plan.shorten_before(time)
+        {
+            closes.push((close, published));
         }
-        assert_eq!(published, index, "messages go out in order");
-        published += 1;
     }
     let last = *log_times.last().expect("a message");
-    let tail = closed_before(&mut plan, last + 1);
-    tail.into_iter().all(|boundary| check(boundary, published))
-        && check(plan.end_boundary(None), published)
+    let published = log_times.len();
+    closes.extend(closed_before(&mut plan, last + 1).into_iter().map(|close| (close, published)));
+    closes.push((plan.end_boundary(None), published));
+    closes
 }
 
-#[test]
-fn a_chunk_never_closes_past_unpublished_data() {
-    let times = [1_000, 1_001, 1_020, 1_020, 1_099, 1_100, 1_100, 1_350, 1_351, 2_500];
-    assert!(replay_keeps_the_rule(&times, 1_000, 100));
-    assert!(replay_keeps_the_rule(&times, 0, 7));
-    assert!(replay_keeps_the_rule(&times, 1_000, 1_000_000));
+proptest::proptest! {
+    #[test]
+    fn a_replay_keeps_the_rule(
+        start in 0_u64..50,
+        chunk in 1_u64..20,
+        mut offsets in proptest::collection::vec(0_u64..200, 1..40),
+        shorten in proptest::collection::vec(proptest::bool::ANY, 40),
+    ) {
+        offsets.sort_unstable();
+        let log_times: Vec<u64> = offsets.iter().map(|offset| start + offset).collect();
+        let closes = replay(&log_times, &shorten, start, chunk);
+        for &(close, published) in &closes {
+            // Every message stamped at or before a close went out before it ...
+            let held = log_times.iter().filter(|time| **time <= close).count();
+            proptest::prop_assert!(published >= held, "{close} closed before its data");
+            // ... and nothing went out past the message the close comes before.
+            if let Some(next) = log_times.get(published) {
+                proptest::prop_assert!(close < *next, "{close} is not before message {next}");
+            }
+        }
+        // Closes rise; only a first shortened close can repeat the start's clock.
+        let values: Vec<u64> = closes.iter().map(|(close, _)| *close).collect();
+        proptest::prop_assert!(values.is_sorted_by(|a, b| a < b), "{values:?}");
+        proptest::prop_assert!(values.iter().skip(1).all(|close| *close > start), "{values:?}");
+        proptest::prop_assert!(values.first().is_some_and(|close| *close >= start));
+        // Every boundary of the grid closes, and the pass ends at the first one after the
+        // last message.
+        let last = *log_times.last().expect("a message");
+        let end = *values.last().expect("an end");
+        let on_the_grid = |close: u64| close > start && (close - start).is_multiple_of(chunk);
+        proptest::prop_assert!(end > last && end - chunk <= last && on_the_grid(end));
+        let grid: Vec<u64> = (1..=(end - start) / chunk).map(|k| start + k * chunk).collect();
+        let on_grid: Vec<u64> = values.iter().copied().filter(|close| on_the_grid(*close)).collect();
+        proptest::prop_assert_eq!(on_grid, grid);
+    }
 }
