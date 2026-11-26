@@ -74,7 +74,10 @@ Sort every line of the ROS node into one of three classes:
   configuration of the repository that owns the node.
 - **Keep every comment.** When the line under a comment changes, keep the
   comment. Change its text only when it now states a false fact (for example it
-  names a ROS call that is gone).
+  names a ROS call that is gone). A comment on glue that is removed moves to the code
+  that replaces that glue, when that code does what the comment says (step 5 does this
+  for `speedCallback`). A comment that no remaining code matches stays in the file,
+  above the replacement it sat beside, and the change description lists it.
 - **Do not refactor the logic.** Do not rename, extract, inline or "clean up".
   Change a logic line only when it does not compile against hypha types
   ([section 5](#5-message-types-and-the-minimal-logic-edits)), and then change
@@ -259,6 +262,11 @@ rotation_count = 3
 - A relative log path resolves against the directory of the TOML file.
 - `${NAME}` in any string, `[log]` and `include` included, expands from the
   environment. An unset or empty variable stops the node.
+- Port names are unique per direction. Each `[ports.inputs.<name>]` is one table, so two
+  inputs cannot share a name, and the same holds for `[ports.outputs.<name>]`. When an
+  upstream configuration uses one name for two inputs (a velocity input and a lock both
+  called `joystick`), rename one of them in its TOML table and in its port declaration,
+  for example `joystick_lock`.
 
 **Check:** every parameter and topic row of the inventory has one TOML entry.
 
@@ -420,9 +428,11 @@ separate class. Remove its ROS members (`ros::Subscriber`, `ros::Publisher`,
 
 - **gtest tests of logic** compile against hypha message types with the
   include edits of section 5. Do not change their assertions or names.
-- **Tests of a callback or a timer** run the step of a node that was not started
-  through `hypha::testing::StepHarness` (`hypha/testing.h`). Keep the test name and
-  every assertion. Add one test for each verdict that the ROS test did not cover:
+- **Tests of a callback or a timer** of a cycle node run its `step` through
+  `hypha::testing::StepHarness` (`hypha/testing.h`), without starting the node. A callback
+  of an `ApplicationNode` has no step, and `StepHarness` does not run it: test its logic as
+  in this step, and its start-up and bus as in [section 10.10](#1010-test-an-application).
+  Keep the test name and every assertion. Add one test for each verdict that the ROS test did not cover:
   usable, stale, never arrived.
 
 ```cpp
@@ -503,7 +513,9 @@ Reading the diff is not verification. Run the binary.
 2. Read the manifest on `~/introspection` (`hypha topic echo /<node>/introspection`,
    or `hypha::introspect()`). Compare its configuration rows, endpoints and
    cycle rows with the TOML file: the resolved topics and the rate.
-3. `hypha topic list` shows every topic of the inventory.
+3. `hypha topic list` shows only the topics seen publishing during its `--timeout`
+   (default 1.0 s): a topic of the inventory with no traffic in that time is not listed.
+   Check such a topic with `hypha topic hz <topic>` (item 5) once traffic starts.
 4. With no input publisher, `hypha topic echo /<node>/state` (published by
    `runNode`) shows `WAITING`, and the outputs follow the approved missing-input
    response.
@@ -562,9 +574,11 @@ included, uses the same `HYPHA_DOMAIN`.
 | `nh.subscribe` that stores the latest value | `hypha::Latest<T>` port |
 | `nh.subscribe` with work for each message | `hypha::Arrivals<T>` port |
 | `message_filters` synchroniser | `Arrivals` ports; match `header.stamp` in the step |
-| `nh.advertise` + `publish` | `hypha::Output<T>` port: call `send(message)` |
+| `nh.advertise` + `publish` | `hypha::Output<T>` port: call `send(message)`. A step sends one message per Output. A step that sends two declares the Output with `hypha::perStep(2)`: `hypha::Output<T> name{*this, "name", hypha::perStep(2)};` |
 | `nh.createTimer` | The cycle rate, `rate_hz` under `[cycle]` |
 | `ros::TimerEvent` | `const hypha::CycleTime&`: `dt` (no value in the first step), `missed` |
+| `ros::ok()` in a worker or logic loop | `while (hypha::ok())` (`hypha/node.h`), false after SIGINT or SIGTERM. Every blocking read in that loop takes a timeout that returns to this check: a read with no timeout never returns to it, so the stop is never seen |
+| `tf_prefix` (added to every frame id) | None. Read it with `hypha::config().required<std::string>("tf_prefix")` and write each frame id in full, prefix included |
 | Hand-written message age check (decides whether an input may be used) | The port's `silence_ms`, verdict `Stale`. A use of the source time as data stays logic |
 | `ros::Time::now()` for a stamp | In a cycle step `time.stamp`; elsewhere `hypha::toRosTime(hypha::now())`. See cpp-api.md §3 |
 | `header.seq` | The publisher writes it |
@@ -621,18 +635,28 @@ of ROS's own; it cannot include both. Make only these edits:
 
 | ROS 1 | hypha | Edit |
 |---|---|---|
-| `boost::array<double, 9>` | `std::array<double, 9>` | Only where the logic names the type. |
+| `boost::array<double, 9>` | `std::array<double, 9>` | Glue only. A logic line keeps its `boost::` type (the paragraph below the table). |
 | `header.stamp` is `ros::Time` | `header.stamp` is `hypha_msgs::RosTime{secs, nsecs}` | `stamp.sec` to `stamp.secs`, `stamp.nsec` to `stamp.nsecs`. A call such as `stamp.toSec()` becomes `hypha::fromRosTime(stamp)` (`hypha/message_stamp.h`), which returns `std::optional<hypha::Time>`, empty when `nsecs` is one second or more. Check the optional, then call `.seconds()` on the value. Write no helper. |
 | `ros::Time`, `ros::Duration` in logic | `hypha::Time`, `hypha::Duration` | Only when the logic itself measures time. |
+| `ros::Duration::toSec()`, `ros::Duration::toNSec()`, `ros::Time::toSec()`, and `ros::Time` / `ros::Duration` arithmetic | `hypha::Duration::seconds()` (`double`), `hypha::Duration::nanos()` (`int64_t`), `hypha::Time::seconds()`. The operators keep their meaning: `Time + Duration`, `Time - Duration`, and `Time - Time`, which is a `Duration` | Rename the call. `ros::Duration(s)` is `hypha::Duration::fromSeconds(s)`, which throws `std::invalid_argument` for NaN or infinite `s`. |
 | `ros::Time::now()` in logic | `hypha::now()` for framework time, `hypha::steadyNow()` for an interval. For a stamp, `hypha::toRosTime(hypha::now())` (`hypha/message_stamp.h`) | Keep the meaning of the original call. |
 | `ros::Time::isSystemTime()` | `!hypha::isSimTime()` (`hypha_base/clock.h`, included by `hypha/hypha.h`) | Edit the call only. |
 | `ros::Time::waitForValid()` | No call. A cycle step does not run before the first `/clock` sample (execution-model.md section 11.1), so its `time.now` is valid. | Delete the call. |
 | `hypha::now()` before the first `/clock` sample, on a node with `HYPHA_USE_SIM_TIME=1` (`hypha_base/clock.h`) | The placeholder zero: `Time` 0 ns, not a clock value. `hypha::isSimTime()` is already true, and no C++ call says whether a value has arrived. | Inside a step, use `time.now`. Outside one, the value is trustworthy only after the first `/clock` sample, and no call reports that (execution-model.md section 11.1: "The zero that a node starts with is a placeholder, not a value"). |
 | `void cb(const Msg::ConstPtr& msg)` whose logic keeps the pointer | `samples()` gives a `const Msg&` for one step, and it is valid only until the step returns (section 6). | Copy the value into a member of the node (`Msg last;`, then `last = sample;`). If the callback only stores the latest value, use a `Latest` port instead (Step 2). |
-| `boost::shared_ptr<Msg>`, `boost::make_shared<Msg>(...)` | `std::shared_ptr<Msg>`, `std::make_shared<Msg>(...)`. The generated `Msg::Ptr` is `std::shared_ptr` (for example `std_msgs/Float64.h`). | Change the namespace and the include (`<memory>`). Nothing else. |
+| `boost::shared_ptr<Msg>`, `boost::make_shared<Msg>(...)` | `std::shared_ptr<Msg>`, `std::make_shared<Msg>(...)`. The generated `Msg::Ptr` is `std::shared_ptr` (for example `std_msgs/Float64.h`). | Glue only (the paragraph below the table): change the namespace and the include (`<memory>`). Nothing else. |
 | A header-only library that ROS installs but that is not ROS API, such as `tf2/LinearMath` (`tf2::Quaternion`, `tf2::Matrix3x3`) | The same headers, copied into the node as third-party files with their licence. The SDK ships no math types. | Keep every use in the logic. In the copied headers edit only their ROS lines (`#include <ros/macros.h>` goes, `ROS_DEPRECATED` becomes `[[deprecated]]`), and list the copy and those edits in the change description. |
 | `std::mutex` that only guards callbacks | No mutex. | Delete the mutex and its lock calls. Callbacks of one `WaitSet` never run at the same time (execution-model.md section 10.1), and a cycle step runs on that `WaitSet` (execution-model.md section 6.1). Keep a mutex only where a worker thread shares the data. |
 | `pub.publish(msg);` on a plain `Publisher` (`publish` is `[[nodiscard]]`, `hypha/publisher.h`) | `if (!pub.publish(msg)) { ... }`, with `pub.lastPublishStatus()` for the reason | Check the result and log the reason, as cpp-api.md section 1 does: `HYPHA_LOG_WARN_THROTTLE(1.0, "...: {}", pub.lastPublishStatus().name());`. A cycle `Output::send` returns nothing, so this row does not apply to it. |
+
+The `tf2/LinearMath` row does not cover `tf2/convert.h` (`tf2::convert`): it uses
+`ros::Time`, so do not copy that header. Convert the fields by hand, one assignment for
+each field (the `imu_filter_madgwick` port wrote four field copies), and list them in the
+change description.
+
+In glue, each `boost::` type becomes its `std::` equivalent, as the rows above say. A
+logic file keeps its `boost::` types (section 2.1). The SDK ships no Boost, so the node's
+own build must provide the Boost headers that its logic includes.
 
 A message type that hypha does not ship becomes a `.msg` file of the node and
 a `hypha_generate_messages()` call. Copy the `.msg` file without changes.
@@ -674,7 +698,10 @@ or 1.
   back; the process
   exits 75 and its supervisor starts it again
   ([execution-model.md](execution-model.md) §11.1). Every member is built anew, so
-  the node needs no reset code; do not write one.
+  the node needs no reset code for this; do not write one. Only simulated time restarts
+  it: a step of the host wall clock does not ([execution-model.md](execution-model.md)
+  §6.7, §11). When the ROS node resets its state on a backward header stamp, that reset
+  is logic: keep it.
 - **`replay not faithful`, or `the input history is shorter than one replay chunk`,
   under `hypha play --clock`** is a sizing fault of the replay, not of the step. One
   chunk carried more samples of the topic than the input keeps. Check in this order:
@@ -1039,8 +1066,10 @@ publishes therefore owns its publisher, or every access to that publisher is ser
 by the application. Only `hypha::requestStop()` and `failRun()` may be called from another
 thread while the node runs.
 
-The application starts a worker in `started()` and joins it in its destructor. A thread
-that fails calls `failRun()`:
+The application starts a worker in `started()` and joins it in its destructor. The
+worker's loop checks `hypha::ok()` (section 4), and every blocking read in it takes a
+timeout that returns to that check: a read with no timeout never sees the stop, and the
+join then waits forever. A thread that fails calls `failRun()`:
 
 ```cpp
 #include <hypha/hypha.h>
@@ -1078,7 +1107,7 @@ class LidarNode final : public hypha::ApplicationNode
     // The only user of points_ once the thread runs.
     void readLoop()
     {
-        while (!this->stopping_) {
+        while (hypha::ok() && !this->stopping_) {
             try {
                 const bool sent = this->points_.publish(readFromDevice());
                 if (!sent) {
@@ -1219,6 +1248,12 @@ as [examples/sensor_pipeline](../examples/sensor_pipeline/README.md) does for th
 2. **Start-up.** Run the binary with a missing parameter file, a malformed one and one
    without its `[ports.*]` tables, and expect exit 78: `startup_exit_code.cmake`,
    registered for each case in the example's `CMakeLists.txt` with `hypha_add_test`.
+   `startup_exit_code.cmake` is not installed with the SDK, but `hypha_add_test` is
+   (`hyphaTesting.cmake`). A port against the installed SDK copies
+   `examples/sensor_pipeline/startup_exit_code.cmake` from the hypha source tree into its
+   own test folder, and registers each case with `hypha_add_test` and `-P` on that copy, as
+   the example's `CMakeLists.txt` does. Installing the script beside `hyphaTesting.cmake`
+   is a follow-up.
 3. **The bus.** Replay a recorded input into the running node and compare its output
    by stamp: `replay_check.sh`, registered as `sensor_pipeline_replay_check`. The
    recipe, and the comparison with a ROS golden, are in the example's README.
