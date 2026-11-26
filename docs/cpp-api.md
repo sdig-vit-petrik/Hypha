@@ -558,7 +558,13 @@ once per trigger port; a repeat adds nothing, and the order of the calls has no
 meaning. The samples of all triggers step in send-stamp order, a tie in the
 construction order of the ports. In a step the port that fired holds its one sample
 and every other trigger holds none, so the step tells the port that fired as the one
-whose `samples()` is not empty. Each trigger has its own `silence_ms`: `usable()` and
+whose `samples()` is not empty. `CycleTime::now`, and with it the framework send stamp of
+every output of the step, is the send time T of the trigger sample under simulated time
+(of a fallback, its time) and the wall time at the start of the step in host time. On host
+time an output's stamp is therefore its own send time, later than the trigger sample's,
+and the sample's stamp is not carried by it: a node that needs it copies the `header.stamp`
+of the sample, or reads `port.sentAt(0)`, its host-monotonic send time, which is not a
+wall time (execution-model.md §6.6 item 2). Each trigger has its own `silence_ms`: `usable()` and
 `stale()` of every trigger port judge its newest sample against it in every step. After
 the shortest `silence_ms` without a step a fallback step runs with every trigger empty
 and each trigger that is past its own limit `stale()`. The rules are in
