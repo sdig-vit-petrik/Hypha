@@ -117,7 +117,12 @@ fn a_domain_nobody_uses_goes_and_one_in_use_or_outside_the_prefix_stays() {
         name: "clean_held_node".to_owned(),
         pid: holder_pid.and_then(|pid| i32::try_from(pid).ok()),
     };
-    assert_eq!(kept, [(held.as_str(), &alive), (running.as_str(), &KeepReason::RunAlive(pid))]);
+    let run = KeepReason::RunAlive(pid);
+    // `CleanReport::kept` lists the domains by name, so the expected list is sorted by name
+    // the same way: the order then does not depend on the pid in the domain names.
+    let mut expected = [(held.as_str(), &alive), (running.as_str(), &run)];
+    expected.sort_by_key(|(domain, _)| *domain);
+    assert_eq!(kept, expected);
 
     assert!(!schema_file.exists(), "a dead domain's directory stays");
     assert!(!dead_node_file.exists(), "a dead domain's node file stays");
