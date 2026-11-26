@@ -1,4 +1,5 @@
-/// hypha_sensor_source: a synthetic vehicle with an IMU, a LiDAR and odometry.
+/// hypha_sensor_source: a synthetic vehicle with an IMU, a LiDAR and odometry, an
+/// ApplicationNode started by runNode.
 ///
 ///   hypha_sensor_source examples/sensor_pipeline/config/source.toml
 
@@ -18,10 +19,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <exception>
 #include <numbers>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 HYPHA_LOG_MODULE_INIT("sensor_source")
@@ -292,65 +294,76 @@ class SensorSource
     uint64_t                                   unsent_{0};
 };
 
-}  // namespace
-
-int main(int argc, char** argv)
+/// The node. The constructor reads the parameters, so a bad file ends the run with exit 78
+/// before the bus is joined. setup() creates the endpoints and the timer; started() sends the
+/// static transforms once runNode has checked that no parameter is unread.
+class SensorSourceNode final : public hypha::ApplicationNode
 {
-    if (argc != 2) {
-        std::fprintf(stderr, "usage: hypha_sensor_source <parameter file>\n");
-        return hypha::kExitUsage;
+  public:
+    SensorSourceNode() : settings_(readSettings())
+    {
     }
-    try {
-        hypha::Node          node("sensor_source", argv[1]);
-        const SourceSettings settings = readSettings();
-        SensorSource         source(
-            settings,
+
+    SensorSourceNode(const SensorSourceNode&) = delete;
+    SensorSourceNode& operator=(const SensorSourceNode&) = delete;
+
+    ~SensorSourceNode() override
+    {
+        if (this->ran_) {
+            std::printf(
+                "sensor_source: ticks=%llu clouds=%llu unsent=%llu timer_missed=%llu\n",
+                static_cast<unsigned long long>(this->source_->ticks()),
+                static_cast<unsigned long long>(this->source_->clouds()),
+                static_cast<unsigned long long>(this->source_->unsent()),
+                static_cast<unsigned long long>(this->ticker_.missedCount())
+            );
+            std::fflush(stdout);
+        }
+    }
+
+    void setup(hypha::Node& node) override
+    {
+        this->source_.emplace(
+            this->settings_,
             node.advertise<sensor_msgs::Imu>("imu"),
             node.advertise<sensor_msgs::PointCloud2>("cloud"),
             node.advertise<tf2_msgs::TFMessage>(hypha::Topic{"/tf"})
         );
-        hypha::StaticTransformBroadcaster statics{node};
-        const hypha::Duration             period =
-            hypha::Duration::fromNanos(std::llround(1e9 / settings.tickHz));
-        hypha::Timer ticker = node.timer(period, hypha::bind<&SensorSource::tick>(source));
+        this->statics_.emplace(node);
+        const hypha::Duration period =
+            hypha::Duration::fromNanos(std::llround(1e9 / this->settings_.tickHz));
+        this->ticker_ = node.timer(period, hypha::bind<&SensorSource::tick>(*this->source_));
+    }
 
-        // runNode refuses a key nothing read; a custom main() checks it itself.
-        const std::vector<std::string> unread = hypha::config().unreadKeys();
-        if (!unread.empty()) {
-            HYPHA_LOG_ERROR("unread parameter(s): {}", unread.front());
-            return hypha::kExitConfiguration;
-        }
-
+    void started(hypha::Node& /*node*/) override
+    {
         // Two sends, one latched message with both transforms.
-        const bool lidarSent = statics.send(staticTransform(settings.baseFrame, settings.lidar));
-        const bool imuSent = statics.send(staticTransform(settings.baseFrame, settings.imu));
+        const bool lidarSent =
+            this->statics_->send(staticTransform(this->settings_.baseFrame, this->settings_.lidar));
+        const bool imuSent =
+            this->statics_->send(staticTransform(this->settings_.baseFrame, this->settings_.imu));
         const bool staticsSent = lidarSent && imuSent;
         if (!staticsSent) {
-            HYPHA_LOG_ERROR("/tf_static not sent: {}", statics.lastPublishStatus().name());
-            return hypha::kExitRuntime;
+            throw std::runtime_error(
+                "/tf_static not sent: " + std::string(this->statics_->lastPublishStatus().name())
+            );
         }
-
+        this->ran_ = true;
         std::printf("sensor_source: ready\n");
         std::fflush(stdout);
-        const hypha::RunResult result = node.run();
-        std::printf(
-            "sensor_source: ticks=%llu clouds=%llu unsent=%llu timer_missed=%llu\n",
-            static_cast<unsigned long long>(source.ticks()),
-            static_cast<unsigned long long>(source.clouds()),
-            static_cast<unsigned long long>(source.unsent()),
-            static_cast<unsigned long long>(ticker.missedCount())
-        );
-        std::fflush(stdout);
-        const bool rewound = result.status() == hypha::Status::ClockRewound;
-        if (rewound) {
-            return hypha::kExitRewind;
-        }
-        return result.ok() ? hypha::kExitClean : hypha::kExitRuntime;
-    } catch (const hypha::ConfigError& error) {
-        HYPHA_LOG_ERROR("{}", error.what());
-        return hypha::kExitConfiguration;
-    } catch (const std::exception& error) {
-        HYPHA_LOG_ERROR("{}", error.what());
-        return hypha::kExitRuntime;
     }
+
+  private:
+    const SourceSettings                             settings_;
+    std::optional<SensorSource>                      source_;
+    std::optional<hypha::StaticTransformBroadcaster> statics_;
+    hypha::Timer                                     ticker_;
+    bool                                             ran_{false};
+};
+
+}  // namespace
+
+int main(int argc, char** argv)
+{
+    return hypha::runNode<SensorSourceNode>(argc, argv, "sensor_source");
 }

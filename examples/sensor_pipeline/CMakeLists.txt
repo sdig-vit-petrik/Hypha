@@ -1,6 +1,6 @@
-# Sensor pipeline: a synthetic IMU and LiDAR source, an event-driven processing node on a
-# plain hypha::Node with one worker thread, and a replay check that compares two runs of
-# the node by message stamp.
+# Sensor pipeline: a synthetic IMU and LiDAR source, an event-driven processing node with
+# one worker thread (both hypha::ApplicationNode, started by hypha::runNode), and a replay
+# check that compares two runs of the node by message stamp.
 #
 #   cmake -S . -B build && cmake --build build
 
@@ -40,6 +40,22 @@ foreach(target IN LISTS SENSOR_PIPELINE_TARGETS)
 endforeach()
 
 install(TARGETS ${SENSOR_PIPELINE_TARGETS} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+# A parameter file that is missing or malformed ends each node with exit 78, which a
+# supervisor never restarts. The check needs no bus.
+if(COMMAND hypha_add_test AND NOT (DEFINED HYPHA_BUILD_TESTS AND NOT HYPHA_BUILD_TESTS))
+  foreach(node IN ITEMS hypha_cloud_processor hypha_sensor_source)
+    foreach(case IN ITEMS missing malformed)
+      hypha_add_test(${node}_startup_${case}
+        COMMAND ${CMAKE_COMMAND}
+          -DNODE=$<TARGET_FILE:${node}>
+          -DCASE=${case}
+          -DEXPECTED=78
+          -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/startup_exit_code.cmake")
+    endforeach()
+  endforeach()
+endif()
 
 # The replay check (replay_check.sh) runs the processor twice on the recorded fixture,
 # with hypha play and hypha record, and compares the two outputs by stamp. It needs the

@@ -308,7 +308,6 @@ if(HYPHA_BUILD_TESTS)
     test/test_parameters.cpp
     test/test_parameter_lists.cpp
     test/test_config_views.cpp
-    test/test_plain_main_example.cpp
     test/test_node.cpp
     test/test_node_creation_race.cpp
     test/test_schema.cpp

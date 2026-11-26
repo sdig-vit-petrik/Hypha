@@ -12,7 +12,7 @@ application node.
 | Example | Copy it for | What it is |
 |---|---|---|
 | [scan_cycle](scan_cycle/README.md) | **a cycle node** (`hypha::CycleNode`) | **Reference.** `runNode` entry point, parameters checked in the constructor, the contract of each input stated, the stamp from `CycleTime`, and tests at three levels: logic, `StepHarness`, bus. |
-| [sensor_pipeline](sensor_pipeline/README.md) | **an event-driven node** (plain `hypha::Node`) | **Reference.** A custom `main` with the unread-key check and the exit codes, one owner for each endpoint, shared QoS policies, loss and timer counters, and a replay check on a recorded fixture. |
+| [sensor_pipeline](sensor_pipeline/README.md) | **an event-driven node** (`hypha::ApplicationNode`) | **Reference.** `runNode` entry point, endpoints created in `setup()`, a worker thread started in `started()` and joined in the destructor, shared QoS policies, loss and timer counters, a start-up exit-code test, and a replay check on a recorded fixture. |
 | `speed` | a second cycle node to run beside `scan_cycle` | A source and a monitor. The monitor names never-arrived and stale apart with `verdict()` and withholds its Bool rather than send a false all-clear. No tests of its own. |
 | `sensor_fusion` | composed `hypha::Cycle`s built from a `[[sensors]]` list | A feature demonstration with a generator and a probe. Its mains return 0 or 1 for its script; an application returns the codes of `hypha/application_node.h`. |
 | [mrs](mrs/README.md) | nothing | A port of upstream ROS code behind a shim, kept close to the original. Its inputs are `unsupervised` with the upstream's own checks, which is why it reads `has()`; new code declares `silence_ms` and reads `usable()`. |
@@ -22,9 +22,9 @@ application node.
 
 What a reference shows, and where to find the rule:
 
-1. **Entry point.** A cycle node is one call of `hypha::runNode`. A plain node maps its
-   own exits: usage 2, configuration 78, rewind 75, runtime 70
-   ([migration guide](../docs/ros1-migration-guide.md) §10.9).
+1. **Entry point.** A cycle node and an event-driven node are each one call of
+   `hypha::runNode`: the exit codes, `~/introspection`, `~/state` and the refusal of an
+   unread key come with it ([migration guide](../docs/ros1-migration-guide.md) §10.2).
 2. **Input contracts.** `Latest` for a snapshot, bounded `Arrivals` for work on each
    message, `optionalTopic` for wiring, `advisory` for health; and what never-arrived,
    silence, stagnation and recovery do to each output.
