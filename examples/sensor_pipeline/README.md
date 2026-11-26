@@ -1,24 +1,28 @@
-# Sensor pipeline: an event-driven node on a plain `hypha::Node`, and a replay check
+# Sensor pipeline: an event-driven `ApplicationNode`, and a replay check
 
 Two programs and one policy header, in the shape of a ported ROS 1 LiDAR node:
 
-- `hypha_sensor_source` publishes a synthetic IMU, LiDAR and odometry stream.
-- `hypha_cloud_processor` is a plain `hypha::Node` (no cycle). It subscribes to the IMU
+- `hypha_sensor_source` is a `hypha::ApplicationNode` that publishes a synthetic IMU, LiDAR
+  and odometry stream.
+- `hypha_cloud_processor` is a `hypha::ApplicationNode` (no cycle). It subscribes to the IMU
   and the point clouds, runs one timer, hands each cloud to one worker thread, looks the
   transform up at the cloud's stamp from that worker, and publishes the centroid of the
   cloud in the `odom` frame from that worker.
 - `inc/sensor_pipeline_qos.h` holds the policies of both sensor topics. Both programs
   include it.
 
-`sensor_pipeline_compare` and `replay_check.sh` are the replay recipe: they replay a
-recorded fixture into the processor on simulated time and compare two outputs by header
-stamp. The porting rules behind the code are in
-[ros1-migration-guide.md §10](../../docs/ros1-migration-guide.md#10-porting-an-event-driven-node-to-a-plain-hyphanode).
+Both programs are started by `hypha::runNode`, so each publishes `~/introspection` and
+`~/state` and exits 78 for a missing or malformed parameter file or a missing `[ports.*]`
+table; `startup_exit_code.cmake` checks the exit code. `sensor_pipeline_compare` and
+`replay_check.sh` are the replay recipe: they replay a recorded fixture into the processor
+on simulated time and compare two outputs by header stamp. The porting rules behind the code are in
+[ros1-migration-guide.md §10](../../docs/ros1-migration-guide.md#10-porting-an-event-driven-node-an-applicationnode).
 
 | File | Holds |
 |---|---|
 | `src/sensor_source.cpp` | the source: one timer at `tick_hz` publishes every output |
 | `src/cloud_processor.cpp` | the processor: run() thread, hand-over queue, worker |
+| `startup_exit_code.cmake` | the start-up check: a missing or malformed parameter file, or no `[ports.*]` table, gives exit 78; ctest runs it for each node |
 | `src/compare_by_stamp.cpp` | the comparison of two recordings by header stamp |
 | `inc/sensor_pipeline_qos.h` | the `imu` and `lidar_cloud` policies, mapped with `hypha::QosOf<M>` |
 | `config/source.toml`, `config/processor.toml` | the live parameters |
@@ -65,8 +69,8 @@ HYPHA_DOMAIN=demo build/examples/sensor_pipeline/hypha_cloud_processor examples/
 
 Either may start first: both declare the same policies. `Ctrl-C` (SIGINT) or SIGTERM
 stops each one; the processor then prints its `final` lines. A parameter key that nothing
-read stops the processor with exit code 78 (`unread parameter(s): <key>`), and a missing
-argument with exit code 2.
+read stops the processor with exit code 78 (`unread parameter(s): <key>`), as does a
+missing or malformed parameter file, and a second argument stops it with exit code 2.
 
 ## Threads and ownership
 
@@ -76,14 +80,14 @@ The processor has two threads:
 
 | Thread | Runs |
 |---|---|
-| the run() thread (`main`) | `ImuCounter::onImu`, `CloudForwarder::onCloud`, `Reporter::onTick`; it fills the `TransformBuffer` from `/tf` and `/tf_static` |
+| the run() thread (`runNode`) | `ImuCounter::onImu`, `CloudForwarder::onCloud`, `Reporter::onTick`; it fills the `TransformBuffer` from `/tf` and `/tf_static` |
 | the worker (`CloudWorker`) | takes a cloud from the hand-over queue, computes its centroid, `TransformBuffer::lookup()` at the cloud's stamp, `Publisher::publish()` of the result |
 
 The rules the headers give, and how the code follows them:
 
-- `publisher.h`: "Threading: publish() runs on one thread at a time." `main()` creates
-  the result publisher before the run and moves it into the worker. The worker owns it;
-  no other thread touches it, so it needs no lock.
+- `publisher.h`: "Threading: publish() runs on one thread at a time." `setup()` creates
+  the result publisher before the run, and `started()` moves it into the worker. The worker
+  owns it; no other thread touches it, so it needs no lock.
 - `transform_buffer.h`: "lookup() and lookupLatest() may be called from any thread at any
   time while the object lives". The buffer is created before the run and destroyed after
   it, on the main thread, as the same comment requires.
@@ -94,13 +98,13 @@ The rules the headers give, and how the code follows them:
 
 The hand-over is one bounded FIFO (`CloudHandover`, `handover_depth` clouds), one mutex
 and one condition variable. The run() thread never waits on it: when it is full, the
-oldest cloud is dropped and counted. At SIGINT or SIGTERM `run()` returns, `main()` stops
-the queue, the worker processes what is queued and returns, and `main()` joins it before
-the endpoints and the Node are destroyed.
+oldest cloud is dropped and counted. At SIGINT or SIGTERM `run()` returns and the
+application's destructor stops the queue; the worker processes what is queued and returns,
+and the destructor joins it before the endpoints and the Node are destroyed.
 
 ## Diagnostics
 
-The timer prints four lines every `report_period_ms` (500 ms), and `main()` prints them
+The timer prints four lines every `report_period_ms` (500 ms), and the destructor prints them
 once more at exit with `final` in place of `report`:
 
 ```text

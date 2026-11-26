@@ -1,5 +1,6 @@
-/// hypha_cloud_processor: an event-driven sensor node on a plain hypha::Node, in the shape
-/// of a ported ROS 1 LiDAR node, with one worker thread that does the heavy work.
+/// hypha_cloud_processor: an event-driven sensor node, an ApplicationNode started by
+/// runNode, in the shape of a ported ROS 1 LiDAR node, with one worker thread that does the
+/// heavy work.
 ///   hypha_cloud_processor examples/sensor_pipeline/config/processor.toml
 
 #include <hypha/hypha.h>
@@ -397,34 +398,6 @@ struct CloudWorker
     }
 };
 
-/// Stops the hand-over and joins the worker when main() leaves its scope by any path, so
-/// the thread never outlives the endpoints and the Node it uses.
-struct WorkerJoin
-{
-    CloudHandover* handover;
-    std::thread*   worker;
-
-    WorkerJoin(CloudHandover* stopped, std::thread* joined) : handover(stopped), worker(joined)
-    {
-    }
-
-    WorkerJoin(const WorkerJoin&) = delete;
-    WorkerJoin& operator=(const WorkerJoin&) = delete;
-
-    void stopAndJoin()
-    {
-        this->handover->stop();
-        if (this->worker->joinable()) {
-            this->worker->join();
-        }
-    }
-
-    ~WorkerJoin()
-    {
-        this->stopAndJoin();
-    }
-};
-
 /// IMU subscription callback, on the run() thread.
 class ImuCounter
 {
@@ -469,7 +442,8 @@ class CloudForwarder
 };
 
 /// The timer callback, on the run() thread: prints the diagnostics every report_period_ms,
-/// and main() prints them once more at exit. In slow mode it then blocks the run() thread.
+/// and the application prints them once more at exit. In slow mode it then blocks the
+/// run() thread.
 class Reporter
 {
   public:
@@ -480,8 +454,7 @@ class Reporter
         const hypha::Subscriber<sensor_msgs::Imu>&         imu,
         const hypha::Subscriber<sensor_msgs::PointCloud2>& clouds,
         const CloudHandover&                               handover,
-        const WorkerCounters&                              counters,
-        const hypha::TransformBuffer&                      tf
+        const WorkerCounters&                              counters
     )
         : settings_(settings)
         , imuCounter_(imuCounter)
@@ -490,14 +463,14 @@ class Reporter
         , clouds_(clouds)
         , handover_(handover)
         , counters_(counters)
-        , tf_(tf)
     {
     }
 
-    /// The timer is created after the Reporter, which its callback binds.
-    void watch(const hypha::Timer& timer)
+    /// Called from setup() once the timer and the transform buffer exist.
+    void watch(const hypha::Timer& timer, const hypha::TransformBuffer& tf)
     {
         this->timer_ = &timer;
+        this->tf_ = &tf;
     }
 
     void onTick()
@@ -541,7 +514,7 @@ class Reporter
             load(this->counters_.badCloud)
         );
         const TransformResult statics =
-            this->tf_.lookupLatest(this->settings_.staticCheck[0], this->settings_.staticCheck[1]);
+            this->tf_->lookupLatest(this->settings_.staticCheck[0], this->settings_.staticCheck[1]);
         const char* staticText = statics ? "found" : transformErrorName(statics.error());
         std::printf(
             "%s t=%.3f tf static_%s_%s=%s lookup_failed invalid_frame=%llu unknown_frame=%llu "
@@ -603,96 +576,104 @@ class Reporter
     const hypha::Subscriber<sensor_msgs::PointCloud2>& clouds_;
     const CloudHandover&                               handover_;
     const WorkerCounters&                              counters_;
-    const hypha::TransformBuffer&                      tf_;
     const hypha::Timer*                                timer_{nullptr};
+    const hypha::TransformBuffer*                      tf_{nullptr};
+};
+
+/// The node. The constructor reads the parameters, so a bad file ends the run with exit 78
+/// before the bus is joined. setup() creates the endpoints; started() starts the worker once
+/// runNode has checked that no parameter is unread. The worker is joined in the destructor,
+/// before any endpoint it uses is destroyed.
+class CloudProcessorNode final : public hypha::ApplicationNode
+{
+  public:
+    CloudProcessorNode()
+        : settings_(readSettings())
+        , handover_(settings_.handoverDepth)
+        , cloudForwarder_(handover_)
+        , reporter_(settings_, imuCounter_, cloudForwarder_, imu_, clouds_, handover_, counters_)
+    {
+    }
+
+    CloudProcessorNode(const CloudProcessorNode&) = delete;
+    CloudProcessorNode& operator=(const CloudProcessorNode&) = delete;
+
+    ~CloudProcessorNode() override
+    {
+        this->handover_.stop();
+        const bool workerStarted = this->worker_.joinable();
+        if (!workerStarted) {
+            return;  // start-up failed: there was no run to report
+        }
+        this->worker_.join();
+        try {
+            this->reporter_.print("final");
+        } catch (const std::exception& error) {
+            this->failRun(error.what());
+        }
+    }
+
+    void setup(hypha::Node& node) override
+    {
+        // Typed endpoints declare QosOf<M>: the imu and lidar_cloud policies of
+        // sensor_pipeline_qos.h. A topic a tool opened first refuses them (QosMismatch).
+        this->imu_ = node.subscribe<sensor_msgs::Imu>(
+            "imu", hypha::bind<&ImuCounter::onImu>(this->imuCounter_)
+        );
+        this->clouds_ = node.subscribe<sensor_msgs::PointCloud2>(
+            "cloud", hypha::bind<&CloudForwarder::onCloud>(this->cloudForwarder_)
+        );
+        this->tf_.emplace(node);
+        this->centroids_ = node.advertise<geometry_msgs::PointStamped>("centroid");
+        this->timer_ = node.timer(
+            hypha::Duration::fromMillis(this->settings_.reportPeriodMs),
+            hypha::bind<&Reporter::onTick>(this->reporter_)
+        );
+        this->reporter_.watch(this->timer_, *this->tf_);
+    }
+
+    void started(hypha::Node& /*node*/) override
+    {
+        std::optional<Milliseconds> slowDelay;
+        if (this->settings_.slowEnabled) {
+            slowDelay = Milliseconds(this->settings_.slowWorkerDelayMs);
+        }
+        // The publisher moves into the worker: from here on the worker owns it alone.
+        this->worker_ = std::thread(
+            CloudWorker{
+                &this->handover_,
+                &*this->tf_,
+                &this->counters_,
+                std::move(this->centroids_),
+                this->settings_.targetFrame,
+                Milliseconds(this->settings_.tfWaitMs),
+                slowDelay,
+            }
+        );
+        std::printf(
+            "cloud_processor: ready (slow mode %s)\n", this->settings_.slowEnabled ? "on" : "off"
+        );
+        std::fflush(stdout);
+    }
+
+  private:
+    const ProcessorSettings                     settings_;
+    CloudHandover                               handover_;
+    WorkerCounters                              counters_;
+    ImuCounter                                  imuCounter_;
+    CloudForwarder                              cloudForwarder_;
+    hypha::Subscriber<sensor_msgs::Imu>         imu_;
+    hypha::Subscriber<sensor_msgs::PointCloud2> clouds_;
+    std::optional<hypha::TransformBuffer>       tf_;
+    CentroidPublisher                           centroids_;
+    hypha::Timer                                timer_;
+    Reporter                                    reporter_;
+    std::thread                                 worker_;
 };
 
 }  // namespace
 
 int main(int argc, char** argv)
 {
-    if (argc != 2) {
-        std::fprintf(stderr, "usage: hypha_cloud_processor <parameter file>\n");
-        return hypha::kExitUsage;
-    }
-    try {
-        // Declaration order is destruction order reversed: the worker joins before the
-        // endpoints go, and the endpoints go before the Node.
-        hypha::Node             node("cloud_processor", argv[1]);
-        const ProcessorSettings settings = readSettings();
-
-        CloudHandover  handover(settings.handoverDepth);
-        WorkerCounters counters;
-        ImuCounter     imuCounter;
-        CloudForwarder cloudForwarder(handover);
-
-        // Typed endpoints declare QosOf<M>: the imu and lidar_cloud policies of
-        // sensor_pipeline_qos.h. A topic a tool opened first refuses them (QosMismatch).
-        hypha::Subscriber<sensor_msgs::Imu> imu =
-            node.subscribe<sensor_msgs::Imu>("imu", hypha::bind<&ImuCounter::onImu>(imuCounter));
-        hypha::Subscriber<sensor_msgs::PointCloud2> clouds =
-            node.subscribe<sensor_msgs::PointCloud2>(
-                "cloud", hypha::bind<&CloudForwarder::onCloud>(cloudForwarder)
-            );
-        const hypha::TransformBuffer tf{node};
-        CentroidPublisher centroids = node.advertise<geometry_msgs::PointStamped>("centroid");
-
-        Reporter reporter(
-            settings, imuCounter, cloudForwarder, imu, clouds, handover, counters, tf
-        );
-        hypha::Timer timer = node.timer(
-            hypha::Duration::fromMillis(settings.reportPeriodMs),
-            hypha::bind<&Reporter::onTick>(reporter)
-        );
-        reporter.watch(timer);
-
-        // runNode refuses a key nothing read; a custom main() checks it itself, after it
-        // has read its parameters and created its endpoints.
-        const std::vector<std::string> unread = hypha::config().unreadKeys();
-        if (!unread.empty()) {
-            HYPHA_LOG_ERROR("unread parameter(s): {}", unread.front());
-            return hypha::kExitConfiguration;
-        }
-
-        std::optional<Milliseconds> slowDelay;
-        if (settings.slowEnabled) {
-            slowDelay = Milliseconds(settings.slowWorkerDelayMs);
-        }
-        // The publisher moves into the worker: from here on the worker owns it alone.
-        std::thread worker(
-            CloudWorker{
-                &handover,
-                &tf,
-                &counters,
-                std::move(centroids),
-                settings.targetFrame,
-                Milliseconds(settings.tfWaitMs),
-                slowDelay,
-            }
-        );
-        WorkerJoin join{&handover, &worker};
-
-        std::printf("cloud_processor: ready (slow mode %s)\n", settings.slowEnabled ? "on" : "off");
-        std::fflush(stdout);
-        const hypha::RunResult result = node.run();
-        join.stopAndJoin();
-        reporter.print("final");
-        // Simulated time went back (a backward seek of the replay): exit 75, so the
-        // supervisor starts the node again on the new timeline, as runNode does.
-        const bool rewound = result.status() == hypha::Status::ClockRewound;
-        if (rewound) {
-            return hypha::kExitRewind;
-        }
-        if (!result.ok()) {
-            HYPHA_LOG_ERROR("the run failed: {}", result.status().name());
-            return hypha::kExitRuntime;
-        }
-        return hypha::kExitClean;
-    } catch (const hypha::ConfigError& error) {
-        HYPHA_LOG_ERROR("{}", error.what());
-        return hypha::kExitConfiguration;
-    } catch (const std::exception& error) {
-        HYPHA_LOG_ERROR("{}", error.what());
-        return hypha::kExitRuntime;
-    }
+    return hypha::runNode<CloudProcessorNode>(argc, argv, "cloud_processor");
 }
