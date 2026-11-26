@@ -55,3 +55,126 @@ fn a_pause_holds_the_schedule_at_its_position() {
     schedule.reanchor(anchor, resumed);
     assert_eq!(schedule.virtual_log_time(resumed, 1.0), Some(10_000_000_000));
 }
+
+/// A session that replays only the recorded `/clock`, which it never publishes, with no
+/// participant: each chunk it closes is a `/clock` that `clocks` reads back.
+struct ClockedSession<'bus> {
+    session: super::Session<'bus>,
+    clocks: hypha_node::sdk::RawSubscriber,
+}
+
+const START: u64 = 1_000_000_000;
+const MS: u64 = 1_000_000;
+
+fn bus() -> hypha_node::sdk::BusNode {
+    hypha_node::sdk::BusNode::new("play_session_tests").expect("a bus node")
+}
+
+fn player() -> crate::player::Player {
+    // The session reads the recording only for its progress line and a restart's publishers.
+    crate::player::Player::new("/nonexistent/play_session_tests.mcap")
+}
+
+impl<'bus> ClockedSession<'bus> {
+    fn open(bus: &'bus hypha_node::sdk::BusNode, player: &'bus crate::player::Player) -> Self {
+        let clocks = bus
+            .subscribe_raw_with_schema(
+                super::CLOCK_TOPIC,
+                "rosgraph_msgs/Clock",
+                "",
+                hypha_node::sdk::SubscriberOptions::default().keeping(16),
+            )
+            .expect("a clock reader");
+        let config = super::PlaySessionConfig {
+            pace: super::Pace::Max,
+            publish_clock: true,
+            sync: super::SyncConfig { settle: Duration::ZERO, ..super::SyncConfig::default() },
+            ..super::PlaySessionConfig::default()
+        };
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let session = super::Session::open(
+            bus,
+            player,
+            std::collections::HashMap::new(),
+            Vec::new(),
+            config,
+            stop,
+        )
+        .expect("a session");
+        let mut session = Self { session, clocks };
+        session.session.begin_pass();
+        session
+    }
+
+    /// Hands the session a message at `offset` from the start; true when it went on.
+    fn item(&mut self, offset: u64) -> bool {
+        let item = crate::player::PlaybackItem {
+            topic: super::CLOCK_TOPIC,
+            bytes: &[0; 8],
+            delay_nanos: 0,
+            log_time_nanos: START + offset,
+        };
+        self.session.on_item(&item)
+    }
+
+    /// The `/clock` values sent so far, as offsets from the start.
+    fn clocks(&mut self) -> Vec<u64> {
+        let mut values = Vec::new();
+        while let Some(sample) = self.clocks.try_receive().expect("a clock receive") {
+            let payload = sample.bytes().expect("a clock payload");
+            let nanos = hypha_node::sdk::RosTime::decode_clock(payload)
+                .map(hypha_node::sdk::RosTime::as_nanos)
+                .expect("a clock value");
+            values.push(nanos - START);
+        }
+        values
+    }
+}
+
+#[test]
+fn a_restart_closes_the_open_chunk_one_nanosecond_before_the_message_it_stopped_at() {
+    let (bus, player) = (bus(), player());
+    let mut replay = ClockedSession::open(&bus, &player);
+    assert!(replay.item(0) && replay.item(50 * MS));
+    // The restart key: the pass stops before the message at 150 ms, before the boundary at
+    // 100 ms went out.
+    replay.session.restart_requested = true;
+    assert!(!replay.item(150 * MS));
+    replay.session.finish_pass();
+    assert!(replay.session.failure.is_none());
+    assert_eq!(replay.clocks(), [0, 150 * MS - 1]);
+}
+
+#[test]
+fn a_restart_at_the_first_instant_sends_the_start_clock_again() {
+    let (bus, player) = (bus(), player());
+    let mut replay = ClockedSession::open(&bus, &player);
+    assert!(replay.item(0));
+    replay.session.restart_requested = true;
+    // Stopped before a second message at the start: the clock never goes back in a pass.
+    assert!(!replay.item(0));
+    replay.session.finish_pass();
+    assert_eq!(replay.clocks(), [0, 0]);
+}
+
+#[test]
+fn a_pass_closes_a_last_message_on_the_grid_then_ends_one_chunk_later() {
+    let (bus, player) = (bus(), player());
+    let mut replay = ClockedSession::open(&bus, &player);
+    assert!(replay.item(0) && replay.item(100 * MS));
+    replay.session.finish_pass();
+    assert!(replay.session.failure.is_none());
+    assert_eq!(replay.clocks(), [0, 100 * MS, 200 * MS]);
+}
+
+#[test]
+fn a_restart_during_the_tail_still_ends_the_pass() {
+    let (bus, player) = (bus(), player());
+    let mut replay = ClockedSession::open(&bus, &player);
+    assert!(replay.item(0) && replay.item(100 * MS));
+    // The tail halts before the boundary at the last message; the end still closes it.
+    replay.session.restart_requested = true;
+    replay.session.finish_pass();
+    assert!(replay.session.failure.is_none());
+    assert_eq!(replay.clocks(), [0, 200 * MS]);
+}
