@@ -79,7 +79,7 @@ class Output final : public Port
     ///        a port that the parameter file wires, as a start would.
     bool enabled() const
     {
-        return this->enabled_;
+        return this->enabled_ || this->enabledByHarness();
     }
 
     /// @brief The sends accepted across steps, those of a disabled output included. It wraps.
@@ -104,7 +104,7 @@ class Output final : public Port
     ///        building a message nobody reads.
     bool hasSubscribers() const
     {
-        return this->enabled_ && this->subscriberCount().value_or(1U) > 0U;
+        return this->enabled() && this->subscriberCount().value_or(1U) > 0U;
     }
 
   private:
@@ -129,7 +129,7 @@ class Output final : public Port
             );
         }
         // A disabled output counts the send and keeps nothing, as in a started cycle.
-        if (this->enabled_) {
+        if (this->enabled()) {
             void* store = harness.storeFor(*this, &Output::newSent, &Output::deleteSent);
             static_cast<std::vector<M>*>(store)->push_back(message);
         }
@@ -194,11 +194,6 @@ class Output final : public Port
     const detail::TopicSource* topicSource() const override
     {
         return &this->topic_;
-    }
-
-    void setWiredByHarness(bool wired) override
-    {
-        this->enabled_ = wired;
     }
 
     ::HyphaStatus capture(const HyphaCycleImage*) override

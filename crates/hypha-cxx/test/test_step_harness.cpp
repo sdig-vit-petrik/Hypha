@@ -797,6 +797,34 @@ std::string optionalPortsFile(const std::string& topicPrefix)
     return text;
 }
 
+/// A parameter file that is removed when the test ends, also when an assertion failed.
+class TempToml
+{
+  public:
+    TempToml(const std::string& name, const std::string& text)
+        : path_(std::filesystem::temp_directory_path() / name)
+    {
+        std::ofstream(this->path_) << text;
+    }
+
+    TempToml(const TempToml&) = delete;
+    TempToml& operator=(const TempToml&) = delete;
+
+    ~TempToml()
+    {
+        std::error_code ignored;
+        std::filesystem::remove(this->path_, ignored);
+    }
+
+    std::string path() const
+    {
+        return this->path_.string();
+    }
+
+  private:
+    std::filesystem::path path_;
+};
+
 class OptionalPortsFixture : public ::testing::Test
 {
   protected:
@@ -942,36 +970,155 @@ TEST_F(OptionalPortsFixture, TheHarnessLeavesThePortsAsItFoundThemWhenItIsGone)
 
 TEST(StepHarnessOptionalPorts, ATopicNameAStartWouldRefuseIsRefusedAndTheCycleStaysFree)
 {
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "hypha_step_harness_bad_topic.toml";
-    std::ofstream(path) << "[ports.inputs.mag]\ntopic = 'no slash'\n";
-    const hypha::ConfigContext context(path.string());
+    const TempToml file(
+        "hypha_step_harness_bad_topic.toml", "[ports.inputs.mag]\ntopic = 'no slash'\n"
+    );
+    const hypha::ConfigContext context(file.path());
     Optionals                  node;
     EXPECT_THROW(hypha::testing::StepHarness{node}, hypha::ConfigError);
     EXPECT_THROW(hypha::testing::StepHarness{node}, hypha::ConfigError)
         << "the refusal left no harness holding the cycle";
-    std::filesystem::remove(path);
+}
+
+TEST(StepHarnessOptionalPorts, AnEntryThatIsAPlainStringIsRefusedAsAStartRefusesIt)
+{
+    const TempToml file(
+        "hypha_step_harness_plain_entry.toml", "[ports.inputs]\nmag = '/plain/mag'\n"
+    );
+    {
+        const hypha::ConfigContext context(file.path());
+        Optionals                  node;
+        try {
+            hypha::testing::StepHarness harness{node};
+            FAIL() << "a plain string entry must be refused";
+        } catch (const hypha::ConfigError& error) {
+            EXPECT_NE(std::string(error.what()).find("ports.inputs.mag"), std::string::npos)
+                << error.what();
+        }
+    }
+    hypha::Node node("harness_plain_entry", file.path());
+    Optionals   cycle;
+    cycle.setRate(hypha::Hz(100.0));
+    EXPECT_FALSE(cycle.start(node).has_value()) << "a start refuses it as well";
+}
+
+TEST_F(OptionalPortsFixture, ASetOrAStaleVerdictOnADisabledInputIsRefusedAndNeverArrivedIsNot)
+{
+    Optionals                   node;
+    hypha::testing::StepHarness harness{node};
+    EXPECT_THROW(harness.set(node.absent, Float64{1.0}), std::logic_error);
+    EXPECT_THROW(harness.setStale(node.absent), std::logic_error);
+    EXPECT_THROW(harness.setStagnant(node.absent, true), std::logic_error);
+    EXPECT_THROW(harness.set(node.aux, {Float64{1.0}}), std::logic_error);
+    EXPECT_THROW(harness.setStale(node.aux), std::logic_error);
+    try {
+        harness.set(node.absent, Float64{1.0});
+    } catch (const std::logic_error& error) {
+        EXPECT_NE(
+            std::string(error.what()).find("set() on input ports.inputs.absent"), std::string::npos
+        ) << error.what();
+    }
+
+    harness.setNeverArrived(node.absent);
+    harness.setNeverArrived(node.aux);
+    harness.step(node, stepAt(kStartNanos));
+    EXPECT_EQ(node.absent.verdict(), InputVerdict::NeverArrived);
+    EXPECT_FALSE(node.absent.has());
+
+    harness.set(node.tilt, Float64{1.0});
+    EXPECT_TRUE(node.tilt.usable()) << "a wired port takes a verdict";
+}
+
+TEST_F(OptionalPortsFixture, AnEnabledOutputReportsASubscriberAndADisabledOneDoesNot)
+{
+    Optionals node;
+    EXPECT_FALSE(node.debug.hasSubscribers());
+    hypha::testing::StepHarness harness{node};
+    EXPECT_TRUE(node.debug.hasSubscribers());
+    EXPECT_FALSE(node.tf.hasSubscribers());
+    EXPECT_FALSE(node.debug.subscriberCount().has_value()) << "no transport counts one";
+}
+
+TEST(StepHarnessOptionalPorts, TwoHarnessesOneAfterTheOtherEachReadTheirOwnFile)
+{
+    Optionals node;
+    {
+        const TempToml file(
+            "hypha_step_harness_first.toml",
+            "[ports.inputs.mag]\ntopic = '/first/mag'\nsilence_ms = 100\n"
+        );
+        const hypha::ConfigContext  context(file.path());
+        hypha::testing::StepHarness harness{node};
+        EXPECT_EQ(
+            node.enabledPorts(), (std::vector<bool>{true, false, false, false, false, false})
+        );
+    }
+    EXPECT_EQ(node.enabledPorts(), std::vector<bool>(6, false));
+    {
+        const TempToml file(
+            "hypha_step_harness_second.toml",
+            "[ports.inputs.tilt]\ntopic = '/second/tilt'\nsilence_ms = 100\n"
+        );
+        const hypha::ConfigContext  context(file.path());
+        hypha::testing::StepHarness harness{node};
+        EXPECT_EQ(
+            node.enabledPorts(), (std::vector<bool>{false, true, false, false, false, false})
+        );
+    }
+}
+
+TEST(StepHarnessOptionalPorts, ANodeStartedAfterAHarnessEnablesWhatItsOwnFileSays)
+{
+    Optionals node;
+    {
+        const TempToml file("hypha_step_harness_before_start.toml", optionalPortsFile("/before"));
+        const hypha::ConfigContext  context(file.path());
+        hypha::testing::StepHarness harness{node};
+        ASSERT_TRUE(node.mag.enabled());
+    }
+    const std::string topic = hypha_test::testTopic("/after_harness");
+    const TempToml    file(
+        "hypha_step_harness_after_harness.toml",
+        "[ports.inputs.tilt]\ntopic = '" + topic
+            + "/tilt'\nsilence_ms = 100\n"
+              "[ports.outputs.tf]\ntopic = '"
+            + topic + "/tf'\n"
+    );
+    hypha::Node node2("harness_after", file.path());
+    node.setRate(hypha::Hz(100.0));
+    const std::expected<void, std::string> started = node.start(node2);
+    ASSERT_TRUE(started.has_value()) << started.error();
+    EXPECT_EQ(node.enabledPorts(), (std::vector<bool>{false, true, false, false, false, true}));
+}
+
+TEST_F(DeliverFixture, APortThatRequiresItsTopicIsEnabledEvenWhenItsTableLacksOne)
+{
+    Judged                      judged;
+    hypha::testing::StepHarness harness{judged};
+    EXPECT_TRUE(judged.limited.enabled())
+        << "a start would refuse the table; the harness does not check it";
+    EXPECT_TRUE(judged.open.enabled());
 }
 
 /// What a start enables is what the harness enables, for the same parameter file.
 TEST(StepHarnessOptionalPorts, TheHarnessEnablesTheOptionalPortsThatAStartEnables)
 {
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "hypha_step_harness_enabled_like_start.toml";
-    std::ofstream(path) << optionalPortsFile(hypha_test::testTopic("/harness_enabled"));
+    const TempToml file(
+        "hypha_step_harness_enabled_like_start.toml",
+        optionalPortsFile(hypha_test::testTopic("/harness_enabled"))
+    );
     std::vector<bool> started;
     {
-        hypha::Node node("harness_enabled", path.string());
+        hypha::Node node("harness_enabled", file.path());
         Optionals   cycle;
         cycle.setRate(hypha::Hz(100.0));
         const std::expected<void, std::string> result = cycle.start(node);
         ASSERT_TRUE(result.has_value()) << result.error();
         started = cycle.enabledPorts();
     }
-    const hypha::ConfigContext  context(path.string());
+    const hypha::ConfigContext  context(file.path());
     Optionals                   node;
     hypha::testing::StepHarness harness{node};
     EXPECT_EQ(node.enabledPorts(), started);
     EXPECT_EQ(started, (std::vector<bool>{true, true, false, false, true, false}));
-    std::filesystem::remove(path);
 }

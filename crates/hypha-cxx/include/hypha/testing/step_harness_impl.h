@@ -7,23 +7,29 @@
 
 namespace hypha::testing {
 
-/// Whether a start would wire @p topic, decided from the parameter file alone. It follows
+/// Predicts whether a start enables @p topic, from the parameter file alone. It follows
 /// `hypha_param_topic` (crates/hypha_node/src/param_topic.rs), which needs a node and so
 /// cannot run here; TheHarnessEnablesTheOptionalPortsThatAStartEnables keeps the two equal.
-inline bool StepHarness::wiredByFile(const detail::TopicSource& topic)
+/// A port that requires its topic, or sits on a literal, is not checked: a start refuses a
+/// missing, empty or invalid one, the harness enables it.
+inline bool StepHarness::startWouldEnable(const detail::TopicSource& topic)
 {
-    const bool alwaysWired = !topic.fromParam() || !topic.paramOptional;
-    if (alwaysWired) {
+    const bool alwaysEnabled = !topic.fromParam() || !topic.paramOptional;
+    if (alwaysEnabled) {
         return true;
     }
-    const ConfigView                 table(topic.describe());
-    const std::optional<std::string> name = table.optional<std::string>("topic");
+    const std::string entry = topic.describe();
+    const bool plainEntry = backend::readConfigValue(entry).first != HYPHA_PARAM_RESULT_ABSENT;
+    if (plainEntry) {
+        throw ConfigError("hypha: the entry " + entry + " must be a table with a `topic` key");
+    }
+    const std::optional<std::string> name = ConfigView(entry).optional<std::string>("topic");
     const bool                       switchedOff = !name.has_value() || name->empty();
     if (switchedOff) {
         return false;
     }
     if (validateTopicName(*name) != Status::Ok) {
-        throw ConfigError(detail::failureText(topic.describe(), Status::InvalidTopic));
+        throw ConfigError(detail::failureText(entry, Status::InvalidTopic));
     }
     return true;
 }
@@ -31,13 +37,13 @@ inline bool StepHarness::wiredByFile(const detail::TopicSource& topic)
 /// Decides every port before it changes one, so a refusal leaves the cycle as it was.
 inline void StepHarness::wirePorts()
 {
-    std::vector<bool> wired;
+    std::vector<bool> enabled;
     for (const Port* port : this->cycle_.ports_) {
         const detail::TopicSource* topic = port->topicSource();
-        wired.push_back(topic != nullptr && StepHarness::wiredByFile(*topic));
+        enabled.push_back(topic != nullptr && StepHarness::startWouldEnable(*topic));
     }
-    for (size_t index = 0; index < wired.size(); ++index) {
-        this->cycle_.ports_[index]->setWiredByHarness(wired[index]);
+    for (size_t index = 0; index < enabled.size(); ++index) {
+        this->cycle_.ports_[index]->enabledByHarness_ = enabled[index];
     }
 }
 
@@ -52,19 +58,21 @@ inline void* StepHarness::storeFor(const Port& port, void* (*make)(), void (*des
     return this->stores_.back().sent;
 }
 
-/// A disabled input never receives a sample in a started cycle, so a test that gives it
-/// one tests a state that cannot occur: refuse it, and say what enables the port.
+/// A disabled input never receives a sample in a started cycle, and no step judges it, so a
+/// test that gives it a value or a verdict tests a state that cannot occur: refuse it, and
+/// say what enables the port.
 template <typename M>
-void StepHarness::requireEnabled(const Input<M>& port)
+void StepHarness::requireEnabled(const Input<M>& port, const char* call)
 {
     if (port.enabled()) {
         return;
     }
     const std::string table = port.slot_->topic.describe();
     throw std::logic_error(
-        "hypha: deliver() to input " + table + ", which is disabled: the parameter file gives ["
-        + table + "] no non-empty `topic`, so a started cycle would give it no sample; set `topic` "
-        + "there, in the file that a Node or a ConfigContext holds before the harness is built"
+        "hypha: " + std::string(call) + " on input " + table
+        + ", which is disabled: the parameter file gives [" + table
+        + "] no non-empty `topic`, so a started cycle would give it no sample; set `topic` "
+          "there, in the file that a Node or a ConfigContext holds before the harness is built"
     );
 }
 

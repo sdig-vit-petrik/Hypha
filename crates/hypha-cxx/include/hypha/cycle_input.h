@@ -129,7 +129,7 @@ class Input : public Port
     ///        port that the parameter file wires, as a start would.
     bool enabled() const
     {
-        return this->slot_->source.enabled() || this->wiredByHarness_;
+        return this->slot_->source.enabled() || this->enabledByHarness();
     }
 
     /// @brief The cumulative health of this binding with its supervision report: of this
@@ -259,11 +259,6 @@ class Input : public Port
         return &this->slot_->topic;
     }
 
-    void setWiredByHarness(bool wired) override
-    {
-        this->wiredByHarness_ = wired;
-    }
-
     std::optional<uint64_t> aliveOf(const M& message) const
     {
         if (!this->alive_) {
@@ -368,7 +363,6 @@ class Input : public Port
     uint32_t                               depth_{0};
     InputVerdict                           verdict_{InputVerdict::NeverArrived};
     bool                                   tableRefused_{false};
-    bool                                   wiredByHarness_{false};
     HyphaCycleBindingView                  facts_{
         .health = {}, .held = {}, .supervision = {}, .ok = 1, .age_nanos = 0
     };
