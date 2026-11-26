@@ -27,8 +27,8 @@ of each input, and a test at each of three levels. The reference for an `Applica
 A node is a `hypha::CycleNode` with its ports as members, started by
 `hypha::runNode<App>()` (see [cpp-api.md](cpp-api.md) §5.4). A node whose ports
 are built at run time uses `hypha::Cycle` ([cpp-api.md](cpp-api.md) §5.5). A node that
-needs callbacks or threads is a `hypha::ApplicationNode`, started by the same call
-([section 10](#10-porting-an-event-driven-node-an-applicationnode)).
+owns worker threads, or whose callbacks publish on more than one input, is a
+`hypha::ApplicationNode`, started by the same call ([section 10.1](#101-which-target)).
 
 ---
 
@@ -787,10 +787,11 @@ Report each item in the change description, with the evidence.
 Steps 1 to 8 end in a `CycleNode`. This section covers the other target: a
 `hypha::ApplicationNode` with typed subscriptions, publishers and timers, started by
 `hypha::runNode<App>()` like a `CycleNode`. Step 1 (inventory), Step 3 (TOML) and
-Step 4 (build) apply unchanged. The rules of [section 2](#2-rules) apply, except the
-cycle items; of [section 9](#9-production-ready-checklist), the items on steps,
-`silence_ms` and verdicts do not apply, and the `main` item does. The names below are
-in [cpp-api.md](cpp-api.md) §1, §3, §4, §5, §7 and §9.
+Step 4 (build), Step 7 (run on the bus) and Step 8 (deploy) apply unchanged, except
+the items of Step 7 on input verdicts. The rules of [section 2](#2-rules) apply, except
+the cycle items; of [section 9](#9-production-ready-checklist), the items on steps,
+`silence_ms` and verdicts do not apply, and the `main`, launch-unit and installed-file
+items do. The names below are in [cpp-api.md](cpp-api.md) §1, §3, §4, §5, §7 and §9.
 
 ### 10.1 Which target
 
@@ -808,7 +809,7 @@ What a triggered cycle adds over an `ApplicationNode`, and what it costs:
 |---|---|
 | A verdict for each input (`stale()`, `Latest::usable()`), and the input rows of `~/state` | A `silence_ms` for each supervised input, the trigger's included |
 | Outputs held until the step succeeds: a failed step publishes nothing ([execution-model.md](execution-model.md) §6.1) | A fallback step to handle when the trigger is silent |
-| Replay order: under simulated time the step runs at the sample's time, with the other inputs cut before it, and waits for its upstream nodes (§6.6) | One decode of each sample into its port before the step, and a payload copy in the input's history (§6.2) |
+| Replay order: under simulated time the step runs at the sample's time, with the other inputs cut before it, and waits for its upstream nodes ([execution-model.md](execution-model.md) §6.6) | One decode of each sample into its port before the step, and a payload copy in the input's history ([execution-model.md](execution-model.md) §6.2) |
 | | On host time, a trigger older than its `silence_ms` runs no step and counts in `age_rejections_total` |
 
 `runNode` gives both targets `~/introspection`, `~/state`, the refusal of an unread
@@ -845,11 +846,12 @@ class Locator final : public hypha::ApplicationNode
     void setup(hypha::Node& node) override
     {
         this->scan_ = node.subscribe<sensor_msgs::PointCloud2>(
-            "scan", hypha::bind<&Locator::onScan>(*this));                    // [ports.inputs.scan]
-        this->pose_ = node.advertise<geometry_msgs::PoseStamped>("pose");     // [ports.outputs.pose]
+            "scan", hypha::bind<&Locator::onScan>(*this));                 // [ports.inputs.scan]
+        this->pose_ = node.advertise<geometry_msgs::PoseStamped>("pose");  // [ports.outputs.pose]
         this->timer_ = node.timer(
-            hypha::Duration::fromMillis(100), hypha::bind<&Locator::onTick>(*this));
-        this->tf_.emplace(node);   // TransformBuffer has no default constructor
+            hypha::Duration::fromMillis(100), hypha::bind<&Locator::onTick>(*this)
+        );
+        this->tf_.emplace(node);  // TransformBuffer has no default constructor
     }
 
   private:
@@ -857,8 +859,11 @@ class Locator final : public hypha::ApplicationNode
     {
         geometry_msgs::PoseStamped pose;
         pose.header = scan->header;
+        pose.pose.position.x = this->gain_ * static_cast<double>(scan->width);  // the node's logic
         if (!this->pose_.publish(pose)) {
-            HYPHA_LOG_WARN_THROTTLE(1.0, "pose not sent: {}", this->pose_.lastPublishStatus().name());
+            HYPHA_LOG_WARN_THROTTLE(
+                1.0, "pose not sent: {}", this->pose_.lastPublishStatus().name()
+            );
         }
     }
 
@@ -867,11 +872,11 @@ class Locator final : public hypha::ApplicationNode
         // periodic work
     }
 
-    double                                                gain_;
-    hypha::Subscriber<sensor_msgs::PointCloud2>           scan_;
-    hypha::Publisher<geometry_msgs::PoseStamped>          pose_;
-    hypha::Timer                                          timer_;
-    std::optional<hypha::TransformBuffer>                 tf_;
+    double gain_;
+    hypha::Subscriber<sensor_msgs::PointCloud2> scan_;
+    hypha::Publisher<geometry_msgs::PoseStamped> pose_;
+    hypha::Timer timer_;
+    std::optional<hypha::TransformBuffer> tf_;
 };
 
 int main(int argc, char** argv)
@@ -882,8 +887,9 @@ int main(int argc, char** argv)
 
 `runNode` loads the parameter file (`argv[1]`, optional), constructs the class, joins the
 bus, calls `setup()`, refuses an unread parameter key, publishes `~/introspection` and
-`~/state`, calls `started()` and runs until a stop. It logs `node failed in <phase>:
-<what>` and returns an exit code that a supervisor reads:
+`~/state`, calls `started()` and runs until a stop. An exception ends the run with the
+line `node failed in <phase>: <what>`, `failRun()` with `application failed: <reason>`, a
+failed run with `node run failed`. It returns an exit code that a supervisor reads:
 
 | Code | Constant | When | `hypha launch` |
 |---|---|---|---|
@@ -900,8 +906,8 @@ bus, calls `setup()`, refuses an unread parameter key, publishes `~/introspectio
 - `started(hypha::Node&)` runs after every check, just before the run. Start worker
   threads and send latched messages there. Throw to refuse the run (70).
 - `failRun("reason")` ends the run as failed from any thread (70).
-- The destructor runs on every way out, before the node and the endpoints are destroyed.
-  Stop and join every thread of the class in it.
+- The destructor runs on every way out: its body first, then the members (the endpoints),
+  then the node. Stop and join every thread of the class in the body.
 - A callback runs in the run, on one thread. It must not block.
 
 A custom `main()` that builds a `hypha::Node` is for a bounded probe or tool that ends
@@ -924,11 +930,14 @@ auto pose = nh.advertise<geometry_msgs::PoseStamped>("pose", 1);
 hypha, with the topic names in the TOML file, in `setup(hypha::Node& node)`:
 
 ```cpp
-auto scan = node.subscribe<sensor_msgs::PointCloud2>(
-    "scan", hypha::bind<&Locator::onScan>(*this));          // [ports.inputs.scan]
-auto pose = node.advertise<geometry_msgs::PoseStamped>("pose");   // [ports.outputs.pose]
-auto tf = node.advertise<tf2_msgs::TFMessage>(hypha::Topic{"/tf"});  // a literal topic
+this->scan_ = node.subscribe<sensor_msgs::PointCloud2>(
+    "scan", hypha::bind<&Locator::onScan>(*this));                 // [ports.inputs.scan]
+this->pose_ = node.advertise<geometry_msgs::PoseStamped>("pose");  // [ports.outputs.pose]
+this->tfOut_ = node.advertise<tf2_msgs::TFMessage>(hypha::Topic{"/tf"});  // a literal topic
 ```
+
+Assign each endpoint to a member of the application, as in §10.2: an endpoint held by
+a local is destroyed when `setup()` returns.
 
 ```toml
 [ports.inputs.scan]
@@ -946,9 +955,9 @@ topic = "~/pose"
   empty `topic = ""` then disables it, and `enabled()` is false:
 
 ```cpp
-auto odom = node.subscribe<nav_msgs::Odometry>(
+this->odom_ = node.subscribe<nav_msgs::Odometry>(
     "odom", hypha::bind<&Locator::onOdom>(*this), hypha::optionalTopic);
-if (!odom.enabled()) {
+if (!this->odom_.enabled()) {
     HYPHA_LOG_INFO("odometry input is off");
 }
 ```
@@ -1019,8 +1028,8 @@ struct hypha::QosOf<sensor_msgs::Imu>
 `Node::run()` runs every subscription and timer callback on one thread. The framework
 creates no thread. One endpoint belongs to one thread at a time. A worker thread that
 publishes therefore owns its publisher, or every access to that publisher is serialized
-by the application. Only `hypha::requestStop()` may be called from another thread while
-the node runs.
+by the application. Only `hypha::requestStop()` and `failRun()` may be called from another
+thread while the node runs.
 
 The application starts a worker in `started()` and joins it in its destructor. A thread
 that fails calls `failRun()`:
@@ -1031,6 +1040,7 @@ that fails calls `failRun()`:
 #include <sensor_msgs/PointCloud2.h>
 
 #include <atomic>
+#include <exception>
 #include <thread>
 
 sensor_msgs::PointCloud2 readFromDevice();   // the driver's blocking read, with a timeout
@@ -1064,7 +1074,9 @@ class LidarNode final : public hypha::ApplicationNode
             try {
                 const bool sent = this->points_.publish(readFromDevice());
                 if (!sent) {
-                    HYPHA_LOG_WARN_THROTTLE(1.0, "cloud not sent: {}", this->points_.lastPublishStatus().name());
+                    HYPHA_LOG_WARN_THROTTLE(
+                        1.0, "cloud not sent: {}", this->points_.lastPublishStatus().name()
+                    );
                 }
             } catch (const std::exception& error) {
                 this->failRun(error.what());
@@ -1073,14 +1085,13 @@ class LidarNode final : public hypha::ApplicationNode
         }
     }
 
-    std::atomic<bool>                            stopping_{false};
-    hypha::Publisher<sensor_msgs::PointCloud2>   points_;
-    std::thread                                  worker_;
+    std::atomic<bool> stopping_{false};
+    hypha::Publisher<sensor_msgs::PointCloud2> points_;
+    std::thread worker_;
 };
 ```
 
-`worker_` is the last member, so no member is destroyed before the destructor body has
-joined it. A bounded hand-over from a callback to a worker is in
+A bounded hand-over from a callback to a worker is in
 [examples/sensor_pipeline](../examples/sensor_pipeline/README.md) (`CloudHandover`).
 
 A timer counts the periods it did not fire in, because a callback or the run loop
@@ -1120,7 +1131,7 @@ The facts of [cpp-api.md](cpp-api.md) §10 apply:
 #include <hypha/transform_buffer.h>
 
 // members of the application
-std::optional<hypha::TransformBuffer>        tf_;
+std::optional<hypha::TransformBuffer> tf_;
 std::optional<hypha::StaticTransformBroadcaster> statics_;
 
 // in setup(hypha::Node& node):
@@ -1128,7 +1139,9 @@ this->tf_.emplace(node);
 this->statics_.emplace(node);
 
 // in started(), after the checks:
-const bool sent = this->statics_->send(baseToLidar);
+if (!this->statics_->send(baseToLidar)) {
+    throw std::runtime_error("/tf_static not sent");
+}
 
 // in a callback, or in a worker thread while the node runs:
 const std::optional<hypha::Time> stamp = hypha::fromRosTime(scan.header.stamp);
@@ -1141,10 +1154,10 @@ if (stamp.has_value()) {
 }
 ```
 
-  The application creates the buffer in `setup()` and destroys it with itself, as the
-  header requires, and a worker thread is joined before that. Nothing is ingested unless the node runs. The buffer
-  keeps 10 s of dynamic transforms per frame unless the constructor gets another
-  duration. `hypha::Transforms` is the port of a cycle; its lookup throws
+- The application creates the buffer in `setup()` and destroys it with itself, as the
+  header requires, and joins a worker thread before that. Nothing is ingested unless the
+  node runs. The buffer keeps 10 s of dynamic transforms per frame unless the constructor
+  gets another duration. `hypha::Transforms` is the port of a cycle; its lookup throws
   `std::logic_error` outside a step.
 
 ### 10.8 A list of scalars in the parameter file
@@ -1195,12 +1208,9 @@ as [examples/sensor_pipeline](../examples/sensor_pipeline/README.md) does for th
 
 1. **Logic.** Keep the ROS node's logic in classes that need no `Node`, and test them
    as in Step 6. A callback of the application then only calls them.
-2. **Start-up.** Run the binary with a missing and with a malformed parameter file and
-   expect exit 78: `startup_exit_code.cmake`, registered for each case in the
-   example's `CMakeLists.txt` with `hypha_add_test`.
+2. **Start-up.** Run the binary with a missing parameter file, a malformed one and one
+   without its `[ports.*]` tables, and expect exit 78: `startup_exit_code.cmake`,
+   registered for each case in the example's `CMakeLists.txt` with `hypha_add_test`.
 3. **The bus.** Replay a recorded input into the running node and compare its output
    by stamp: `replay_check.sh`, registered as `sensor_pipeline_replay_check`. The
    recipe, and the comparison with a ROS golden, are in the example's README.
-
-Step 7 applies to an `ApplicationNode` as it is written, with `~/state` and
-`~/introspection` from `runNode`.

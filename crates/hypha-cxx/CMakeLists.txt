@@ -339,6 +339,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_input_supervision.cpp
     test/cycle_supervision_from_table.cpp
     test/cycle_step_exception_is_logged.cpp
+    test/test_application_doc_examples.cpp
     test/test_cycle_doc_examples.cpp
     test/test_quick_start_doc_examples.cpp
     test/test_cycle_verdict_mapping.cpp

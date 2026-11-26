@@ -138,7 +138,8 @@ A `Node` must exist before an endpoint is created; `runNode` creates it for an
 application. A node that reacts to messages and runs until stopped is a
 `hypha::ApplicationNode` whose `setup(Node&)` creates these endpoints
 ([ros1-migration-guide.md](ros1-migration-guide.md#102-the-application)); the `main()`
-forms above are for bounded probes and tools (section 2). SIGINT and SIGTERM make `ok()` false and stop the run. The tests
+forms above are for bounded probes and tools (section 2). SIGINT and SIGTERM make `ok()`
+false and stop the run. The tests
 `crates/hypha-cxx/test/test_quick_start_doc_examples.cpp` (callback, publish-only and
 README examples) and `test_cycle_doc_examples.cpp` (sections 5.4, 5.5, 10.1) compile them.
 
@@ -353,7 +354,8 @@ Options: a `hypha::Qos` (section 7) and, for a port, `hypha::optionalTopic` (sec
 sample; a `*` pattern is read every 1 ms (execution-model.md §7-8). A cycle input port
 warns about a missing publisher like a subscriber, once per topic: ports that share a
 topic share the warning. A literal topic and a port name side by side, and a ROS 1 node
-ported to an `ApplicationNode`: [ros1-migration-guide.md](ros1-migration-guide.md#103-literal-topic-or-port-name).
+ported to an `ApplicationNode`:
+[ros1-migration-guide.md](ros1-migration-guide.md#103-literal-topic-or-port-name).
 Reference: `hypha/subscriber.h` (type check, patterns, the no-publisher warning),
 `hypha/node.h` (`Node::subscribe`).
 
@@ -503,9 +505,10 @@ configuration is a `hypha::ConfigError` (a `ParameterError` among them): throw o
 from the constructor or `setup()` to exit 78; `failRun()` gives 70. A bad `node.name`,
 an invalid `[log]` table or a bad `HYPHA_USE_SIM_TIME` or `HYPHA_REPLAY_LOCKSTEP` fails *node creation* and
 gives 70. A program with its own `main` returns 75 itself after `ClockRewound` to be
-restarted (`replay-flow-control.md` §4.4). Derive timer- and callback-driven
-applications from `ApplicationNode` (`examples/sensor_fusion/src/fusion_main.cpp`),
-periodic ones from `CycleNode`.
+restarted (`replay-flow-control.md` §4.4). Derive an application that owns worker
+threads, whose callbacks publish on more than one input, or that composes cycles
+(`examples/sensor_fusion/src/fusion_main.cpp`) from `ApplicationNode`; one that steps at a
+rate or on one trigger from `CycleNode`.
 
 - The rate has one source: `rate_hz` under `[cycle]`, `setRate()` in `setup()`, or
   `setTrigger(port)` ("Triggered cycles"). `rate_hz` with `setRate()` fails the start
