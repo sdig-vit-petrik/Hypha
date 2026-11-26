@@ -103,15 +103,21 @@ fn utc_window_replay_publishes_utc_clock_before_data() {
         "recorded /clock must not overwrite UTC"
     );
     assert!(clock_data.iter().any(|(utc, _)| *utc == start), "clock starts at requested UTC");
-    // Each message is preceded by the newest clock at or before its time, which was sent
-    // before the message went out.
+    // Each message goes out after the newest clock before its time and before the first
+    // clock at or after it: a chunk closed at T holds every message stamped at or before T.
     for ((_, sent), stamped) in data.iter().zip([first, second]) {
-        let covering = clock_data
+        let opening = clock_data
             .iter()
-            .filter(|(utc, _)| *utc <= stamped)
+            .filter(|(utc, _)| *utc < stamped)
             .max_by_key(|(utc, _)| *utc)
-            .expect("a clock covers the message");
-        assert!(covering.1 < *sent, "UTC clock must be sent before its data payload");
+            .expect("a clock opens the message's chunk");
+        assert!(opening.1 < *sent, "UTC clock must be sent before its data payload");
+        let closing = clock_data
+            .iter()
+            .filter(|(utc, _)| *utc >= stamped)
+            .min_by_key(|(utc, _)| *utc)
+            .expect("a clock closes the message's chunk");
+        assert!(*sent < closing.1, "the clock that closes a chunk follows its data");
     }
     assert!(
         clock_data.iter().any(|(utc, _)| *utc > start && *utc < first),

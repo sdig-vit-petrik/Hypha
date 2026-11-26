@@ -391,10 +391,13 @@ state and include the required input topics. Replay preserves the payload bytes.
 
 Every frame carries its recorded time as its framework send stamp
 (`framework_sent_nanos`), including `/clock`. A subscriber reads it from the
-frame, so it sees the recording's time, not the host's. `/clock = T` is never
-published before every message stamped before `T` has been published, and the
-player waits until every participant has run the deadlines up to `T`. A node that reads
-`/clock = T` therefore already has all data stamped before `T`.
+frame, so it sees the recording's time, not the host's. A chunk closed at `T`
+holds every message stamped at or before `T`: `/clock = T` is never published
+before all of them have been published, and the player waits until every
+participant has run the deadlines up to `T`. A node that reads `/clock = T`
+therefore already has all data stamped at or before `T`. The first instant of a
+pass is the one exception: the start barrier sends its `/clock` before any data
+(`replay-flow-control.md` §4.3).
 
 A cycle node that runs on simulated time replays faithfully at any `--rate` the
 host keeps up with. Its steps run on the recording's deadlines, with the samples

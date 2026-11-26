@@ -334,8 +334,10 @@ calling thread.
   it with the framework clock, which is simulated time on a sim-time node. A
   replayer stamps it with the recorded time instead. `hypha play` does this for
   every frame it publishes, `/clock` included. Its replay ordering rule is that
-  it never publishes `/clock = T` until every message stamped before `T` has
-  gone out, so a node that reads `/clock = T` already has that data queued. It
+  a chunk closed at `T` holds every message stamped at or before `T`: it never
+  publishes `/clock = T` until all of them have gone out, so a node that reads
+  `/clock = T` already has that data queued. The first instant of a pass is the
+  one exception: its `/clock` is the start barrier, sent before any data. It
   also waits until every participant has reported, on `/clock_progress`, a
   `clock_sent_nanos` at or after the host send floor taken just before that
   `/clock` sample went out, and a `clock_nanos` at or beyond the sample's value.

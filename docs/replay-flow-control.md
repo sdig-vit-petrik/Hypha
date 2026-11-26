@@ -111,9 +111,10 @@ The player advances in **chunks** of `--chunk` data time (default 100 ms). Every
 1. **Start barrier** (section 5). Each pass (the start, each `--loop`, each restart) begins with
    `/clock` at its first log time, and the player waits for every participant to acknowledge it
    before any data of that pass. The pass starts at `--start-utc` when it is given, else at its first
-   log time.
-2. **Publish one chunk.** Every message with log time below `T + chunk`, in order. With `--rate`, each
-   message waits for its wall deadline first.
+   log time. The messages stamped at that first instant therefore go out after its `/clock`: the
+   one exception to the rule below.
+2. **Publish one chunk.** Every message with log time at or before `T + chunk`, in order. With
+   `--rate`, each message waits for its wall deadline first.
 3. **Close the chunk.** At the boundary `T + chunk` the player first waits for the wall schedule to
    reach it (none with `--rate max`). Then it records the host monotonic time as the floor and
    publishes `/clock = T + chunk`.
@@ -123,22 +124,31 @@ The player advances in **chunks** of `--chunk` data time (default 100 ms). Every
    that of the first send. The executor is served meanwhile.
 5. Repeat from step 2.
 
-Data in flight is bounded by one chunk. The rule `/clock = T` is published only after every message
-stamped before `T` is out. A chunk must also fit each subscriber's queue. With `--clock`, when the next message would be the
+Data in flight is bounded by one chunk. The rule: **a chunk closed at `T` holds every message
+stamped at or before `T`**, on every topic. `/clock = T` is published only after all of them are
+out, so a node that reads `/clock = T` has every message stamped `T` queued, whatever their topics:
+what it sees at `T` does not depend on the order in which they arrive. The first instant of a pass
+is the one exception (step 1).
+
+A chunk must also fit each subscriber's queue. With `--clock`, when the next message would be the
 one past the smallest queue (`min_subscriber_buffer`) of the subscribers connected to its topic, the
-player closes the chunk at that message's time and opens a new one, so the barrier waits for it as for
-any boundary. The grid is unchanged and the extra boundary is only added; the limit is read again at
-each chunk close, so a subscriber that connects later counts from the next chunk. The player prints
+player closes the chunk one nanosecond before that message's time and opens a new one, so the
+barrier waits for it as for any boundary, and the closed chunk still holds every message stamped at
+or before its `/clock`. The grid is unchanged and the extra boundary is only added; the limit is
+read again at each chunk close, so a subscriber that connects later counts from the next chunk. The player prints
 `chunks shortened on '<topic>'` once per topic. Only messages that share one instant and exceed the
 queue fail the run (`N messages of '<topic>' at one instant exceed the smallest subscriber queue B`).
 A node's own input must still hold the samples of one step (6.6).
 
 ### 4.4 Restart, loop, backward seek and pause
 
-A pass ends with `/clock` at the end of its last chunk. That chunk closes the last messages, so the
-tail of a pass is processed, which open-loop replay never did. The player goes back to the start
-(`--loop`, the restart key) only after the barrier of that chunk, so no participant holds unread
-data from the old timeline. A restart stops before the next message and closes the open chunk at that message's time.
+A pass ends with `/clock` at the first boundary after its last message. A last message on a boundary
+is closed by that boundary, as any message is, and the empty chunk after it follows, so a step after
+the last message runs and the tail of a pass is processed, which open-loop replay never did. The
+player goes back to the start (`--loop`, the restart key) only after the barrier of that chunk, so no
+participant holds unread data from the old timeline. A restart stops before the next message and
+closes the open chunk one nanosecond before that message's time; at the first instant of a pass it
+sends the start's `/clock` again.
 Pause holds at the next message, even in the middle of a chunk. Messages already sent stay sent;
 the rest of the chunk, its `/clock` and the wait for acknowledgements wait until resume. The step
 key plays the rest of one chunk, sends its `/clock` and pauses again.
@@ -346,6 +356,10 @@ turn.
   `/clock_progress`, minus the node itself. The player publishes inputs but never progress, and the
   recorder publishes progress but no cycle inputs, so neither is anyone's upstream. The names are read
   from the transport when the set of publishers changes.
+- **The player needs no hold.** A chunk closed at `T` holds every message stamped at or before `T`
+  (4.3), so a node that reads `/clock = T` already has the player's data through `T`, ties at `T` on
+  several topics included. The first instant of a pass is the exception: its messages follow the
+  start barrier's `/clock`.
 - **Valid report.** In a process that a backward seek restarted (4.4), a report counts only when it
   answers a `/clock` sample sent at or after the one the process rejoined on: an older one describes
   the timeline that the seek left. In any other process the epoch is zero. Send times decide this;

@@ -294,6 +294,7 @@ struct Session<'bus> {
     restart_requested: bool,
     playback: Playback,
     current_msg: u64,
+    /// The log time of the last message published; the tail of a pass closes after it.
     last_log_time: u64,
     last_topic: String,
     last_render: Instant,

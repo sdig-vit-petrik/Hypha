@@ -113,14 +113,60 @@ fn closed_before(plan: &mut ChunkPlan, log_time: u64) -> Vec<u64> {
 }
 
 #[test]
-fn a_chunk_plan_closes_every_boundary_at_or_before_the_next_message() {
+fn a_chunk_plan_closes_every_boundary_before_the_next_message() {
     let mut plan = ChunkPlan::new(1_000, 100).expect("a plan");
     assert_eq!(closed_before(&mut plan, 1_050), Vec::<u64>::new());
-    assert_eq!(closed_before(&mut plan, 1_100), vec![1_100]);
-    // A gap closes each of its boundaries, empty or not. A message stamped at 1_400 closes
-    // 1_400 too: only messages before it may be unpublished.
-    assert_eq!(closed_before(&mut plan, 1_400), vec![1_200, 1_300, 1_400]);
-    assert_eq!(plan.boundary(), 1_500);
+    assert_eq!(closed_before(&mut plan, 1_150), vec![1_100]);
+    // A gap closes each of its boundaries, empty or not. A message stamped at 1_400 is
+    // held by the chunk that 1_400 closes, so that boundary stays open.
+    assert_eq!(closed_before(&mut plan, 1_400), vec![1_200, 1_300]);
+    assert_eq!(plan.boundary(), 1_400);
+}
+
+#[test]
+fn a_message_at_the_boundary_goes_before_its_clock() {
+    let mut plan = ChunkPlan::new(1_000, 100).expect("a plan");
+    // Messages stamped at the boundary, on one topic or several, all go out first ...
+    assert_eq!(closed_before(&mut plan, 1_100), Vec::<u64>::new());
+    assert_eq!(closed_before(&mut plan, 1_100), Vec::<u64>::new());
+    // ... and the first message after it closes the boundary.
+    assert_eq!(closed_before(&mut plan, 1_101), vec![1_100]);
+}
+
+#[test]
+fn shortening_closes_one_nanosecond_before_the_message() {
+    let mut plan = ChunkPlan::new(1_000, 100).expect("a plan");
+    assert_eq!(closed_before(&mut plan, 1_050), Vec::<u64>::new());
+    assert_eq!(plan.shorten_before(1_050), Some(1_049));
+    // The grid is unchanged: the message at 1_100 still goes before the clock 1_100.
+    assert_eq!(closed_before(&mut plan, 1_100), Vec::<u64>::new());
+    assert_eq!(plan.shorten_before(1_100), Some(1_099));
+    assert_eq!(closed_before(&mut plan, 1_101), vec![1_100]);
+}
+
+#[test]
+fn a_chunk_whose_messages_share_one_instant_cannot_be_shortened() {
+    let mut plan = ChunkPlan::new(1_000, 100).expect("a plan");
+    assert_eq!(plan.shorten_before(1_050), Some(1_049));
+    // Every message of the chunk opened at 1_050 is stamped 1_050.
+    assert_eq!(plan.shorten_before(1_050), None);
+    assert_eq!(plan.shorten_before(1_051), Some(1_050));
+    // After a boundary, the chunk opens one nanosecond past it.
+    assert_eq!(closed_before(&mut plan, 1_101), vec![1_100]);
+    assert_eq!(plan.shorten_before(1_101), None);
+    assert_eq!(plan.shorten_before(1_102), Some(1_101));
+}
+
+#[test]
+fn the_first_instant_of_a_pass_follows_its_clock() {
+    // The start barrier sends `/clock = 1_000` before any data, so the first chunk holds
+    // the messages stamped at the start, and none of them can be shortened away.
+    let mut plan = ChunkPlan::new(1_000, 100).expect("a plan");
+    assert_eq!(closed_before(&mut plan, 1_000), Vec::<u64>::new());
+    assert_eq!(plan.shorten_before(1_000), None);
+    // Before a message one nanosecond later, the chunk closes at the start again, and then
+    // holds the first instant.
+    assert_eq!(plan.shorten_before(1_001), Some(1_000));
 }
 
 #[test]
@@ -131,8 +177,18 @@ fn a_gap_is_taken_one_boundary_at_a_time() {
     while plan.next_closed_before(1_000_000).expect("closes").is_some() {
         count += 1;
     }
-    assert_eq!(count, 1_000_000);
-    assert_eq!(plan.boundary(), 1_000_001);
+    assert_eq!(count, 999_999);
+    assert_eq!(plan.boundary(), 1_000_000);
+}
+
+#[test]
+fn the_pass_ends_at_the_first_boundary_after_its_last_message() {
+    let mut plan = ChunkPlan::new(0, 100).expect("a plan");
+    assert_eq!(closed_before(&mut plan, 300), vec![100, 200]);
+    // The last message is at 300, on the grid. The player closes what lies at or before
+    // it, as if a message followed one nanosecond later, and ends the pass after it.
+    assert_eq!(closed_before(&mut plan, 301), vec![300]);
+    assert_eq!(plan.end_boundary(None), 400);
 }
 
 #[test]
@@ -165,20 +221,18 @@ fn a_zero_chunk_is_refused() {
 }
 
 /// Replays `log_times` the way the player does and checks, at every boundary, that
-/// no message stamped before it is still unpublished and that none after it went out.
+/// no message stamped at or before it is still unpublished and that none after it went out.
 fn replay_keeps_the_rule(log_times: &[u64], start: u64, chunk: u64) -> bool {
     let mut plan = ChunkPlan::new(start, chunk).expect("a plan");
     let mut published = 0_usize;
     let check = |boundary: u64, published: usize| {
-        let all_before_published = log_times
+        let all_held_out =
+            log_times.iter().enumerate().all(|(index, &time)| time > boundary || index < published);
+        let none_later_out = log_times
             .iter()
             .enumerate()
-            .all(|(index, &time)| time >= boundary || index < published);
-        let none_after = log_times
-            .iter()
-            .enumerate()
-            .all(|(index, &time)| time < boundary || index >= published);
-        all_before_published && none_after
+            .all(|(index, &time)| time <= boundary || index >= published);
+        all_held_out && none_later_out
     };
     for (index, &time) in log_times.iter().enumerate() {
         for boundary in closed_before(&mut plan, time) {
@@ -189,12 +243,15 @@ fn replay_keeps_the_rule(log_times: &[u64], start: u64, chunk: u64) -> bool {
         assert_eq!(published, index, "messages go out in order");
         published += 1;
     }
-    check(plan.boundary(), published)
+    let last = *log_times.last().expect("a message");
+    let tail = closed_before(&mut plan, last + 1);
+    tail.into_iter().all(|boundary| check(boundary, published))
+        && check(plan.end_boundary(None), published)
 }
 
 #[test]
 fn a_chunk_never_closes_past_unpublished_data() {
-    let times = [1_000, 1_020, 1_020, 1_099, 1_100, 1_350, 1_351, 2_500];
+    let times = [1_000, 1_001, 1_020, 1_020, 1_099, 1_100, 1_100, 1_350, 1_351, 2_500];
     assert!(replay_keeps_the_rule(&times, 1_000, 100));
     assert!(replay_keeps_the_rule(&times, 0, 7));
     assert!(replay_keeps_the_rule(&times, 1_000, 1_000_000));

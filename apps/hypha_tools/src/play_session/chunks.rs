@@ -57,6 +57,23 @@ impl Session<'_> {
         }
     }
 
+    /// Closes every boundary before `log_time`. Each is taken in turn, so a long gap
+    /// allocates nothing.
+    fn close_boundaries_before(&mut self, log_time: u64) -> Result<Flow, String> {
+        loop {
+            let next = match self.plan.as_mut() {
+                Some(plan) => plan.next_closed_before(log_time)?,
+                None => None,
+            };
+            let Some(boundary) = next else {
+                return Ok(Flow::Go);
+            };
+            if self.close_chunk(boundary)? == Flow::Halt {
+                return Ok(Flow::Halt);
+            }
+        }
+    }
+
     /// Handles one message of the pass: closes the chunks that end before it, paces it,
     /// and publishes it.
     pub(super) fn step_item(&mut self, item: &PlaybackItem<'_>) -> Result<Flow, String> {
@@ -64,18 +81,8 @@ impl Session<'_> {
         if self.plan.is_none() && self.start_pass(item.log_time_nanos)? == Flow::Halt {
             return Ok(Flow::Halt);
         }
-        // Each boundary the message closes is taken in turn, so a long gap allocates nothing.
-        loop {
-            let next = match self.plan.as_mut() {
-                Some(plan) => plan.next_closed_before(item.log_time_nanos)?,
-                None => None,
-            };
-            let Some(boundary) = next else {
-                break;
-            };
-            if self.close_chunk(boundary)? == Flow::Halt {
-                return Ok(Flow::Halt);
-            }
+        if self.close_boundaries_before(item.log_time_nanos)? == Flow::Halt {
+            return Ok(Flow::Halt);
         }
         if self.split_full_chunk(item)? == Flow::Halt {
             return Ok(Flow::Halt);
@@ -92,9 +99,10 @@ impl Session<'_> {
     }
 
     /// Closes the chunk before `item` when its topic already fills the smallest subscriber
-    /// queue, so that no subscriber loses samples within one chunk. The chunk closes at the
-    /// item's time, as a grid boundary does. Without `/clock`, or without the lockstep
-    /// that would wait for it, nothing is split.
+    /// queue, so that no subscriber loses samples within one chunk. The chunk closes one
+    /// nanosecond before the item, so it holds every message stamped at or before its close,
+    /// as a grid chunk does. Without `/clock`, or without the lockstep that would wait for
+    /// it, nothing is split.
     fn split_full_chunk(&mut self, item: &PlaybackItem<'_>) -> Result<Flow, String> {
         if !self.in_lockstep() {
             return Ok(Flow::Go);
@@ -119,20 +127,22 @@ impl Session<'_> {
         if sent < limit {
             return Ok(Flow::Go);
         }
-        if item.log_time_nanos <= self.last_boundary {
+        let Some(boundary) =
+            self.plan.as_mut().and_then(|plan| plan.shorten_before(item.log_time_nanos))
+        else {
             return Err(format!(
                 "{} messages of '{}' at one instant exceed the smallest subscriber queue {limit}",
                 sent.saturating_add(1),
                 item.topic
             ));
-        }
+        };
         if !self.shortened.contains(item.topic) && self.shortened.insert(item.topic.to_owned()) {
             println!(
                 "hypha play: chunks shortened on '{}': its smallest subscriber queue holds {limit} samples",
                 item.topic
             );
         }
-        self.close_chunk(item.log_time_nanos)
+        self.close_chunk(boundary)
     }
 
     /// Called for each message of the pass. Returns false to stop delivering.
@@ -150,25 +160,21 @@ impl Session<'_> {
         }
     }
 
-    /// Ends a pass. The last chunk is closed like any other, so a rewind or a loop starts
+    /// Ends a pass. The last chunks are closed like any other, so a rewind or a loop starts
     /// only once the participants have the tail of the pass. A restart stops before its
-    /// next message; the chunk that it leaves open is closed at that message, which is
-    /// the first one not yet sent. A quit closes nothing.
+    /// next message; the chunk that it leaves open is closed one nanosecond before that
+    /// message, the first one not yet sent. A quit closes nothing.
     pub(super) fn finish_pass(&mut self) {
-        if self.failure.is_some() || self.stopping() {
+        if self.failure.is_some() || self.stopping() || self.plan.is_none() {
             return;
         }
-        // The last `/clock` is capped at the window's exclusive end, which may be off the grid.
-        let Some(boundary) =
-            self.plan.as_ref().map(|plan| plan.end_boundary(self.config.utc_range.end()))
-        else {
-            return;
-        };
         let target = match self.halted_at {
-            Some(log_time) => log_time,
-            None => match self.close_chunk(boundary) {
-                Ok(Flow::Go) => return,
-                Ok(Flow::Halt) => boundary,
+            // The clock never goes back within a pass: a restart at its first instant sends
+            // the start's clock again.
+            Some(log_time) => log_time.saturating_sub(1).max(self.last_boundary),
+            None => match self.close_tail() {
+                Ok(None) => return,
+                Ok(Some(end)) => end,
                 Err(error) => {
                     self.failure = Some(error);
                     return;
@@ -183,6 +189,25 @@ impl Session<'_> {
             Ok(Flow::Halt) => {}
             Err(error) => self.failure = Some(error),
         }
+    }
+
+    /// Closes the chunks after the last message of a pass: a boundary at that message, as a
+    /// message one nanosecond later would close it, then the next boundary, which ends the
+    /// pass, so that a step after the last message runs. The final `/clock` is capped at
+    /// the window's exclusive end, which may be off the grid. Returns the end when a restart
+    /// halted the closing, for a barrier that still closes it.
+    fn close_tail(&mut self) -> Result<Option<u64>, String> {
+        let after_last = self.last_log_time.saturating_add(1);
+        let flow = self.close_boundaries_before(after_last)?;
+        let Some(end) =
+            self.plan.as_ref().map(|plan| plan.end_boundary(self.config.utc_range.end()))
+        else {
+            return Ok(None);
+        };
+        if flow == Flow::Go && self.close_chunk(end)? == Flow::Go {
+            return Ok(None);
+        }
+        Ok(Some(end))
     }
 
     pub(super) fn counters_in_order(&self) -> Vec<(String, u64)> {

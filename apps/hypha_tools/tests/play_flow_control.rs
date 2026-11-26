@@ -23,7 +23,7 @@ const DATA_TOPIC: &str = "/flow_data";
 const RUN_LIMIT: Duration = Duration::from_secs(30);
 
 /// Messages as (offset from the start in milliseconds, value). With the default 100 ms
-/// chunk they fall in the chunks [0, 100), [100, 200), [200, 300) and [400, 500).
+/// chunk they fall in the chunks [0, 100], (100, 200], (200, 300] and (400, 500].
 const MESSAGES: [(u64, u8); 4] = [(10, 1), (150, 2), (250, 3), (420, 4)];
 
 /// How the participant answers `/clock`.
@@ -211,20 +211,21 @@ fn first_sent(trace: &Trace, nanos: u64) -> Option<u64> {
     trace.clocks.iter().filter(|clock| clock.nanos == nanos).map(|clock| clock.sent).min()
 }
 
-/// Each message went out after the newest clock value at or before its time was sent, and
-/// before the first clock value past it was sent.
+/// Each message went out after the clock that opened its chunk and before the clock that
+/// closes it: a chunk closed at `T` holds every message stamped at or before `T`. The start
+/// barrier's clock opens the first chunk, so the messages stamped at the start follow it.
 fn assert_message_order(trace: &Trace, messages: &[(u64, u8)]) {
     assert_eq!(trace.data.len(), messages.len(), "every message went out");
+    let values = clock_values(trace);
+    let (start, closes) = values.split_first().expect("the start barrier's clock");
     for ((value, sent), (time, expected)) in trace.data.iter().zip(messages) {
         assert_eq!(value, expected, "messages go out in order");
-        let covering = clock_values(trace).into_iter().filter(|nanos| nanos <= time).max();
-        let covering = covering.expect("a clock covers the message");
-        let covering_sent = first_sent(trace, covering).expect("the covering clock was sent");
-        assert!(covering_sent < *sent, "clock {covering} was sent after message {value}");
-        let next = clock_values(trace).into_iter().find(|nanos| nanos > time);
-        if let Some(next) = next {
-            let next_sent = first_sent(trace, next).expect("the next clock was sent");
-            assert!(*sent < next_sent, "message {value} went out after clock {next}");
+        let opened = closes.iter().filter(|nanos| *nanos < time).max().unwrap_or(start);
+        let opened_sent = first_sent(trace, *opened).expect("the opening clock was sent");
+        assert!(opened_sent < *sent, "clock {opened} was sent after message {value}");
+        if let Some(closing) = closes.iter().find(|nanos| *nanos >= time) {
+            let closing_sent = first_sent(trace, *closing).expect("the closing clock was sent");
+            assert!(*sent < closing_sent, "message {value} went out after clock {closing}");
         }
     }
 }
@@ -459,9 +460,10 @@ fn assert_message_order_values(trace: &Trace, messages: &[(u64, u8)]) {
 }
 
 #[test]
-fn a_message_on_a_chunk_boundary_goes_out_after_the_clock_that_closes_before_it() {
+fn a_message_on_a_chunk_boundary_goes_out_before_the_clock_that_closes_it() {
     let start = start_nanos();
-    let messages = [(100, 1), (200, 2), (250, 3)];
+    // At the start, twice at one boundary, and last on the grid.
+    let messages = [(0, 1), (100, 2), (100, 3), (200, 4), (300, 5)];
     let path = recording_path("boundary");
     write_recording(&path, start, &messages);
 
@@ -487,8 +489,10 @@ fn a_message_on_a_chunk_boundary_goes_out_after_the_clock_that_closes_before_it(
     std::fs::remove_file(&path).expect("remove the recording");
     assert!(status.success(), "the replay succeeds");
 
-    // The message at 100 ms closes the boundary at 100 ms: that clock goes out first.
-    let boundaries: Vec<u64> = [0, 100, 200, 300].iter().map(|ms| at(start, *ms)).collect();
+    // The messages at 100 ms go out before /clock 100 ms, the message at the start after
+    // the start barrier's clock, and the pass ends at the first boundary after its last
+    // message.
+    let boundaries: Vec<u64> = [0, 100, 200, 300, 400].iter().map(|ms| at(start, *ms)).collect();
     assert_eq!(clock_values(&run.trace), boundaries);
     let timed: Vec<(u64, u8)> =
         messages.iter().map(|(offset, value)| (at(start, *offset), *value)).collect();

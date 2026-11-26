@@ -163,11 +163,17 @@ pub fn clock_payload(log_time_nanos: u64) -> Result<[u8; 8], String> {
 
 /// The chunk boundaries of a replay pass.
 ///
-/// A boundary `B` closes once every message stamped before `B` has been published. The
-/// player then sends `/clock = B` and waits for the participants before it goes on.
+/// A chunk closed at `T` holds every message stamped at or before `T`: the player sends
+/// `/clock = T` once they are all out, then waits for the participants before it goes on.
+/// The first instant of a pass is the one exception. Its `/clock` is the start barrier,
+/// sent before any data, so the messages stamped at the start follow it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkPlan {
     chunk_nanos: u64,
+    /// The earliest stamp the open chunk can hold: the start of the pass, then one
+    /// nanosecond past the last close.
+    opened: u64,
+    /// The next boundary on the grid of `chunk_nanos` from the start.
     boundary: u64,
 }
 
@@ -183,34 +189,47 @@ impl ChunkPlan {
         let boundary = start
             .checked_add(chunk_nanos)
             .ok_or_else(|| "the replay runs past the end of time".to_string())?;
-        Ok(Self { chunk_nanos, boundary })
+        Ok(Self { chunk_nanos, opened: start, boundary })
     }
 
-    /// The boundary after the last message of the pass. Closed at the end of the pass.
+    /// The next boundary on the grid: the first at or after every message given to
+    /// [`Self::next_closed_before`] so far.
     #[must_use]
     pub fn boundary(&self) -> u64 {
         self.boundary
     }
 
-    /// Closes the next boundary when it is at or before `log_time`, the next message to
+    /// Closes the next boundary when it is before `log_time`, the next message to
     /// publish, and returns it. Call again until it returns `None`: a gap closes each of its
     /// boundaries, empty chunks included, one at a time.
     ///
     /// # Errors
     /// Returns a message when the boundary after it runs past the end of time.
     pub fn next_closed_before(&mut self, log_time: u64) -> Result<Option<u64>, String> {
-        if log_time < self.boundary {
+        if log_time <= self.boundary {
             return Ok(None);
         }
+        let past_the_end = || "the replay runs past the end of time".to_string();
         let closed = self.boundary;
-        self.boundary = closed
-            .checked_add(self.chunk_nanos)
-            .ok_or_else(|| "the replay runs past the end of time".to_string())?;
+        self.boundary = closed.checked_add(self.chunk_nanos).ok_or_else(past_the_end)?;
+        self.opened = closed.checked_add(1).ok_or_else(past_the_end)?;
         Ok(Some(closed))
     }
 
-    /// The boundary that ends the pass. It is capped at `range_end`, the exclusive end of the
-    /// UTC window: the final `/clock` never passes the window.
+    /// Closes the open chunk off the grid, before `log_time`, the next message to publish:
+    /// one nanosecond before it, so the chunk still holds every message stamped at or before
+    /// its close. Returns `None` when every message the chunk can hold is stamped
+    /// `log_time`: no close comes between the messages of one instant. Call it once
+    /// [`Self::next_closed_before`] has closed the boundaries before `log_time`.
+    pub fn shorten_before(&mut self, log_time: u64) -> Option<u64> {
+        let closed = log_time.checked_sub(1).filter(|closed| *closed >= self.opened)?;
+        self.opened = log_time;
+        Some(closed)
+    }
+
+    /// The boundary that ends the pass, once the boundaries up to its last message have
+    /// closed: the first one after that message. It is capped at `range_end`, the exclusive
+    /// end of the UTC window: the final `/clock` never passes the window.
     #[must_use]
     pub fn end_boundary(&self, range_end: Option<u64>) -> u64 {
         range_end.map_or(self.boundary, |end| self.boundary.min(end))
