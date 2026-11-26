@@ -112,7 +112,6 @@ class StepHarness final : private detail::CaptureStore
         port.held_ = std::move(value);
         port.heldStamp_ = detail::SampleStamp{};
         port.hasHeld_ = true;
-        port.usable_ = true;
         port.verdict_ = InputVerdict::Usable;
         port.ageNanos_ = 0;
         StepHarness::judge(port, HYPHA_CYCLE_VERDICT_USABLE, false);
@@ -124,7 +123,6 @@ class StepHarness final : private detail::CaptureStore
     void setStale(Latest<M>& port)
     {
         this->forget(port);
-        port.usable_ = false;
         port.fresh_ = false;
         port.verdict_ = InputVerdict::Stale;
         StepHarness::judge(port, HYPHA_CYCLE_VERDICT_STALE, true);
@@ -136,7 +134,6 @@ class StepHarness final : private detail::CaptureStore
     {
         this->forget(port);
         port.hasHeld_ = false;
-        port.usable_ = false;
         port.fresh_ = false;
         port.verdict_ = InputVerdict::NeverArrived;
         StepHarness::judge(port, HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, false);

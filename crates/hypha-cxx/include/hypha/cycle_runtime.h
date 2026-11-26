@@ -40,8 +40,9 @@ class Cycle
     void setRate(Hz rate);
 
     /// @brief Step once per sample of Arrivals @p port instead of a rate (before start(),
-    ///        not with setRate()). The port needs a silence limit; past it a fallback step
-    ///        runs with no sample. Throws for a port of another cycle.
+    ///        not with setRate()). Each call adds a trigger; a repeat adds nothing. Every
+    ///        trigger needs its own silence limit; a fallback step with no sample runs
+    ///        after the shortest of them without one. Throws for a port of another cycle.
     void setTrigger(const Port& port);
 
     /// @brief Make this rate cycle drive `/clock` (before start(); needs setRate(), not
@@ -121,7 +122,7 @@ class Cycle
     bool                               rateSet_{false};
     Duration                           period_{};
     std::vector<Port*>                 ports_;
-    const Port*                        trigger_{nullptr};
+    std::vector<const Port*>           triggers_;
     std::optional<ClockDriverOptions>  clockDriver_{};
     bool                               started_{false};
     bool                               startRefusedByConfiguration_{false};
@@ -157,7 +158,9 @@ inline void Cycle::setTrigger(const Port& port)
     if (std::ranges::find(this->ports_, &port) == this->ports_.end()) {
         throw std::invalid_argument("hypha: cycle '" + this->name_ + "': foreign trigger port");
     }
-    this->trigger_ = &port;
+    if (std::ranges::find(this->triggers_, &port) == this->triggers_.end()) {
+        this->triggers_.push_back(&port);
+    }
 }
 
 inline void Cycle::setClockDriver(ClockDriverOptions options)
@@ -186,9 +189,7 @@ inline void Cycle::addPort(Port* port)
 inline void Cycle::removePort(Port* port) noexcept
 {
     std::erase(this->ports_, port);
-    if (this->trigger_ == port) {
-        this->trigger_ = nullptr;
-    }
+    std::erase(this->triggers_, port);
 }
 
 template <typename Step>
@@ -220,7 +221,6 @@ std::expected<void, std::string> Cycle::startBound(Node& node, HyphaWaitSet* wai
     }
     // The cycle joins the session's node, which owns it from here on.
     static_cast<void>(node);
-    const bool triggered = this->trigger_ != nullptr;
     if (waitset == nullptr) {
         return std::unexpected(detail::cycleFailure(this->name_, "", HYPHA_STATUS_INVALID_STATE));
     }
@@ -260,8 +260,8 @@ std::expected<void, std::string> Cycle::startBound(Node& node, HyphaWaitSet* wai
             );
         }
     }
-    if (triggered) {
-        const std::optional<uint32_t> index = this->trigger_->triggerIndex();
+    for (const Port* trigger : this->triggers_) {
+        const std::optional<uint32_t> index = trigger->triggerIndex();
         if (!index.has_value()) {
             return std::unexpected(
                 "hypha: cycle '" + this->name_ + "': the trigger must be an Arrivals port"
@@ -270,7 +270,7 @@ std::expected<void, std::string> Cycle::startBound(Node& node, HyphaWaitSet* wai
         const ::HyphaStatus set = backend::cycleSetTrigger(raw, *index);
         if (set != HYPHA_STATUS_OK) {
             return std::unexpected(
-                detail::cycleFailure(this->name_, this->trigger_->describeFailure(), set)
+                detail::cycleFailure(this->name_, trigger->describeFailure(), set)
             );
         }
     }

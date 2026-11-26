@@ -510,8 +510,8 @@ threads, whose callbacks publish on more than one input, or that composes cycles
 (`examples/sensor_fusion/src/fusion_main.cpp`) from `ApplicationNode`; one that steps at a
 rate or on one trigger from `CycleNode`.
 
-- The rate has one source: `rate_hz` under `[cycle]`, `setRate()` in `setup()`, or
-  `setTrigger(port)` ("Triggered cycles"). `rate_hz` with `setRate()` fails the start
+- The rate has one source: `rate_hz` under `[cycle]`, `setRate()` in `setup()`, or one
+  or more triggers, `setTrigger(port)` once per trigger port ("Triggered cycles"). `rate_hz` with `setRate()` fails the start
   (`keep one`), and so does neither (`neither a rate nor a trigger`).
 - An input port takes its topic as `{cycle, "name"}`, `{cycle, hypha::Topic{"/x"}}`,
   `{cycle, "name", hypha::Topic{"/x"}}` or `{cycle, ["name",] hypha::sharing(other)}`,
@@ -551,13 +551,26 @@ commit) in its `[cycle]` table, beside `rate_hz`:
 
 #### Triggered cycles
 
-`setTrigger(port)` before `start()` runs one step per sample of an `Arrivals` port,
-oldest first, in place of a rate; past the port's `silence_ms` a fallback step runs
-with `samples().empty()` and the port `stale()`. The rules are in
+`setTrigger(port)` before `start()` adds an `Arrivals` port to the triggers of the
+cycle, which then runs one step per sample of any trigger in place of a rate. Call it
+once per trigger port; a repeat adds nothing, and the order of the calls has no
+meaning. The samples of all triggers step in send-stamp order, a tie in the
+construction order of the ports. In a step the port that fired holds its one sample
+and every other trigger holds none, so the step tells the port that fired as the one
+whose `samples()` is not empty. Each trigger has its own `silence_ms`: `usable()` and
+`stale()` of every trigger port judge its newest sample against it in every step. After
+the shortest `silence_ms` without a step a fallback step runs with every trigger empty
+and each trigger that is past its own limit `stale()`. The rules are in
 execution-model.md §6.6. `examples/mrs/managers/estimation_manager.cpp` and
 `control_manager.cpp` are triggered cycles. `start()` fails for a rate with a trigger
 ("a rate and a trigger exclude each other"), a `Latest` trigger ("the trigger must be
-an Arrivals port") and a trigger without `silence_ms` (also when `unsupervised`).
+an Arrivals port"), a trigger without `silence_ms`, also when `unsupervised` (the error
+names the port), and two triggers on one topic through `sharing()`.
+
+In a `StepHarness` test of a triggered step, `deliver()` the sample of the port that
+fires, and `deliver(port, {}, sentAt)` each other trigger with the send time of its
+newest sample, or keep a delivery from an earlier step, so that its `usable()` is
+judged as in the cycle.
 A clock driver is a rate cycle that drives `/clock` for a simulator:
 `setClockDriver(options)` with `setRate()`, before `start()` (`hypha/cycle_runtime.h`,
 `hypha/cycle_clock_driver.h`; `examples/mrs/simulator/mrs_simulator.cpp`). Its

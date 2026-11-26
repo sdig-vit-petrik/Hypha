@@ -57,6 +57,12 @@ class Input : public Port
         return this->verdict_;
     }
 
+    /// @brief True when the input is within its limits in this step: verdict() is Usable.
+    bool usable() const
+    {
+        return this->verdict_ == InputVerdict::Usable;
+    }
+
     uint64_t received() const
     {
         return this->heldReport_.received_total;

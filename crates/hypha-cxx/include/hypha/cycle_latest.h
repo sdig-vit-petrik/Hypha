@@ -101,7 +101,7 @@ class Latest final : public Input<M>
     /// @brief The value, usable in this step. @throws InputNotUsable unless usable().
     const M& operator*() const
     {
-        if (!this->usable_) {
+        if (!this->usable()) {
             this->throwNotUsable();
         }
         return this->held_;
@@ -127,16 +127,10 @@ class Latest final : public Input<M>
     ///        object that outlives the use of the result, never a temporary.
     const M& valueOr(const M& fallback) const
     {
-        return this->usable_ ? this->held_ : fallback;
+        return this->usable() ? this->held_ : fallback;
     }
 
     const M& valueOr(M&&) const = delete;
-
-    /// @brief True when the value is within its limits in this step: verdict() is Usable.
-    bool usable() const
-    {
-        return this->usable_;
-    }
 
     /// @brief True when the value is new in this step. It implies has().
     bool fresh() const
@@ -243,10 +237,9 @@ class Latest final : public Input<M>
         }
         this->verdict_ = *mapped;
         this->ageNanos_ = view.age_nanos;
-        this->usable_ = *mapped == InputVerdict::Usable;
-        const bool missingUsableSample = this->usable_ && !this->hasHeld_;
+        // A usable verdict without a value fails the run before the step reads the port.
+        const bool missingUsableSample = this->usable() && !this->hasHeld_;
         if (missingUsableSample) {
-            this->usable_ = false;
             return HYPHA_STATUS_INVALID_STATE;
         }
         const std::optional<uint64_t> alive =
@@ -282,7 +275,6 @@ class Latest final : public Input<M>
         return HYPHA_STATUS_OK;
     }
 
-    bool                usable_{false};
     uint64_t            ageNanos_{0};
     M                   held_{};
     M                   candidate_{};
