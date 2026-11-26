@@ -502,9 +502,10 @@ bus yet), *node creation*, *setup* (`setup(Node&)`: endpoints, rate or trigger),
 and the `Node` leaves the bus. The exit codes (0, 2, 70, 75, 78):
 `hypha/application_node.h`; restarts: tools.md (`hypha launch`). A refused
 configuration is a `hypha::ConfigError` (a `ParameterError` among them): throw one
-from the constructor or `setup()` to exit 78; `failRun()` gives 70. A bad `node.name`,
-an invalid `[log]` table or a bad `HYPHA_USE_SIM_TIME` or `HYPHA_REPLAY_LOCKSTEP` fails *node creation* and
-gives 70. A program with its own `main` returns 75 itself after `ClockRewound` to be
+from the constructor or `setup()` to exit 78; `failRun()` gives 70. A bad `node.name` or an
+invalid `[log]` table in the parameter file is refused when the file loads and gives 78. A bad
+`HYPHA_USE_SIM_TIME` or `HYPHA_REPLAY_LOCKSTEP`, a node name given in code, or a name another process
+holds fails *node creation* and gives 70. A program with its own `main` returns 75 itself after `ClockRewound` to be
 restarted (`replay-flow-control.md` §4.4). Derive an application that owns worker
 threads, whose callbacks publish on more than one input, or that composes cycles
 (`examples/sensor_fusion/src/fusion_main.cpp`) from `ApplicationNode`; one that steps at a

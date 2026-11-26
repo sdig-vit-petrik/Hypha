@@ -452,6 +452,42 @@ TEST(RunNodeLifecycle, AnInvalidEnvironmentReferenceReturnsTheConfigurationCode)
     EXPECT_NE(output.find("node failed in configuration loading"), std::string::npos) << output;
 }
 
+TEST(RunNodeLifecycle, AnInvalidLogLevelReturnsTheConfigurationCode)
+{
+    const std::filesystem::path path =
+        parameterFile("hypha_k8_log_level.toml", "[log]\nlevel = \"loud\"\n");
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithFile(&hypha::runNode<TimerApp>, path);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    std::filesystem::remove(path);
+    EXPECT_EQ(exitCode, hypha::kExitConfiguration);
+    EXPECT_NE(output.find("[log] level: unknown level"), std::string::npos) << output;
+}
+
+TEST(RunNodeLifecycle, AnInvalidNodeNameInTheParameterFileReturnsTheConfigurationCode)
+{
+    const std::filesystem::path path =
+        parameterFile("hypha_k8_node_name.toml", "[node]\nname = \"Bad Name\"\n");
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithFile(&hypha::runNode<TimerApp>, path);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    std::filesystem::remove(path);
+    EXPECT_EQ(exitCode, hypha::kExitConfiguration);
+    EXPECT_NE(output.find("'Bad Name' is not a node name"), std::string::npos) << output;
+}
+
+TEST(RunNodeLifecycle, AnInvalidNodeNameInTheCodeReturnsTheRuntimeCode)
+{
+    EXPECT_TRUE(hypha::disableSimTime());
+    char  program[] = "prog";
+    char* argv[] = {program, nullptr};
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = hypha::runNode<TimerApp>(1, argv, "Bad Name");
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    EXPECT_EQ(exitCode, hypha::kExitRuntime);
+    EXPECT_NE(output.find("'Bad Name' is not a node name"), std::string::npos) << output;
+}
+
 TEST(RunNodeLifecycle, AParameterErrorInSetupReturnsTheConfigurationCode)
 {
     ::testing::internal::CaptureStderr();
