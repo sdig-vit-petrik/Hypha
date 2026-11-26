@@ -432,10 +432,11 @@ impl CycleRuntime {
             Some(cut_nanos) => CaptureClock::Replay { cut_nanos },
             None => CaptureClock::Host { steady_nanos: capture_steady_u64 },
         };
-        if let Err(status) = self.arrival_assignments(clock) {
+        let arrivals_clock = self.arrivals_clock(clock, time);
+        if let Err(status) = self.arrival_assignments(arrivals_clock) {
             return self.fail(status);
         }
-        if let Err(status) = self.capture_bindings(clock, time) {
+        if let Err(status) = self.capture_bindings(clock, arrivals_clock, time) {
             return self.fail(status);
         }
         let callback_start_nanos = callback_start();
@@ -514,8 +515,35 @@ impl CycleRuntime {
         emissions.iter().try_for_each(|staged| budget.admit(staged.output, staged.len))
     }
 
+    /// The clock of this step's queued inputs that are no trigger. In a trigger step on host
+    /// time they admit only what was sent before the firing sample: a sample sent after it
+    /// belongs to a later step, so the trigger samples drained in one turn each find their
+    /// own arrivals, as they do under a replay cut. A fallback and a rate step take every
+    /// arrival.
+    fn arrivals_clock(&self, clock: CaptureClock, time: CycleTime) -> CaptureClock {
+        let (CaptureClock::Host { steady_nanos }, Some(TriggerStep::Sample { port })) =
+            (clock, time.trigger_step)
+        else {
+            return clock;
+        };
+        let firing_sent_nanos = self.triggers.get(port).and_then(|&index| {
+            let history = self.bindings.get(index)?.history.as_ref()?;
+            self.captures.get(index)?.next_sent_nanos(&crate::locked(history))
+        });
+        firing_sent_nanos.map_or(clock, |trigger_sent_nanos| CaptureClock::HostBefore {
+            steady_nanos,
+            trigger_sent_nanos,
+        })
+    }
+
     /// Capture every binding. A shared history is locked once, so all read one snapshot.
-    fn capture_bindings(&mut self, clock: CaptureClock, time: CycleTime) -> Result<(), i32> {
+    /// Queued inputs that are no trigger are captured on `arrivals_clock`.
+    fn capture_bindings(
+        &mut self,
+        clock: CaptureClock,
+        arrivals_clock: CaptureClock,
+        time: CycleTime,
+    ) -> Result<(), i32> {
         for (first, slot) in self.bindings.iter().enumerate() {
             let Some(history) = slot.history.as_ref() else {
                 if let Some(capture) = self.captures.get_mut(first) {
@@ -545,6 +573,7 @@ impl CycleRuntime {
                     }
                 } else if other.options.mode == super::CaptureMode::Queued {
                     let assigned = self.assignments.get(index).copied().unwrap_or_default();
+                    let clock = if other.exempt { clock } else { arrivals_clock };
                     capture.capture_assigned_on(&guard, other.options, assigned, clock);
                 } else if capture.host_clock() {
                     let steady_nanos = u64::try_from(time.capture_steady_nanos)

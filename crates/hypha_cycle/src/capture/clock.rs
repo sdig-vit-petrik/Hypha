@@ -19,10 +19,16 @@ impl CaptureClock {
         matches!(self, Self::Replay { .. } | Self::ReplayThrough { .. })
     }
 
+    /// Whether this clock admits only a part of the retained samples.
+    const fn cuts(self) -> bool {
+        self.is_replay() || matches!(self, Self::HostBefore { .. })
+    }
+
     /// Whether this clock admits a sample with framework send time `sent_nanos`.
     const fn admits_sent(self, sent_nanos: u64) -> bool {
         match self {
-            Self::Host { .. } => true,
+            // Host time cuts by host send time, not by the framework stamp.
+            Self::Host { .. } | Self::HostBefore { .. } => true,
             Self::Replay { cut_nanos } => sent_nanos < cut_nanos,
             Self::ReplayThrough { cut_nanos } => sent_nanos <= cut_nanos,
         }
@@ -32,6 +38,8 @@ impl CaptureClock {
     pub(super) fn admitted_end(self, history: &CycleHistory) -> Option<usize> {
         match self {
             Self::Host { .. } => Some(history.samples().len()),
+            // A history is ordered by framework stamp, not by host send time.
+            Self::HostBefore { .. } => None,
             Self::Replay { .. } | Self::ReplayThrough { .. } => {
                 history.replay_end(|sent_nanos| self.admits_sent(sent_nanos))
             }
@@ -40,13 +48,18 @@ impl CaptureClock {
 
     /// Whether this capture may select `sample` at all.
     pub(super) const fn admits(self, sample: &HistorySample) -> bool {
-        self.admits_sent(sample.framework_sent_nanos)
+        match self {
+            Self::HostBefore { trigger_sent_nanos, .. } => {
+                sample.transport_sent_nanos < trigger_sent_nanos
+            }
+            _ => self.admits_sent(sample.framework_sent_nanos),
+        }
     }
 
     /// The time of this clock: host monotonic time, or the replay cut.
     pub(super) const fn nanos(self) -> u64 {
         match self {
-            Self::Host { steady_nanos } => steady_nanos,
+            Self::Host { steady_nanos } | Self::HostBefore { steady_nanos, .. } => steady_nanos,
             Self::Replay { cut_nanos } | Self::ReplayThrough { cut_nanos } => cut_nanos,
         }
     }
@@ -69,7 +82,7 @@ impl CaptureClock {
     /// The send time of `sample` on this clock.
     pub(super) const fn sent(self, sample: &HistorySample) -> u64 {
         match self {
-            Self::Host { .. } => sample.transport_sent_nanos,
+            Self::Host { .. } | Self::HostBefore { .. } => sample.transport_sent_nanos,
             Self::Replay { .. } | Self::ReplayThrough { .. } => sample.framework_sent_nanos,
         }
     }
@@ -96,12 +109,12 @@ pub(super) fn value_usable_within(
     !has_limit || age <= silence_nanos
 }
 
-/// The accepted count that `clock` admits, less the samples a reader rejected. A replay
-/// clock admits the samples stamped before its cut, or through it.
+/// The accepted count that `clock` admits, less the samples a reader rejected. A clock
+/// that cuts admits the samples sent before its cut, or through it.
 pub(super) fn accepted_on(history: &CycleHistory, clock: CaptureClock) -> u64 {
     let stats = history.stats();
     let accepted = stats.accepted.wrapping_sub(stats.rejected);
-    if !clock.is_replay() {
+    if !clock.cuts() {
         return accepted;
     }
     let retained_after_cut = clock.admitted_end(history).map_or_else(

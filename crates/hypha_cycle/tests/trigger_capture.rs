@@ -463,3 +463,77 @@ fn a_triggered_cycle_refuses_a_step_that_names_no_trigger_step() {
     let refused = runtime.run_iteration(time, || 10, None, |_, _| Ok(Vec::new()), |_, _| Ok(()));
     assert_eq!(refused, Err(STATUS_INVALID_ARGUMENT));
 }
+
+/// A history whose samples were sent at host monotonic times `sent`, each stamped on the
+/// wall clock an epoch later.
+fn host_history(sent: &[u64]) -> Arc<Mutex<CycleHistory>> {
+    const EPOCH: u64 = 1_700_000_000_000_000_000;
+    let mut history = CycleHistory::new(16).expect("valid history");
+    for at in sent {
+        let _ = history.push(&at.to_le_bytes(), *at, EPOCH + *at);
+    }
+    Arc::new(Mutex::new(history))
+}
+
+fn sent(capture: &BindingCapture) -> Vec<u64> {
+    capture.samples.iter().map(|sample| sample.transport_sent_nanos).collect()
+}
+
+/// Run one step on host time at monotonic time 100. The step time is monotonic and the
+/// framework stamps are wall time, so neither orders two samples; their host send times do.
+fn host_step(runtime: &mut CycleRuntime, trigger: TriggerStep) -> Vec<BindingCapture> {
+    let time = CycleTime {
+        scheduled_nanos: 100,
+        capture_steady_nanos: 100,
+        trigger_step: Some(trigger),
+        ..CycleTime::default()
+    };
+    run(runtime, time)
+}
+
+#[test]
+fn on_host_time_an_arrival_sent_after_the_firing_sample_waits_for_a_later_step() {
+    // Two pairs drained in one turn: each trigger sample follows its partner on the wire.
+    let mut runtime = CycleRuntime::new();
+    let trigger =
+        runtime.add_binding(host_history(&[11, 21]), queued(8)).expect("binding") as usize;
+    let partner =
+        runtime.add_binding(host_history(&[10, 20]), queued(8)).expect("binding") as usize;
+    runtime.set_trigger(trigger).expect("trigger");
+
+    let first = host_step(&mut runtime, TriggerStep::Sample { port: 0 });
+    assert_eq!(sent(&first[trigger]), [11]);
+    assert_eq!(sent(&first[partner]), [10], "the partner of the second pair is not due yet");
+
+    let second = host_step(&mut runtime, TriggerStep::Sample { port: 0 });
+    assert_eq!(sent(&second[trigger]), [21]);
+    assert_eq!(sent(&second[partner]), [20]);
+}
+
+#[test]
+fn on_host_time_the_arrivals_are_cut_at_the_sample_of_the_port_that_fires() {
+    // Two trigger ports drained in one turn, and one queued input between their samples.
+    let mut runtime = CycleRuntime::new();
+    let early = runtime.add_binding(host_history(&[10]), queued(8)).expect("binding") as usize;
+    let late = runtime.add_binding(host_history(&[30]), queued(8)).expect("binding") as usize;
+    let other =
+        runtime.add_binding(host_history(&[5, 20, 40]), queued(8)).expect("binding") as usize;
+    runtime.set_trigger(early).expect("trigger");
+    runtime.set_trigger(late).expect("trigger");
+
+    let first = host_step(&mut runtime, TriggerStep::Sample { port: 0 });
+    assert_eq!(sent(&first[other]), [5]);
+    let second = host_step(&mut runtime, TriggerStep::Sample { port: 1 });
+    assert_eq!(sent(&second[other]), [20]);
+}
+
+#[test]
+fn on_host_time_a_fallback_step_takes_every_arrival() {
+    let mut runtime = CycleRuntime::new();
+    let trigger = runtime.add_binding(host_history(&[]), queued(8)).expect("binding") as usize;
+    let other = runtime.add_binding(host_history(&[10, 20]), queued(8)).expect("binding") as usize;
+    runtime.set_trigger(trigger).expect("trigger");
+
+    let seen = host_step(&mut runtime, TriggerStep::Fallback { due: TriggerPorts::default() });
+    assert_eq!(sent(&seen[other]), [10, 20]);
+}

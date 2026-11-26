@@ -512,8 +512,12 @@ the trigger that has no limit.
    a sample exactly at its limit is usable; in host time every retained sample counts,
    as for a `Latest` input, one stamped after the step included. Under simulated time
    every other input is cut strictly before T, as a grid step is cut at its deadline,
-   and the outputs carry T as their framework send stamp. In host time the other
-   inputs are captured as a host-time rate step captures them.
+   and the outputs carry T as their framework send stamp. In host time a queued
+   (`Arrivals`) input that is no trigger holds the samples sent before the trigger
+   sample, by the host send time of both: one sent after it waits for a later trigger
+   step or a fallback, so two trigger samples drained in one turn each find their own
+   arrivals. A `Latest` input and the transform input are captured as a host-time rate
+   step captures them.
 3. **Fallback.** When no step ran for the shortest silence limit (`silence_ms`) of
    the triggers, one step runs without a trigger sample. The limit counts from the
    last step, or from the cycle's first evaluation when that is later: a trigger

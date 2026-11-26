@@ -37,6 +37,16 @@ pub enum CaptureClock {
         /// Host monotonic time of the capture.
         steady_nanos: u64,
     },
+    /// Host monotonic time for the queued inputs of a trigger step that are no trigger: only
+    /// samples sent before the step's trigger sample are admitted, so one sent after it
+    /// waits for a later step, as under [`CaptureClock::Replay`]. Each is judged by its
+    /// send time.
+    HostBefore {
+        /// Host monotonic time of the capture.
+        steady_nanos: u64,
+        /// Host monotonic time at which the step's trigger sample was sent.
+        trigger_sent_nanos: u64,
+    },
     /// Data time for one replay step: only samples sent before `cut_nanos` are admitted,
     /// each judged by `cut_nanos - framework_sent_nanos`.
     Replay {
@@ -430,6 +440,12 @@ impl BindingCapture {
     ) -> impl Iterator<Item = u64> + 'a + use<'a> {
         let start = history.cursor_offset(self.cursor);
         history.samples().range(start..).map(|sample| sample.framework_sent_nanos)
+    }
+
+    /// Host monotonic send time of the oldest retained sample after this binding's cursor.
+    pub(crate) fn next_sent_nanos(&self, history: &CycleHistory) -> Option<u64> {
+        let start = history.cursor_offset(self.cursor);
+        history.samples().get(start).map(|sample| sample.transport_sent_nanos)
     }
 
     /// Pending retained samples for this queued binding that `clock` admits.
