@@ -76,8 +76,8 @@ Sort every line of the ROS node into one of three classes:
   comment. Change its text only when it now states a false fact (for example it
   names a ROS call that is gone). A comment on glue that is removed moves to the code
   that replaces that glue, when that code does what the comment says (step 5 does this
-  for `speedCallback`). A comment that no remaining code matches stays in the file,
-  above the replacement it sat beside, and the change description lists it.
+  for `speedCallback`). A comment that no remaining code matches goes with
+  its glue, and the change description lists it.
 - **Do not refactor the logic.** Do not rename, extract, inline or "clean up".
   Change a logic line only when it does not compile against hypha types
   ([section 5](#5-message-types-and-the-minimal-logic-edits)), and then change
@@ -577,7 +577,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | `nh.advertise` + `publish` | `hypha::Output<T>` port: call `send(message)`. A step sends one message per Output. A step that sends two declares the Output with `hypha::perStep(2)`: `hypha::Output<T> name{*this, "name", hypha::perStep(2)};` |
 | `nh.createTimer` | The cycle rate, `rate_hz` under `[cycle]` |
 | `ros::TimerEvent` | `const hypha::CycleTime&`: `dt` (no value in the first step), `missed` |
-| `ros::ok()` in a worker or logic loop | `while (hypha::ok())` (`hypha/node.h`), false after SIGINT or SIGTERM. Every blocking read in that loop takes a timeout that returns to this check: a read with no timeout never returns to it, so the stop is never seen |
+| `ros::ok()` in the loop of a worker thread | The stop flag of the application: a `std::atomic<bool>` that its destructor sets before it joins the thread ([section 10.6](#106-threads)). Every blocking read in that loop takes a timeout that returns to this check: a read with no timeout never returns to it, so the stop is never seen |
 | `tf_prefix` (added to every frame id) | None. Read it with `hypha::config().required<std::string>("tf_prefix")` and write each frame id in full, prefix included |
 | Hand-written message age check (decides whether an input may be used) | The port's `silence_ms`, verdict `Stale`. A use of the source time as data stays logic |
 | `ros::Time::now()` for a stamp | In a cycle step `time.stamp`; elsewhere `hypha::toRosTime(hypha::now())`. See cpp-api.md §3 |
@@ -635,7 +635,7 @@ of ROS's own; it cannot include both. Make only these edits:
 
 | ROS 1 | hypha | Edit |
 |---|---|---|
-| `boost::array<double, 9>` | `std::array<double, 9>` | Glue only. A logic line keeps its `boost::` type (the paragraph below the table). |
+| `boost::array<double, 9>` | `std::array<double, 9>` | Only where the logic names the type. A message field is a `std::array`. |
 | `header.stamp` is `ros::Time` | `header.stamp` is `hypha_msgs::RosTime{secs, nsecs}` | `stamp.sec` to `stamp.secs`, `stamp.nsec` to `stamp.nsecs`. A call such as `stamp.toSec()` becomes `hypha::fromRosTime(stamp)` (`hypha/message_stamp.h`), which returns `std::optional<hypha::Time>`, empty when `nsecs` is one second or more. Check the optional, then call `.seconds()` on the value. Write no helper. |
 | `ros::Time`, `ros::Duration` in logic | `hypha::Time`, `hypha::Duration` | Only when the logic itself measures time. |
 | `ros::Duration::toSec()`, `ros::Duration::toNSec()`, `ros::Time::toSec()`, and `ros::Time` / `ros::Duration` arithmetic | `hypha::Duration::seconds()` (`double`), `hypha::Duration::nanos()` (`int64_t`), `hypha::Time::seconds()`. The operators keep their meaning: `Time + Duration`, `Time - Duration`, and `Time - Time`, which is a `Duration` | Rename the call. `ros::Duration(s)` is `hypha::Duration::fromSeconds(s)`, which throws `std::invalid_argument` for NaN or infinite `s`. |
@@ -651,11 +651,12 @@ of ROS's own; it cannot include both. Make only these edits:
 
 The `tf2/LinearMath` row does not cover `tf2/convert.h` (`tf2::convert`): it uses
 `ros::Time`, so do not copy that header. Convert the fields by hand, one assignment for
-each field (the `imu_filter_madgwick` port wrote four field copies), and list them in the
+each field, and list them in the
 change description.
 
 In glue, each `boost::` type becomes its `std::` equivalent, as the rows above say. A
-logic file keeps its `boost::` types (section 2.1). The SDK ships no Boost, so the node's
+logic file keeps its `boost::` types (section 2.1), except a type that names a message
+field. The SDK ships no Boost, so the node's
 own build must provide the Boost headers that its logic includes.
 
 A message type that hypha does not ship becomes a `.msg` file of the node and
@@ -1067,9 +1068,9 @@ by the application. Only `hypha::requestStop()` and `failRun()` may be called fr
 thread while the node runs.
 
 The application starts a worker in `started()` and joins it in its destructor. The
-worker's loop checks `hypha::ok()` (section 4), and every blocking read in it takes a
-timeout that returns to that check: a read with no timeout never sees the stop, and the
-join then waits forever. A thread that fails calls `failRun()`:
+worker's loop checks a stop flag that the destructor sets, and every blocking read in it
+takes a timeout that returns to that check: a read with no timeout never sees the stop,
+and the join then waits forever. A thread that fails calls `failRun()`:
 
 ```cpp
 #include <hypha/hypha.h>
@@ -1107,7 +1108,7 @@ class LidarNode final : public hypha::ApplicationNode
     // The only user of points_ once the thread runs.
     void readLoop()
     {
-        while (hypha::ok() && !this->stopping_) {
+        while (!this->stopping_) {
             try {
                 const bool sent = this->points_.publish(readFromDevice());
                 if (!sent) {
