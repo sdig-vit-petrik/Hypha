@@ -686,7 +686,8 @@ The parameter file cannot switch supervision off, and code sets no limit value:
   fails `start()`; the library never clamps. The limit is inclusive: a value exactly
   `silence_ms` old is usable.
 - An unknown key fails `start()`, naming the port and the key (known: `topic`,
-  `ignored`, `silence_ms`, and `stagnation_ms` with `setAlive()`).
+  `ignored`, `silence_ms`, and `stagnation_ms` with `setAlive()`, and any other key the
+  application read before `start()`: section 9, port tables).
 - A sharing port has no `topic` key; a port without a table name that counts for health
   needs `unsupervised`, else `start()` fails with `a required input without a table needs the tag hypha::unsupervised`.
 - A port with no silence limit and no `setAlive()` is never stale. A disabled port needs
@@ -866,6 +867,16 @@ for (const auto sensor : settings.list("sensors")) {
 - **Port tables.** A bare string names `[ports.inputs.<name>]` or
   `[ports.outputs.<name>]`, which hold `topic` (section 5.3); an input and an output
   may share a name. A plain entry, `speed = "/odom_speed"`, is `InvalidArgument`.
+  A table may also hold a key of the application's own, such as the `priority` of
+  each input of a multiplexer: read it with `config("ports.inputs.<name>")`, so that
+  no second table names every input again. A cycle input accepts such a key only when
+  the application has read it before `start()`, in the constructor or in `setup()`; the
+  ports bind at `start()`, and `started()` comes after it. An unread key fails `start()`
+  as unknown (section 5.4), whatever its name. The framework's own keys are never
+  application keys: a typo such as `silence_mss`, or `stagnation_ms` on a port without
+  `setAlive()`, is refused even when the application reads it. The table of an output,
+  or of a subscriber of an `ApplicationNode`, has no check at `start()`: a key that the
+  application never reads there is an unread key, below.
 - **Reserved names.** `node`, `ports` and `log` belong to the framework: `node.name`
   (section 2), the port tables, and `[log]` (section 11), whose keys the parameter
   API does not return. The top-level keys `include` (below) and `unused` are not
