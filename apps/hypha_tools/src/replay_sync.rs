@@ -161,12 +161,9 @@ pub fn clock_payload(log_time_nanos: u64) -> Result<[u8; 8], String> {
     Ok(bytes)
 }
 
-/// The chunk boundaries of a replay pass.
-///
-/// A chunk closed at `T` holds every message stamped at or before `T`: the player sends
-/// `/clock = T` once they are all out, then waits for the participants before it goes on.
-/// The first instant of a pass is the one exception. Its `/clock` is the start barrier,
-/// sent before any data, so the messages stamped at the start follow it.
+/// The chunk boundaries of a replay pass, by the rule of `docs/replay-flow-control.md`
+/// §4.3: a chunk closed at `T` holds every message stamped at or before `T`, except at the
+/// first instant of a pass, whose `/clock` is the start barrier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkPlan {
     chunk_nanos: u64,

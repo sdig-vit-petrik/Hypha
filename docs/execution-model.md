@@ -333,11 +333,10 @@ calling thread.
 - **Data time.** Every frame carries a framework send time. A publisher stamps
   it with the framework clock, which is simulated time on a sim-time node. A
   replayer stamps it with the recorded time instead. `hypha play` does this for
-  every frame it publishes, `/clock` included. Its replay ordering rule is that
-  a chunk closed at `T` holds every message stamped at or before `T`: it never
-  publishes `/clock = T` until all of them have gone out, so a node that reads
-  `/clock = T` already has that data queued. The first instant of a pass is the
-  one exception: its `/clock` is the start barrier, sent before any data. It
+  every frame it publishes, `/clock` included. It publishes `/clock = T` only
+  after every message stamped at or before `T`, so a node that reads `/clock = T`
+  already has that data queued (`replay-flow-control.md` §4.3 states the rule and
+  its one exception). It
   also waits until every participant has reported, on `/clock_progress`, a
   `clock_sent_nanos` at or after the host send floor taken just before that
   `/clock` sample went out, and a `clock_nanos` at or beyond the sample's value.
@@ -877,8 +876,10 @@ captures it as a host-time step does, at every step: the newest sample whatever 
 stamp, its silence limit judged by host time (the sender's send time, so on one host),
 and no replay loss or time-base mismatch for it. Such an input makes the step depend on
 arrival timing, so a replay of the node is no longer deterministic for it.
-`hypha play --clock` waits for the nodes, so its replay fails only when a queue is too short
-for one chunk of an input's samples (`replay-flow-control.md`, section 6.7). A run at a high
+`hypha play --clock` waits for the nodes, so its replay fails only when an input is too short
+for the samples its cycle has not read yet: a `Latest` input needs a queue of (`--chunk` + period)
+x rate, a queued input chunk x rate and a `perStep` of at least period x rate
+(`replay-flow-control.md`, section 6.7). A run at a high
 `--rate` is only as faithful as the host keeps up.
 
 ---

@@ -391,23 +391,21 @@ state and include the required input topics. Replay preserves the payload bytes.
 
 Every frame carries its recorded time as its framework send stamp
 (`framework_sent_nanos`), including `/clock`. A subscriber reads it from the
-frame, so it sees the recording's time, not the host's. A chunk closed at `T`
-holds every message stamped at or before `T`: `/clock = T` is never published
-before all of them have been published, and the player waits until every
-participant has run the deadlines up to `T`. A node that reads `/clock = T`
-therefore already has all data stamped at or before `T`. The first instant of a
-pass is the one exception: the start barrier sends its `/clock` before any data
-(`replay-flow-control.md` §4.3).
+frame, so it sees the recording's time, not the host's. `/clock = T` goes out only
+after every message stamped at or before `T`, and the player waits until every
+participant has run the deadlines up to `T`; the rule and its one exception, the
+first instant of a pass, are in `replay-flow-control.md` §4.3.
 
 A cycle node that runs on simulated time replays faithfully at any `--rate` the
 host keeps up with. Its steps run on the recording's deadlines, with the samples
 recorded before each deadline, and its data ages are measured in recorded time.
 A step that loses a sample on a queued input (a transport overflow or a history
 eviction) fails with `SequenceGap` and logs `replay not faithful`. The player
-fails the replay when a queue is too short for one chunk of a topic's samples,
-so size each input's queue for `--chunk` times the topic's rate. The execution
-model (section 11.1) and `replay-flow-control.md` (section 6.7) describe the
-rules.
+fails the replay when a queue is too short for the samples a cycle has not read
+yet. Size a `Latest` input's queue for `--chunk` plus the cycle's period, times
+the topic's rate; a queued input's for `--chunk` times the rate, with a `perStep`
+of at least the period times the rate (`replay-flow-control.md` §6.7). The
+execution model (section 11.1) describes the rules.
 
 Observers, such as a recorder or the bridge, are not waited for. A message sent
 before one connects is lost to it.
