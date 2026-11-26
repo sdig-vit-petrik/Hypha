@@ -67,14 +67,8 @@ impl TriggeredCycle {
         step.runtime.pending_trigger_stamps(&mut self.pending).map_err(Error::from_code)
     }
 
-    /// Admit the events of this turn into `events`: on simulated time at `now`, on host
-    /// time at the monotonic `now` and the `wall` reading taken with it.
-    fn admit(&mut self, cycle: &Cycle, sim: bool, now: i64, wall: i64) -> Result<(), Error> {
-        let clock = if sim {
-            TriggerClock::Sim { now, limit: &self.limit }
-        } else {
-            TriggerClock::Host { wall, steady: now }
-        };
+    /// Admit the events of this turn on `clock` into `events`.
+    fn admit(&mut self, cycle: &Cycle, clock: TriggerClock<'_>) -> Result<(), Error> {
         match self.schedule.admit(&self.pending, clock, &mut self.events)? {
             TriggerAdmit::Run => Ok(()),
             TriggerAdmit::OutOfOrder { stamp, before } => {
@@ -133,14 +127,20 @@ impl CallbackDispatcher<'_> {
         // The steps reach the dispatcher's other fields directly, never the dispatcher as a whole.
         let state = triggered_state(self.registrations, attachment)?;
         state.observe(cycle, now)?;
-        state.limit = if sim {
+        let limit = if sim {
             state.upstream.settle(&cycle.step_ref()?.inputs, node)?
         } else {
             Limit { at: None, blocking: None }
         };
         crate::cycle::drain_inputs(cycle)?;
         state.read_pending(cycle)?;
-        state.admit(cycle, sim, now, wall)?;
+        let clock = if sim {
+            TriggerClock::Sim { now, limit: &limit }
+        } else {
+            TriggerClock::Host { wall, steady: now }
+        };
+        state.admit(cycle, clock)?;
+        state.limit = limit;
         let mut decision = Progression::Continue;
         for &event in &state.events {
             // A step may detach its own cycle's registration: no further step then.

@@ -5,12 +5,12 @@
 #include "hypha/cycle_node.h"
 #include "hypha/hypha.h"
 #include "hypha/testing.h"
+#include <hypha_msgs/NodeState.h>
 
 #include "test_types.h"
 
-#include <gtest/gtest.h>
 #include <geometry_msgs/Twist.h>
-#include <hypha_msgs/NodeState.h>
+#include <gtest/gtest.h>
 #include <std_msgs/Bool.h>
 
 #include <algorithm>
@@ -21,13 +21,14 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 using geometry_msgs::Twist;
-using std_msgs::Bool;
 using hypha::Time;
+using std_msgs::Bool;
 using namespace hypha::literals;
 
 namespace {
@@ -42,11 +43,15 @@ struct Prioritized
 class TwistMux final : public hypha::CycleNode
 {
   public:
-    TwistMux(const std::vector<Prioritized>& velocityInputs, const std::vector<Prioritized>& lockInputs)
+    TwistMux(
+        const std::vector<Prioritized>& velocityInputs, const std::vector<Prioritized>& lockInputs
+    )
     {
         for (const Prioritized& input : velocityInputs) {
             this->velocities_.push_back(
-                {input.name, input.priority, std::make_unique<Arrivals<Twist>>(*this, input.name, advisory)}
+                {input.name,
+                 input.priority,
+                 std::make_unique<Arrivals<Twist>>(*this, input.name, advisory)}
             );
         }
         for (const Prioritized& input : lockInputs) {
@@ -142,10 +147,11 @@ std::string topicFor(const std::string& name)
 std::string parameters()
 {
     std::string text;
-    for (const auto& [port, silenceMs] :
-         std::vector<std::pair<std::string, int>>{{"joystick", 500}, {"navigation", 500}, {"e_stop", 1000}}) {
-        text += "[ports.inputs." + port + "]\ntopic='" + topicFor(port) + "'\nsilence_ms = "
-                + std::to_string(silenceMs) + "\n";
+    for (const auto& [port, silenceMs] : std::vector<std::pair<std::string, int>>{
+             {"joystick", 500}, {"navigation", 500}, {"e_stop", 1000}
+         }) {
+        text += "[ports.inputs." + port + "]\ntopic='" + topicFor(port)
+              + "'\nsilence_ms = " + std::to_string(silenceMs) + "\n";
     }
     return text + "[ports.outputs.cmd_vel_out]\ntopic='" + topicFor("out") + "'\n";
 }
@@ -237,7 +243,7 @@ TEST_F(TwistMuxHarness, ATieAtOneInstantForwardsOnlyTheHigher)
         hypha::testing::StepHarness harness{mux};
         harness.set(mux.lock("e_stop"), Bool{});
         std::vector<double> forwarded;
-        const auto          fire = [&](const std::string& firing, const std::string& other, double x) {
+        const auto fire = [&](const std::string& firing, const std::string& other, double x) {
             harness.deliver(mux.velocity(firing), {twist(x)}, before(0));
             harness.deliver(mux.velocity(other), {}, before(0));
             harness.step(mux, at(kNow));
@@ -375,7 +381,8 @@ TEST_F(TwistMuxBus, ATieAtOneInstantOnTheBusForwardsOnlyTheHigher)
     const auto started = mux.start(*this->node);
     ASSERT_TRUE(started.has_value()) << started.error();
     std::vector<double> forwarded;
-    auto output = hypha::Node().subscribe<Twist>(hypha::Topic{topicFor("out")}, Collect{&forwarded});
+    auto                output =
+        hypha::Node().subscribe<Twist>(hypha::Topic{topicFor("out")}, Collect{&forwarded});
     auto lock = this->publisherOf<Bool>("e_stop");
     auto joystick = this->publisherOf<Twist>("joystick");
     auto navigation = this->publisherOf<Twist>("navigation");

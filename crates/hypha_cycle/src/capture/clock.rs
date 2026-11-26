@@ -7,7 +7,7 @@ use super::{CaptureClock, CycleHistory, HistorySample};
 impl CaptureClock {
     /// The clock of a trigger port: a replay step admits its trigger samples through its
     /// time; host time admits every retained sample on any port.
-    pub(crate) const fn through(self) -> Self {
+    pub(crate) const fn for_trigger(self) -> Self {
         match self {
             Self::Replay { cut_nanos } => Self::ReplayThrough { cut_nanos },
             other => other,

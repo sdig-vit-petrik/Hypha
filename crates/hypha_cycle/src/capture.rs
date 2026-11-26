@@ -647,7 +647,7 @@ impl BindingCapture {
     }
 }
 
-/// Which of the samples a queued capture examines it delivers.
+/// Which examined samples a queued capture delivers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Examine {
     /// Those within the silence limit; an older one is an age rejection.

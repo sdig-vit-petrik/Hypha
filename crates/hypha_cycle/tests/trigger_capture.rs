@@ -374,6 +374,23 @@ fn a_fallback_marks_stale_only_the_due_ports_and_keeps_never_arrived() {
 }
 
 #[test]
+fn a_second_trigger_that_never_arrived_counts_its_silence_from_the_first_evaluation() {
+    let mut runtime = CycleRuntime::new();
+    let short = runtime.add_binding(history(&[]), queued(1)).expect("binding");
+    let long = runtime.add_binding(history(&[]), queued(1)).expect("binding");
+    for (index, silence) in [(short, 100), (long, 500)] {
+        supervise(&mut runtime, index, silence);
+        runtime.set_trigger(index as usize).expect("trigger");
+    }
+    runtime.start_trigger_silence(0);
+    let seen = step(&mut runtime, 100, falls_back(&[0]));
+    assert_eq!(seen[long as usize].verdict, InputVerdict::NeverArrived);
+    assert_eq!(seen[long as usize].age_nanos, 100, "silent since the first evaluation");
+    let seen = step(&mut runtime, 600, falls_back(&[0, 1]));
+    assert!(seen[long as usize].stale(), "past its own limit at 500");
+}
+
+#[test]
 fn refuse_trigger_consumes_the_oldest_pending_sample_and_counts_it() {
     let mut runtime = CycleRuntime::new();
     let index = runtime.add_binding(history(&[10, 20]), queued(1)).expect("binding");

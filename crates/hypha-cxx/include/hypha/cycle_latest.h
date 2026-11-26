@@ -237,7 +237,8 @@ class Latest final : public Input<M>
         }
         this->verdict_ = *mapped;
         this->ageNanos_ = view.age_nanos;
-        // A usable verdict without a value fails the run before the step reads the port.
+        // Invariant of a step: usable() implies has(). A usable verdict without a value
+        // breaks it, so the capture fails the run before the step reads the port.
         const bool missingUsableSample = this->usable() && !this->hasHeld_;
         if (missingUsableSample) {
             return HYPHA_STATUS_INVALID_STATE;

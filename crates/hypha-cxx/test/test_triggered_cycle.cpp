@@ -431,12 +431,13 @@ class SharedTriggers final : public hypha::CycleNode
 
 }  // namespace
 
-TEST_F(TriggeredFixture, TwoTriggersOnOneTopicAreRefused)
+TEST_F(TriggeredFixture, TwoTriggersOnOneSharedHistoryAreRefused)
 {
     this->init({PortTable{"first", 100}, PortTable{"second", 100}});
     SharedTriggers cycle;
     const auto     started = cycle.start(*this->node);
     ASSERT_FALSE(started.has_value());
+    EXPECT_NE(started.error().find("'second'"), std::string::npos) << started.error();
     EXPECT_NE(started.error().find("InvalidArgument"), std::string::npos) << started.error();
 }
 

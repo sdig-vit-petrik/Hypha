@@ -551,6 +551,50 @@ fn a_two_trigger_cycle_acknowledges_every_driver_step() {
     assert_eq!(Some(stage.as_slice()), driver.get(..stage.len()));
 }
 
+/// The steps of a two-trigger `stage` whose first trigger reads `peer`, a participant
+/// that echoes the driver, and whose second reads the driver, until the driver ran 20
+/// steps; `stage_first` turns the stage first, else the driver first.
+fn two_participant_steps(stage_first: bool) -> Vec<Record> {
+    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    let _ = hypha_clock_disable_sim_time();
+    let (echo, to_driver) =
+        (format!("/{}", unique("drv_echo")), format!("/{}", unique("drv_back")));
+    // The stage's second trigger is on `<echo>_quiet`, which the driver feeds here.
+    let from_driver = format!("{echo}_quiet");
+    let stage = Stage::new("stage", &Mode::TwoTriggers, &echo, &to_driver);
+    let peer = Stage::new("peer", &Mode::Triggered, &from_driver, &echo);
+    let expected = vec![stage.name.clone(), peer.name.clone()];
+    let driver =
+        Stage::new("driver", &Mode::Driver(expected, 5_000 * MS), &to_driver, &from_driver);
+    let order = if stage_first { [&stage, &peer, &driver] } else { [&driver, &peer, &stage] };
+    let started = std::time::Instant::now();
+    while driver.steps().len() < 20 {
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "the driver stalled");
+        for participant in order {
+            assert_eq!(participant.run(2 * MS), 0, "a run failed");
+        }
+    }
+    let steps = stage.steps().into_iter().filter(|step| step.scheduled <= deadline(15)).collect();
+    drop((stage, peer, driver));
+    let _ = hypha_clock_disable_sim_time();
+    steps
+}
+
+#[test]
+fn a_tie_with_a_reporting_participant_runs_in_port_order_in_any_turn_order() {
+    let reference = two_participant_steps(false);
+    assert_eq!(reference, two_participant_steps(true), "the turn order changed the steps");
+    // At each deadline the peer's echo (port 0, which this step reads) runs before the
+    // driver's sample (port 1) it ties with: the stage holds the deadline until the peer
+    // reported it, so the echo is there whichever node turns first.
+    let (pairs, _) = reference.as_chunks::<2>();
+    assert!(pairs.len() >= 10, "{reference:?}");
+    for [first, second] in pairs {
+        assert_eq!(first.scheduled, second.scheduled, "{reference:?}");
+        assert_eq!((first.seen.is_some(), second.seen), (true, None), "{reference:?}");
+    }
+}
+
 fn driver_inputs(stage_first: bool) -> Vec<Record> {
     let run = Loop::new(&Mode::Triggered, true, 5_000 * MS);
     run.run(30, stage_first);

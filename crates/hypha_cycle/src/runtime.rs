@@ -537,7 +537,7 @@ impl CycleRuntime {
                 if let Some(port) = self.triggers.iter().position(|&trigger| trigger == index) {
                     let step = time.trigger_step.ok_or(STATUS_INVALID_ARGUMENT)?;
                     let options = other.options;
-                    capture.capture_trigger(&guard, options, step.fires(port), clock.through());
+                    capture.capture_trigger(&guard, options, step.fires(port), clock.for_trigger());
                     // The schedule found the port silent; the capture clock may read a
                     // little earlier than the schedule's.
                     if step.is_due(port) {
