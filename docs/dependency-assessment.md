@@ -22,7 +22,7 @@ Readers: an assessor, and the engineer who updates a dependency.
 |---|---|---|---|
 | iceoryx2 0.10.1 | 28 (`iceoryx2`, `iceoryx2-cal` vendored with a patch, `iceoryx2-bb-*`, `iceoryx2-pal-*`, `iceoryx2-log*`) | Yes, always | The transport: shared-memory segments, lock-free queues, discovery, events, cleanup of dead processes |
 | Pulled in by iceoryx2 | `flatbuffers`, `postcard`, `cobs`, `sha1_smol`, `tiny-fn`, `enum-iterator` | Yes | Its service configuration files and naming |
-| Operating-system calls | `libc`, `rustix`, `linux-raw-sys`, `nix`, `memmap2`, `bitflags`, `cfg-if` | Yes | System calls and memory mapping |
+| Operating-system calls | `libc`, `rustix`, `linux-raw-sys`, `bitflags` | Yes | System calls and memory mapping |
 | Checksum | `crc32c` 0.6.8 | Yes, on every send and receive | The CRC-32C of the frame |
 | Configuration | `toml` 0.9.12 with `toml_parser`, `toml_datetime`, `toml_writer`, `serde_spanned`, `winnow`; `serde`, `serde_core` | At start-up | Parsing the node's parameter file |
 | Transforms | `transforms` 2.3.0, `approx`, `num-traits`, `libm` | When a node uses the transform buffer | Interpolation of coordinate transforms |
