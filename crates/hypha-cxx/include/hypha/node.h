@@ -150,6 +150,8 @@ class Node
 {
   public:
     /// A handle that joins no session; its members use the process session when one exists.
+    /// Create a named Node first: without a session `advertise` and `subscribe` throw
+    /// `InvalidState: no session exists`.
     Node() = default;
 
     /// Leaves the bus when this is the last Node that joined the session. Leaving destroys
