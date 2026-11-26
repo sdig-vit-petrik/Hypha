@@ -309,7 +309,7 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
             Ok((id, Target::Timer { timer, callback, cycle, run_anchored, control }))
         }
         Request::Triggered { cycle, silence_nanos, notified } => {
-            let schedule = hypha_runtime::trigger_schedule::TriggerSchedule::new(silence_nanos)
+            let schedule = hypha_runtime::trigger_schedule::TriggerSchedule::new(&[silence_nanos])
                 .ok_or(Error::InvalidArgument)?;
             let wake = triggered_wake(set, silence_nanos, notified);
             let id = set.native_attach(None, wake)?;

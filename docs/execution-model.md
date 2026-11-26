@@ -501,24 +501,27 @@ neither, or whose trigger has no positive silence limit is refused at start with
    runs without a trigger sample, with the trigger stale. It repeats
    every silence limit until a trigger arrives. Before the first trigger it counts
    from the cycle's first evaluation. A trigger stamped exactly at the fallback time
-   runs instead of the fallback. In host time a trigger stamped before the step that
-   ran last, or already older than the limit on the wall clock, runs no step: it is
-   consumed and counted in `age_rejections_total`, so steps run in send order.
+   runs instead of the fallback. In host time a trigger already older than its limit on
+   the wall clock, or stamped before the last step on its port, runs no step: it is
+   consumed and counted in `age_rejections_total`. A step's time never goes back: a
+   trigger stamped before a fallback that ran steps at the fallback's time, and the next
+   fallback counts from there.
    The send stamp is aged once, when the trigger is received, and its silence then
    runs on the monotonic clock: a later step of the wall clock moves no fallback. The
    fallbacks that a late turn missed run as one step at the latest due time, as a rate
    cycle counts missed periods instead of a burst. Under
    simulated time each fallback runs, at the last trigger stamp plus multiples of
-   the limit, so replays repeat them. A fallback at F waits until every upstream
-   has reported at least F, so no trigger stamped F can still come.
+   the limit, so replays repeat them.
 4. **Wake-up.** The trigger wakes the `WaitSet` when its publisher notifies, which
    every publisher does, and the `WaitSet` wakes at the cycle's next fallback
    deadline, so a fallback runs on its deadline. A wildcard
    trigger has no listener and is polled every millisecond, as a wildcard subscription
    is. Under simulated time the wake follows the rule of a cycle timer (section 11.1).
-5. **Simulated time.** A step at T runs when the node's clock is at least T and
-   every upstream of the cycle has reported at least T − 1 ns on `/clock_progress`,
-   the rule a grid replay cycle follows. A held step waits for as long as its
+5. **Simulated time.** A step at T, for a trigger or a fallback, runs when the node's
+   clock is at least T and every upstream of the cycle has reported at least T on
+   `/clock_progress`, so no trigger stamped T can still come. A grid replay cycle needs
+   T − 1 ns (section 11.1): it cuts its inputs strictly before T, while a triggered step
+   reads its triggers through T. A held step waits for as long as its
    upstream does not report; the player's `--timeout` is the bound. The trigger stamps must
    ascend in arrival order: a trigger stamped before the step that ran last, from a
    publisher that does not report progress or from several publishers whose samples
@@ -811,7 +814,8 @@ host:
   reports (`replay-flow-control.md`, sections 4.2 and 4.3).
 - **A held deadline waits for the upstream nodes.** A cycle reads from the nodes
   that publish its inputs and `/clock_progress`, except itself. Before it runs
-  deadline `D`, each of them must report a clock of at least `D - 1 ns`, for a
+  deadline `D`, each of them must report a clock of at least `D - 1 ns` (`D` for a
+  triggered cycle, section 6.6), for a
   `/clock` sample sent at or after the one a restarted process rejoined on. A feedback loop does not deadlock, because each node
   needs only the other's deadlines before `D`. A deadline that waits is held, and
   the cycle still reports its clock up to that deadline (`replay-flow-control.md`,

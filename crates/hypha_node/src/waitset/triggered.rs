@@ -13,8 +13,9 @@ pub(super) struct TriggeredCycle {
     pub(super) cycle: CycleId,
     pub(super) schedule: TriggerSchedule,
     pub(super) upstream: UpstreamHold,
-    /// The trigger stamps still pending after the last turn, for the progress report.
-    pub(super) pending: Vec<i64>,
+    /// The stamps of each trigger port still pending after the last turn, for the
+    /// progress report.
+    pub(super) pending: Vec<Vec<i64>>,
     /// The upstream limit of the last turn, for the progress report.
     pub(super) limit: Limit,
     /// Scratch for the events of one turn.
@@ -30,7 +31,7 @@ impl TriggeredCycle {
             cycle,
             schedule,
             upstream: UpstreamHold::default(),
-            pending: Vec::new(),
+            pending: vec![Vec::new()],
             limit: Limit { at: None, blocking: None },
             events: Vec::new(),
             last_now: None,
@@ -112,11 +113,7 @@ impl CallbackDispatcher<'_> {
             hypha_runtime::upstream_hold::Limit { at: None, blocking: None }
         };
         crate::cycle::drain_inputs(cycle)?;
-        cycle
-            .step_mut()?
-            .runtime
-            .pending_trigger_stamps(&mut state.pending)
-            .map_err(Error::from_code)?;
+        pending_stamps(cycle, &mut state.pending)?;
         let clock = if sim {
             TriggerClock::Sim { now, limit: &state.limit }
         } else {
@@ -138,9 +135,9 @@ impl CallbackDispatcher<'_> {
                 break;
             }
             let (time, take) = match event {
-                TriggerEvent::Trigger(time) => (time, 1),
-                TriggerEvent::Fallback(time) => (time, 0),
-                TriggerEvent::Late(_) => {
+                TriggerEvent::Trigger { time, .. } => (time, 1),
+                TriggerEvent::Fallback { time, .. } => (time, 0),
+                TriggerEvent::Late { .. } => {
                     // Stamped before a step that ran, or older than the limit: consumed
                     // and counted as an age rejection, with no step.
                     cycle.step_mut()?.runtime.refuse_trigger().map_err(Error::from_code)?;
@@ -164,11 +161,13 @@ impl CallbackDispatcher<'_> {
                 break;
             }
         }
-        cycle
-            .step_mut()?
-            .runtime
-            .pending_trigger_stamps(&mut state.pending)
-            .map_err(Error::from_code)?;
+        pending_stamps(cycle, &mut state.pending)?;
         Ok(decision)
     }
+}
+
+/// Replace `pending` with the pending stamps of the trigger of `cycle`.
+fn pending_stamps(cycle: &Cycle, pending: &mut [Vec<i64>]) -> Result<(), Error> {
+    let stamps = pending.first_mut().ok_or(Error::InvalidState)?;
+    cycle.step_mut()?.runtime.pending_trigger_stamps(stamps).map_err(Error::from_code)
 }

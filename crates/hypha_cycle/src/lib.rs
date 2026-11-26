@@ -8,6 +8,7 @@ mod judgement;
 mod replay_fidelity;
 mod runtime;
 mod supervision;
+mod trigger;
 
 pub use capture::{
     BindingCapture, BindingCounters, BindingOptions, CaptureClock, CaptureMode, HeldReport,
@@ -23,6 +24,7 @@ pub use runtime::{
     StagedMessage,
 };
 pub use supervision::{FAULT_STAGNANT, FAULT_STALE, Supervision, SupervisionLimits};
+pub use trigger::TriggerPorts;
 
 /// The guard of `mutex`, taken as it is when a holder panicked. A shipped build aborts
 /// on a panic, so no lock is ever poisoned there: the recovery serves test builds,

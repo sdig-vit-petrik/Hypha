@@ -46,6 +46,8 @@ pub enum HoldError {
     Gap,
     /// A deadline or a count is not representable.
     Overflow,
+    /// The pending stamps of a triggered cycle name other ports than its schedule.
+    Ports,
 }
 
 /// The held deadlines of one replay cycle and the upstream nodes it waits for.
