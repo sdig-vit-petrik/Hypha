@@ -295,6 +295,12 @@ impl Parameters {
         self.lists.contains_key(name)
     }
 
+    /// True when the scalar `name` has been read. Does not mark `name` as read.
+    #[must_use]
+    pub fn is_read(&self, name: &str) -> bool {
+        self.read_values.contains(name)
+    }
+
     /// The value of the scalar `name`, if present. Marks `name` as read when present.
     #[must_use]
     pub fn value(&self, name: &str) -> Option<&ParamValue> {

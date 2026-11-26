@@ -2,8 +2,9 @@
 //!
 //!
 //! [`supervise`] reads `ports.inputs.<name>`. Allowed keys are `topic`, `ignored`,
-//! `silence_ms`, and `stagnation_ms` when a stagnation check is declared; nested keys
-//! count as one dotted name.
+//! `silence_ms`, and `stagnation_ms` when a stagnation check is declared, and any other
+//! key that the application has read before the call; nested keys count as one dotted
+//! name. The check never marks an application key read.
 //!
 //! An enabled input that counts for health must set `silence_ms` unless tagged
 //! `unsupervised`, which must not set it. `topic` is refused on a port that takes a
@@ -163,12 +164,13 @@ pub fn supervise(
     Ok(Supervision { limits, ignored })
 }
 
-/// True when a port table may hold `key`: `stagnation_ms` only with a stagnation check.
-fn is_allowed_port_key(key: &str, check_stagnation: bool) -> bool {
+/// True when a port table may hold `key`: a framework key (`stagnation_ms` only with a
+/// stagnation check), or any other key that the application has read already.
+fn is_allowed_port_key(key: &str, check_stagnation: bool, read_by_application: bool) -> bool {
     match key {
         "topic" | "ignored" | "silence_ms" => true,
         "stagnation_ms" => check_stagnation,
-        _ => false,
+        _ => read_by_application,
     }
 }
 
@@ -184,12 +186,14 @@ fn record(
 }
 
 /// The first key of the port entry `prefix` that the checks do not allow, in sorted order.
+/// Marks every key it passes as read, and leaves the key it refuses unread.
 fn unknown_key(port: Port<'_>, prefix: &str, check_stagnation: bool) -> Option<String> {
     for key in port.parameters.names() {
         let Some(suffix) = key.strip_prefix(prefix) else {
             continue;
         };
-        if !is_allowed_port_key(suffix, check_stagnation) {
+        let read_by_application = port.parameters.is_read(key);
+        if !is_allowed_port_key(suffix, check_stagnation, read_by_application) {
             return Some(suffix.to_owned());
         }
         let _ = port.parameters.value(key);

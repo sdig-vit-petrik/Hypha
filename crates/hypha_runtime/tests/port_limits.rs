@@ -334,6 +334,85 @@ fn an_overflow_policy_key_is_unknown() {
     );
 }
 
+const APPLICATION_KEYS: &str = r#"[ports.inputs.mux]
+topic = "/mux"
+silence_ms = 250
+priority = 100
+
+[ports.inputs.other]
+topic = "/other"
+silence_ms = 250
+priority = 10
+
+[ports.inputs.stalled]
+topic = "/stalled"
+silence_ms = 250
+stagnation_ms = 500
+
+[ports.inputs.typo]
+topic = "/typo"
+silence_mss = 250
+priority = 5
+"#;
+
+/// What `supervise` returns for the port `name` of [`APPLICATION_KEYS`] once the application
+/// has read `read`, and the keys that are still unread afterwards.
+fn after_reads(
+    name: &str,
+    declared: Declared,
+    read_limits: bool,
+    read: &[&str],
+) -> (Result<Supervision, PortError>, Vec<String>) {
+    let parameters = parameters(APPLICATION_KEYS);
+    for key in read {
+        assert!(parameters.value(key).is_some(), "the fixture sets {key}");
+    }
+    let introspection = IntrospectionRegistry::new(Identity::default());
+    let entry = format!("ports.inputs.{name}");
+    let port = Port { parameters: &parameters, introspection: &introspection, entry: &entry };
+    let outcome = supervise(port, declared, true, read_limits, &RANGES);
+    (outcome, parameters.unread_keys())
+}
+
+#[test]
+fn a_key_read_by_the_application_is_accepted() {
+    let (outcome, unread) = after_reads("mux", SILENCE, true, &["ports.inputs.mux.priority"]);
+    assert_eq!(outcome, silence(250 * MILLI));
+    assert!(unread.iter().all(|key| !key.starts_with("ports.inputs.mux.")), "unread: {unread:?}");
+}
+
+#[test]
+fn a_key_read_by_the_application_is_accepted_on_a_disabled_port() {
+    let (outcome, _) = after_reads("mux", SILENCE, false, &["ports.inputs.mux.priority"]);
+    assert_eq!(outcome, Ok(Supervision::default()));
+}
+
+#[test]
+fn an_unread_extra_key_is_still_refused_and_stays_unread() {
+    let (outcome, unread) = after_reads("mux", SILENCE, true, &[]);
+    assert_eq!(outcome, invalid("unknown key 'priority'"));
+    assert!(unread.contains(&"ports.inputs.mux.priority".to_owned()), "unread: {unread:?}");
+}
+
+#[test]
+fn a_key_read_in_another_table_does_not_count() {
+    let (outcome, _) = after_reads("mux", SILENCE, true, &["ports.inputs.other.priority"]);
+    assert_eq!(outcome, invalid("unknown key 'priority'"));
+}
+
+#[test]
+fn a_framework_key_the_port_does_not_declare_stays_refused_when_the_application_reads_it() {
+    let (outcome, _) =
+        after_reads("stalled", SILENCE, true, &["ports.inputs.stalled.stagnation_ms"]);
+    assert_eq!(outcome, invalid("unknown key 'stagnation_ms'"));
+}
+
+#[test]
+fn a_typo_of_a_framework_key_is_refused_beside_an_application_key_that_was_read() {
+    let (outcome, _) = after_reads("typo", NONE, true, &["ports.inputs.typo.priority"]);
+    assert_eq!(outcome, invalid("unknown key 'silence_mss'"));
+}
+
 const BOUNDS: &str = r#"[ports.inputs.stag_low]
 topic = "/a"
 stagnation_ms = 9

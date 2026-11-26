@@ -178,3 +178,15 @@ ki = 0.2
     assert_eq!(params.unread_keys_under("controller"), vec!["controller.ki"]);
     assert_eq!(params.unread_keys_under("node"), vec!["node.unexpected"]);
 }
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn is_read_reports_a_read_without_making_one() {
+    let params = common::from_text("kp = 1.0\nki = 0.2\n", "is_read.toml").unwrap();
+    assert!(params.value("kp").is_some());
+
+    assert!(params.is_read("kp"));
+    assert!(!params.is_read("ki"));
+    assert!(!params.is_read("absent"));
+    assert_eq!(params.unread_keys(), vec!["ki"]);
+}
