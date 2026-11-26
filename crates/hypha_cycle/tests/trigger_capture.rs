@@ -611,6 +611,6 @@ fn on_host_time_an_input_whose_samples_wait_behind_the_firing_one_stays_usable()
     supervise(&mut runtime, partner, 50);
 
     let seen = host_step_at(&mut runtime, 130, TriggerStep::Sample { port: 0 });
-    assert!(sent(&seen[partner as usize]).is_empty());
+    assert_eq!(sent(&seen[partner as usize]), []);
     assert_eq!(seen[partner as usize].verdict, InputVerdict::Usable);
 }
