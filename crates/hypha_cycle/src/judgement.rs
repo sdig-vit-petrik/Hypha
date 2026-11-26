@@ -127,7 +127,8 @@ const fn millis(nanos: u64) -> u64 {
 }
 
 /// The log level and text of `event` for the binding named `subject`. An `advisory`
-/// binding's line ends in ` (advisory)`.
+/// binding's line ends in ` (advisory)`, and its faults are reported at INFO, not WARN:
+/// the node is healthy without it, so a fault of it is not one of the node's.
 #[must_use]
 pub fn judgement_line(
     subject: &str,
@@ -165,6 +166,7 @@ pub fn judgement_line(
         JudgementEvent::FaultIgnored => (log::Level::Warn, "fault is ignored".to_owned()),
         JudgementEvent::FaultCountsAgain => (log::Level::Warn, "fault counts again".to_owned()),
     };
+    let level = if advisory && level == log::Level::Warn { log::Level::Info } else { level };
     (level, format!("{subject} {text}{suffix}"))
 }
 
@@ -208,5 +210,24 @@ mod tests {
             judgement_line("in", JudgementEvent::UsableAgain, true),
             (log::Level::Info, "in is usable again (advisory)".to_owned())
         );
+    }
+
+    /// An advisory input is not needed for the node's health, so its faults are reported
+    /// at INFO; the same events of a required input stay at WARN.
+    #[test]
+    fn an_advisory_input_reports_its_faults_at_info_and_a_required_one_at_warn() {
+        let faults = [
+            JudgementEvent::Stale { age_nanos: 250_000_000, limit_nanos: 200_000_000 },
+            JudgementEvent::NeverArrived { age_nanos: 201_000_000, limit_nanos: 200_000_000 },
+            JudgementEvent::Stagnant { unchanged_nanos: 100_500_000, limit_nanos: 100_000_000 },
+            JudgementEvent::FaultIgnored,
+            JudgementEvent::FaultCountsAgain,
+        ];
+        for event in faults {
+            let (required, _) = judgement_line("in", event, false);
+            let (advisory, _) = judgement_line("in", event, true);
+            assert_eq!(required, log::Level::Warn, "{event:?} required");
+            assert_eq!(advisory, log::Level::Info, "{event:?} advisory");
+        }
     }
 }

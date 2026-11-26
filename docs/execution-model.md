@@ -444,7 +444,9 @@ of the step that captured it; there is no periodic summary, and the initial wait
 nothing. An input without a silence limit never logs `never arrived`. Two ports on one
 topic log under their own names. `<in>` is `cycle '<cycle>' input '<port>' (<topic>)`,
 or `cycle '<cycle>' input (<topic>)` without a table; an advisory input's line ends in
-` (advisory)`. Ages and limits are whole milliseconds.
+` (advisory)`, and an advisory input reports its faults at INFO where the table says WARN:
+the node is healthy without it. An `unsupervised` or an ignored input is not advisory: its
+lines have the levels of the table. Ages and limits are whole milliseconds.
 
 | Change | Level | Line |
 |---|---|---|
