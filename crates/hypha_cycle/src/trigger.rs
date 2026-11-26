@@ -19,6 +19,12 @@ impl TriggerPorts {
         bit(port).map(|bit| Self(self.0 | bit))
     }
 
+    /// The set of `ports`; `None` when one is at or past [`Self::CAPACITY`].
+    #[must_use]
+    pub fn of(ports: impl IntoIterator<Item = usize>) -> Option<Self> {
+        ports.into_iter().try_fold(Self::default(), Self::with)
+    }
+
     /// Whether `port` is in this set.
     #[must_use]
     pub fn contains(self, port: usize) -> bool {

@@ -112,9 +112,10 @@ impl Port {
         self.last_step.unwrap_or(first).checked_add(self.silence)
     }
 
-    /// Host time: whether its sample stamped `stamp`, at schedule time `time`, runs no step.
-    fn is_late(&self, stamp: i64, time: i64, wall: i64) -> bool {
-        let too_old = wall.checked_sub(stamp).is_some_and(|age| age > self.silence);
+    /// Host time: whether its sample of wall age `age`, at schedule time `time`, runs no
+    /// step: it is older than the limit, or sent before the sample of the port's last step.
+    fn is_late(&self, age: i64, time: i64) -> bool {
+        let too_old = age > self.silence;
         let before_its_step = self.last_step.is_some_and(|step| time < step);
         too_old || before_its_step
     }
@@ -132,8 +133,6 @@ pub struct TriggerSchedule {
     ran: Option<i64>,
     /// Whether the last admission stopped at [`MAX_EVENTS_PER_ADMIT`] with events left.
     capped: bool,
-    /// The merge cursors, kept so that a turn allocates nothing.
-    cursors: Vec<usize>,
 }
 
 /// The most events one simulated-time admission writes; a long clock jump runs over
@@ -154,8 +153,13 @@ impl TriggerSchedule {
             first: None,
             ran: None,
             capped: false,
-            cursors: Vec::with_capacity(silences.len()),
         })
+    }
+
+    /// The shortest silence limit of the ports, in nanoseconds: the fallback interval.
+    #[must_use]
+    pub fn shortest(&self) -> i64 {
+        self.shortest
     }
 
     /// Write to `out` the events that run now, in order: the pending samples of every
@@ -182,25 +186,12 @@ impl TriggerSchedule {
             return Err(HoldError::Ports);
         }
         let first = *self.first.get_or_insert(clock.now());
-        let mut cursors = std::mem::take(&mut self.cursors);
-        let admitted = self.admit_merged(Merge::new(pending, &mut cursors), first, clock, out);
-        self.cursors = cursors;
-        admitted
-    }
-
-    fn admit_merged(
-        &mut self,
-        mut merge: Merge<'_>,
-        first: i64,
-        clock: TriggerClock<'_>,
-        out: &mut Vec<TriggerEvent>,
-    ) -> Result<TriggerAdmit, HoldError> {
-        if let TriggerClock::Sim { .. } = clock {
-            if let Some(order) = self.out_of_order(&mut merge) {
-                return Ok(order);
-            }
-            merge.rewind();
+        if let TriggerClock::Sim { .. } = clock
+            && let Some(order) = self.out_of_order(pending)
+        {
+            return Ok(order);
         }
+        let mut merge = Merge::new(pending);
         loop {
             if let TriggerClock::Sim { .. } = clock
                 && out.len() >= MAX_EVENTS_PER_ADMIT
@@ -208,8 +199,8 @@ impl TriggerSchedule {
                 self.capped = true;
                 break;
             }
-            if let TriggerClock::Host { wall, .. } = clock {
-                self.take_late(&mut merge, wall, clock, out)?;
+            if let TriggerClock::Host { wall, steady } = clock {
+                self.take_late(&mut merge, wall, steady, out)?;
             }
             let anchor = self.anchor(first);
             let fallback = anchor.checked_add(self.shortest).ok_or(HoldError::Overflow)?;
@@ -230,7 +221,7 @@ impl TriggerSchedule {
                     let Some(time) = self.fallback_time(fallback, anchor, head, clock)? else {
                         break;
                     };
-                    out.push(self.run_fallback(time, first));
+                    out.push(self.run_fallback(time, first)?);
                 }
             }
         }
@@ -239,9 +230,9 @@ impl TriggerSchedule {
 
     /// Simulated time: the first pending stamp, in merge order, below the event that
     /// runs before it.
-    fn out_of_order(&self, merge: &mut Merge<'_>) -> Option<TriggerAdmit> {
+    fn out_of_order(&self, pending: &[Vec<i64>]) -> Option<TriggerAdmit> {
         let mut before = self.ran;
-        for (stamp, _) in merge {
+        for (stamp, _) in Merge::new(pending) {
             if let Some(before) = before.filter(|before| stamp < *before) {
                 return Some(TriggerAdmit::OutOfOrder { stamp, before });
             }
@@ -255,12 +246,13 @@ impl TriggerSchedule {
         &self,
         merge: &mut Merge<'_>,
         wall: i64,
-        clock: TriggerClock<'_>,
+        steady: i64,
         out: &mut Vec<TriggerEvent>,
     ) -> Result<(), HoldError> {
         while let Some((stamp, port)) = merge.peek() {
-            let time = trigger_time(stamp, clock)?;
-            if !self.ports.get(port).ok_or(HoldError::Ports)?.is_late(stamp, time, wall) {
+            let age = wall.checked_sub(stamp).ok_or(HoldError::Overflow)?;
+            let time = host_time(age, steady)?;
+            if !self.ports.get(port).ok_or(HoldError::Ports)?.is_late(age, time) {
                 break;
             }
             merge.advance(port);
@@ -278,16 +270,12 @@ impl TriggerSchedule {
     }
 
     /// Record the fallback step at `time`; its due ports are those silent for their limit.
-    fn run_fallback(&mut self, time: i64, first: i64) -> TriggerEvent {
-        let due = self
-            .ports
-            .iter()
-            .enumerate()
-            .filter(|(_, port)| port.silent_at(first).is_some_and(|silent| silent <= time))
-            // `new` holds every port below the capacity of the set.
-            .fold(TriggerPorts::default(), |due, (port, _)| due.with(port).unwrap_or(due));
+    fn run_fallback(&mut self, time: i64, first: i64) -> Result<TriggerEvent, HoldError> {
+        let silent = |port: &Port| port.silent_at(first).is_some_and(|silent| silent <= time);
+        let due = self.ports.iter().enumerate().filter(|(_, port)| silent(port));
+        let due = TriggerPorts::of(due.map(|(port, _)| port)).ok_or(HoldError::Ports)?;
         self.ran = Some(time);
-        TriggerEvent::Fallback { time, due }
+        Ok(TriggerEvent::Fallback { time, due })
     }
 
     /// The time the fallback due at `fallback` runs at, or `None` while it may not run.
@@ -342,18 +330,17 @@ impl TriggerSchedule {
 }
 
 /// The k-way merge of the ports' pending stamps: the head with the lowest stamp comes
-/// first, a tie goes to the lower port, and each port keeps its own order.
+/// first, a tie goes to the lower port, and each port keeps its own order. It merges at
+/// most [`TriggerPorts::CAPACITY`] ports, as many as a schedule has.
 struct Merge<'a> {
     pending: &'a [Vec<i64>],
     /// The position of each port's next stamp in its list.
-    next: &'a mut Vec<usize>,
+    next: [usize; TriggerPorts::CAPACITY],
 }
 
 impl<'a> Merge<'a> {
-    fn new(pending: &'a [Vec<i64>], next: &'a mut Vec<usize>) -> Self {
-        next.clear();
-        next.resize(pending.len(), 0);
-        Self { pending, next }
+    fn new(pending: &'a [Vec<i64>]) -> Self {
+        Self { pending, next: [0; TriggerPorts::CAPACITY] }
     }
 
     /// The next stamp with its port.
@@ -372,11 +359,6 @@ impl<'a> Merge<'a> {
             *next = next.saturating_add(1);
         }
     }
-
-    /// Start the merge again at the first stamp of every port.
-    fn rewind(&mut self) {
-        self.next.fill(0);
-    }
 }
 
 impl Iterator for Merge<'_> {
@@ -390,15 +372,17 @@ impl Iterator for Merge<'_> {
 }
 
 /// The schedule time of a pending trigger stamp on `clock`.
-///
-/// Under host time the stamp's wall age is taken back from the monotonic reading; a
-/// stamp from the future counts as sent now.
 fn trigger_time(stamp: i64, clock: TriggerClock<'_>) -> Result<i64, HoldError> {
     let TriggerClock::Host { wall, steady } = clock else {
         return Ok(stamp);
     };
-    let age = wall.checked_sub(stamp).ok_or(HoldError::Overflow)?.max(0);
-    steady.checked_sub(age).ok_or(HoldError::Overflow)
+    host_time(wall.checked_sub(stamp).ok_or(HoldError::Overflow)?, steady)
+}
+
+/// The monotonic time of a host sample of wall age `age`: the age taken back from the
+/// monotonic reading `steady`; a stamp from the future counts as sent now.
+fn host_time(age: i64, steady: i64) -> Result<i64, HoldError> {
+    steady.checked_sub(age.max(0)).ok_or(HoldError::Overflow)
 }
 
 /// The latest `last + k * silence`, `k >= 1`, at or before `bound`.

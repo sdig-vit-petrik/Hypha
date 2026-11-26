@@ -29,7 +29,7 @@ fn one(silence: i64) -> TriggerSchedule {
 }
 
 fn ports(ports: &[usize]) -> TriggerPorts {
-    ports.iter().fold(TriggerPorts::default(), |set, &port| set.with(port).unwrap())
+    TriggerPorts::of(ports.iter().copied()).unwrap()
 }
 
 fn trigger(time: i64, port: usize) -> TriggerEvent {
@@ -164,6 +164,48 @@ fn a_sim_trigger_stamped_before_the_last_event_is_refused() {
 fn a_sim_trigger_before_the_first_evaluation_still_runs() {
     let mut s = one(S);
     assert_eq!(run(&mut s, &[990], sim(1_000)), vec![trigger(990, 0)]);
+}
+
+#[test]
+fn a_sim_trigger_before_the_first_evaluation_moves_no_anchor_back() {
+    let mut s = one(S);
+    assert_eq!(run(&mut s, &[990], sim(1_000)), vec![trigger(990, 0)]);
+    // The next fallback counts from the first evaluation, the later of the two.
+    assert_eq!(run(&mut s, &[], sim(1_099)), vec![]);
+    assert_eq!(run(&mut s, &[], sim(1_100)), vec![fallback(1_100, &[0])]);
+}
+
+#[test]
+fn a_sim_fallback_holds_for_an_upstream_that_never_reported() {
+    let never = Limit { at: Some(i64::MIN), blocking: Some(("up".into(), None)) };
+    let mut s = one(S);
+    let _ = run(&mut s, &[], TriggerClock::Sim { now: 0, limit: &never });
+    assert_eq!(run(&mut s, &[], TriggerClock::Sim { now: 500, limit: &never }), vec![]);
+}
+
+#[test]
+fn host_a_sample_after_a_raised_step_compares_with_the_sample_of_that_step() {
+    let mut s = one(S);
+    let _ = run(&mut s, &[], host(0));
+    assert_eq!(run(&mut s, &[], host(150)), vec![fallback(100, &[0])]);
+    assert_eq!(run(&mut s, &[90], host(160)), vec![trigger(100, 0)]);
+    // Sent at 95, after the sample of the port's last step at 90, though before the time
+    // that step ran at.
+    assert_eq!(run(&mut s, &[95], host(170)), vec![trigger(100, 0)]);
+}
+
+#[test]
+fn host_a_trigger_at_exactly_its_limit_steps_and_one_past_it_is_late() {
+    let mut s = one(S);
+    assert_eq!(run(&mut s, &[900], host(1_000)), vec![trigger(900, 0)]);
+    let mut s = one(S);
+    assert_eq!(run(&mut s, &[899], host(1_000)), vec![late(899, 0)]);
+}
+
+#[test]
+fn host_a_tie_within_one_port_steps_each_sample() {
+    let mut s = one(S);
+    assert_eq!(run(&mut s, &[50, 50], host(60)), vec![trigger(50, 0), trigger(50, 0)]);
 }
 
 #[test]

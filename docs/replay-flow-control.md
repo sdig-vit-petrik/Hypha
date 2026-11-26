@@ -352,8 +352,10 @@ turn.
   clock values are compared only against `D - 1 ns`.
 - **Triggered cycles.** A triggered cycle's step at `t`, for a trigger sample or a fallback, needs a
   clock of at least `t` from each upstream node, not `t - 1 ns`: the step reads its trigger samples
-  stamped at or before `t`, so all of them must have arrived. A tie of two samples stamped `t` then
-  always runs in the same order (`execution-model.md` §6.6).
+  stamped at or before `t`, so all of them must have arrived. A tie of two samples from upstream
+  nodes stamped `t` then always runs in the same order (`execution-model.md` §6.6). The player is no
+  upstream and sends messages stamped `T` after `/clock = T`, so a tie on player data runs in arrival
+  order; #219 makes it deterministic.
 - **Feedback loops.** Input cuts are strict (`stamp < D`). Two nodes that read each other each need
   only the other's deadlines before `D`, so a loop does not deadlock. Tested with two nodes. A loop of
   a rate cycle and a triggered cycle does not deadlock either: the rate cycle reports `D' - 1 ns`

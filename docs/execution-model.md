@@ -514,17 +514,18 @@ the trigger that has no limit.
    and the outputs carry T as their framework send stamp. In host time the other
    inputs are captured as a host-time rate step captures them.
 3. **Fallback.** When no step ran for the shortest silence limit (`silence_ms`) of
-   the triggers, counted from the last step, one step runs without a trigger sample.
-   It repeats every shortest limit until a trigger arrives. Before the first trigger
-   it counts from the cycle's first evaluation. In the fallback step every trigger is
+   the triggers, one step runs without a trigger sample. The limit counts from the
+   last step, or from the cycle's first evaluation when that is later: a trigger
+   stamped before the first evaluation moves the count no earlier. It repeats every
+   shortest limit until a trigger arrives. In the fallback step every trigger is
    empty; a trigger without a sample for its own limit, since its last step or the
    first evaluation, is stale, and the others keep the verdict of item 2. A trigger
    stamped exactly at the fallback time runs instead of the fallback. In host time a
-   trigger sample already older than its port's limit on the wall clock, or stamped
-   before the last step on its port, runs no step: it is consumed and counted in its
-   port's `age_rejections_total`. A sample of one port drained after a later step of
-   another port still steps. A step's time never goes back: a trigger stamped before
-   the step that ran last steps at that step's time, and the next fallback counts
+   trigger sample older than its port's limit on the wall clock (a sample exactly at
+   its limit steps), or stamped before the sample of its port's last trigger step,
+   runs no step: it is consumed and counted in its port's `age_rejections_total`. A
+   trigger stamped before the last step of another port, or before a fallback, steps
+   at that step's time, so a step's time never goes back, and the next fallback counts
    from there.
    The send stamp is aged once, when the trigger is received, and its silence then
    runs on the monotonic clock: a later step of the wall clock moves no fallback. The

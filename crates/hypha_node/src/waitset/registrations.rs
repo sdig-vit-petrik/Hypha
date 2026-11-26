@@ -311,8 +311,7 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
         Request::Triggered { cycle, silences_nanos, notified } => {
             let schedule = hypha_runtime::trigger_schedule::TriggerSchedule::new(&silences_nanos)
                 .ok_or(Error::InvalidArgument)?;
-            let shortest = silences_nanos.iter().copied().min().ok_or(Error::InvalidArgument)?;
-            let wake = triggered_wake(set, shortest, notified);
+            let wake = triggered_wake(set, schedule.shortest(), notified);
             let id = set.native_attach(None, wake)?;
             let state = super::triggered::TriggeredCycle::new(cycle, schedule);
             Ok((id, Target::Triggered(state)))
