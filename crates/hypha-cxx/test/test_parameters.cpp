@@ -203,3 +203,115 @@ TEST_F(ParameterFixture, FloatOverflowThrows)
     EXPECT_THROW(hypha::config().optional<float>("huge", 0.0F), hypha::ParameterError);
     EXPECT_DOUBLE_EQ(hypha::config().optional<double>("huge", 0.0), 1e39);
 }
+
+namespace {
+
+/// A parameter file with port tables, for the inputs that share one topic.
+class PortTypeFixture : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        this->path = std::filesystem::temp_directory_path() / "hypha_port_type_test.toml";
+        std::ofstream output(this->path);
+        output << "[ports.inputs.joint]\n"
+                  "topic='/port_type_test/joint'\n"
+                  "[ports.inputs.mirror]\n"
+                  "topic='/port_type_test/joint'\n"
+                  "[ports.inputs.aside]\n"
+                  "topic='/port_type_test/aside'\n";
+        output.close();
+        ASSERT_TRUE(hypha::enableSimTime(hypha::Time::fromNanos(1000000000)));
+        this->node.emplace("port_type_test", this->path.string());
+    }
+
+    void TearDown() override
+    {
+        this->node.reset();
+        std::filesystem::remove(this->path);
+    }
+
+    std::optional<hypha::Node> node;
+    std::filesystem::path      path;
+};
+
+/// Two cycle ports of different types on one port name.
+class TwoTypesOnOnePort final : public hypha_test::StepCycle
+{
+  public:
+    TwoTypesOnOnePort()
+        : hypha_test::StepCycle("two_types")
+        , reading(*this, "joint", hypha::unsupervised)
+        , command(*this, "joint", hypha::unsupervised)
+    {
+    }
+
+    hypha::Latest<hypha_test::Reading>   reading;
+    hypha::Arrivals<hypha_test::Command> command;
+
+    void step(const hypha::CycleTime&) override
+    {
+    }
+};
+
+}  // namespace
+
+TEST_F(PortTypeFixture, ASecondInputOfAnotherTypeOnOnePortIsRefusedNamingBothTypes)
+{
+    auto first = hypha::Node().subscribe<hypha_test::Reading>("joint");
+    ASSERT_TRUE(first.enabled());
+
+    const std::string refusal = hypha_test::refusalOf([] {
+        static_cast<void>(hypha::Node().subscribe<hypha_test::Command>("joint"));
+    });
+    EXPECT_NE(refusal.find("ports.inputs.joint"), std::string::npos) << refusal;
+    EXPECT_NE(refusal.find("hypha_test/Command"), std::string::npos) << refusal;
+    EXPECT_NE(refusal.find("hypha_test/Reading"), std::string::npos) << refusal;
+    EXPECT_NE(refusal.find("/port_type_test/joint"), std::string::npos) << refusal;
+}
+
+TEST_F(PortTypeFixture, ASecondInputOfAnotherTypeOnTheTopicOfAnotherPortIsRefusedToo)
+{
+    auto first = hypha::Node().subscribe<hypha_test::Reading>("joint");
+
+    const std::string refusal = hypha_test::refusalOf([] {
+        static_cast<void>(hypha::Node().subscribe<hypha_test::Command>("mirror"));
+    });
+    EXPECT_NE(refusal.find("ports.inputs.mirror"), std::string::npos) << refusal;
+    EXPECT_NE(refusal.find("ports.inputs.joint"), std::string::npos) << refusal;
+}
+
+TEST_F(PortTypeFixture, TheSameTypeTwiceOnOnePortStaysAllowed)
+{
+    auto first = hypha::Node().subscribe<hypha_test::Reading>("joint");
+    auto second = hypha::Node().subscribe<hypha_test::Reading>("joint");
+    EXPECT_TRUE(first.enabled());
+    EXPECT_TRUE(second.enabled());
+}
+
+TEST_F(PortTypeFixture, AnotherTypeOnAnotherTopicIsAllowed)
+{
+    auto first = hypha::Node().subscribe<hypha_test::Reading>("joint");
+    auto second = hypha::Node().subscribe<hypha_test::Command>("aside");
+    EXPECT_TRUE(second.enabled());
+}
+
+TEST_F(PortTypeFixture, AnotherTypeIsAllowedOnceEveryInputOfTheFirstTypeIsGone)
+{
+    {
+        auto first = hypha::Node().subscribe<hypha_test::Reading>("joint");
+    }
+    auto second = hypha::Node().subscribe<hypha_test::Command>("joint");
+    EXPECT_TRUE(second.enabled());
+}
+
+TEST_F(PortTypeFixture, TwoCyclePortsOfAnotherTypeOnOneNameAreRefusedAtStart)
+{
+    TwoTypesOnOnePort cycle;
+    cycle.setRate(hypha::Hz(100.0));
+    const auto started = cycle.start(*this->node);
+    ASSERT_FALSE(started.has_value());
+    EXPECT_NE(started.error().find("ports.inputs.joint"), std::string::npos) << started.error();
+    EXPECT_NE(started.error().find("hypha_test/Command"), std::string::npos) << started.error();
+    EXPECT_NE(started.error().find("hypha_test/Reading"), std::string::npos) << started.error();
+}

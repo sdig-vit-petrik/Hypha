@@ -357,7 +357,12 @@ Options: a `hypha::Qos` (section 7) and, for a port, `hypha::optionalTopic` (sec
 5.3). The callback is optional. A subscription on a literal topic wakes the run per
 sample; a `*` pattern is read every 1 ms (execution-model.md §7-8). A cycle input port
 warns about a missing publisher like a subscriber, once per topic: ports that share a
-topic share the warning. A literal topic and a port name side by side, and a ROS 1 node
+topic share the warning. A topic carries one message type: while an input of the
+process reads a topic as one type, a second input of another type on it (the same port
+table or another with the same topic) is refused when it is created, naming both ports
+and both types (`ConfigError` for a port table; a cycle's `start()` fails with
+`InvalidSchema`). The same type twice is allowed. A literal topic and a port name side
+by side, and a ROS 1 node
 ported to an `ApplicationNode`:
 [ros1-migration-guide.md](ros1-migration-guide.md#103-literal-topic-or-port-name).
 Reference: `hypha/subscriber.h` (type check, patterns, the no-publisher warning),

@@ -5,6 +5,7 @@
 
 #include "hypha/backend/config_readers.h"
 #include "hypha/backend/endpoint_factory.h"
+#include "hypha/backend/input_types.h"
 #include "hypha/backend/introspection.h"
 #include "hypha/backend/ros1_codec.h"
 #include "hypha/backend/session.h"
@@ -153,6 +154,14 @@ class Subscriber
             ),
             source.describe()
         ));
+        if (!isPattern) {
+            const std::expected<void, std::string> claimed = backend::claimInputType(
+                topic, codec::dataType<M>(), codec::md5Sum<M>(), source.describe(), this->handle
+            );
+            if (!claimed) {
+                source.refuse("hypha: " + claimed.error());
+            }
+        }
         this->shared->connected = true;
         const std::expected<std::string, Status> resolved =
             backend::readSubscriberTopic(this->handle->rawSubscriber());

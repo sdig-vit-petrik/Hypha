@@ -4,6 +4,7 @@
 /// Input: the state that Latest and Arrivals share: source, settings and supervision.
 
 #include "hypha/backend/cycle.h"
+#include "hypha/backend/input_types.h"
 #include "hypha/backend/session.h"
 #include "hypha/backend/typed.h"
 #include "hypha/cycle.h"
@@ -214,7 +215,8 @@ class Input : public Port
 
     std::string describeFailure() const override
     {
-        return this->supervision_.describe(this->slot_->topic);
+        const std::string port = this->supervision_.describe(this->slot_->topic);
+        return this->refusal_.empty() ? port : port + ": " + this->refusal_;
     }
 
     void endStep() override
@@ -229,6 +231,7 @@ class Input : public Port
     ::HyphaStatus bindSource(HyphaCycle* cycle, bool queued)
     {
         this->tableRefused_ = false;
+        this->refusal_.clear();
         const ::HyphaStatus opened = this->ensureSource();
         if (opened != HYPHA_STATUS_OK) {
             return opened;
@@ -296,6 +299,15 @@ class Input : public Port
             this->tableRefused_ = true;
             return static_cast<::HyphaStatus>(resolved.error());
         }
+        const std::expected<void, std::string> claimed = backend::claimInputType(
+            *resolved, codec::dataType<M>(), codec::md5Sum<M>(), slot.topic.describe(), this->slot_
+        );
+        if (!claimed) {
+            // Another input reads the topic as another type: a restart cannot fix it.
+            this->refusal_ = claimed.error();
+            this->tableRefused_ = slot.topic.fromParam();
+            return HYPHA_STATUS_INVALID_SCHEMA;
+        }
         std::expected<detail::InputSource, Status> opened = detail::openSource<M>(
             backend::defaultWaitSet(),
             *resolved,
@@ -357,7 +369,9 @@ class Input : public Port
     uint32_t                               depth_{0};
     InputVerdict                           verdict_{InputVerdict::NeverArrived};
     bool                                   tableRefused_{false};
-    HyphaCycleBindingView                  facts_{
+    /// Why the last bind() was refused, when the port's own text does not say.
+    std::string           refusal_;
+    HyphaCycleBindingView facts_{
         .health = {}, .held = {}, .supervision = {}, .ok = 1, .age_nanos = 0
     };
     uint32_t                          index_{0};

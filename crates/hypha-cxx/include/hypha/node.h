@@ -218,8 +218,9 @@ class Node
     ///        @p callback for each sample. Options: optionalTopic, a Qos. With
     ///        optionalTopic a table without a topic gives a disabled subscriber. Create
     ///        endpoints before run().
-    /// @throws ConfigError when its port table is missing or refused, or the policy
-    ///         mismatches (QosMismatch); std::runtime_error for any other refusal.
+    /// @throws ConfigError when its port table is missing or refused, another input reads
+    ///         the topic as another message type, or the policy mismatches (QosMismatch);
+    ///         std::runtime_error for any other refusal.
     template <typename M, SubscriberOption... Options>
     [[nodiscard]] Subscriber<M>
     subscribe(std::string port, typename Subscriber<M>::Callback callback = {}, Options... options)
@@ -235,7 +236,7 @@ class Node
 
     /// @brief A subscriber on a topic, or a wildcard pattern, that code fixes. Option: a Qos.
     /// @throws ConfigError for a policy mismatch (QosMismatch); std::runtime_error for any
-    ///         other refusal.
+    ///         other refusal, such as another input that reads the topic as another type.
     template <typename M, SubscriberOption... Options>
         requires(detail::FixedTopicOption<Options> && ...)
     [[nodiscard]] Subscriber<M>

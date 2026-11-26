@@ -80,11 +80,18 @@ struct TopicSource
     ///         before a named Node has been created.
     void requireSession() const
     {
-        if (backend::nodeHandle() != nullptr) {
-            return;
+        if (backend::nodeHandle() == nullptr) {
+            this->refuse(
+                failureText(this->describe(), Status::InvalidState)
+                + ": no session exists; create a named hypha::Node first"
+            );
         }
-        const std::string text = failureText(this->describe(), Status::InvalidState)
-                               + ": no session exists; create a named hypha::Node first";
+    }
+
+    /// @throws ConfigError for a port table: a restart cannot fix it. std::runtime_error
+    ///         for a literal topic.
+    [[noreturn]] void refuse(const std::string& text) const
+    {
         if (this->fromParam()) {
             throw ConfigError(text);
         }
@@ -118,11 +125,7 @@ struct TopicSource
         if (topic) {
             return *topic;
         }
-        const std::string text = failureText(this->describe(), topic.error());
-        if (this->fromParam()) {
-            throw ConfigError(text);
-        }
-        throw std::runtime_error(text);
+        this->refuse(failureText(this->describe(), topic.error()));
     }
 };
 
