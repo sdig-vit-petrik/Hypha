@@ -111,7 +111,7 @@ fn set_trigger_refuses_a_latest_binding() {
     let mut runtime = CycleRuntime::new();
     let index = runtime.add_binding(history(&[]), latest()).expect("binding");
     assert_eq!(runtime.set_trigger(index as usize), Err(STATUS_INVALID_ARGUMENT));
-    assert!(runtime.triggers().is_empty());
+    assert_eq!(runtime.triggers(), []);
 }
 
 #[test]
@@ -199,10 +199,10 @@ fn a_step_takes_the_firing_sample_and_leaves_the_others_pending() {
     runtime.set_trigger(b as usize).expect("trigger");
     let seen = step(&mut runtime, 10, fires(0));
     assert_eq!(stamps(&seen[0]), [10]);
-    assert!(seen[1].samples.is_empty(), "{:?}", seen[1].samples);
+    assert_eq!(seen[1].samples, []);
     assert_eq!(pending(&runtime), [vec![20], vec![10]]);
     let seen = step(&mut runtime, 10, fires(1));
-    assert!(seen[0].samples.is_empty());
+    assert_eq!(seen[0].samples, []);
     assert_eq!(stamps(&seen[1]), [10]);
 }
 
