@@ -7,6 +7,40 @@
 
 namespace hypha::testing {
 
+/// Whether a start would wire @p topic, decided from the parameter file alone. It follows
+/// `hypha_param_topic` (crates/hypha_node/src/param_topic.rs), which needs a node and so
+/// cannot run here; TheHarnessEnablesTheOptionalPortsThatAStartEnables keeps the two equal.
+inline bool StepHarness::wiredByFile(const detail::TopicSource& topic)
+{
+    const bool alwaysWired = !topic.fromParam() || !topic.paramOptional;
+    if (alwaysWired) {
+        return true;
+    }
+    const ConfigView                 table(topic.describe());
+    const std::optional<std::string> name = table.optional<std::string>("topic");
+    const bool                       switchedOff = !name.has_value() || name->empty();
+    if (switchedOff) {
+        return false;
+    }
+    if (validateTopicName(*name) != Status::Ok) {
+        throw ConfigError(detail::failureText(topic.describe(), Status::InvalidTopic));
+    }
+    return true;
+}
+
+/// Decides every port before it changes one, so a refusal leaves the cycle as it was.
+inline void StepHarness::wirePorts()
+{
+    std::vector<bool> wired;
+    for (const Port* port : this->cycle_.ports_) {
+        const detail::TopicSource* topic = port->topicSource();
+        wired.push_back(topic != nullptr && StepHarness::wiredByFile(*topic));
+    }
+    for (size_t index = 0; index < wired.size(); ++index) {
+        this->cycle_.ports_[index]->setWiredByHarness(wired[index]);
+    }
+}
+
 inline void* StepHarness::storeFor(const Port& port, void* (*make)(), void (*destroy)(void*))
 {
     for (Store& store : this->stores_) {

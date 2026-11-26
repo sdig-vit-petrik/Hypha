@@ -101,6 +101,19 @@ class Port
         return false;
     }
 
+    /// @brief The topic this port reads or publishes; nullptr for a port that has none.
+    ///        A testing::StepHarness decides enabled() from it. Default: none.
+    virtual const detail::TopicSource* topicSource() const
+    {
+        return nullptr;
+    }
+
+    /// @brief Make enabled() answer @p wired while a testing::StepHarness holds the
+    ///        cycle, which opens no source and binds no publisher. Default: nothing.
+    virtual void setWiredByHarness(bool)
+    {
+    }
+
     /// @brief The binding index of a port that can trigger its cycle, once bound.
     ///        Default: none.
     virtual std::optional<uint32_t> triggerIndex() const

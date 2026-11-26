@@ -465,7 +465,10 @@ TEST(SpeedControllerStep, CommandsAfterAUsableSpeedArrived)
 
   The harness setters (`set`, `setStale`, `setNeverArrived`, `setStagnant`) give a
   port what a capture would give, for `Latest` and `Arrivals` ports alike; see
-  `docs/cpp-api.md`, "Test a step without a bus". The harness moves no clock: the
+  `docs/cpp-api.md`, "Test a step without a bus". An `optionalTopic` input or output is
+  enabled in the harness only when the test's TOML gives its table a `topic`: wire it
+  there to `deliver()` to it and read its three verdicts, and test the fallback with a
+  file that leaves it out. The harness moves no clock: the
   step reads the `CycleTime` it is given, for its decisions and for the stamps it
   writes. Ported code that still calls `hypha::now()` gets the process clock in a
   harness step; until it is changed, the test sets simulated time to the step's time

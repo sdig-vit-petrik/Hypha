@@ -75,7 +75,8 @@ class Output final : public Port
         return this->sent_;
     }
 
-    /// @brief True when start() bound a publisher.
+    /// @brief True when start() bound a publisher. In a testing::StepHarness it is true for
+    ///        a port that the parameter file wires, as a start would.
     bool enabled() const
     {
         return this->enabled_;
@@ -185,6 +186,16 @@ class Output final : public Port
     bool bindRefusedByConfiguration() const override
     {
         return this->tableRefused_;
+    }
+
+    const detail::TopicSource* topicSource() const override
+    {
+        return &this->topic_;
+    }
+
+    void setWiredByHarness(bool wired) override
+    {
+        this->enabled_ = wired;
     }
 
     ::HyphaStatus capture(const HyphaCycleImage*) override

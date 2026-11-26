@@ -10,8 +10,19 @@
 ///     harness.step(controller);
 ///     ASSERT_EQ(harness.sent(controller.command).size(), 1U);
 ///
-/// deliver() reads `silence_ms` of `[ports.inputs.<name>]`, so a Node or a ConfigContext
-/// must hold the parameter file.
+/// What a harness step shares with a started cycle:
+///  - which ports are enabled, decided from the parameter file as a start decides it: a
+///    port that requires its topic or sits on a Topic literal is enabled; an optionalTopic
+///    port is enabled when its table sets a non-empty `topic`;
+///  - the verdict of a delivered input, by the rule of the capture, from `silence_ms`;
+///  - the bound of perStep() on the sends of a step.
+/// What it leaves out: the node, the transport (no subscriber or publisher is opened, no
+/// sample crosses a bus), the clock, and every key of a table but `topic` and `silence_ms`.
+/// set(), setStale() and setNeverArrived() state a verdict and read no file.
+///
+/// The parameter file is read when the harness is built, for `topic`, and in deliver(),
+/// for `silence_ms`, so a Node or a ConfigContext must hold it before the harness exists.
+/// Without a file every optionalTopic port is disabled.
 ///
 /// step() moves no clock: in a harness step hypha::now() returns the process clock, so a
 /// test of code that calls it sets simulated time itself.
@@ -45,6 +56,8 @@ class StepHarness final : private detail::CaptureStore
 {
   public:
     /// @throws std::logic_error when @p cycle has started or another harness holds it.
+    /// @throws ConfigError when an optional port's `topic` is a name a start would refuse.
+    /// @throws ParameterError when that `topic` is not text.
     explicit StepHarness(Cycle& cycle) : cycle_(cycle)
     {
         const bool taken = cycle.started_ || cycle.harnessLive_;
@@ -54,6 +67,7 @@ class StepHarness final : private detail::CaptureStore
                 + "': a StepHarness needs a cycle that was not started"
             );
         }
+        this->wirePorts();
         cycle.harnessLive_ = true;
     }
 
@@ -66,6 +80,9 @@ class StepHarness final : private detail::CaptureStore
     {
         for (Store& store : this->stores_) {
             store.destroy(store.sent);
+        }
+        for (Port* port : this->cycle_.ports_) {
+            port->setWiredByHarness(false);
         }
         this->cycle_.harnessLive_ = false;
     }
@@ -266,7 +283,9 @@ class StepHarness final : private detail::CaptureStore
     };
 
     // Defined in hypha/testing/step_harness_impl.h.
-    void* storeFor(const Port& port, void* (*make)(), void (*destroy)(void*)) override;
+    void        wirePorts();
+    static bool wiredByFile(const detail::TopicSource& topic);
+    void*       storeFor(const Port& port, void* (*make)(), void (*destroy)(void*)) override;
     template <typename M>
     static int64_t  silenceOf(const Input<M>& port);
     static bool     withinSilence(int64_t silenceNanos, int64_t sentNanos, int64_t nowNanos);
