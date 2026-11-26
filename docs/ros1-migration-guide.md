@@ -846,11 +846,11 @@ class Locator final : public hypha::ApplicationNode
     void setup(hypha::Node& node) override
     {
         this->scan_ = node.subscribe<sensor_msgs::PointCloud2>(
-            "scan", hypha::bind<&Locator::onScan>(*this));                 // [ports.inputs.scan]
+            "scan", hypha::bind<&Locator::onScan>(*this)
+        );  // [ports.inputs.scan]
         this->pose_ = node.advertise<geometry_msgs::PoseStamped>("pose");  // [ports.outputs.pose]
-        this->timer_ = node.timer(
-            hypha::Duration::fromMillis(100), hypha::bind<&Locator::onTick>(*this)
-        );
+        this->timer_ =
+            node.timer(hypha::Duration::fromMillis(100), hypha::bind<&Locator::onTick>(*this));
         this->tf_.emplace(node);  // TransformBuffer has no default constructor
     }
 
@@ -872,11 +872,11 @@ class Locator final : public hypha::ApplicationNode
         // periodic work
     }
 
-    double gain_;
-    hypha::Subscriber<sensor_msgs::PointCloud2> scan_;
+    double                                       gain_;
+    hypha::Subscriber<sensor_msgs::PointCloud2>  scan_;
     hypha::Publisher<geometry_msgs::PoseStamped> pose_;
-    hypha::Timer timer_;
-    std::optional<hypha::TransformBuffer> tf_;
+    hypha::Timer                                 timer_;
+    std::optional<hypha::TransformBuffer>        tf_;
 };
 
 int main(int argc, char** argv)
@@ -1043,7 +1043,7 @@ that fails calls `failRun()`:
 #include <exception>
 #include <thread>
 
-sensor_msgs::PointCloud2 readFromDevice();   // the driver's blocking read, with a timeout
+sensor_msgs::PointCloud2 readFromDevice();  // the driver's blocking read, with a timeout
 
 class LidarNode final : public hypha::ApplicationNode
 {
@@ -1063,7 +1063,7 @@ class LidarNode final : public hypha::ApplicationNode
 
     void started(hypha::Node& /*node*/) override
     {
-        this->worker_ = std::thread(&LidarNode::readLoop, this);   // after the checks
+        this->worker_ = std::thread(&LidarNode::readLoop, this);  // after the checks
     }
 
   private:
@@ -1085,9 +1085,9 @@ class LidarNode final : public hypha::ApplicationNode
         }
     }
 
-    std::atomic<bool> stopping_{false};
+    std::atomic<bool>                          stopping_{false};
     hypha::Publisher<sensor_msgs::PointCloud2> points_;
-    std::thread worker_;
+    std::thread                                worker_;
 };
 ```
 
