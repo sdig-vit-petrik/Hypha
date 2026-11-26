@@ -561,7 +561,9 @@ and every other trigger holds none, so the step tells the port that fired as the
 whose `samples()` is not empty. Each trigger has its own `silence_ms`: `usable()` and
 `stale()` of every trigger port judge its newest sample against it in every step. After
 the shortest `silence_ms` without a step a fallback step runs with every trigger empty
-and each trigger that is past its own limit `stale()`. The rules are in
+and each trigger that is past its own limit `stale()`. On host time an `Arrivals`
+port that is no trigger holds, in a trigger step, the samples sent up to the trigger
+sample; a later one is in a later step. The rules are in
 execution-model.md §6.6. `examples/mrs/managers/estimation_manager.cpp` and
 `control_manager.cpp` are triggered cycles. `start()` fails for a rate with a trigger
 ("a rate and a trigger exclude each other"), a `Latest` trigger ("the trigger must be

@@ -482,9 +482,18 @@ fn sent(capture: &BindingCapture) -> Vec<u64> {
 /// Run one step on host time at monotonic time 100. The step time is monotonic and the
 /// framework stamps are wall time, so neither orders two samples; their host send times do.
 fn host_step(runtime: &mut CycleRuntime, trigger: TriggerStep) -> Vec<BindingCapture> {
+    host_step_at(runtime, 100, trigger)
+}
+
+/// [`host_step`] captured at monotonic time `steady`.
+fn host_step_at(
+    runtime: &mut CycleRuntime,
+    steady: i64,
+    trigger: TriggerStep,
+) -> Vec<BindingCapture> {
     let time = CycleTime {
-        scheduled_nanos: 100,
-        capture_steady_nanos: 100,
+        scheduled_nanos: steady,
+        capture_steady_nanos: steady,
         trigger_step: Some(trigger),
         ..CycleTime::default()
     };
@@ -536,4 +545,72 @@ fn on_host_time_a_fallback_step_takes_every_arrival() {
 
     let seen = host_step(&mut runtime, TriggerStep::Fallback { due: TriggerPorts::default() });
     assert_eq!(sent(&seen[other]), [10, 20]);
+}
+
+#[test]
+fn on_host_time_a_partner_sent_with_the_firing_sample_is_in_its_step() {
+    // One step of one upstream cycle stamps all its outputs with one host send time.
+    let mut runtime = CycleRuntime::new();
+    let trigger =
+        runtime.add_binding(host_history(&[100, 200]), queued(8)).expect("binding") as usize;
+    let partner =
+        runtime.add_binding(host_history(&[100, 200]), queued(8)).expect("binding") as usize;
+    runtime.set_trigger(trigger).expect("trigger");
+
+    let first = host_step_at(&mut runtime, 300, TriggerStep::Sample { port: 0 });
+    assert_eq!(sent(&first[partner]), [100]);
+    let second = host_step_at(&mut runtime, 300, TriggerStep::Sample { port: 0 });
+    assert_eq!(sent(&second[partner]), [200]);
+}
+
+#[test]
+fn on_host_time_arrivals_are_taken_up_to_the_first_one_sent_after_the_firing_sample() {
+    // Two publishers on the partner topic: the history is in arrival order, not send order.
+    let mut runtime = CycleRuntime::new();
+    let trigger =
+        runtime.add_binding(host_history(&[20, 40]), queued(8)).expect("binding") as usize;
+    let partner =
+        runtime.add_binding(host_history(&[10, 30, 15]), queued(8)).expect("binding") as usize;
+    runtime.set_trigger(trigger).expect("trigger");
+
+    let first = host_step(&mut runtime, TriggerStep::Sample { port: 0 });
+    assert_eq!(sent(&first[partner]), [10], "30 ends the run, so 15 waits behind it");
+    assert_eq!(first[partner].backlog_samples, 0);
+
+    let second = host_step(&mut runtime, TriggerStep::Sample { port: 0 });
+    assert_eq!(sent(&second[partner]), [30, 15], "nothing is lost and nothing comes twice");
+}
+
+#[test]
+fn on_host_time_a_drop_under_the_bound_counts_every_sample_it_passes() {
+    let mut runtime = CycleRuntime::new();
+    let trigger =
+        runtime.add_binding(host_history(&[20, 40]), queued(8)).expect("binding") as usize;
+    let partner =
+        runtime.add_binding(host_history(&[10, 30, 15, 16]), queued(1)).expect("binding") as usize;
+    runtime.set_trigger(trigger).expect("trigger");
+
+    let first = host_step(&mut runtime, TriggerStep::Sample { port: 0 });
+    assert_eq!(sent(&first[partner]), [10]);
+    assert_eq!(first[partner].work_limit_drops, 0);
+
+    let second = host_step(&mut runtime, TriggerStep::Sample { port: 0 });
+    assert_eq!(sent(&second[partner]), [16], "one sample a step: the newest of the three due");
+    assert_eq!(second[partner].work_limit_drops, 2, "30 and 15 are passed, and both counted");
+    assert_eq!(second[partner].counters.overrun_total, 0);
+}
+
+#[test]
+fn on_host_time_an_input_whose_samples_wait_behind_the_firing_one_stays_usable() {
+    // The partner's only sample was sent after the firing one: it has arrived, so the
+    // input is not silent, though this step takes nothing from it.
+    let mut runtime = CycleRuntime::new();
+    let trigger = runtime.add_binding(host_history(&[100]), queued(8)).expect("binding");
+    let partner = runtime.add_binding(host_history(&[105]), queued(8)).expect("binding");
+    runtime.set_trigger(trigger as usize).expect("trigger");
+    supervise(&mut runtime, partner, 50);
+
+    let seen = host_step_at(&mut runtime, 130, TriggerStep::Sample { port: 0 });
+    assert!(sent(&seen[partner as usize]).is_empty());
+    assert_eq!(seen[partner as usize].verdict, InputVerdict::Usable);
 }

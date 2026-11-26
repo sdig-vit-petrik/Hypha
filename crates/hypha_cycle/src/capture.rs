@@ -37,16 +37,6 @@ pub enum CaptureClock {
         /// Host monotonic time of the capture.
         steady_nanos: u64,
     },
-    /// Host monotonic time for the queued inputs of a trigger step that are no trigger: only
-    /// samples sent before the step's trigger sample are admitted, so one sent after it
-    /// waits for a later step, as under [`CaptureClock::Replay`]. Each is judged by its
-    /// send time.
-    HostBefore {
-        /// Host monotonic time of the capture.
-        steady_nanos: u64,
-        /// Host monotonic time at which the step's trigger sample was sent.
-        trigger_sent_nanos: u64,
-    },
     /// Data time for one replay step: only samples sent before `cut_nanos` are admitted,
     /// each judged by `cut_nanos - framework_sent_nanos`.
     Replay {
@@ -401,15 +391,12 @@ impl BindingCapture {
                 self.capture_latest(history, high_water, clock);
             }
             CaptureMode::Queued => {
-                let assigned = options.max_samples_per_iteration;
-                self.capture_queued(
-                    history,
-                    high_water,
-                    options,
-                    assigned,
-                    clock,
-                    Examine::WithinLimit,
-                );
+                let take = Take {
+                    assigned: options.max_samples_per_iteration,
+                    sent_through: None,
+                    examine: Examine::WithinLimit,
+                };
+                self.capture_queued(history, high_water, options, clock, take);
             }
         }
     }
@@ -443,7 +430,7 @@ impl BindingCapture {
     }
 
     /// Host monotonic send time of the oldest retained sample after this binding's cursor.
-    pub(crate) fn next_sent_nanos(&self, history: &CycleHistory) -> Option<u64> {
+    pub(crate) fn next_transport_sent_nanos(&self, history: &CycleHistory) -> Option<u64> {
         let start = history.cursor_offset(self.cursor);
         history.samples().get(start).map(|sample| sample.transport_sent_nanos)
     }
@@ -451,7 +438,41 @@ impl BindingCapture {
     /// Pending retained samples for this queued binding that `clock` admits.
     #[must_use]
     pub fn pending_samples_on(&self, history: &CycleHistory, clock: CaptureClock) -> usize {
-        self.pending_before(history, clock, clock.admitted_end(history))
+        self.pending_arrivals(history, clock, None)
+    }
+
+    /// Pending retained samples this queued binding may take: those `clock` admits, and
+    /// with `sent_through` only those within [`Self::reach`].
+    pub(crate) fn pending_arrivals(
+        &self,
+        history: &CycleHistory,
+        clock: CaptureClock,
+        sent_through: Option<u64>,
+    ) -> usize {
+        self.pending_before(history, clock, self.reach(history, clock, sent_through))
+    }
+
+    /// The exclusive end of what a queued capture may take. Without `sent_through` it is
+    /// the prefix `clock` admits. With it, it is the run of pending samples, in arrival
+    /// order, up to the first one sent after that host monotonic time: a cursor takes
+    /// samples in order, so a later sample ends the run even when an earlier-sent one
+    /// follows it.
+    fn reach(
+        &self,
+        history: &CycleHistory,
+        clock: CaptureClock,
+        sent_through: Option<u64>,
+    ) -> Option<usize> {
+        let Some(sent_through) = sent_through else {
+            return clock.admitted_end(history);
+        };
+        let start = history.cursor_offset(self.cursor);
+        let run = history
+            .samples()
+            .range(start..)
+            .take_while(|sample| sample.transport_sent_nanos <= sent_through)
+            .count();
+        Some(start.saturating_add(run))
     }
 
     fn pending_before(
@@ -485,8 +506,23 @@ impl BindingCapture {
         assigned: usize,
         clock: CaptureClock,
     ) {
+        self.capture_arrivals(history, options, assigned, clock, None);
+    }
+
+    /// [`Self::capture_assigned_on`], taking with `sent_through` only the samples within
+    /// [`Self::reach`]. The verdict and the received count are those of `clock`: a sample
+    /// that waits behind `sent_through` has arrived, so its input is not silent.
+    pub(crate) fn capture_arrivals(
+        &mut self,
+        history: &CycleHistory,
+        options: BindingOptions,
+        assigned: usize,
+        clock: CaptureClock,
+        sent_through: Option<u64>,
+    ) {
         let high_water = self.begin_capture(history, options, clock);
-        self.capture_queued(history, high_water, options, assigned, clock, Examine::WithinLimit);
+        let take = Take { assigned, sent_through, examine: Examine::WithinLimit };
+        self.capture_queued(history, high_water, options, clock, take);
     }
 
     /// Capture for a binding with no source at `clock`: what an empty history gives.
@@ -561,8 +597,9 @@ impl BindingCapture {
             overflow_policy: QueueOverflowPolicy::Carry,
             ..options
         };
-        let take = usize::from(fires);
-        self.capture_queued(history, high_water, options, take, clock, Examine::Every);
+        let take =
+            Take { assigned: usize::from(fires), sent_through: None, examine: Examine::Every };
+        self.capture_queued(history, high_water, options, clock, take);
     }
 
     fn capture_queued(
@@ -570,16 +607,16 @@ impl BindingCapture {
         history: &CycleHistory,
         high_water: u64,
         options: BindingOptions,
-        assigned: usize,
         clock: CaptureClock,
-        examine: Examine,
+        take: Take,
     ) {
+        let Take { assigned, sent_through, examine } = take;
         let Some(oldest) = history.samples().front().map(|sample| sample.sequence) else {
             return;
         };
         self.skip_evicted(oldest);
 
-        let admitted_end = clock.admitted_end(history);
+        let admitted_end = self.reach(history, clock, sent_through);
         let start = history.cursor_offset(self.cursor);
         let pending = self.pending_before(history, clock, admitted_end);
         let excess = pending.saturating_sub(assigned.min(options.max_samples_per_iteration));
@@ -602,7 +639,9 @@ impl BindingCapture {
         }
 
         let mut examined = 0usize;
-        for sample in history.samples().range(history.cursor_offset(self.cursor)..) {
+        let from = history.cursor_offset(self.cursor);
+        let to = admitted_end.unwrap_or(history.samples().len()).max(from);
+        for sample in history.samples().range(from..to) {
             let sample_is_outside_queued_window = !before_or_equal(self.cursor, sample.sequence)
                 || !before(sample.sequence, high_water);
             if sample_is_outside_queued_window {
@@ -643,7 +682,7 @@ impl BindingCapture {
             self.delivered_total = self.delivered_total.wrapping_add(usable_count);
             self.held = Some(Arc::clone(newest));
         }
-        self.backlog_samples = self.pending_before(history, clock, admitted_end);
+        self.backlog_samples = self.pending_arrivals(history, clock, sent_through);
     }
 
     /// A latest binding re-selects the same sample until a newer one arrives; only a new
@@ -661,6 +700,17 @@ impl BindingCapture {
         self.counters.latest_unavailable_iterations =
             self.counters.latest_unavailable_iterations.wrapping_add(1);
     }
+}
+
+/// What one queued capture takes.
+#[derive(Debug, Clone, Copy)]
+struct Take {
+    /// The samples the scheduler assigned.
+    assigned: usize,
+    /// The host send time that bounds the capture ([`BindingCapture::reach`]), if any.
+    sent_through: Option<u64>,
+    /// Which of the examined samples are delivered.
+    examine: Examine,
 }
 
 /// Which examined samples a queued capture delivers.

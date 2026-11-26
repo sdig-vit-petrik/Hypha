@@ -465,8 +465,10 @@ input takes none. Without a budget, no cycle-wide limit applies.
 
 A queued input has one overflow behaviour, and no option selects another: the
 pending samples beyond its share are the oldest, so it discards them, examines
-the newest, and counts each discard. Only the triggers of a triggered cycle keep
-their pending samples for later steps (section 6.6).
+the newest, and counts each discard. In a triggered cycle the triggers keep their
+pending samples for later steps, and on host time a queued input that is no trigger
+keeps the samples sent after the step's trigger sample: they are not pending for
+that step and no share discards them (section 6.6).
 
 Each cause of loss has its own counter:
 
@@ -513,11 +515,17 @@ the trigger that has no limit.
    as for a `Latest` input, one stamped after the step included. Under simulated time
    every other input is cut strictly before T, as a grid step is cut at its deadline,
    and the outputs carry T as their framework send stamp. In host time a queued
-   (`Arrivals`) input that is no trigger holds the samples sent before the trigger
-   sample, by the host send time of both: one sent after it waits for a later trigger
-   step or a fallback, so two trigger samples drained in one turn each find their own
-   arrivals. A `Latest` input and the transform input are captured as a host-time rate
-   step captures them.
+   (`Arrivals`) input that is no trigger takes its pending samples, in arrival order,
+   up to the first one sent after the trigger sample, by the host send time of both. A
+   sample sent with the trigger sample, by one step of one upstream cycle, has the same
+   send time and is taken. A later one waits for a later trigger step or a fallback,
+   so the trigger samples drained in one turn each find their own arrivals; with two
+   publishers on the input, an earlier sample that arrives behind a later one waits
+   with it. The input's verdict counts every sample that has arrived, the waiting ones
+   included. A `Latest` input and the transform input are captured as a host-time rate
+   step captures them. Under simulated time a sample stamped exactly T, as the outputs
+   of the step that sent the trigger sample are, is cut and belongs to the next step:
+   the two clocks differ here.
 3. **Fallback.** When no step ran for the shortest silence limit (`silence_ms`) of
    the triggers, one step runs without a trigger sample. The limit counts from the
    last step, or from the cycle's first evaluation when that is later: a trigger
