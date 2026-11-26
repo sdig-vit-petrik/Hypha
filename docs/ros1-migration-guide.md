@@ -21,12 +21,14 @@ Read these before you start: [cpp-api.md](cpp-api.md) §2, §5.4 (cycle node), �
 (parameters), §11 (logging), [execution-model.md](execution-model.md) §2 and
 §3. The reference for a cycle node is
 [examples/scan_cycle](../examples/scan_cycle/README.md): its entry point, the contract
-of each input, and a test at each of three levels. The reference for a plain node is
+of each input, and a test at each of three levels. The reference for an `ApplicationNode` is
 [examples/sensor_pipeline](../examples/sensor_pipeline/README.md) (section 10).
 
 A node is a `hypha::CycleNode` with its ports as members, started by
 `hypha::runNode<App>()` (see [cpp-api.md](cpp-api.md) §5.4). A node whose ports
-are built at run time uses `hypha::Cycle` ([cpp-api.md](cpp-api.md) §5.5).
+are built at run time uses `hypha::Cycle` ([cpp-api.md](cpp-api.md) §5.5). A node that
+needs callbacks or threads is a `hypha::ApplicationNode`, started by the same call
+([section 10](#10-porting-an-event-driven-node-an-applicationnode)).
 
 ---
 
@@ -39,9 +41,9 @@ without timers, parameters and services. The procedure ends in a `CycleNode`:
 - A node whose work runs on each sample of one input becomes a **triggered cycle**:
   `setTrigger(port)` on that input's `Arrivals` port, one step per sample at the
   sample's time ([Step 2](#step-2-design-the-cycle)).
-- A plain `hypha::Node` is only for a node whose callbacks publish on more than one
+- A `hypha::ApplicationNode` is only for a node whose callbacks publish on more than one
   input, a node that owns worker threads, and a shim of a ROS client library: see
-  [section 10](#10-porting-an-event-driven-node-to-a-plain-hyphanode).
+  [section 10](#10-porting-an-event-driven-node-an-applicationnode).
 
 Do not use it, and ask the user first, when the node needs one of the items in
 [section 7](#7-stop-and-ask). hypha has no equivalent for them.
@@ -203,7 +205,7 @@ effect for each message (a counter, an integrator, a queue) must use an
   ports as in the table above, and a TF listener a `hypha::Transforms` port.
 
 A node with two inputs whose callbacks each publish is not one triggered cycle: it
-stays a plain node (section 10).
+becomes an `ApplicationNode` (section 10).
 
 **Check:** each subscription has one input port, and each publication has one
 output port.
@@ -481,6 +483,8 @@ TEST(DetectorGolden, Fixture01MatchesTheRosNode)
     }
 }
 ```
+- **An `ApplicationNode`** has no step, so `StepHarness` does not run it: see
+  [section 10.10](#1010-test-an-application).
 - **rostest tests** need a ROS master and do not run under hypha. Port the
   harness to a test that starts the node with a test TOML and drives it with
   `runFor()`, or to step tests. Keep every case. Report a case you cannot port.
@@ -512,8 +516,8 @@ Reading the diff is not verification. Run the binary.
    (`hypha record`), or run the ROS node through the bridge beside the hypha
    node. A recorded input is replayed with `hypha play --topics <inputs>` and the
    input topics only: golden outputs must never reach the live output topics.
-   For a plain node, `examples/sensor_pipeline/replay_check.sh` runs this replay and
-   compares two outputs by stamp ([section 10.8](#108-a-runnable-sensor-node-and-its-replay-check)).
+   For an `ApplicationNode`, `examples/sensor_pipeline/replay_check.sh` runs this replay and
+   compares two outputs by stamp ([section 10.9](#109-a-runnable-sensor-node-and-its-replay-check)).
 8. Negative start checks: remove a required `[ports.inputs.<name>]` table, write a number as
    text, pass a second argument. Each one stops the node with a message and a
    non-zero exit status.
@@ -682,7 +686,7 @@ or 1.
 hypha has no equivalent for these. Stop and ask the user before you continue:
 
 - A transform lookup that waits: `waitForTransform`, `lookupTransform` with a timeout,
-  or `canTransform` in a loop. `hypha::TransformBuffer` lookups never wait (§10.6;
+  or `canTransform` in a loop. `hypha::TransformBuffer` lookups never wait (§10.7;
   [cpp-api.md](cpp-api.md) section 10.2): the node holds its message until a later
   callback finds the transform, or drops it.
 - `dynamic_reconfigure`, or a parameter changed at run time. Parameters are
@@ -769,7 +773,7 @@ Report each item in the change description, with the evidence.
 - [ ] Every input port has a `silence_ms` chosen from the input rate.
 - [ ] No input has an age limit besides `silence_ms`.
 - [ ] The response to each missing or stale input is explicit and approved.
-- [ ] `main` only calls `hypha::runNode`: one TOML file at most, a second argument stops the node with status 2.
+- [ ] `main` only calls `hypha::runNode`, for a `CycleNode` and an `ApplicationNode` alike: one TOML file at most, a second argument stops the node with status 2.
 - [ ] The logged snapshot shows the expected topics and period.
 - [ ] Step 7 was done on the bus, and its results are recorded.
 - [ ] A `hypha launch` unit and an installed TOML file exist.
@@ -778,13 +782,15 @@ Report each item in the change description, with the evidence.
 
 ---
 
-## 10. Porting an event-driven node to a plain `hypha::Node`
+## 10. Porting an event-driven node: an `ApplicationNode`
 
-Steps 1 to 8 end in a `CycleNode`. This section covers the other target: a plain
-`hypha::Node` with typed subscriptions, publishers and timers. Step 1 (inventory),
-Step 3 (TOML) and Step 4 (build) apply unchanged. The rules of
-[section 2](#2-rules) apply, except the cycle items. The names below are in
-[cpp-api.md](cpp-api.md) §1, §3, §4, §5, §7 and §9.
+Steps 1 to 8 end in a `CycleNode`. This section covers the other target: a
+`hypha::ApplicationNode` with typed subscriptions, publishers and timers, started by
+`hypha::runNode<App>()` like a `CycleNode`. Step 1 (inventory), Step 3 (TOML) and
+Step 4 (build) apply unchanged. The rules of [section 2](#2-rules) apply, except the
+cycle items; of [section 9](#9-production-ready-checklist), the items on steps,
+`silence_ms` and verdicts do not apply, and the `main` item does. The names below are
+in [cpp-api.md](cpp-api.md) §1, §3, §4, §5, §7 and §9.
 
 ### 10.1 Which target
 
@@ -792,28 +798,116 @@ Step 3 (TOML) and Step 4 (build) apply unchanged. The rules of
 |---|---|
 | Its work runs from a timer | A rate `CycleNode` (Step 2) |
 | Its work runs on each sample of one input | A triggered `CycleNode`: `setTrigger(port)` (Step 2) |
-| Its callbacks publish on more than one input | A plain `hypha::Node` |
-| It owns worker threads | A plain `hypha::Node` |
-| It is a shim of a ROS client library (#59) | A plain `hypha::Node` |
+| Its callbacks publish on more than one input | An `ApplicationNode` |
+| It owns worker threads | An `ApplicationNode` |
+| It is a shim of a ROS client library (#59) | An `ApplicationNode` |
 
-What a triggered cycle adds over a plain node, and what it costs:
+What a triggered cycle adds over an `ApplicationNode`, and what it costs:
 
 | A triggered cycle adds | It costs |
 |---|---|
-| A verdict for each input (`stale()`, `Latest::usable()`), and `~/state` rows under `runNode` | A `silence_ms` for each supervised input, the trigger's included |
+| A verdict for each input (`stale()`, `Latest::usable()`), and the input rows of `~/state` | A `silence_ms` for each supervised input, the trigger's included |
 | Outputs held until the step succeeds: a failed step publishes nothing ([execution-model.md](execution-model.md) §6.1) | A fallback step to handle when the trigger is silent |
 | Replay order: under simulated time the step runs at the sample's time, with the other inputs cut before it, and waits for its upstream nodes (§6.6) | One decode of each sample into its port before the step, and a payload copy in the input's history (§6.2) |
-| `~/introspection` and the refusal of an unread parameter key, from `runNode` | On host time, a trigger older than its `silence_ms` runs no step and counts in `age_rejections_total` |
+| | On host time, a trigger older than its `silence_ms` runs no step and counts in `age_rejections_total` |
 
-A plain `hypha::Node` has none of the first column: freshness is judged for cycle
-inputs only ([cpp-api.md](cpp-api.md) §5.1), and without `runNode` the node publishes
-no `~/state` and `~/introspection` and refuses no unread parameter key
-([cpp-api.md](cpp-api.md) §2). `Node::run()` calls every callback on the calling
-thread, and each `publish()` goes out at once. The model is in
-[execution-model.md](execution-model.md) §3, §4 and §11.2. Write the reason for a
-plain node in the change description.
+`runNode` gives both targets `~/introspection`, `~/state`, the refusal of an unread
+parameter key and the exit codes of §10.2. An `ApplicationNode` has none of the first
+column: freshness is judged for cycle inputs only ([cpp-api.md](cpp-api.md) §5.1).
+`Node::run()` calls every callback on one thread, and each `publish()` goes out at
+once. The model is in [execution-model.md](execution-model.md) §3, §4 and §11.2. Write
+the reason for an `ApplicationNode` in the change description.
 
-### 10.2 Literal topic or port name
+### 10.2 The application
+
+Write the node as one class and start it with `runNode`. `main` is one line.
+
+```cpp
+#include <hypha/hypha.h>
+#include <hypha/transform_buffer.h>
+
+#include <geometry_msgs/PoseStamped.h>
+#include <sensor_msgs/PointCloud2.h>
+
+#include <optional>
+
+class Locator final : public hypha::ApplicationNode
+{
+  public:
+    // The bus is not joined yet. Read and check the parameters here: a refused value
+    // ends the run with exit 78.
+    Locator() : gain_(hypha::config().required<double>("gain", hypha::constraints::positive()))
+    {
+    }
+
+    // Create every subscription, publisher, timer and transform buffer here, and
+    // nowhere else. The members hold them.
+    void setup(hypha::Node& node) override
+    {
+        this->scan_ = node.subscribe<sensor_msgs::PointCloud2>(
+            "scan", hypha::bind<&Locator::onScan>(*this));                    // [ports.inputs.scan]
+        this->pose_ = node.advertise<geometry_msgs::PoseStamped>("pose");     // [ports.outputs.pose]
+        this->timer_ = node.timer(
+            hypha::Duration::fromMillis(100), hypha::bind<&Locator::onTick>(*this));
+        this->tf_.emplace(node);   // TransformBuffer has no default constructor
+    }
+
+  private:
+    void onScan(const hypha::MessagePtr<sensor_msgs::PointCloud2>& scan)
+    {
+        geometry_msgs::PoseStamped pose;
+        pose.header = scan->header;
+        if (!this->pose_.publish(pose)) {
+            HYPHA_LOG_WARN_THROTTLE(1.0, "pose not sent: {}", this->pose_.lastPublishStatus().name());
+        }
+    }
+
+    void onTick()
+    {
+        // periodic work
+    }
+
+    double                                                gain_;
+    hypha::Subscriber<sensor_msgs::PointCloud2>           scan_;
+    hypha::Publisher<geometry_msgs::PoseStamped>          pose_;
+    hypha::Timer                                          timer_;
+    std::optional<hypha::TransformBuffer>                 tf_;
+};
+
+int main(int argc, char** argv)
+{
+    return hypha::runNode<Locator>(argc, argv, "locator");
+}
+```
+
+`runNode` loads the parameter file (`argv[1]`, optional), constructs the class, joins the
+bus, calls `setup()`, refuses an unread parameter key, publishes `~/introspection` and
+`~/state`, calls `started()` and runs until a stop. It logs `node failed in <phase>:
+<what>` and returns an exit code that a supervisor reads:
+
+| Code | Constant | When | `hypha launch` |
+|---|---|---|---|
+| 0 | `kExitClean` | the run stopped as requested | the unit's restart policy |
+| 2 | `kExitUsage` | more than one argument | the unit's restart policy |
+| 78 | `kExitConfiguration` | the parameter file, a parameter or an endpoint policy is refused; an unread key | never restarts |
+| 75 | `kExitRewind` | simulated time went back (`Status::ClockRewound`) | always restarts |
+| 70 | `kExitRuntime` | anything else, and `failRun()` | the unit's restart policy |
+
+- The constructor and `setup()` throw `hypha::ConfigError` or `hypha::ParameterError` for
+  a refused configuration (78); any other exception is 70.
+- `started(hypha::Node&)` runs after every check, just before the run. Start worker
+  threads and send latched messages there. Throw to refuse the run (70).
+- `failRun("reason")` ends the run as failed from any thread (70).
+- The destructor runs on every way out, before the node and the endpoints are destroyed.
+  Stop and join every thread of the class in it.
+- A callback runs in the run, on one thread. It must not block.
+
+A custom `main()` that builds a `hypha::Node` is for a bounded probe or tool that ends
+by itself ([cpp-api.md](cpp-api.md) §2). It publishes no `~/state` and no
+`~/introspection`, refuses no unread key, and maps its own exit codes. A node that runs
+until stopped is never written that way.
+
+### 10.3 Literal topic or port name
 
 `hypha::Topic{...}` names a literal topic that code fixes. A bare string names a
 port table of the parameter file. ROS 1:
@@ -825,10 +919,9 @@ auto scan = nh.subscribe(scanTopic, 5, &Locator::onScan, this);
 auto pose = nh.advertise<geometry_msgs::PoseStamped>("pose", 1);
 ```
 
-hypha, with the topic names in the TOML file:
+hypha, with the topic names in the TOML file, in `setup(hypha::Node& node)`:
 
 ```cpp
-hypha::Node node("locator", argv[1]);                       // argv[1]: the parameter file
 auto scan = node.subscribe<sensor_msgs::PointCloud2>(
     "scan", hypha::bind<&Locator::onScan>(*this));          // [ports.inputs.scan]
 auto pose = node.advertise<geometry_msgs::PoseStamped>("pose");   // [ports.outputs.pose]
@@ -858,30 +951,14 @@ if (!odom.enabled()) {
 }
 ```
 
-- `runNode` refuses a parameter key that nothing read. A custom `main()` does not;
-  it checks the keys itself, after it has read its parameters and created its
-  endpoints:
-
-```cpp
-const std::vector<std::string> unread = hypha::config().unreadKeys();
-if (!unread.empty()) {
-    HYPHA_LOG_ERROR("unread parameter(s): {}", unread.front());
-    return hypha::kExitConfiguration;
-}
-```
-
-  `unreadKeys()` returns the unread keys sorted. `kExitConfiguration` is 78, the
-  code that `runNode` returns for a refused configuration and that a supervisor
-  does not restart (`hypha/application_node.h`).
-
-### 10.3 Time, status and logging
+### 10.4 Time, status and logging
 
 | ROS 1 | hypha | Meaning |
 |---|---|---|
 | `msg.header.stamp.toSec()` | `hypha::fromRosTime(msg.header.stamp)` (`hypha/message_stamp.h`) | Returns `std::optional<hypha::Time>`. Empty when `nsecs` is one second or more. `Time::nanos()` gives integer nanoseconds. |
 | `header.stamp = ros::Time::now()` | `header.stamp = hypha::toRosTime(hypha::now())` | Throws `std::out_of_range` for a time before the epoch or after 2106. |
-| `ros::spin()` | `const hypha::RunResult result = node.run();` | `[[nodiscard]]`. `result.ok()` is true when the call succeeded and the run stopped as requested or at its time limit. `reason()`, `status()` and `call()` say why not. |
-| `ros::shutdown()` from another thread | `hypha::requestStop()` | The one call that another thread may make on a running node. |
+| `ros::spin()` | `hypha::runNode<App>(argc, argv, "name")` | Runs `node.run()` and returns the exit code of §10.2. |
+| `ros::shutdown()` from another thread | `hypha::requestStop()` | The one call that another thread may make on a running node. For a failure, `failRun(reason)` in the application. |
 | `pub.publish(msg)` (no result) | `publish(msg)` returns `bool` (`[[nodiscard]]`); `lastPublishStatus()` returns the `Status` of the last attempt | The status names the reason: a disabled publisher, a message that is too large, an exhausted pool, a transport failure. |
 | `ROS_WARN_THROTTLE(1, ...)` | `HYPHA_LOG_WARN_THROTTLE(1.0, "{}", x)` | The first call writes, later calls at most once per period. Host monotonic time. |
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(state, false, ...)` | Writes when `state` changes from false to true at that call site. |
@@ -900,7 +977,7 @@ if (!nobodyListens) {
 The count is the subscribers of every node on the machine at that instant. It is
 not delivery. A cycle `Output::hasSubscribers()` treats an empty count as watched.
 
-### 10.4 Queue depth
+### 10.5 Queue depth
 
 A subscriber queues the `maxDepth` of its topic's policy. The limit of 32 belongs
 to the `default` policy. A topic that needs a deeper queue, such as a ROS IMU
@@ -935,30 +1012,88 @@ struct hypha::QosOf<sensor_msgs::Imu>
   `default`, and a typed endpoint with the deeper policy is then refused. Start the
   application nodes first, or map the type to `default`.
 
-### 10.5 Threads
+### 10.6 Threads
 
-`Node::run()` runs every subscription and timer callback on the calling thread.
-The framework creates no thread. One endpoint belongs to one thread at a time. A
-worker thread that publishes therefore owns its publisher, or every access to that
-publisher is serialized by the application. Only `hypha::requestStop()` may be
-called from another thread while the node runs.
+`Node::run()` runs every subscription and timer callback on one thread. The framework
+creates no thread. One endpoint belongs to one thread at a time. A worker thread that
+publishes therefore owns its publisher, or every access to that publisher is serialized
+by the application. Only `hypha::requestStop()` may be called from another thread while
+the node runs.
+
+The application starts a worker in `started()` and joins it in its destructor. A thread
+that fails calls `failRun()`:
+
+```cpp
+#include <hypha/hypha.h>
+
+#include <sensor_msgs/PointCloud2.h>
+
+#include <atomic>
+#include <thread>
+
+sensor_msgs::PointCloud2 readFromDevice();   // the driver's blocking read, with a timeout
+
+class LidarNode final : public hypha::ApplicationNode
+{
+  public:
+    ~LidarNode() override
+    {
+        this->stopping_ = true;
+        if (this->worker_.joinable()) {
+            this->worker_.join();
+        }
+    }
+
+    void setup(hypha::Node& node) override
+    {
+        this->points_ = node.advertise<sensor_msgs::PointCloud2>("points");
+    }
+
+    void started(hypha::Node& /*node*/) override
+    {
+        this->worker_ = std::thread(&LidarNode::readLoop, this);   // after the checks
+    }
+
+  private:
+    // The only user of points_ once the thread runs.
+    void readLoop()
+    {
+        while (!this->stopping_) {
+            try {
+                const bool sent = this->points_.publish(readFromDevice());
+                if (!sent) {
+                    HYPHA_LOG_WARN_THROTTLE(1.0, "cloud not sent: {}", this->points_.lastPublishStatus().name());
+                }
+            } catch (const std::exception& error) {
+                this->failRun(error.what());
+                return;
+            }
+        }
+    }
+
+    std::atomic<bool>                            stopping_{false};
+    hypha::Publisher<sensor_msgs::PointCloud2>   points_;
+    std::thread                                  worker_;
+};
+```
+
+`worker_` is the last member, so no member is destroyed before the destructor body has
+joined it. A bounded hand-over from a callback to a worker is in
+[examples/sensor_pipeline](../examples/sensor_pipeline/README.md) (`CloudHandover`).
 
 A timer counts the periods it did not fire in, because a callback or the run loop
 ran longer than one period:
 
 ```cpp
-hypha::Timer timer = node.timer(hypha::Duration::fromMillis(100), OnTick{&state});
-...
-const uint64_t missed = timer.missedCount();   // periods never fired in
+const uint64_t missed = this->timer_.missedCount();   // periods never fired in
 ```
 
-`OnTick` is a named functor with `void operator()()`. Read `missedCount()` where
-the node can log it. A subscriber counts the samples it lost before it read them, and
-the frames it refused:
+Read `missedCount()` where the node can log it. A subscriber counts the samples it lost
+before it read them, and the frames it refused:
 
 ```cpp
-const uint64_t lost = imu.missingSequences();      // frames lost before they were read
-const hypha::SubscriberMetrics m = imu.metrics();  // m.sequenceGap, m.invalidFrame, ...
+const uint64_t lost = this->scan_.missingSequences();      // frames lost before they were read
+const hypha::SubscriberMetrics m = this->scan_.metrics();  // m.sequenceGap, m.invalidFrame, ...
 ```
 
 `missingSequences()` grows on a queue overflow. `m.sequenceGap` counts frames that
@@ -966,7 +1101,7 @@ arrived and were refused because their sequence was not newer; a lost frame does
 raise it. Both may be read from any thread while the node runs
 ([cpp-api.md](cpp-api.md) §7).
 
-### 10.6 TF in a plain node
+### 10.7 TF in an application
 
 The facts of [cpp-api.md](cpp-api.md) §10 apply:
 
@@ -982,13 +1117,21 @@ The facts of [cpp-api.md](cpp-api.md) §10 apply:
 ```cpp
 #include <hypha/transform_buffer.h>
 
-hypha::TransformBuffer tf{node};                  // before node.run()
-hypha::StaticTransformBroadcaster statics{node};
+// members of the application
+std::optional<hypha::TransformBuffer>        tf_;
+std::optional<hypha::StaticTransformBroadcaster> statics_;
 
-// in a callback, or in a worker thread while node.run() runs:
+// in setup(hypha::Node& node):
+this->tf_.emplace(node);
+this->statics_.emplace(node);
+
+// in started(), after the checks:
+const bool sent = this->statics_->send(baseToLidar);
+
+// in a callback, or in a worker thread while the node runs:
 const std::optional<hypha::Time> stamp = hypha::fromRosTime(scan.header.stamp);
 if (stamp.has_value()) {
-    const auto found = tf.lookup("map", "lidar", *stamp);
+    const auto found = this->tf_->lookup("map", "lidar", *stamp);
     if (!found) {
         // found.error() is a hypha::TransformError: UnknownFrame, NotConnected,
         // BeforeBuffer, AfterBuffer or InvalidFrame
@@ -996,13 +1139,13 @@ if (stamp.has_value()) {
 }
 ```
 
-  Create and destroy the buffer on the thread that configures the node, not while the
-  node runs on another thread. Nothing is ingested unless the node runs. The buffer
+  The application creates the buffer in `setup()` and destroys it with itself, as the
+  header requires, and a worker thread is joined before that. Nothing is ingested unless the node runs. The buffer
   keeps 10 s of dynamic transforms per frame unless the constructor gets another
   duration. `hypha::Transforms` is the port of a cycle; its lookup throws
   `std::logic_error` outside a step.
 
-### 10.7 A list of scalars in the parameter file
+### 10.8 A list of scalars in the parameter file
 
 A TOML array of numbers, flags or text is read with `requiredArray`:
 
@@ -1020,97 +1163,42 @@ range check of `required<T>`, and an error names the element, for example
 `lidar_extrinsic[2]`. Check the range of the values in the application. `ConfigList`
 remains for a list of tables (`[[sensors]]`).
 
-### 10.8 A runnable sensor node and its replay check
+### 10.9 A runnable sensor node and its replay check
 
-[examples/sensor_pipeline](../examples/sensor_pipeline/README.md) applies 10.2 to 10.7 in
-one plain node: a 400 Hz IMU with `maxDepth = 200`, 10 Hz point clouds of 262144 bytes of
-data, one timer, and one worker thread that owns the result publisher, looks the
+[examples/sensor_pipeline](../examples/sensor_pipeline/README.md) applies 10.2 to 10.8 in
+two `ApplicationNode`s: a 400 Hz IMU with `maxDepth = 200`, 10 Hz point clouds of 262144
+bytes of data, one timer, and one worker thread that owns the result publisher, looks the
 transform up at the cloud's stamp and publishes. Its replay recipe, `replay_check.sh`,
 runs the node on simulated time from a recorded fixture of 98296 bytes with `hypha play
 --clock` and `hypha record --sync`, and makes three checks:
 
 - **Loss.** The node prints `missingSequences()` and `metrics()` of each subscriber. A
   replay at `--rate 1` reports `missing=0`; slow mode (`[slow] enabled = true`) shows a
-  growing count, live and in a replay, since nothing waits for a plain node.
+  growing count, live and in a replay, since nothing waits for an `ApplicationNode`.
 - **Timer misses.** The node prints `Timer::missedCount()`; the stalls of slow mode
   show as misses.
 - **Comparison by stamp.** `sensor_pipeline_compare` reads two recordings with the test
   MCAP reader and pairs the outputs by `header.stamp`: two runs of the node, or a run and
   the ROS node's golden output.
 
-A plain node on simulated time takes no part in the replay lockstep (#153): its
+An `ApplicationNode` on simulated time takes no part in the replay lockstep (#153): its
 callbacks run as their samples arrive, and the player does not wait for it
 ([execution-model.md](execution-model.md) §11.2). Its replays are not identical from
 run to run; a node that needs a deterministic replay is built from cycles.
 
+### 10.10 Test an application
 
-### 10.9 The exit code of a custom `main`
+`StepHarness` runs cycle steps, and an `ApplicationNode` has none. Test it at three levels,
+as [examples/sensor_pipeline](../examples/sensor_pipeline/README.md) does for the bus:
 
-`runNode` maps every way out to an exit code that a supervisor reads
-(`hypha/application_node.h`). A custom `main` does the same itself. `result.ok() ? 0 : 1`
-loses two facts: a refused configuration, which a restart cannot fix, and a backward
-seek of the replay, after which the process must start again.
+1. **Logic.** Keep the ROS node's logic in classes that need no `Node`, and test them
+   as in Step 6. A callback of the application then only calls them.
+2. **Start-up.** Run the binary with a missing and with a malformed parameter file and
+   expect exit 78: `startup_exit_code.cmake`, registered for each case in the
+   example's `CMakeLists.txt` with `hypha_add_test`.
+3. **The bus.** Replay a recorded input into the running node and compare its output
+   by stamp: `replay_check.sh`, registered as `sensor_pipeline_replay_check`. The
+   recipe, and the comparison with a ROS golden, are in the example's README.
 
-| Code | Constant | When | `hypha launch` |
-|---|---|---|---|
-| 0 | `kExitClean` | the run stopped as requested | the unit's restart policy |
-| 2 | `kExitUsage` | wrong arguments | the unit's restart policy |
-| 78 | `kExitConfiguration` | the parameter file, a parameter or an endpoint policy is refused; an unread key | never restarts |
-| 75 | `kExitRewind` | simulated time went back: the run ended with `Status::ClockRewound` | always restarts |
-| 70 | `kExitRuntime` | anything else | the unit's restart policy |
-
-A plain node sees `ClockRewound` too: a timer on simulated time ends the run with it
-([execution-model.md](execution-model.md) §11).
-
-```cpp
-#include <hypha/application_node.h>   // the exit codes
-#include <hypha/hypha.h>
-
-/// The exit code of a run that ended: 0, 75 after simulated time went back, else 70.
-int exitCodeOf(const hypha::RunResult& result)
-{
-    const bool rewound = result.status() == hypha::Status::ClockRewound;
-    if (rewound) {
-        return hypha::kExitRewind;
-    }
-    return result.ok() ? hypha::kExitClean : hypha::kExitRuntime;
-}
-
-int main(int argc, char** argv)
-{
-    const bool tooManyArguments = argc > 2;
-    if (tooManyArguments) {
-        std::cerr << "usage: locator [parameter_file]\n";
-        return hypha::kExitUsage;
-    }
-    const std::string parameterFile = argc == 2 ? std::string(argv[1]) : std::string{};
-    try {
-        // Loaded first and alone: a file that is missing or does not parse is a
-        // configuration fault, which a restart cannot fix.
-        const hypha::ConfigContext configuration(parameterFile);
-        try {
-            hypha::Node   node("locator", parameterFile);
-            const Locator locator(node);   // reads its parameters, creates its endpoints
-            const std::vector<std::string> unread = hypha::config().unreadKeys();
-            if (!unread.empty()) {
-                std::cerr << "unread parameter(s): " << unread.front() << '\n';
-                return hypha::kExitConfiguration;
-            }
-            return exitCodeOf(node.run());
-        } catch (const hypha::ConfigError& error) {   // ParameterError, QosMismatch
-            std::cerr << "configuration refused: " << error.what() << '\n';
-            return hypha::kExitConfiguration;
-        } catch (const std::exception& error) {
-            std::cerr << "start-up failed: " << error.what() << '\n';
-            return hypha::kExitRuntime;
-        }
-    } catch (const std::exception& error) {
-        std::cerr << "parameter file refused: " << error.what() << '\n';
-        return hypha::kExitConfiguration;
-    }
-}
-```
-
-`crates/hypha-cxx/test/test_plain_main_example.cpp` compiles and runs this `main`. Test
-the backward seek under the supervisor: `hypha play --clock --loop` restarts the unit at
-each pass.
+Step 7 applies to an `ApplicationNode` as it is written, with `~/state` and
+`~/introspection` from `runNode`.

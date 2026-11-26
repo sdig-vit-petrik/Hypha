@@ -135,7 +135,10 @@ class AttitudeNode {
 ```
 
 A `Node` must exist before an endpoint is created; `runNode` creates it for an
-application. SIGINT and SIGTERM make `ok()` false and stop the run. The tests
+application. A node that reacts to messages and runs until stopped is a
+`hypha::ApplicationNode` whose `setup(Node&)` creates these endpoints
+([ros1-migration-guide.md](ros1-migration-guide.md#102-the-application)); the `main()`
+forms above are for bounded probes and tools (section 2). SIGINT and SIGTERM make `ok()` false and stop the run. The tests
 `crates/hypha-cxx/test/test_quick_start_doc_examples.cpp` (callback, publish-only and
 README examples) and `test_cycle_doc_examples.cpp` (sections 5.4, 5.5, 10.1) compile them.
 
@@ -337,7 +340,7 @@ Reference: `hypha/node.h`, `hypha/publisher.h`, `hypha/topic.h`, `hypha/options.
   It returns `std::optional<size_t>`: empty means the count is unavailable (a disabled
   publisher, or a transport that cannot count), `0` means no subscriber now. Skip work only
   for a counted `0`. The ROS 1 mapping is in
-  [ros1-migration-guide.md](ros1-migration-guide.md#103-time-status-and-logging).
+  [ros1-migration-guide.md](ros1-migration-guide.md#104-time-status-and-logging).
 
 ## 5. Subscribing
 
@@ -350,7 +353,7 @@ Options: a `hypha::Qos` (section 7) and, for a port, `hypha::optionalTopic` (sec
 sample; a `*` pattern is read every 1 ms (execution-model.md §7-8). A cycle input port
 warns about a missing publisher like a subscriber, once per topic: ports that share a
 topic share the warning. A literal topic and a port name side by side, and a ROS 1 node
-ported to a plain `Node`: [ros1-migration-guide.md](ros1-migration-guide.md#102-literal-topic-or-port-name).
+ported to an `ApplicationNode`: [ros1-migration-guide.md](ros1-migration-guide.md#103-literal-topic-or-port-name).
 Reference: `hypha/subscriber.h` (type check, patterns, the no-publisher warning),
 `hypha/node.h` (`Node::subscribe`).
 
@@ -789,7 +792,7 @@ struct hypha::QosOf<my_msgs::Image>
   (`loanBudget` included). A `RawSubscriber` has the same two; a cycle port has none.
 
 A policy with a deeper queue, such as an IMU at `maxDepth = 200`:
-[ros1-migration-guide.md](ros1-migration-guide.md#104-queue-depth).
+[ros1-migration-guide.md](ros1-migration-guide.md#105-queue-depth).
 The pool size and the start-order rules are in [engineering-traps.md](engineering-traps.md);
 safe overflow and the frame checks in [interface-specification.md](interface-specification.md#service-limits-and-wildcards).
 Reference: `<hypha/qos.h>`, and `<hypha/status.h>` for `Status`, `require()` and `ConfigError`.
@@ -873,7 +876,7 @@ for (const auto sensor : settings.list("sensors")) {
   leaves ignored keys out), so every SDK gets it.
 - **Arrays of scalars.** `cfg.requiredArray<T>(key)` returns `std::vector<T>`; `cfg.requiredArray<T, N>(key)` returns `std::array<T, N>` and refuses any other length. `optionalArray<T>` and `optionalArray<T, N>` return a `std::optional` of the same, empty only when the key is absent. T is any type `required<T>` reads (bool, an integer, float, double, std::string), and each element gets the same conversion and range check. A key that is not an array, an element of the wrong type, an array of tables and a wrong length throw `ParameterError` for the `required*` and the `optional*` form alike, and the message names the key and, for an element, its index (`hypha: parameter 'voxel_weights[2]': expected a number, found "x"`; `hypha: parameter 'extrinsic_t': expected 3 elements, found 4`). An empty array is an empty vector, and a length error for N > 0. Reading an array marks the key as read, so `unreadKeys()` does not list it. An array inside an entry of a table list is refused like a nested list.
 - **Porting.** A ROS 1 list parameter, with the fixed-size form:
-  [ros1-migration-guide.md](ros1-migration-guide.md#107-a-list-of-scalars-in-the-parameter-file).
+  [ros1-migration-guide.md](ros1-migration-guide.md#108-a-list-of-scalars-in-the-parameter-file).
 - **Without a bus.** A `hypha::ConfigContext` serves `hypha::config()` in a test
   (`examples/mrs/test/test_plugin_host.cpp`); `hypha param validate` checks a file.
 
@@ -1068,7 +1071,7 @@ The thread in `run()` runs every callback, once per queued sample. A publish in 
 callback wakes the next process; it never runs downstream code on its own stack. One
 endpoint belongs to one thread at a time. Destroy the `Node` after `run()` returns.
 A worker thread that publishes, and `Timer::missedCount()`:
-[ros1-migration-guide.md](ros1-migration-guide.md#105-threads).
+[ros1-migration-guide.md](ros1-migration-guide.md#106-threads).
 
 ### 12.3 Failure and ordering contract
 
