@@ -79,7 +79,7 @@ verdicts in the control nodes after their configured age limits.
 
 Each directory here can also be configured on its own.
 
-`sensor_pipeline` is an event-driven node on a plain `hypha::Node`: a 400 Hz IMU, 10 Hz
+`sensor_pipeline` is an event-driven `hypha::ApplicationNode`: a 400 Hz IMU, 10 Hz
 point clouds, one timer and one worker thread that looks transforms up and publishes. It
 prints its loss, timer and hand-over counters, and its `replay_check.sh` replays a
 recorded fixture on simulated time and compares two runs by header stamp. Its

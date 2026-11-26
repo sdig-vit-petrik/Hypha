@@ -1,4 +1,4 @@
-# hypha_cloud_processor: a plain hypha::Node with one timer and one worker thread.
+# hypha_cloud_processor: a hypha::ApplicationNode with one timer and one worker thread.
 report_period_ms = 500     # the timer: one diagnostics report every 500 ms
 handover_depth = 2         # clouds queued between the run() thread and the worker
 target_frame = "odom"      # the frame of the published centroid

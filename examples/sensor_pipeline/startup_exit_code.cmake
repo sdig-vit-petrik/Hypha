@@ -1,11 +1,11 @@
 # Runs the node NODE with the parameter file of CASE and fails unless it exits with
-# EXPECTED. ctest -P passes NODE, CASE, EXPECTED and WORK_DIR, and CONFIG (a valid
+# EXPECTED. cmake -P passes NODE, CASE, EXPECTED and WORK_DIR, and CONFIG (a valid
 # parameter file of the node) for noports.
 #
 #   missing    a parameter file that does not exist
 #   malformed  a parameter file that is not TOML
-#   noports    a valid parameter file without its [ports.*] tables, so the first
-#              endpoint finds no topic
+#   noports    a valid parameter file without its [ports.*] tables: the first endpoint
+#              finds no topic (this case joins the bus)
 #
 # A configuration refused before the run is exit 78 (hypha::kExitConfiguration), which a
 # supervisor never restarts; 70 would be restarted without end.

@@ -2,7 +2,8 @@
 
 Two programs and one policy header, in the shape of a ported ROS 1 LiDAR node:
 
-- `hypha_sensor_source` is a `hypha::ApplicationNode` that publishes a synthetic IMU, LiDAR and odometry stream.
+- `hypha_sensor_source` is a `hypha::ApplicationNode` that publishes a synthetic IMU, LiDAR
+  and odometry stream.
 - `hypha_cloud_processor` is a `hypha::ApplicationNode` (no cycle). It subscribes to the IMU
   and the point clouds, runs one timer, hands each cloud to one worker thread, looks the
   transform up at the cloud's stamp from that worker, and publishes the centroid of the
@@ -11,17 +12,17 @@ Two programs and one policy header, in the shape of a ported ROS 1 LiDAR node:
   include it.
 
 Both programs are started by `hypha::runNode`, so each publishes `~/introspection` and
-`~/state` and exits 78 for a missing or malformed parameter file; `startup_exit_code.cmake`
-checks the exit code. `sensor_pipeline_compare` and `replay_check.sh` are the replay recipe: they replay a
-recorded fixture into the processor on simulated time and compare two outputs by header
-stamp. The porting rules behind the code are in
+`~/state` and exits 78 for a missing or malformed parameter file or a missing `[ports.*]`
+table; `startup_exit_code.cmake` checks the exit code. `sensor_pipeline_compare` and
+`replay_check.sh` are the replay recipe: they replay a recorded fixture into the processor
+on simulated time and compare two outputs by header stamp. The porting rules behind the code are in
 [ros1-migration-guide.md §10](../../docs/ros1-migration-guide.md#10-porting-an-event-driven-node-an-applicationnode).
 
 | File | Holds |
 |---|---|
 | `src/sensor_source.cpp` | the source: one timer at `tick_hz` publishes every output |
 | `src/cloud_processor.cpp` | the processor: run() thread, hand-over queue, worker |
-| `startup_exit_code.cmake` | the start-up check: a missing and a malformed parameter file give exit 78; ctest runs it for each node |
+| `startup_exit_code.cmake` | the start-up check: a missing or malformed parameter file, or no `[ports.*]` table, gives exit 78; ctest runs it for each node |
 | `src/compare_by_stamp.cpp` | the comparison of two recordings by header stamp |
 | `inc/sensor_pipeline_qos.h` | the `imu` and `lidar_cloud` policies, mapped with `hypha::QosOf<M>` |
 | `config/source.toml`, `config/processor.toml` | the live parameters |
@@ -85,7 +86,7 @@ The processor has two threads:
 The rules the headers give, and how the code follows them:
 
 - `publisher.h`: "Threading: publish() runs on one thread at a time." `setup()` creates
-  the result publisher before the run, and `started()` hands it to the worker. The worker
+  the result publisher before the run, and `started()` moves it into the worker. The worker
   owns it; no other thread touches it, so it needs no lock.
 - `transform_buffer.h`: "lookup() and lookupLatest() may be called from any thread at any
   time while the object lives". The buffer is created before the run and destroyed after
@@ -97,9 +98,9 @@ The rules the headers give, and how the code follows them:
 
 The hand-over is one bounded FIFO (`CloudHandover`, `handover_depth` clouds), one mutex
 and one condition variable. The run() thread never waits on it: when it is full, the
-oldest cloud is dropped and counted. At SIGINT or SIGTERM `run()` returns and the application's destructor stops
-the queue; the worker processes what is queued and returns, and the destructor joins it
-before the endpoints and the Node are destroyed.
+oldest cloud is dropped and counted. At SIGINT or SIGTERM `run()` returns and the
+application's destructor stops the queue; the worker processes what is queued and returns,
+and the destructor joins it before the endpoints and the Node are destroyed.
 
 ## Diagnostics
 

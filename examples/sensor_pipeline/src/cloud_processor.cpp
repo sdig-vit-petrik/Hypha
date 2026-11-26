@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <expected>
 #include <mutex>
 #include <optional>
@@ -314,13 +315,13 @@ Vector3 applyTransform(const geometry_msgs::Transform& transform, const Vector3&
 }
 
 /// The worker thread's body. A named functor: std::thread keeps it for the thread's life.
-/// It is the only user of the result publisher once the thread runs.
+/// It owns the result publisher; nothing else touches it.
 struct CloudWorker
 {
     CloudHandover*                handover;
     const hypha::TransformBuffer* tf;
     WorkerCounters*               counters;
-    CentroidPublisher*            centroids;
+    CentroidPublisher             centroids;
     std::string                   targetFrame;
     Milliseconds                  tfWait;
     std::optional<Milliseconds>   slowDelay;
@@ -361,11 +362,11 @@ struct CloudWorker
         result.point.x = mapped.x;
         result.point.y = mapped.y;
         result.point.z = mapped.z;
-        const bool sent = this->centroids->publish(result);
+        const bool sent = this->centroids.publish(result);
         if (!sent) {
             this->counters->publishFailed.fetch_add(1U, std::memory_order_relaxed);
             HYPHA_LOG_WARN_THROTTLE(
-                1.0, "centroid not sent: {}", this->centroids->lastPublishStatus().name()
+                1.0, "centroid not sent: {}", this->centroids.lastPublishStatus().name()
             );
             return;
         }
@@ -441,7 +442,8 @@ class CloudForwarder
 };
 
 /// The timer callback, on the run() thread: prints the diagnostics every report_period_ms,
-/// and the application prints them once more at exit. In slow mode it then blocks the run() thread.
+/// and the application prints them once more at exit. In slow mode it then blocks the
+/// run() thread.
 class Reporter
 {
   public:
@@ -464,8 +466,7 @@ class Reporter
     {
     }
 
-    /// The timer and the transform buffer are created in setup(), after the Reporter,
-    /// which the timer callback binds.
+    /// Called from setup() once the timer and the transform buffer exist.
     void watch(const hypha::Timer& timer, const hypha::TransformBuffer& tf)
     {
         this->timer_ = &timer;
@@ -580,13 +581,13 @@ class Reporter
 };
 
 /// The node. The constructor reads the parameters, so a bad file ends the run with exit 78
-/// before the bus is joined. setup() creates the endpoints on the run() thread's node;
-/// started() starts the worker once runNode has checked that no parameter is unread. The
-/// worker is joined in the destructor, before any endpoint it uses is destroyed.
-class CloudProcessor final : public hypha::ApplicationNode
+/// before the bus is joined. setup() creates the endpoints; started() starts the worker once
+/// runNode has checked that no parameter is unread. The worker is joined in the destructor,
+/// before any endpoint it uses is destroyed.
+class CloudProcessorNode final : public hypha::ApplicationNode
 {
   public:
-    CloudProcessor()
+    CloudProcessorNode()
         : settings_(readSettings())
         , handover_(settings_.handoverDepth)
         , cloudForwarder_(handover_)
@@ -594,15 +595,21 @@ class CloudProcessor final : public hypha::ApplicationNode
     {
     }
 
-    CloudProcessor(const CloudProcessor&) = delete;
-    CloudProcessor& operator=(const CloudProcessor&) = delete;
+    CloudProcessorNode(const CloudProcessorNode&) = delete;
+    CloudProcessorNode& operator=(const CloudProcessorNode&) = delete;
 
-    ~CloudProcessor() override
+    ~CloudProcessorNode() override
     {
         this->handover_.stop();
-        if (this->worker_.joinable()) {
-            this->worker_.join();
+        const bool workerStarted = this->worker_.joinable();
+        if (!workerStarted) {
+            return;  // start-up failed: there was no run to report
+        }
+        this->worker_.join();
+        try {
             this->reporter_.print("final");
+        } catch (const std::exception& error) {
+            this->failRun(error.what());
         }
     }
 
@@ -631,13 +638,13 @@ class CloudProcessor final : public hypha::ApplicationNode
         if (this->settings_.slowEnabled) {
             slowDelay = Milliseconds(this->settings_.slowWorkerDelayMs);
         }
-        // From here on the worker alone uses centroids_.
+        // The publisher moves into the worker: from here on the worker owns it alone.
         this->worker_ = std::thread(
             CloudWorker{
                 &this->handover_,
                 &*this->tf_,
                 &this->counters_,
-                &this->centroids_,
+                std::move(this->centroids_),
                 this->settings_.targetFrame,
                 Milliseconds(this->settings_.tfWaitMs),
                 slowDelay,
@@ -668,5 +675,5 @@ class CloudProcessor final : public hypha::ApplicationNode
 
 int main(int argc, char** argv)
 {
-    return hypha::runNode<CloudProcessor>(argc, argv, "cloud_processor");
+    return hypha::runNode<CloudProcessorNode>(argc, argv, "cloud_processor");
 }

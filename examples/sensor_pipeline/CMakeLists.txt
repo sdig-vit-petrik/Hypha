@@ -41,9 +41,15 @@ endforeach()
 
 install(TARGETS ${SENSOR_PIPELINE_TARGETS} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
+# The tests are not added when the hypha tree is built without tests.
+set(SENSOR_PIPELINE_TESTS ON)
+if(DEFINED HYPHA_BUILD_TESTS AND NOT HYPHA_BUILD_TESTS)
+  set(SENSOR_PIPELINE_TESTS OFF)
+endif()
+
 # A parameter file that is missing or malformed, or one without its ports tables, ends
-# each node with exit 78, which a supervisor never restarts. The check needs no bus.
-if(COMMAND hypha_add_test AND NOT (DEFINED HYPHA_BUILD_TESTS AND NOT HYPHA_BUILD_TESTS))
+# each node with exit 78, which a supervisor never restarts. Only noports joins the bus.
+if(SENSOR_PIPELINE_TESTS AND COMMAND hypha_add_test)
   set(hypha_cloud_processor_config processor.toml)
   set(hypha_sensor_source_config source.toml)
   foreach(node IN ITEMS hypha_cloud_processor hypha_sensor_source)
@@ -57,17 +63,14 @@ if(COMMAND hypha_add_test AND NOT (DEFINED HYPHA_BUILD_TESTS AND NOT HYPHA_BUILD
           -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
           -P "${CMAKE_CURRENT_SOURCE_DIR}/startup_exit_code.cmake")
     endforeach()
+    set_tests_properties(${node}_startup_noports PROPERTIES LABELS "needs-iceoryx2")
   endforeach()
 endif()
 
 # The replay check (replay_check.sh) runs the processor twice on the recorded fixture,
 # with hypha play and hypha record, and compares the two outputs by stamp. It needs the
 # tools and the comparison; it is not run when the hypha tree is built without tests.
-set(SENSOR_PIPELINE_REPLAY_TEST ON)
-if(DEFINED HYPHA_BUILD_TESTS AND NOT HYPHA_BUILD_TESTS)
-  set(SENSOR_PIPELINE_REPLAY_TEST OFF)
-endif()
-if(SENSOR_PIPELINE_REPLAY_TEST AND TARGET hypha::hypha AND TARGET sensor_pipeline_compare)
+if(SENSOR_PIPELINE_TESTS AND TARGET hypha::hypha AND TARGET sensor_pipeline_compare)
   hypha_add_test(sensor_pipeline_replay_check
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/replay_check.sh"
       --hypha "$<TARGET_FILE:hypha::hypha>"

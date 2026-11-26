@@ -309,7 +309,7 @@ class SensorSourceNode final : public hypha::ApplicationNode
 
     ~SensorSourceNode() override
     {
-        if (this->ran_) {
+        if (this->started_) {
             std::printf(
                 "sensor_source: ticks=%llu clouds=%llu unsent=%llu timer_missed=%llu\n",
                 static_cast<unsigned long long>(this->source_->ticks()),
@@ -348,7 +348,7 @@ class SensorSourceNode final : public hypha::ApplicationNode
                 "/tf_static not sent: " + std::string(this->statics_->lastPublishStatus().name())
             );
         }
-        this->ran_ = true;
+        this->started_ = true;
         std::printf("sensor_source: ready\n");
         std::fflush(stdout);
     }
@@ -358,7 +358,7 @@ class SensorSourceNode final : public hypha::ApplicationNode
     std::optional<SensorSource>                      source_;
     std::optional<hypha::StaticTransformBroadcaster> statics_;
     hypha::Timer                                     ticker_;
-    bool                                             ran_{false};
+    bool                                             started_{false};
 };
 
 }  // namespace
