@@ -71,7 +71,8 @@ Notes:
   is a new publisher. A sequence half the range or more ahead is refused as not
   newer.
 - Under simulated time (development only) a cycle input that loses a sample fails the
-  run: a transport gap, or a history eviction of a sample the input had not read. A
+  run: a transport gap, or a history eviction of a sample the input still needed; for a
+  `Latest` input, an evicted sample that a newer one supersedes is no loss. A
   replay that lost data is not faithful. A queued input's `perStep` drops the oldest
   samples of a step on purpose: counted in `work_limit_drops_total`, no failure.
 - In the replay lockstep a participant drains its cycle inputs before it acknowledges

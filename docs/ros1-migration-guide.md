@@ -768,7 +768,9 @@ or 1.
      the topic, or one that stamps ahead of the clock: the player splits its own
      chunks to fit the queue, but no other publisher's
      ([replay-flow-control.md](replay-flow-control.md) §6.7). Give the topic a deeper
-     policy for them.
+     policy for them. A publisher that keeps sending while the node drains its inputs
+     can also leave samples queued after the node's report, and the next chunk then
+     overflows the queue.
 
 ---
 

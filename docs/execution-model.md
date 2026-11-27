@@ -926,10 +926,11 @@ takes it or a newer one. A rejection of that sample, by the step or by another r
 history, ends the supersession. A step that selects nothing counts every evicted sample that
 no sample the binding holds for good supersedes, because one of them may be the value this
 step or a later one is due, and the step knows no later deadline. The count errs only towards
-a loss: when more samples than the history holds are stamped from the deadline through the
-newest, or when an evicted sample was itself rejected. The first cannot happen on a topic
-that the player alone publishes to a node it waits for: the samples stamped at or after the
-deadline then came in the one chunk that ran the step, which fits the queue. When samples have
+a loss, in the three cases of `replay-flow-control.md` §6.6: an evicted rejected sample, an
+evicted sample at or before the newest evicted rejected one, and a step that selects nothing
+counting an evicted sample stamped at or after its deadline. The last cannot happen on a
+topic that the player alone publishes to a node it waits for: the samples stamped at or after
+the deadline then came in the one chunk that ran the step, which fits the queue. When samples have
 been accepted but none are admitted because all retained samples are stamped at or after the
 deadline, the input history is shorter than one replay chunk; the binding's verdict at the C ABI is `EMPTY` (not
 `NEVER_ARRIVED`), or `STALE` for a queued binding past its silence limit. An Arrivals port shows

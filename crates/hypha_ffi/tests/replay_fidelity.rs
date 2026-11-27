@@ -936,8 +936,8 @@ pub(crate) fn a_bounded_run_ends_after_one_slice_of_a_long_jump() {
 }
 
 /// Two publishers on one input bound as `bind` of a 100 ms cycle: publisher 1 sends 150
-/// and publisher 0 sends 140, both before the step at 200, and a `/clock` at 160 runs no
-/// step. With `turn_between`, the node's turn at 160 falls between the two sends; else
+/// and publisher 0 sends 140, in that order or, `in_stamp_order`, the reverse, both
+/// before the step at 200, and a `/clock` at 160 runs no step. With `turn_between`, the node's turn at 160 falls between the two sends; else
 /// after both. Returns each step's deadline, how many samples it took and the value of
 /// the last.
 fn two_publishers_around_a_turn(
@@ -1003,7 +1003,7 @@ fn two_publishers_around_a_turn(
 }
 
 #[test]
-pub(crate) fn two_publishers_on_one_input_order_by_when_the_node_drained_them() {
+pub(crate) fn two_publishers_on_one_input_deliver_in_the_order_the_node_drained_them() {
     // A limit (replay-flow-control.md §6.7): the history keeps samples in the order the
     // node's turns drained them, so with two publishers what a step takes depends on when
     // the node had a turn. With a turn between the two sends the arrival order is the send
@@ -1021,10 +1021,7 @@ pub(crate) fn two_publishers_on_one_input_order_by_when_the_node_drained_them() 
             let one_drain = two_publishers_around_a_turn(bind, false, in_stamp_order);
             let (head, last) = one_drain.split_at(1);
             assert_eq!(head, [(100, 1, Some(9))]);
-            assert!(
-                matches!(last, [(200, n, Some(14 | 15))] if *n == count),
-                "{one_drain:?}"
-            );
+            assert!(matches!(last, [(200, n, Some(14 | 15))] if *n == count), "{one_drain:?}");
         }
     }
 }

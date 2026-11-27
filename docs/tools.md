@@ -408,7 +408,9 @@ eviction) fails with `SequenceGap` and logs `replay not faithful`. A node drains
 its inputs on every `/clock`, so a queue holds one chunk, which the player splits
 to fit it. A queued input needs a `perStep` of at least the cycle's period times
 the topic's rate; a `Latest` input on a topic the player alone publishes needs
-nothing more (`replay-flow-control.md` §6.7). The execution model (section 11.1)
+nothing more (`replay-flow-control.md` §6.7). Another publisher on the topic is not
+split into chunks, and one that keeps sending while the node drains its inputs can
+leave samples queued after the node's report. The execution model (section 11.1)
 describes the rules.
 
 Observers, such as a recorder or the bridge, are not waited for. A message sent

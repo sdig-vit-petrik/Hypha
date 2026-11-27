@@ -415,6 +415,16 @@ is at or after it, the input history is shorter than the replay chunk, and the n
 `all N retained samples on <topic> are stamped at or after deadline D: the input history is shorter than one
 replay chunk`. An input whose first samples come after the deadline logs nothing.
 
+The count of a latest input errs only towards a loss, in three cases, and each fails its step:
+
+- an evicted sample that a reader rejected counts, though no step would have taken it;
+- eviction forgets a rejection, so every evicted sample at or before the newest evicted sample that a
+  reader rejected counts as possibly rejected: it supersedes nothing;
+- a step that selects nothing counts every evicted sample it passed, also one stamped at or after its
+  deadline, which a later step might have found superseded: such a step fails although nothing it was
+  due is lost. A step selects nothing after an eviction only when every retained sample is at or after
+  its deadline, which a topic the player alone publishes never gives (6.7).
+
 ### 6.7 Limits
 
 These are the limits of the built replay. Each is a rule for how a replay is built, not a fault to
@@ -449,6 +459,7 @@ wait out.
     drops one sample a step, and one from 90 ms (s = 10) fails at 200 ms. Only a `perStep` of at
     least p x r holds on every phase.
 
+  A wildcard input has a queue per topic, and its history holds the sum of their depths plus one.
   A topic with several publishers gives each one its queue, and a drain empties all of them, so the
   player's queue still holds one chunk. What the other publishers send, cycle nodes upstream
   included, is not split into chunks: size the queue and the history for what they send between two
@@ -457,14 +468,14 @@ wait out.
   (`communication-integrity.md` §3). A `WaitSet` that has not reported yet does not hold its node's
   report (4.2), so its queues are guarded only from its first report.
 - **Several publishers on one topic make a replay input depend on turn timing.** The history keeps
-  samples in the order the node drained them, and one drain reads the publishers in a fixed order.
-  A `Latest` input takes the newest arrival before the cut and a queued input delivers in arrival
-  order, so when two publishers send before one step, which sample the step takes, or in which
-  order, depends on whether a turn of the node fell between the two sends. Before every turn
+  samples in the order the node drained them, and one drain reads the publishers in an order the
+  transport chooses. A `Latest` input takes the newest arrival before the cut and a queued input
+  delivers in arrival order, so when two publishers send before one step, which sample the step
+  takes, or in which order, depends on whether a turn of the node fell between the two sends. Before every turn
   drained, the same held for samples split across two step turns. A deterministic replay needs one
   publisher per topic of a replay input, or publishers whose samples arrive in stamp order.
-  `two_publishers_on_one_input_order_by_when_the_node_drained_them` in
-  `crates/hypha_ffi/tests/replay_fidelity.rs` pins it.
+  `two_publishers_on_one_input_deliver_in_the_order_the_node_drained_them` in
+  `crates/hypha_ffi/tests/replay_fidelity.rs` shows it.
 - **A forward jump of `/clock` costs one step per period.** It runs one step per period it covers (4.4),
   in slices of at most 1024 steps or 50 ms, so a jump across a long gap is slow, but a turn stays short.
 - **Simulated time is process-global.** With two sim-time nodes in one process, a backward seek can be
