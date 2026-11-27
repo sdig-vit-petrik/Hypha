@@ -426,6 +426,14 @@ impl Dispatcher for CallbackDispatcher<'_> {
         if decision != Progression::Continue {
             return decision;
         }
+        // `sim` says the node reads `/clock`; a replay cycle also runs on simulated time
+        // set through the C ABI, which `on_sim_time` adds. Only then can one be attached.
+        if self.node.on_sim_time() {
+            let decision = self.drain_replay_inputs();
+            if decision != Progression::Continue {
+                return decision;
+            }
+        }
         self.publish_progress(snapshot, now);
         Progression::Continue
     }
@@ -440,8 +448,11 @@ impl Dispatcher for CallbackDispatcher<'_> {
                 subscriber.check_no_publisher_warning(now_nanos);
             }
         }
+        for cycle in self.cycles {
+            crate::cycle::check_input_publishers(cycle, now_nanos);
+        }
         // The node's housekeeping, after the turn and outside every step.
-        self.node.topic_streams.housekeep(&self.node.transport, std::time::Instant::now());
+        self.node.topic_streams.housekeep(&self.node.transport, now_nanos);
         // Every dispatch sweep ends here, so an unbounded run is observed too.
         self.health.record_sweep_end();
         Progression::Continue
@@ -465,7 +476,7 @@ impl Dispatcher for CallbackDispatcher<'_> {
 
     /// The wait may last until the earliest host deadline. Under simulated time the
     /// timers hold no host deadline, and a canceled timer holds none.
-    fn next_timed_wait(&mut self) -> Option<std::time::Duration> {
+    fn next_deadline(&mut self) -> Option<hypha_time::Time> {
         // What a callback attached or reset takes effect before this wait.
         self.admit_attached();
         self.apply_timer_resets();
@@ -476,19 +487,16 @@ impl Dispatcher for CallbackDispatcher<'_> {
             _ => false,
         });
         if sliced {
-            return Some(std::time::Duration::ZERO);
+            return Some(hypha_time::steady_now());
         }
-        // The housekeeping's next round, or the rest of one a pass left unfinished.
-        let housekeeping = self.node.topic_streams.next_wake(std::time::Instant::now());
         let host_timers = !self.node.on_sim_time();
         let live = self.registrations.iter().filter(|r| !is_detached_in(self.detached, r.id));
-        let Some(deadline) = live.filter_map(|r| host_deadline(&r.target, host_timers)).min()
-        else {
-            return housekeeping;
-        };
-        let remaining = deadline.saturating_sub(hypha_time::steady_now().nanos());
-        let timed = std::time::Duration::from_nanos(u64::try_from(remaining).unwrap_or(0));
-        Some(housekeeping.map_or(timed, |soon| soon.min(timed)))
+        let timers = live.filter_map(|r| host_deadline(&r.target, host_timers)).min();
+        // The housekeeping's next round, or the rest of one a pass left unfinished: a
+        // deadline like a timer's, so the timer that ends the wait ends it for this too.
+        let housekeeping =
+            self.node.topic_streams.next_deadline(crate::subscriber::host_now_nanos());
+        timers.into_iter().chain(housekeeping).min().map(hypha_time::Time::from_nanos)
     }
 }
 

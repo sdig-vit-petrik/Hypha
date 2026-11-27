@@ -192,6 +192,75 @@ fn a_chunk_that_expires_no_deadline_is_still_acknowledged() {
 }
 
 #[test]
+fn a_chunk_that_expires_no_deadline_is_drained_before_it_is_acknowledged() {
+    let bus = Bus::new();
+    let topic = format!("/{}", unique("drained_in"));
+    // A queue of 4, and a queued input whose history holds 4 + 16.
+    let (publisher, subscriber) = unsafe { create_pubsub(bus.node, &topic, 4) };
+    let mut source = ptr::null_mut();
+    assert_eq!(
+        unsafe { hypha_input_source_create(bus.waitset, subscriber, &raw mut source) },
+        HyphaStatus::Ok
+    );
+    let recorder = Box::new(Recorder::new(Duration::ZERO));
+    let label = c_text(&unique("drained_cycle"));
+    let mut cycle = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            hypha_cycle_create(
+                bus.waitset,
+                label.as_ptr(),
+                label.as_bytes().len(),
+                PERIOD_NANOS,
+                Some(record_step),
+                (&raw const *recorder).cast_mut().cast(),
+                None,
+                &raw mut cycle,
+            )
+        },
+        HyphaStatus::Ok
+    );
+    let bind = HyphaCycleBindingOptions {
+        mode: HyphaCycleInputMode::Queued as u32,
+        max_samples_per_iteration: 16,
+        optional: 0,
+    };
+    let mut index = 0_u32;
+    assert_eq!(
+        unsafe { hypha_cycle_bind_input(cycle, source, &raw const bind, &raw mut index) },
+        HyphaStatus::Ok
+    );
+    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
+    bus.clock(BASE);
+    bus.run();
+    bus.progress();
+    // Three chunks of a full queue each, every one acknowledged before the next is sent,
+    // and no deadline expires before 1.02.
+    for chunk in 0..3_u64 {
+        for sample in 0..4_u64 {
+            let stamp = BASE + (chunk * 5 + sample + 1) * MS;
+            let value = u8::try_from(chunk * 4 + sample).expect("a small value");
+            unsafe { send_stamped(publisher, value, i64::try_from(stamp).expect("a stamp")) };
+        }
+        let close = BASE + (chunk + 1) * 5 * MS;
+        bus.clock(close);
+        bus.run();
+        assert_eq!(only(bus.progress()).clock_nanos, close, "chunk {chunk} is acknowledged");
+    }
+    bus.clock(BASE + PERIOD_NANOS);
+    assert_eq!(run_status(bus.waitset, 50 * MS), HyphaStatus::Ok as i32);
+    let steps = recorder.steps();
+    let taken: Vec<(i64, usize, Option<u8>)> =
+        steps.iter().map(|step| (step.scheduled, step.sample_count, step.newest)).collect();
+    assert_eq!(taken, [(1_020_000_000, 12, Some(11))], "every sample of the three chunks");
+    unsafe {
+        assert_eq!(hypha_cycle_destroy(cycle), HyphaStatus::Ok);
+        assert_eq!(hypha_input_source_destroy(source), HyphaStatus::Ok);
+        hypha_publisher_destroy(publisher);
+    }
+}
+
+#[test]
 fn a_rewind_of_the_bus_clock_ends_the_run_of_a_replay_cycle() {
     let mut bus = Bus::new();
     bus.add_cycle();

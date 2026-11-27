@@ -76,7 +76,7 @@ pub struct DiscoveredService {
     pub name: String,
     /// The schema hash of the stream's frames; 0 for the stream of no schema.
     pub schema_hash: u64,
-    /// Number of publisher ports whose node is alive.
+    /// Number of active publisher ports, a dead node's included until it is reclaimed.
     pub publishers: usize,
     /// Number of active subscriber ports.
     pub subscribers: usize,
@@ -131,10 +131,9 @@ fn discovered_node(view: &impl NodeView, is_alive: bool) -> Option<DiscoveredNod
 /// Returns a backend error when the service registry cannot be read.
 pub fn list_service_ports(node: &SharedNode) -> Result<Vec<DiscoveredService>, PortError> {
     let streams = topic_streams()?;
-    let dead = crate::endpoint::dead_node_ids()?;
     let mut services = Vec::with_capacity(streams.len());
     for (name, stream) in streams {
-        let Some(counted) = count_service_ports(node, &name, stream, &dead)? else {
+        let Some(counted) = count_service_ports(node, &name, stream)? else {
             continue;
         };
         services.push(counted);
@@ -143,14 +142,13 @@ pub fn list_service_ports(node: &SharedNode) -> Result<Vec<DiscoveredService>, P
 }
 
 /// Counts the endpoints of the data service `name` of `stream`, excluding the calling
-/// node's own ports and the publishers of the `dead` nodes.
+/// node's own ports.
 ///
 /// `Ok(None)` when the service disappeared since the registry scan.
 fn count_service_ports(
     node: &SharedNode,
     name: &str,
     stream: Stream,
-    dead: &[iceoryx2::identifiers::UniqueNodeId],
 ) -> Result<Option<DiscoveredService>, PortError> {
     let Ok(service_name) = name.try_into() else {
         return Ok(None);
@@ -170,7 +168,7 @@ fn count_service_ports(
     let dynamic = service.dynamic_config();
     let mut publishers: usize = 0;
     dynamic.list_publishers(|publisher| {
-        if publisher.node_id != node_id && !dead.contains(&publisher.node_id) {
+        if publisher.node_id != node_id {
             publishers = publishers.saturating_add(1);
         }
         CallbackProgression::Continue

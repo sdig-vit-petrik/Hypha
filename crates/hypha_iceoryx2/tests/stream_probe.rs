@@ -171,15 +171,20 @@ fn a_killed_publisher_of_another_version_is_not_reported() {
     assert_eq!(others(&transport, &topic).len(), 1);
     child.kill().expect("kill");
     child.wait().expect("wait");
-    let listed: Vec<usize> = transport
+    // The listing still counts the port the killed process left, as the clock driver
+    // reads it; the probe, which the driver asks next, says it is no publisher.
+    let listed: Vec<(u64, usize)> = transport
         .list_service_ports()
         .expect("listing")
         .into_iter()
         .filter(|service| service.name == topic)
-        .map(|service| service.publishers)
+        .map(|service| (service.schema_hash, service.publishers))
         .collect();
     assert!(others(&transport, &topic).is_empty(), "a dead node's port is no publisher");
-    assert!(listed.iter().all(|publishers| *publishers == 0), "{listed:?}");
+    for (schema_hash, ports) in listed {
+        let live = transport.live_publishers(&topic, schema_hash).expect("probe");
+        assert!(ports == 0 || live == Some(0), "{ports} ports, {live:?} live");
+    }
 }
 
 /// What one refresh of a watched topic costs with `n` other streams, each with a live

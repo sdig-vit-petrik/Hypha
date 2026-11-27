@@ -558,6 +558,10 @@ threads or composes cycles (`examples/sensor_fusion/src/fusion_main.cpp`) from
 - `start()` binds the ports in declaration order. A failure names the cycle, the
   port and the status: `hypha: cycle 'controller_node': input 'topic_speed': NotAvailable`.
 - One process has one `CycleNode`; a second step is a composed `hypha::Cycle` (5.5).
+- On host time a rate step starts when the run wakes at its deadline: on Linux within the
+  kernel's wake-up latency, on macOS late by up to half the wait and at most about 10 ms
+  (execution-model.md §11). `CycleTime::now` is the wall time at the start of the step,
+  so it varies with that wake-up; it is not the scheduled deadline.
 - A `Latest` subscriber queues the policy's `maxDepth`, an `Arrivals` its `perStep`
   (section 7). The cycle history is sized below the ABI (`buffer_size + 1` for
   `Latest`, `buffer_size + perStep` for `Arrivals`) and counts samples, not bytes.
@@ -647,7 +651,7 @@ counts no queue evictions: a transport drop shows only as a gap in `overrun_tota
 | Counter                                                                   | Reads         | Counts                                                                                              |
 | ------------------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------- |
 | `lost()`                                                                | `Arrivals`  | Samples the history overwrote before this port read them.                                           |
-| `bindingHealth().overrun_total`                                         | every input   | History losses and, for a queued input, transport sequence gaps. A `Latest` input counts neither. |
+| `bindingHealth().overrun_total`                                         | every input   | History losses and, for a queued input, transport sequence gaps. A `Latest` input counts neither in host time; under replay it counts transport gaps and the evictions of execution-model.md §11.1. |
 | `bindingHealth().age_rejections_total`                                  | every input   | Samples the age rule refused. They were received, not lost.                                         |
 | `bindingHealth().work_limit_drops_total`, `.capture.work_limit_drops` | queued inputs | Samples over the step's share, dropped on purpose; `capture.` counts the latest step only.        |
 
@@ -871,8 +875,10 @@ struct hypha::QosOf<my_msgs::Image>
   `default`, and a typed endpoint with another policy is then refused. Start the
   application nodes first, or map the type to `default`.
 - Under simulated time a sample a queue drops fails the run (`SequenceGap`, "replay
-  not faithful"): a `Latest` queue (`maxDepth`) must hold what the topic sends between
-  two steps, an `Arrivals` queue (`perStep()`) one step; else use a deeper policy.
+  not faithful"). A node drains its inputs on every `/clock`, so under `hypha play` a
+  queue holds one chunk, which the player splits to fit it; an `Arrivals` port needs a
+  `perStep()` of what the topic sends in one period of its cycle
+  (`replay-flow-control.md` §6.7).
 - Ports that share a topic read one subscriber with the deepest `perStep` among them; a
   port with a smaller `perStep` drops the older samples of a step as work-limit drops.
 - A latched sample reaches only the subscriber that joined, so a join adds no

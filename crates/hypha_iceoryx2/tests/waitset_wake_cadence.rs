@@ -1,32 +1,36 @@
 //! A `WaitSet` wakes for its timers and its notifications alone: nothing polls.
-#![allow(clippy::expect_used, clippy::arithmetic_side_effects)]
+#![expect(
+    clippy::expect_used,
+    clippy::arithmetic_side_effects,
+    reason = "a failed setup stops the test with its message; the turn counts are small"
+)]
 
 use core::time::Duration;
-use std::time::Instant;
 
 use hypha_core::port::{QosPolicy, QosRequest, TopicSpec, dispatch::AttachmentId};
 use hypha_iceoryx2::Iox2Transport;
 use hypha_iceoryx2::waitset::{Dispatcher, EventOutcome, Progression, Trigger};
 use hypha_testkit::unique_name;
+use hypha_time::{Time, steady_now};
 
 const BUDGET: u32 = 64;
 
 /// The period of the timer these tests hold: a 5 Hz cycle.
-const TIMER_PERIOD: Duration = Duration::from_millis(200);
+const TIMER_PERIOD: hypha_time::Duration = hypha_time::Duration::from_nanos(200_000_000);
 
 /// How long each run lasts.
 const RUN_LENGTH: Duration = Duration::from_millis(1000);
 
 /// Holds one timer of `TIMER_PERIOD` and counts the turns of the run loop.
 struct TimerDispatcher {
-    next_due: Instant,
+    next_due: Time,
     turns: u32,
     timer_runs: u32,
 }
 
 impl TimerDispatcher {
     fn new() -> Self {
-        Self { next_due: Instant::now() + TIMER_PERIOD, turns: 0, timer_runs: 0 }
+        Self { next_due: steady_now() + TIMER_PERIOD, turns: 0, timer_runs: 0 }
     }
 }
 
@@ -36,7 +40,7 @@ impl Dispatcher for TimerDispatcher {
     }
 
     fn on_timers(&mut self) -> Progression {
-        let due = Instant::now() >= self.next_due;
+        let due = steady_now() >= self.next_due;
         if due {
             self.timer_runs += 1;
             self.next_due += TIMER_PERIOD;
@@ -49,8 +53,8 @@ impl Dispatcher for TimerDispatcher {
         Progression::Continue
     }
 
-    fn next_timed_wait(&mut self) -> Option<Duration> {
-        Some(self.next_due.saturating_duration_since(Instant::now()))
+    fn next_deadline(&mut self) -> Option<Time> {
+        Some(self.next_due)
     }
 }
 

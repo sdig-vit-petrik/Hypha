@@ -58,9 +58,14 @@ pub(crate) fn attach_driver_cycle(
     };
     let node = set.node();
     // One clock per bus: another process that publishes `/clock` would fight this one,
-    // whatever schema it sends it with, as `hypha play` judges it.
+    // whatever schema it sends it with, as `hypha play` judges it; a dead node's port is
+    // no publisher.
     let listed = node.transport.list_service_ports().map_err(Error::from)?;
-    let taken = listed.iter().any(|stream| stream.name == "/clock" && stream.publishers > 0);
+    let mut taken = false;
+    for stream in listed.iter().filter(|stream| stream.name == "/clock" && stream.publishers > 0) {
+        let live = node.transport.live_publishers(&stream.name, stream.schema_hash);
+        taken |= live.map_err(Error::from)?.is_some_and(|publishers| publishers > 0);
+    }
     if taken {
         log::error!(target: "hypha", "hypha: clock driver '{}' is refused: another process already publishes /clock in this domain", registration.name());
         return Err(Error::InvalidState);
@@ -158,7 +163,7 @@ impl CallbackDispatcher<'_> {
             }
             DriverAction::Step { deadline } => {
                 crate::clock::clock_set_sim_time(deadline)?;
-                crate::cycle::drain_inputs(cycle)?;
+                crate::cycle::drain_inputs(cycle, crate::cycle::DrainClock::Simulated)?;
                 {
                     let mut step = cycle.step_mut()?;
                     step.scheduled_nanos = deadline;

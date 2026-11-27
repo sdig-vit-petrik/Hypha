@@ -357,8 +357,10 @@ writes its stream's record in a directory named by the whole topic name in hex, 
 name is at most 126 bytes (`MAX_RECORDED_TOPIC_NAME_BYTES`); the transport refuses a
 longer one with a line that says so.
 
-`hypha_list_service_ports` reports each stream with its `schema_hash` and its publishers
-whose node is alive, so a topic of two schemas is two entries. Every endpoint that names an
+`hypha_list_service_ports` reports each stream with its `schema_hash` and its publisher
+ports, a dead node's included until a node start reclaims it, so a topic of two schemas is
+two entries. The clock driver, which refuses to start while another process publishes
+`/clock`, asks each listed `/clock` stream for its publishers whose node is alive. Every endpoint that names an
 MD5 writes the record of its stream, `<hex(topic)>/<schema hash>`, after its port exists: its
 type, MD5 and definition, or an empty file when it has no definition. The records of a topic
 are the list of its streams. A record lives while its stream has a port: the endpoint whose
