@@ -4,6 +4,7 @@
 //! Only a listener is attachable, and a guard borrows its listener for the whole
 //! run, so listeners live apart from the endpoints the dispatcher mutates.
 
+mod deadline;
 mod run;
 
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -128,6 +129,8 @@ pub struct Iox2WaitSet {
     listeners: Vec<Option<Listener<Ipc>>>,
     registrations: Vec<Registration>,
     control: Control,
+    /// Ends a run's wait at the dispatcher's timed deadline.
+    timer: deadline::DeadlineTimer,
     stop: Arc<AtomicBool>,
     /// The identifier handed out last.
     last_id: AttachmentId,
@@ -138,7 +141,8 @@ impl Iox2WaitSet {
     /// control service is opened.
     ///
     /// # Errors
-    /// Returns [`PortError`] when the control event service cannot be opened.
+    /// Returns [`PortError`] when the control event service cannot be opened, or
+    /// [`PortError::Backend`] when the deadline timer cannot be created.
     pub(crate) fn new(
         node: &crate::transport::SharedNode,
         control_service: &str,
@@ -150,6 +154,7 @@ impl Iox2WaitSet {
             listeners: Vec::with_capacity(MAX_REGISTRATIONS),
             registrations: Vec::with_capacity(MAX_REGISTRATIONS),
             control: Control { listener, notifier: Arc::new(notifier) },
+            timer: deadline::DeadlineTimer::new()?,
             stop: Arc::new(AtomicBool::new(false)),
             last_id: 0,
         })

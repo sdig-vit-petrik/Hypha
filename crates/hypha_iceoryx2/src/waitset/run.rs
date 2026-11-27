@@ -51,6 +51,10 @@ impl Iox2WaitSet {
         let Ok(control_guard) = waitset.attach_notification(&self.control.listener) else {
             return RunReport::setup_failed(PortError::Backend(32));
         };
+        let _timer_guard = match self.timer.attach(&waitset) {
+            Ok(guard) => guard,
+            Err(cause) => return RunReport::setup_failed(cause),
+        };
 
         let (mut event_guards, mut interval_guards) = (Vec::new(), Vec::new());
         if let Err(report) = build_guards(
@@ -80,6 +84,12 @@ impl Iox2WaitSet {
             };
             let due = dispatcher.next_deadline();
             let wait_slice = due.map_or(wait_slice, |due| wait_slice.min(time_until(due)));
+            // The timer ends a blocking wait at `due`, which the wait's timeout may overshoot.
+            if !wait_slice.is_zero()
+                && let Err(cause) = self.timer.arm(due)
+            {
+                return RunReport::runtime_failed(cause, None);
+            }
 
             let mut stop_requested = false;
             let wait = waitset.wait_and_process_once_with_timeout(
