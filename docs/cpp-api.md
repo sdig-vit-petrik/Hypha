@@ -609,7 +609,11 @@ bus yet), *node creation*, *setup* (`setup(Node&)`: endpoints, rate or trigger),
 and the `Node` leaves the bus. The exit codes (0, 2, 70, 75, 78):
 `hypha/application_node.h`; restarts: tools.md (`hypha launch`). A refused
 configuration is a `hypha::ConfigError` (a `ParameterError` among them): throw one
-from the constructor or `setup()` to exit 78; `failRun()` gives 70. A bad `node.name` or an
+from the constructor or `setup()` to exit 78; `failRun(reason)` gives 70. A fault of the
+parameter file that only the running application can establish (a first frame larger than the
+configured limit, a pixel format the device lacks) is reported with `failRun(hypha::ConfigError("..."))`,
+from any thread: the run ends and `runNode` returns 78, so that a supervisor does not restart it.
+The first report decides the code. A bad `node.name` or an
 invalid `[log]` table in the parameter file is refused when the file loads and gives 78. A bad
 `HYPHA_USE_SIM_TIME` or `HYPHA_REPLAY_LOCKSTEP`, a node name given in code, or a name another process
 holds fails *node creation* and gives 70. A program with its own `main` returns 75 itself after `ClockRewound` to be
