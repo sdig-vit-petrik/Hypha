@@ -96,6 +96,27 @@ The cycle calls (`hypha_cycle_*`, `hypha_input_source_*`) give these causes:
   `hypha_publisher_reserve_frame` lends as `hypha_publisher_loan_frame` does, but a refusal
   takes no sequence number: it is for a caller that holds the loan to fill it and may ask
   again, and subscribers count no lost frame.
+- **A kept delivery must be released.** In a subscription callback,
+  `hypha_delivery_retain(delivery, &sample)` keeps the delivered sample past the call,
+  without a copy: `delivery->payload` stays valid until `hypha_received_sample_release`,
+  which any thread may call. A subscriber's callbacks keep at most its loan budget of
+  samples (`loan_budget`, 1 for a `WaitSet` subscriber: one slot stays free for the next
+  delivery); past it `BorrowLimit`, counted in `loan_refused`, and the sample is released
+  at the return as usual. `HyphaDelivery::holder` is null for a delivery that cannot be
+  kept; a second keep of one sample is `InvalidState`.
+- **A cycle loan lives one step.** `hypha_cycle_emission_lend` lends a slot of an output
+  for a message the step fills in place, named by a token; `hypha_cycle_emission_send`
+  stages it with its first `len` bytes, in the order of the step's sends and commits, and
+  `hypha_cycle_emission_return` gives it back unsent. A step may hold several beside a
+  reserve; the end of the step returns those it still holds. It counts against the
+  output's per-step count from the lend, and a refused lend (`PoolExhausted`, `LoanLimit`)
+  counts nothing and latches nothing.
+- **A cycle input reads a large message in place.** On host time, outside a replay, a
+  source keeps a message of 64 KiB or more in the subscriber's slot: the step's
+  `HyphaCycleSampleView::payload` points there. A slot goes back once every queued binding
+  took its sample and no `Latest` binding holds it as the newest; to receive while all of
+  the subscriber's borrowed slots are held, the oldest is copied out (logged, counted).
+  Under simulated time, in a replay, and for a smaller message, the source copies.
 - **A callback context moves only on success.** A successful attach or cycle
   creation takes the `context` and its `release`, and calls `release` exactly once,
   after no callback can run again. A refused call leaves the context to the caller.
@@ -288,9 +309,10 @@ counted by `hypha_subscriber_missing_sequences`.
 | Log (process-wide) | `log.lines_written`, `log.write_failures`, `log.rejected_lines` | `hypha_node_metrics`, with or without a node |
 | Subscriber | `integrity.invalid_frame`, `integrity.corrupt_payload`, `integrity.schema_mismatch`, `integrity.sequence_gap`, `integrity.invalid_timestamp`, `loan.budget`, `loan.held`, `loan.refused` | `RawSubscriber::metrics` (Rust SDK); `hypha_subscriber_counters` (C ABI, as a struct) |
 
-`loan.budget` is the effective per-subscriber budget of owning samples; `loan.held`
-is the number of samples the subscriber holds; `loan.refused` counts receives refused
-because the budget was full. The struct's ninth field, `other_schemas`, has no metric: it
+`loan.budget` is the effective per-subscriber budget of owning samples, or for a
+subscriber a `WaitSet` dispatches, of deliveries its callbacks keep (1); `loan.held`
+is the number of samples the subscriber holds; `loan.refused` counts receives, or keeps
+of a delivery, refused because the budget was full. The struct's ninth field, `other_schemas`, has no metric: it
 is the number of other schemas (MD5s) of the subscriber's topic that a live publisher
 sends, as the node's housekeeping last found them, or `HYPHA_NOT_CHECKED` before a check
 (see [Streams](#streams)): a fact about the topic, not a fault count.
