@@ -3,8 +3,9 @@
 
 use hypha_runtime::replay_progress::{ProgressTurn, progress_turn};
 
-use super::dispatch::fail_with;
+use super::dispatch::{fail_with, is_detached_in};
 use super::{BatchStep, BatchTurn, CallbackDispatcher, Progression, ReceiveFailure, Target};
+use crate::cycle::DrainClock;
 use crate::node_progress::{self, ClockRead};
 use crate::status::Error;
 use crate::subscriber::HyphaSubscriber;
@@ -76,6 +77,33 @@ impl CallbackDispatcher<'_> {
             }
         }
         Ok(last)
+    }
+
+    /// Drain the inputs of every replay cycle of this `WaitSet`, after the turn's steps and
+    /// other callbacks, which may have published into them; a triggered cycle drains on
+    /// each of its turns. The progress offered next then answers no sample whose data still
+    /// waits in a transport queue: each queue holds only what was sent since, and a loss
+    /// shows as a history eviction, which the capture judges (replay-flow-control.md §4.2).
+    pub(super) fn drain_replay_inputs(&mut self) -> Progression {
+        let detached = self.detached;
+        let replay =
+            self.registrations.iter().filter_map(|registration| match registration.target {
+                Target::Timer { ref timer, cycle: Some(ref owned), .. }
+                    if timer.is_grid() && !is_detached_in(detached, registration.id) =>
+                {
+                    Some((registration.id, owned.cycle))
+                }
+                _ => None,
+            });
+        for (attachment, id) in replay {
+            let drained = self
+                .cycle(id)
+                .and_then(|cycle| crate::cycle::drain_inputs(cycle, DrainClock::Simulated));
+            if let Err(status) = drained {
+                return fail_with(&mut self.failure, attachment, status);
+            }
+        }
+        Progression::Continue
     }
 
     /// True when this `WaitSet` runs a replay cycle, whose steps the progress reports.

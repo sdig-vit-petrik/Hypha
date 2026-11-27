@@ -7,7 +7,7 @@ pub mod inspect;
 pub mod introspection;
 pub mod registration;
 pub mod source;
-pub(crate) use source::{DrainStep, drain_at_most};
+pub(crate) use source::{DrainClock, DrainStep, drain_at_most};
 pub mod state;
 pub mod tick;
 pub mod transforms;

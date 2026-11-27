@@ -159,7 +159,7 @@ impl CallbackDispatcher<'_> {
             }
             DriverAction::Step { deadline } => {
                 crate::clock::clock_set_sim_time(deadline)?;
-                crate::cycle::drain_inputs(cycle)?;
+                crate::cycle::drain_inputs(cycle, crate::cycle::DrainClock::Simulated)?;
                 {
                     let mut step = cycle.step_mut()?;
                     step.scheduled_nanos = deadline;

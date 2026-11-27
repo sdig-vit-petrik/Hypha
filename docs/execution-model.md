@@ -853,8 +853,9 @@ host:
   stamp. The header stamp of each step is `Di` too.
 - **Each step sees its deadline's data.** A step takes only the samples whose
   framework send time is before `Di`. A queued input stops its cursor at that
-  cut, and a latest input takes the newest sample before it. A sample sent at
-  `Di` belongs to the next step. A step therefore never sees data that the
+  cut, and a latest input takes the newest sample before it, newest by arrival: with
+  several publishers on one topic, which one arrived last depends on host timing
+  (`replay-flow-control.md` §6.7). A sample sent at `Di` belongs to the next step. A step therefore never sees data that the
   replay has not yet reached.
 - **Ages are data-time ages.** A sample is judged by `Di − sent`, and supervision
   (silence and stagnation) is measured against `Di`. A sample 600 ms old at the
@@ -865,8 +866,12 @@ host:
 - **Progress is reported per `/clock` sample.** After each turn of a `WaitSet`
   that holds a replay cycle or a triggered cycle (section 6.6), it publishes `hypha_msgs/ReplayProgress` on
   `/clock_progress`: the node's name, a clock value and the host send time of the
-  sample it answers. The clock value is the sample's value, lowered to one
-  nanosecond below the earliest deadline that has not run. A report is sent for
+  sample it answers. Before it reports, the turn drains the inputs of every replay
+  cycle of the `WaitSet`, also on a turn that ran no step of it (not its plain callback
+  subscriptions), so the samples sent
+  before the sample it answers are in the input histories. The clock value is the
+  sample's value, lowered to one nanosecond below the earliest deadline that has not
+  run. A report is sent for
   each new sample, even when the clock value repeats. The player waits for these
   reports (`replay-flow-control.md`, sections 4.2 and 4.3).
 - **A held deadline waits for the upstream nodes.** A cycle reads from the nodes
@@ -918,12 +923,23 @@ input (queued or latest) fails, and the `WaitSet` run that holds it fails with
 and the run goes on. The node logs `replay not faithful: N samples lost on <topic>` at
 error level, at most once per topic per second, and a repeated loss is summed
 into the next line. The binding's losses also count in its `overrun_total`.
-While a latest binding in host time counts neither its transport gaps nor its history
-losses because an unread value was superseded in host time, under replay a sample dropped
-or evicted while stamped at or after the oldest deadline still to run was never superseded
-in data time: the newer value belongs to a later step. When samples have been accepted but none
-are admitted because all retained samples are stamped at or after the deadline, the input history
-is shorter than one replay chunk; the binding's verdict at the C ABI is `EMPTY` (not
+A latest binding in host time counts neither its transport gaps nor its history losses,
+because a value it did not read was superseded in host time. Under replay it counts every
+transport gap. A sample it passed over or had not read when the history evicted it counts
+only at a step that finds no retained sample before the deadline that no reader rejected.
+Until then a newer sample that no reader rejected, retained or held by the binding,
+supersedes it in data time: every later deadline admits that sample, so every later step
+takes it or a newer one. A rejection of that sample, by the step or by another reader of the
+history, ends the supersession. A step that selects nothing counts every evicted sample that
+no sample the binding holds for good supersedes, because one of them may be the value this
+step or a later one is due, and the step knows no later deadline. The count errs only towards
+a loss, in the three cases of `replay-flow-control.md` §6.6: an evicted rejected sample, an
+evicted sample at or before the newest evicted rejected one, and a step that selects nothing
+counting an evicted sample stamped at or after its deadline. The last cannot happen on a
+topic that the player alone publishes to a node it waits for: the samples stamped at or after
+the deadline then came in the one chunk that ran the step, which fits the queue. When samples have
+been accepted but none are admitted because all retained samples are stamped at or after the
+deadline, the input history is shorter than one replay chunk; the binding's verdict at the C ABI is `EMPTY` (not
 `NEVER_ARRIVED`), or `STALE` for a queued binding past its silence limit. An Arrivals port shows
 `Usable` with no new sample, and a Latest port without a value shows `NeverArrived`. When the
 history evicted a sample stamped before D, so the value the step was due is gone, a latest
@@ -936,10 +952,11 @@ captures it as a host-time step does, at every step: the newest sample whatever 
 stamp, its silence limit judged by host time (the sender's send time, so on one host),
 and no replay loss or time-base mismatch for it. Such an input makes the step depend on
 arrival timing, so a replay of the node is no longer deterministic for it.
-`hypha play --clock` waits for the nodes, so its replay fails only when an input is too short
-for the samples its cycle has not read yet: a `Latest` input needs a queue of (`--chunk` + period)
-x rate, a queued input chunk x rate and a `perStep` of at least period x rate
-(`replay-flow-control.md`, section 6.7). A run at a high
+`hypha play --clock` waits for the nodes, and a node drains its replay inputs on every turn,
+so a queue holds one chunk, which the player splits to fit it; the replay fails only when an input
+history is too short: a queued input needs a `perStep` of at least period x rate, and a
+`Latest` input's history of its queue plus one always suffices for a topic the player alone
+publishes (`replay-flow-control.md`, section 6.7). A run at a high
 `--rate` is only as faithful as the host keeps up.
 
 ---

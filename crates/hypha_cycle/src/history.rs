@@ -70,6 +70,9 @@ pub struct CycleHistory {
     rejected: Vec<u64>,
     /// The newest framework send stamp of an evicted sample.
     newest_evicted_sent_nanos: Option<u64>,
+    /// The sequence of the newest evicted sample a reader had rejected: eviction prunes
+    /// `rejected`, and a binding still has to know whether a sample it relied on was one.
+    newest_evicted_rejected: Option<u64>,
 }
 
 impl CycleHistory {
@@ -97,6 +100,7 @@ impl CycleHistory {
             timestamp_inversions: 0,
             rejected: Vec::new(),
             newest_evicted_sent_nanos: None,
+            newest_evicted_rejected: None,
         })
     }
 
@@ -137,6 +141,9 @@ impl CycleHistory {
                 break;
             };
             let evicted = oldest.sequence;
+            if self.rejected.contains(&evicted) {
+                self.newest_evicted_rejected = Some(evicted);
+            }
             self.rejected.retain(|sequence| *sequence != evicted);
             let evicted_sent = oldest.framework_sent_nanos;
             let newest = self
@@ -205,6 +212,11 @@ impl CycleHistory {
             self.stats.rejected = self.stats.rejected.wrapping_add(1);
         }
         newly_rejected
+    }
+
+    /// The sequence of the newest evicted sample that was reported as undecodable.
+    pub(crate) const fn newest_evicted_rejected(&self) -> Option<u64> {
+        self.newest_evicted_rejected
     }
 
     /// Whether the retained sample `sequence` was reported as undecodable.

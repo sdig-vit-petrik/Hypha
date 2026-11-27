@@ -756,16 +756,21 @@ or 1.
   §6.7, §11). When the ROS node resets its state on a backward header stamp, that reset
   is logic: keep it.
 - **`replay not faithful`, or `the input history is shorter than one replay chunk`,
-  under `hypha play --clock`** is a sizing fault of the replay, not of the step. One
-  chunk carried more samples of the topic than the input keeps. Check in this order:
+  under `hypha play --clock`** is a sizing fault of the replay, not of the step. The
+  input's history could not hold what the cycle had not read yet. Check in this order:
   1. The line names the topic. Take its rate from the recording
      (`hypha topic hz` during an open-loop `hypha play`).
-  2. Samples in one chunk = rate x `--chunk` (100 ms unless set). Compare with what
-     the input keeps: the policy's `maxDepth` (32 for `default`) for a `Latest` port,
-     `perStep(n)` (8 unless set) for an `Arrivals` port.
-  3. Lower `--chunk <ms>` until a chunk fits, or give the topic a deeper policy or the
-     port a larger `perStep` ([cpp-api.md](cpp-api.md) section 7). A burst counts by
-     its peak, not by the mean rate.
+  2. For an `Arrivals` port, samples in one period of the cycle = rate x period.
+     Compare with `perStep(n)` (8 unless set), and give the port a larger `perStep`
+     ([cpp-api.md](cpp-api.md) section 7). A burst counts by its peak, not by the
+     mean rate.
+  3. For a `Latest` port, or when `perStep` suffices, look for a second publisher of
+     the topic, or one that stamps ahead of the clock: the player splits its own
+     chunks to fit the queue, but no other publisher's
+     ([replay-flow-control.md](replay-flow-control.md) §6.7). Give the topic a deeper
+     policy for them. A publisher that keeps sending while the node drains its inputs
+     can also leave samples queued after the node's report, and the next chunk then
+     overflows the queue.
 
 ---
 

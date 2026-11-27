@@ -21,7 +21,8 @@ only as warnings after the fact.
 One rule: **`/clock` never runs ahead of what every participant has finished.**
 
 - A replay in sync mode is lossless and deterministic on any host, under any load, in any start
-  order. Its output equals that of a replay at any other rate.
+  order. Its output equals that of a replay at any other rate. The one exception is a replay input
+  whose topic has several publishers (6.7).
 - The player publishes every message of the recording; it never skips ahead of a slow node.
 - Nodes need no change. Live operation (no player) is unchanged.
 - **Two modes, one switch.** The lockstep is the default and is deterministic. The open loop, a
@@ -96,6 +97,14 @@ runtime publishes one `ReplayProgress` for the newest `/clock` sample it has rea
   has never reported does not count yet. A `WaitSet` stops holding when its run ends for any
   reason but a `run_for` deadline, when it runs again without such a cycle, or when it is
   destroyed. The offers left are then reported once they answer one sample.
+- **The inputs are drained before the report.** Each turn of such a `WaitSet` drains the inputs of
+  every replay cycle it holds after its steps and its other callbacks, which may publish into them,
+  whether or not a step ran, and a triggered cycle drains its inputs on each of its turns. Every
+  such drain begins after the `/clock` sample was read. A drain takes as many samples as the queues of all
+  publishers of the input hold. So a report answers a `/clock` sample only once the samples sent
+  before it are in the input histories, and the next chunk cannot push an unread one out of a queue
+  (6.7). A publisher that keeps sending during a drain can use up that bound and leave samples
+  queued after the report. Plain callback subscriptions are not drained before the report.
 - **A failure to publish** is logged once as an error. The node keeps running, and the player times
   out on the missing acknowledgement.
 - **The data of a step is published before its progress report.** On one host, iceoryx2 places a
@@ -143,7 +152,7 @@ read again at each chunk close, so a subscriber that connects later counts from 
 player prints `chunks shortened on '<topic>'` once per topic; for a topic on the chunk grid, a queue of
 exactly chunk x rate samples shortens the first chunk of every pass, which is expected. Only messages that share one instant and
 exceed the queue fail the run (`N messages of '<topic>' at one instant exceed the smallest subscriber
-queue B`). A node's own input must still hold what its cycle has not read yet (6.7).
+queue B`). A node's input history must still hold what its cycle has not read yet (6.7).
 
 ### 4.4 Restart, loop, backward seek and pause
 
@@ -411,11 +420,24 @@ Unchanged. The `replay time base mismatch` check stays, because it diagnoses exa
 An input (queued or latest) that loses samples in replay fails the step. A loss is a transport sequence
 gap or a history eviction that the input cursor had not read. The WaitSet run then fails with `SequenceGap`,
 and the node logs `replay not faithful: N samples lost on <topic>` at error level, rate-limited per topic.
-In replay, latest inputs count these losses identically to queued inputs because an unread sample was not
-superseded in data time. When a latest input's history evicted the sample stamped before the deadline that
-the step was due, and every retained one is at or after it, the input history is shorter than the replay
-chunk, and the node logs `all N retained samples on <topic> are stamped at or after deadline D: the input
-history is shorter than one replay chunk`. An input whose first samples come after the deadline logs nothing.
+In replay, a latest input counts every transport gap, as a queued input does, but an evicted sample only at
+a step that finds no retained sample before the deadline that no reader rejected. Until then a newer sample
+that no reader rejected, retained or held by the input, supersedes the evicted one in data time; a rejection
+of it, by the step or by another reader of the history, ends that (execution-model.md §11.1). When a latest
+input's history evicted the sample stamped before the deadline that the step was due, and every retained one
+is at or after it, the input history is shorter than the replay chunk, and the node logs
+`all N retained samples on <topic> are stamped at or after deadline D: the input history is shorter than one
+replay chunk`. An input whose first samples come after the deadline logs nothing.
+
+The count of a latest input errs only towards a loss, in three cases, and each fails its step:
+
+- an evicted sample that a reader rejected counts, though no step would have taken it;
+- eviction forgets a rejection, so every evicted sample at or before the newest evicted sample that a
+  reader rejected counts as possibly rejected: it supersedes nothing;
+- a step that selects nothing counts every evicted sample it passed, also one stamped at or after its
+  deadline, which a later step might have found superseded: such a step fails although nothing it was
+  due is lost. A step selects nothing after an eviction only when every retained sample is at or after
+  its deadline, which a topic the player alone publishes never gives (6.7).
 
 ### 6.7 Limits
 
@@ -428,17 +450,46 @@ wait out.
   the launch in the open loop (4.6).
 - **A loop of triggered cycles has no delay element.** It holds until `--timeout`, and the player
   names its nodes as a loop (6.1); a rate cycle or a clock driver in the loop is the delay element.
-- **Inputs are drained at step time.** A chunk is split so that a topic's samples fit the smallest
-  subscriber queue (4.3), but a node's history must also keep every sample its cycle has not read
-  when the next `/clock` arrives: those from its last deadline run through the new clock, which spans
-  up to a chunk plus a period. Size each replayed input for the topic's rate r, the chunk c and the
-  cycle's period p:
-  - a `Latest` input: a queue of (c + p) x r samples;
-  - a queued input (`Arrivals`): a queue of c x r samples and a `perStep` of at least p x r.
+- **Inputs are drained on every turn.** A node's queues hold only what was sent since the `/clock`
+  sample it last answered (4.2): one chunk of the player, split to fit the smallest subscriber queue
+  (4.3), or the outputs of one step of a clock driver (4.5). What a drain takes waits in the input's
+  history, where a loss is an eviction that fails the step (6.6). For an input of a participant that
+  the player or the driver waits for, on a topic that it alone publishes, with the topic's rate r, the
+  chunk c and the cycle's period p:
+  - the queue of a topic of the player needs no size beyond the messages of one instant. A queue of
+    c x r samples, one more on the chunk grid, keeps the player from shortening chunks, which costs
+    only throughput. The queue of a topic of a clock driver holds the outputs of one driver step;
+  - a `Latest` input's history, its queue plus one sample, always holds the newest sample before each
+    deadline: every retained sample stamped at or after the deadline came with the `/clock` that ran
+    the step, and those fit the queue;
+  - a queued input (`Arrivals`) needs a `perStep` of at least p x r. Its history, its queue plus
+    `perStep`, then holds what its cycle has not read when a step runs: the samples stamped since the
+    previous deadline, at most p x r, and the s samples stamped at or after the deadline that came
+    with the `/clock` that ran the step, at most the queue q. A smaller `perStep` drops the oldest
+    due samples of a step on purpose, counted in `work_limit_drops_total` and no failure, but only
+    while p x r + s ≤ q + `perStep`; past that the history evicts a sample its cycle has not read,
+    and the step fails. s depends on how the chunk grid lines up with the deadline grid: at 100 Hz
+    with chunks and a period of 100 ms, q = 10 and a `perStep` of 9, a replay from 10 ms (s ≤ 2)
+    drops one sample a step, and one from 90 ms (s = 10) fails at 200 ms. Only a `perStep` of at
+    least p x r holds on every phase.
 
-  A `Latest` history holds its queue plus one sample, a queued one its queue plus `perStep`. An input
-  sized below this fails with `replay not faithful` (6.6) when the chunk grid and the deadline grid
-  are out of phase, even if it passes when they line up.
+  A wildcard input has a queue per topic, and its history holds the sum of their depths plus one.
+  A topic with several publishers gives each one its queue, and a drain empties all of them, so the
+  player's queue still holds one chunk. What the other publishers send, cycle nodes upstream
+  included, is not split into chunks: size the queue and the history for what they send between two
+  turns of the node, or the step fails with `replay not faithful`; a queue that overflows before a
+  publisher's first frame that the node accepted loses it uncounted
+  (`communication-integrity.md` §3). A `WaitSet` that has not reported yet does not hold its node's
+  report (4.2), so its queues are guarded only from its first report.
+- **Several publishers on one topic make a replay input depend on turn timing.** The history keeps
+  samples in the order the node drained them, and one drain reads the publishers in an order the
+  transport chooses. A `Latest` input takes the newest arrival before the cut and a queued input
+  delivers in arrival order, so when two publishers send before one step, which sample the step
+  takes, or in which order, depends on whether a turn of the node fell between the two sends. Before every turn
+  drained, the same held for samples split across two step turns. A deterministic replay needs one
+  publisher per topic of a replay input, or publishers whose samples arrive in stamp order.
+  `two_publishers_on_one_input_deliver_in_the_order_the_node_drained_them` in
+  `crates/hypha_ffi/tests/replay_fidelity.rs` shows it.
 - **A forward jump of `/clock` costs one step per period.** It runs one step per period it covers (4.4),
   in slices of at most 1024 steps or 50 ms, so a jump across a long gap is slow, but a turn stays short.
 - **Simulated time is process-global.** With two sim-time nodes in one process, a backward seek can be
@@ -446,7 +497,8 @@ wait out.
 - **An old parameter file is not checked.** A `sim.max_catch_up_periods` key that is still set is
   silently ignored.
 - **The first chunk without `--nodes`** may be acknowledged before a node that has not reported is
-  heard. Name every node that must take part.
+  heard, so the drain rule of 4.2 does not guard that node's queues for it: a chunk past a queue
+  pushes its first frames out uncounted. Name every node that must take part.
 - **The upstream hold is tested with two nodes**, including a feedback loop. Chains of three or more
   nodes are not tested.
 - **The recorder misses losses it cannot see.** A loss is counted when the next frame of that

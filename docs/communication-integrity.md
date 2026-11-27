@@ -70,8 +70,24 @@ Notes:
   accepted as it is, and a loss before it is not counted. A publisher that restarts
   is a new publisher. A sequence half the range or more ahead is refused as not
   newer.
-- Under simulated time (development only) a sample that a queue drops fails the run:
-  a replay that lost data is not faithful.
+- Under simulated time (development only) a cycle input that loses a sample fails the
+  run: a transport gap, or a history eviction of a sample the input still needed; for a
+  `Latest` input, an evicted sample that a newer one supersedes is no loss. A
+  replay that lost data is not faithful. A queued input's `perStep` drops the oldest
+  samples of a step on purpose: counted in `work_limit_drops_total`, no failure.
+- In the replay lockstep a participant drains its cycle inputs before it acknowledges
+  each `/clock` ([replay-flow-control.md](replay-flow-control.md) §4.2, §6.7). A queue
+  of a topic that only the player publishes therefore does not overflow at an input of
+  a participant the player waits for: the player splits its chunks to fit the queue.
+  A topic that only a clock driver publishes holds the outputs of one driver step,
+  which nothing bounds: the queue does not overflow when they fit it. On those paths the
+  loss of a publisher's first frames is prevented, not detected. It stays undetectable
+  elsewhere: on a topic with another publisher, for that publisher's frames; at a
+  participant the sender does not wait for (a node with only plain callbacks, a node
+  not yet heard in the first chunk without `--nodes`, a `WaitSet` that has not reported
+  yet, the open loop); at the plain callback subscriptions of any node, which are not
+  drained before its report; for frames sent before the participant's first turn; and
+  on host time.
 - A frame is bound to its topic, not to its sender: a trusted process that publishes
   the right message type on a topic is accepted. The deployment's access control is
   the measure against that.
@@ -104,7 +120,8 @@ The library detects; the application decides what a detected fault means.
 - No inhibit after repeated corruption. Every refused frame is independent.
 - No acceptance window: a forward jump of any size below half the sequence range is
   a counted loss, not an error.
-- The first frame of a publisher is trusted.
+- The first frame of a publisher is trusted, and a loss before it is not counted. The
+  replay lockstep prevents that loss only on the paths of section 3.
 - A 32-bit CRC does not detect every corruption. Random corruption of a frame
   passes with a probability of about 2^-32.
 - A plain subscriber is not supervised: silence and the life sign exist for cycle

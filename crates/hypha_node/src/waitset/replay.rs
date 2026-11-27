@@ -8,7 +8,7 @@ use std::time::Instant;
 use super::dispatch::CallbackDispatcher;
 use super::upstream::UpstreamHold;
 use super::{AttachmentId, HyphaStatus, Progression, Registration, Target, invoke_cycle};
-use crate::cycle::{Cycle, CycleId, TIME_BASE_BOUND_PERIODS};
+use crate::cycle::{Cycle, CycleId, DrainClock, TIME_BASE_BOUND_PERIODS};
 use crate::status::Error;
 use hypha_runtime::replay_steps::{Step, window_steps};
 use hypha_runtime::upstream_hold::{Admit, Limit, Window, nth_deadline};
@@ -64,7 +64,7 @@ impl CallbackDispatcher<'_> {
             Ok(limit) => limit,
             Err(status) => return self.fail(attachment, HyphaStatus::from(status)),
         };
-        if let Err(status) = crate::cycle::drain_inputs(cycle) {
+        if let Err(status) = crate::cycle::drain_inputs(cycle, DrainClock::Simulated) {
             return self.fail(attachment, HyphaStatus::from(status));
         }
         let new = (periods > 0).then_some(Window { first_nanos, periods });

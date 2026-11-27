@@ -1,5 +1,6 @@
-//! Cost of one cycle tick with one input and one output over the real transport,
-//! through the C ABI a C++ node uses.
+//! Cost of one cycle tick with one input and one output over the real transport, and of
+//! one `WaitSet` turn of a replay cycle with idle inputs under simulated time, through
+//! the C ABI a C++ node uses.
 //! Needs writable `/dev/shm` and `/tmp/iceoryx2`. Run with
 //! `cargo bench -p hypha_ffi --bench cycle`. Not a CI gate.
 #![expect(clippy::expect_used, reason = "a refused setup or a lost message stops the run")]
@@ -8,17 +9,21 @@ use std::ffi::{CString, c_void};
 use std::ptr;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use hypha_ffi::waitset::{HYPHA_ACTION_CONTINUE, HYPHA_ACTION_FAIL, HyphaCallbackResult};
+use hypha_ffi::waitset::{
+    HYPHA_ACTION_CONTINUE, HYPHA_ACTION_FAIL, HyphaCallbackResult, HyphaWaitSetRunReport,
+    hypha_waitset_run,
+};
 use hypha_ffi::{
     HyphaCycle, HyphaCycleBindingOptions, HyphaCycleEmission, HyphaCycleImage, HyphaCycleInputMode,
     HyphaCycleOutputFailure, HyphaCycleSampleView, HyphaCycleTime, HyphaNode, HyphaPublisher,
     HyphaPublisherOptions, HyphaQos, HyphaStatus, HyphaSubscriber, HyphaSubscriberOptions,
-    HyphaWaitSet, cycle_timer_tick, hypha_cycle_bind_input, hypha_cycle_bind_output,
-    hypha_cycle_commit, hypha_cycle_create, hypha_cycle_destroy, hypha_cycle_emission_commit,
-    hypha_cycle_emission_reserve, hypha_cycle_image_sample, hypha_input_source_create,
-    hypha_input_source_destroy, hypha_loan_send, hypha_node_create, hypha_node_default_waitset,
-    hypha_node_destroy, hypha_publish_with_qos, hypha_publisher_destroy,
-    hypha_publisher_loan_frame, hypha_subscribe_typed, hypha_subscriber_destroy,
+    HyphaWaitSet, cycle_timer_tick, hypha_clock_disable_sim_time, hypha_clock_enable_sim_time,
+    hypha_cycle_bind_input, hypha_cycle_bind_output, hypha_cycle_commit, hypha_cycle_create,
+    hypha_cycle_destroy, hypha_cycle_emission_commit, hypha_cycle_emission_reserve,
+    hypha_cycle_image_sample, hypha_input_source_create, hypha_input_source_destroy,
+    hypha_loan_send, hypha_node_create, hypha_node_default_waitset, hypha_node_destroy,
+    hypha_publish_with_qos, hypha_publisher_destroy, hypha_publisher_loan_frame,
+    hypha_subscribe_typed, hypha_subscriber_destroy,
 };
 use hypha_node::safe::subscriber_receive;
 use hypha_testkit::unique_name;
@@ -256,5 +261,108 @@ fn tick_one_input_one_output(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, tick_one_input_one_output);
+/// The idle inputs of [`sim_turn_idle_inputs`] unless `BENCH_IDLE_INPUTS` says otherwise.
+const IDLE_INPUTS: usize = 32;
+
+extern "C" fn idle_step(
+    _image: *const HyphaCycleImage,
+    _time: *const HyphaCycleTime,
+    _emission: *mut HyphaCycleEmission,
+    _context: *mut c_void,
+) -> HyphaCallbackResult {
+    HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
+}
+
+/// One `WaitSet` turn under simulated time that runs no step: a 1 s replay cycle with
+/// [`IDLE_INPUTS`] `Latest` inputs by default, none of which holds a sample, and a clock that never
+/// reaches its first deadline. The turn drains every input once. Most of a run call is
+/// its setup (on macOS iceoryx2 formats a debug string at each attach), so the cost of
+/// the drain is the difference to a run with `BENCH_IDLE_INPUTS=0`, per input.
+fn sim_turn_idle_inputs(c: &mut Criterion) {
+    assert_eq!(hypha_clock_enable_sim_time(1_000), HyphaStatus::Ok as i32, "simulated time");
+    let name = c_text(&unique_name("bench_sim_turn"));
+    let mut node = ptr::null_mut();
+    // SAFETY: the name comes with its length; null parameters and environment are accepted.
+    let created = unsafe {
+        hypha_node_create(
+            name.as_ptr(),
+            name.as_bytes().len(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            &raw mut node,
+        )
+    };
+    assert_eq!(created, HyphaStatus::Ok, "node");
+    let mut waitset: *mut HyphaWaitSet = ptr::null_mut();
+    // SAFETY: `node` is live and `waitset` is a local.
+    let lent = unsafe { hypha_node_default_waitset(node, &raw mut waitset) };
+    assert_eq!(lent, HyphaStatus::Ok, "waitset");
+    let cycle_name = c_text("bench_idle");
+    let mut cycle = ptr::null_mut();
+    // SAFETY: `waitset` is live; the step uses no context, so a null context is valid.
+    let created = unsafe {
+        hypha_cycle_create(
+            waitset,
+            cycle_name.as_ptr(),
+            cycle_name.as_bytes().len(),
+            1_000_000_000,
+            Some(idle_step),
+            ptr::null_mut(),
+            None,
+            &raw mut cycle,
+        )
+    };
+    assert_eq!(created, HyphaStatus::Ok, "cycle");
+    let binding = HyphaCycleBindingOptions {
+        mode: HyphaCycleInputMode::Latest as u32,
+        max_samples_per_iteration: 1,
+        optional: 0,
+    };
+    // `BENCH_IDLE_INPUTS=0` measures the turn without inputs: the cost of the run call
+    // itself, which the per-input cost is the difference to.
+    let inputs = std::env::var("BENCH_IDLE_INPUTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(IDLE_INPUTS);
+    let mut endpoints = Vec::with_capacity(inputs);
+    for _ in 0..inputs {
+        let (publisher, subscriber) = pubsub(node, "bench_sim_in");
+        let mut source = ptr::null_mut();
+        // SAFETY: `waitset` and `subscriber` are live; success takes the subscriber.
+        let sourced = unsafe { hypha_input_source_create(waitset, subscriber, &raw mut source) };
+        assert_eq!(sourced, HyphaStatus::Ok, "input source");
+        let mut index = 0_u32;
+        // SAFETY: `cycle` and `source` are live; `binding` and `index` are locals.
+        let bound =
+            unsafe { hypha_cycle_bind_input(cycle, source, &raw const binding, &raw mut index) };
+        assert_eq!(bound, HyphaStatus::Ok, "input binding");
+        endpoints.push((publisher, source));
+    }
+    // SAFETY: `cycle` is live.
+    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok, "commit");
+    let mut report =
+        HyphaWaitSetRunReport { reason: 0, status: 0, attachment: 0, slow_callbacks: 0 };
+    c.bench_function("cycle/sim_turn_idle_inputs", |b| {
+        b.iter(|| {
+            // SAFETY: `waitset` is live and `report` is a local; a 1 ns run is one turn.
+            let ran = unsafe { hypha_waitset_run(waitset, 1, &raw mut report) };
+            assert_eq!((ran, report.status), (HyphaStatus::Ok, 0), "the turn runs");
+        });
+    });
+    // SAFETY: each handle is live and destroyed once, the cycle before its sources.
+    assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok, "cycle destroy");
+    for (publisher, source) in endpoints {
+        // SAFETY: as above.
+        let destroyed = unsafe { hypha_input_source_destroy(source) };
+        assert_eq!(destroyed, HyphaStatus::Ok, "source destroy");
+        // SAFETY: as above.
+        unsafe { hypha_publisher_destroy(publisher) };
+    }
+    // SAFETY: as above, after every endpoint of the node.
+    unsafe { hypha_node_destroy(node) };
+    assert_eq!(hypha_clock_disable_sim_time(), HyphaStatus::Ok as i32, "host time");
+}
+
+criterion_group!(benches, tick_one_input_one_output, sim_turn_idle_inputs);
 criterion_main!(benches);
