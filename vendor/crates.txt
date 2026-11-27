@@ -1,0 +1,4 @@
+# The vendored crates: directory, crate, version, sha256 of the published .crate tarball.
+# scripts/check-vendor.sh (run by check.sh) compares each directory with its tarball.
+vendor/iceoryx2 iceoryx2 0.10.1 caeb21ff474c3bcef0ddca7673de06692b02f20299fc92598ec0619382d60ed9
+vendor/iceoryx2-cal iceoryx2-cal 0.10.1 04d3f397f1ee7046b1ea18abf0ab3486f86de68e7352639c2f18730ed76391fa

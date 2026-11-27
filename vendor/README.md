@@ -1,8 +1,34 @@
 # Vendored crates
 
 Third-party crates hypha patches. Each is the published crate unchanged except for the
-lines marked `hypha patch`. `Cargo.toml` points `[patch.crates-io]` at them. Update a
-vendored crate together with its upstream version in `Cargo.lock`, and re-apply the patch.
+lines marked `hypha patch`. `Cargo.toml` and `fuzz/Cargo.toml` both point
+`[patch.crates-io]` at them (a workspace without the lines silently builds the registry
+crate). `crates.txt` pins each crate's version and the sha256 of its tarball;
+`scripts/check-vendor.sh`, run by `check.sh`, compares every directory with that tarball and
+refuses a change no `hypha patch` line marks.
+
+To re-vendor a crate, here iceoryx2 from `OLD` to `NEW`, from the repository root:
+
+```bash
+OLD=0.10.1 NEW=0.10.2 CRATE=iceoryx2 WORK=$(mktemp -d)
+for v in "$OLD" "$NEW"; do
+  curl -sSfL -o "$WORK/$v.crate" "https://static.crates.io/crates/$CRATE/$CRATE-$v.crate"
+  mkdir "$WORK/$v" && tar -xzf "$WORK/$v.crate" -C "$WORK/$v" --strip-components 1
+done
+shasum -a 256 "$WORK/$NEW.crate"                       # the new line of crates.txt
+# The hypha patch: the vendored tree against its own release.
+diff -ru -x .cargo-ok -x .cargo_vcs_info.json -x Cargo.toml.orig \
+  "$WORK/$OLD" "vendor/$CRATE" > "$WORK/hypha.patch" || true
+rm -rf "vendor/$CRATE" && cp -R "$WORK/$NEW" "vendor/$CRATE"
+rm -f "vendor/$CRATE"/{.cargo-ok,.cargo_vcs_info.json,Cargo.toml.orig}
+patch -d "vendor/$CRATE" -p2 < "$WORK/hypha.patch"    # resolve any reject by hand
+# Edit crates.txt (version, sha256) and the iceoryx2 version in Cargo.toml files, then:
+cargo update -p "$CRATE" --precise "$NEW"
+cargo update --manifest-path fuzz/Cargo.toml -p "$CRATE" --precise "$NEW"
+./scripts/check-vendor.sh
+```
+
+The version in `Cargo.lock` (main and `fuzz/`) and in `crates.txt` move together.
 
 ## iceoryx2 0.10.1
 

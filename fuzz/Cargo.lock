@@ -1000,8 +1000,6 @@ dependencies = [
 [[package]]
 name = "iceoryx2"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caeb21ff474c3bcef0ddca7673de06692b02f20299fc92598ec0619382d60ed9"
 dependencies = [
  "flatbuffers",
  "iceoryx2-bb-concurrency",
@@ -1199,8 +1197,6 @@ dependencies = [
 [[package]]
 name = "iceoryx2-cal"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04d3f397f1ee7046b1ea18abf0ab3486f86de68e7352639c2f18730ed76391fa"
 dependencies = [
  "iceoryx2-bb-concurrency",
  "iceoryx2-bb-container",

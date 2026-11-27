@@ -25,6 +25,12 @@ hypha_tools = { path = "../apps/hypha_tools" }
 [workspace]
 members = ["."]
 
+# The vendored crates of the main workspace (vendor/README.md): without these lines this
+# workspace would build the registry iceoryx2, which lacks the patched truncate.
+[patch.crates-io]
+iceoryx2 = { path = "../vendor/iceoryx2" }
+iceoryx2-cal = { path = "../vendor/iceoryx2-cal" }
+
 # cargo fuzz builds in release with debug assertions and overflow checks on; line
 # tables give a crash a readable backtrace.
 [profile.release]

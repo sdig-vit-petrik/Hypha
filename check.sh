@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Style, generated-file and dependency-policy checks. Reads the sources only;
-# needs no build. `cargo deny check` (deny.toml) fetches the RustSec advisory
-# database and the crate manifests of Cargo.lock.
+# Style, generated-file and dependency-policy checks. Reads the sources; the only
+# build is a `cargo check` of the fuzz workspace. `cargo deny check` (deny.toml) fetches
+# the RustSec advisory database and the crate manifests of Cargo.lock.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -16,6 +16,8 @@ python3 -I scripts/test_traceability.py
 python3 -I examples/autoware/tools/port.py verify
 python3 -I examples/autoware/tools/test_port.py
 ./scripts/check-features.sh
+# vendor/: each crate is its published tarball apart from the lines marked `hypha patch`.
+./scripts/check-vendor.sh
 git ls-files '*.sh' | xargs shellcheck --severity=warning --external-sources
 
 # The image installs the toolchain rust-toolchain.toml selects.
@@ -86,5 +88,8 @@ cargo deny --locked check
 # The fuzz targets are a workspace of their own with a lock file of their own. Its
 # tree does not hold every licence of the list above, which is no finding there.
 cargo deny --manifest-path fuzz/Cargo.toml --locked check -A license-not-encountered
+# ... and it builds against the vendored crates: its manifest repeats [patch.crates-io].
+# The main target directory holds the artifacts, so the check reuses them.
+cargo check --manifest-path fuzz/Cargo.toml --locked --target-dir target --quiet
 
 ./scripts/format.sh --check
