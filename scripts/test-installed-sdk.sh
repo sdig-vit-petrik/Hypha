@@ -49,6 +49,23 @@ for header in include/std_msgs/Header.h include/hypha_msgs/NodeState.h include/h
     exit 1
   fi
 done
+# The companion headers of sensor_msgs sit beside the generated messages, under both names.
+for header in point_cloud2_iterator point_field_conversion image_encodings distortion_models; do
+  for extension in h hpp; do
+    if [ ! -f "${PREFIX}/include/sensor_msgs/${header}.${extension}" ]; then
+      echo "ERROR: installed sensor_msgs/${header}.${extension} is missing." >&2
+      exit 1
+    fi
+  done
+done
+if [ ! -f "${PREFIX}/include/sensor_msgs/impl/point_cloud2_iterator.h" ]; then
+  echo "ERROR: installed sensor_msgs/impl/point_cloud2_iterator.h is missing." >&2
+  exit 1
+fi
+if [ -e "${PREFIX}/include/sensor_msgs/vendor.toml" ] || [ -e "${PREFIX}/include/vendor.toml" ]; then
+  echo "ERROR: a vendor manifest was installed." >&2
+  exit 1
+fi
 if [ -e "${PREFIX}/include/hypha_msgs/std_msgs" ]; then
   echo "ERROR: message headers are still installed under the hypha_msgs/ prefix." >&2
   exit 1
