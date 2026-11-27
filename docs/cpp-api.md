@@ -532,6 +532,10 @@ The lifetime is the ViewPtr's, and it is bounded:
   A cycle input whose step takes fewer samples than arrive copies the oldest out of its
   slot to receive the next, logged with its count.
 - `hypha::toMessage(*msg)` copies a view into an `M`, for code that takes `const M&`.
+- The bytes are where the ROS 1 encoding puts them, not aligned: read a number of more
+  than a byte with `std::memcpy`. `PointCloud2ConstIterator` reads a field through a
+  reference to its type, as it does for any cloud; aarch64 and x86-64 load such a field, and
+  UBSan reports it as a misaligned access.
 - Do not read a ViewPtr on another thread before its callback or step returns: that
   return may move the bytes into a copy. A subscriber of views keeps no
   `latestSample()` (it would hold the budget's slot).

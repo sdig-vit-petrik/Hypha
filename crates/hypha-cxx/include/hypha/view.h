@@ -41,7 +41,7 @@ struct ViewState
     HyphaReceivedSample*        kept{nullptr};
     /// True while the bytes are a slot the library holds only until the callback or the
     /// step returns: then the library keeps them (kept) or copies them (owner).
-    bool                        lent{false};
+    bool lent{false};
 
     ViewState() = default;
     ViewState(const ViewState&) = delete;
@@ -82,7 +82,8 @@ class ViewAccess;
 /// that return, logged and counted (loanRefused for a subscriber). So a held view is never
 /// lost and never dangles; only a std::span or pointer taken out of it lives no longer than
 /// the ViewPtr it came from. Do not read a ViewPtr on another thread before its callback or
-/// step returns: that return may move its bytes.
+/// step returns: that return may move its bytes. The bytes are not aligned (the ROS 1
+/// encoding has no padding): read numbers of more than a byte with std::memcpy.
 template <ViewableMessage M>
 class ViewPtr
 {
@@ -174,9 +175,10 @@ M toMessage(const View<M>& view)
         fields, view
     );
     // The span's place among the fields.
-    View<M>&     unconst = const_cast<View<M>&>(view);
-    const size_t spanAt = detail::visitSpan(unconst, [](auto&) {});
-    M            message;
+    View<M>&                unconst = const_cast<View<M>&>(view);
+    const size_t            spanAt = detail::visitSpan(unconst, [](auto&) {
+    });
+    M                       message;
     detail::MessageFromView assign(fields, spanAt);
     ros::serialization::Serializer<M>::template allInOne<detail::MessageFromView, M&>(
         assign, message
@@ -222,7 +224,7 @@ class ViewAccess
     static bool settle(ViewPtr<M>& view, Keep&& keep)
     {
         std::shared_ptr<ViewState<M>> state = std::move(view.state_);
-        const bool held = state && state->lent && state.use_count() > 1;
+        const bool                    held = state && state->lent && state.use_count() > 1;
         if (!held) {
             return false;
         }

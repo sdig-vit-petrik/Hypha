@@ -5,6 +5,7 @@
 #include "hypha/cycle_node.h"
 #include "hypha/hypha.h"
 #include "hypha/testing.h"
+
 #include "test_types.h"
 
 #include <gtest/gtest.h>
@@ -108,6 +109,8 @@ class CycleViewFixture : public ::testing::Test
   protected:
     void SetUp() override
     {
+        // Host time: an earlier test of the program may have left simulated time on.
+        static_cast<void>(hypha::disableSimTime());
         this->path = std::filesystem::temp_directory_path() / "hypha_cycle_view_test.toml";
         std::ofstream output(this->path);
         output << "[ports.inputs.cloud]\ntopic='" << topicFor("cloud") << "'\nsilence_ms = 10000\n"
@@ -147,23 +150,24 @@ TEST_F(CycleViewFixture, AViewInAndALoanOutSendTheBytesOfTheTypedPath)
     const auto started = echo.start(*this->node);
     ASSERT_TRUE(started.has_value()) << started.error();
     std::vector<std::vector<uint8_t>> wire;
-    auto raw = hypha::subscribeRawOfType(
-                   topicFor("out"),
-                   hypha::RawType{
-                       .dataType = hypha::codec::dataType<PointCloud2>(),
-                       .md5 = hypha::codec::md5Sum<PointCloud2>()
-                   },
-                   [&wire](const hypha::RawSample& sample) {
+    auto                              raw = hypha::subscribeRawOfType(
+                                                topicFor("out"),
+                                                hypha::RawType{
+                                                    .dataType = hypha::codec::dataType<PointCloud2>(),
+                                                    .md5 = hypha::codec::md5Sum<PointCloud2>()
+                                                },
+                                                [&wire](const hypha::RawSample& sample) {
                        wire.emplace_back(sample.bytes.begin(), sample.bytes.end());
-                   },
-                   0,
-                   hypha::defaultQos
+                                                },
+                                                0,
+                                                hypha::defaultQos
     )
-                   .value();
-    std::vector<double> counts;
-    auto                countSub = hypha::Node().subscribe<Float64>(
-        hypha::Topic{topicFor("count")},
-        [&counts](const hypha::MessagePtr<Float64>& message) { counts.push_back(message->data); }
+                                                .value();
+    std::vector<double>               counts;
+    auto                              countSub = hypha::Node().subscribe<Float64>(
+        hypha::Topic{topicFor("count")}, [&counts](const hypha::MessagePtr<Float64>& message) {
+            counts.push_back(message->data);
+        }
     );
     auto publisher = hypha::Node().advertise<PointCloud2>(hypha::Topic{topicFor("cloud")});
     // From an empty cloud to one read in place (above 64 KiB).
@@ -172,7 +176,9 @@ TEST_F(CycleViewFixture, AViewInAndALoanOutSendTheBytesOfTheTypedPath)
     for (size_t index = 0; index < sizes.size(); ++index) {
         sent.push_back(cloud(sizes[index], static_cast<uint8_t>(index + 1)));
         ASSERT_TRUE(publisher.publish(sent.back()));
-        ASSERT_TRUE(this->runUntil([&] { return wire.size() > index; }));
+        ASSERT_TRUE(this->runUntil([&] {
+            return wire.size() > index;
+        }));
     }
     ASSERT_EQ(echo.seen.size(), sizes.size());
     for (size_t index = 0; index < sizes.size(); ++index) {
@@ -194,11 +200,15 @@ TEST_F(CycleViewFixture, AViewKeptPastItsStepOwnsACopyOfItsBytes)
     auto       publisher = hypha::Node().advertise<PointCloud2>(hypha::Topic{topicFor("cloud")});
     const auto first = cloud(30000, 3);
     ASSERT_TRUE(publisher.publish(first));
-    ASSERT_TRUE(this->runUntil([&] { return echo.seen.size() == 1; }));
+    ASSERT_TRUE(this->runUntil([&] {
+        return echo.seen.size() == 1;
+    }));
     echo.keep = false;
     for (uint8_t seed = 4; seed < 8; ++seed) {
         ASSERT_TRUE(publisher.publish(cloud(30000, seed)));
-        ASSERT_TRUE(this->runUntil([&] { return echo.seen.size() == seed - 2U; }));
+        ASSERT_TRUE(this->runUntil([&] {
+            return echo.seen.size() == seed - 2U;
+        }));
     }
     ASSERT_TRUE(echo.kept);
     PointCloud2 kept = hypha::toMessage(*echo.kept);
@@ -208,9 +218,9 @@ TEST_F(CycleViewFixture, AViewKeptPastItsStepOwnsACopyOfItsBytes)
 
 TEST_F(CycleViewFixture, AHarnessFeedsMessagesToAViewPortAndKeepsTheLoanedSend)
 {
-    Echo                          echo;
-    hypha::testing::StepHarness   harness(echo);
-    const PointCloud2             input = cloud(10, 9);
+    Echo                        echo;
+    hypha::testing::StepHarness harness(echo);
+    const PointCloud2           input = cloud(10, 9);
     harness.deliver(echo.input, std::vector<PointCloud2>{input}, hypha::Time::fromNanos(0));
     harness.step(echo);
     ASSERT_EQ(echo.seen.size(), 1U);
@@ -225,10 +235,10 @@ namespace {
 class Hoarder final : public hypha::CycleNode
 {
   public:
-    Output<PointCloud2>                  output{*this, "out"};
+    Output<PointCloud2>                     output{*this, "out"};
     std::optional<hypha::Loan<PointCloud2>> held;
-    int                                  steps{0};
-    bool                                 refusedLate{false};
+    int                                     steps{0};
+    bool                                    refusedLate{false};
 
     void step(const hypha::CycleTime&) override
     {
@@ -263,10 +273,13 @@ TEST_F(CycleViewFixture, ALoanLivesNoLongerThanItsStep)
     ASSERT_TRUE(hoarder.start(*this->node).has_value());
     std::vector<int> received;
     auto             subscriber = hypha::Node().subscribe<PointCloud2>(
-        hypha::Topic{topicFor("out")},
-        [&received](const hypha::MessagePtr<PointCloud2>&) { received.push_back(1); }
+        hypha::Topic{topicFor("out")}, [&received](const hypha::MessagePtr<PointCloud2>&) {
+            received.push_back(1);
+        }
     );
-    ASSERT_TRUE(this->runUntil([&] { return hoarder.steps >= 3; }));
+    ASSERT_TRUE(this->runUntil([&] {
+        return hoarder.steps >= 3;
+    }));
     EXPECT_TRUE(hoarder.refusedLate) << "a loan of an earlier step is refused";
     EXPECT_TRUE(received.empty()) << "neither the dropped nor the kept loan was sent";
 }

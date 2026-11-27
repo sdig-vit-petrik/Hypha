@@ -75,11 +75,13 @@ PointCloud2 cloud(uint32_t points, std::mt19937& random)
         {.name = "y", .offset = 4, .datatype = sensor_msgs::PointField::FLOAT32, .count = 1},
         {.name = "ring", .offset = 8, .datatype = sensor_msgs::PointField::UINT16, .count = 1},
     };
-    message.point_step = 10;
-    message.row_step = points * 10;
+    // A multiple of 4: a float field of a message's array is aligned (the iterator reads it
+    // through a float reference). A received view's bytes are not aligned: read them with memcpy.
+    message.point_step = 12;
+    message.row_step = points * 12;
     message.is_bigendian = (random() % 2) == 1;
     message.is_dense = (random() % 2) == 1;
-    message.data.resize(static_cast<size_t>(points) * 10);
+    message.data.resize(static_cast<size_t>(points) * 12);
     for (uint8_t& byte : message.data) {
         byte = static_cast<uint8_t>(random());
     }
@@ -90,13 +92,14 @@ PointCloud2 cloud(uint32_t points, std::mt19937& random)
 
 TEST_F(TypedViewFixture, AViewHasTheFieldsTheTypedSubscriberDecodesFromTheSameFrame)
 {
-    const std::string                 topic = testTopic("/cloud");
-    std::vector<PointCloud2>          decoded;
-    std::vector<PointCloud2>          viewed;
-    std::vector<bool>                 inPlace;
-    auto typed = hypha::Node().subscribe<PointCloud2>(
-        hypha::Topic{topic},
-        [&decoded](const hypha::MessagePtr<PointCloud2>& message) { decoded.push_back(*message); }
+    const std::string        topic = testTopic("/cloud");
+    std::vector<PointCloud2> decoded;
+    std::vector<PointCloud2> viewed;
+    std::vector<bool>        inPlace;
+    auto                     typed = hypha::Node().subscribe<PointCloud2>(
+        hypha::Topic{topic}, [&decoded](const hypha::MessagePtr<PointCloud2>& message) {
+            decoded.push_back(*message);
+        }
     );
     auto views = hypha::Node().subscribe<hypha::View<PointCloud2>>(
         hypha::Topic{topic}, [&](const hypha::ViewPtr<PointCloud2>& view) {
@@ -118,10 +121,12 @@ TEST_F(TypedViewFixture, AViewHasTheFieldsTheTypedSubscriberDecodesFromTheSameFr
 
 TEST_F(TypedViewFixture, AViewKeptPastItsCallbackKeepsItsSlotThenACopyPastTheBudget)
 {
-    const std::string                    topic = testTopic("/image");
-    std::vector<hypha::ViewPtr<Image>>   kept;
-    auto views = hypha::Node().subscribe<hypha::View<Image>>(
-        hypha::Topic{topic}, [&kept](const hypha::ViewPtr<Image>& view) { kept.push_back(view); }
+    const std::string                  topic = testTopic("/image");
+    std::vector<hypha::ViewPtr<Image>> kept;
+    auto                               views = hypha::Node().subscribe<hypha::View<Image>>(
+        hypha::Topic{topic}, [&kept](const hypha::ViewPtr<Image>& view) {
+            kept.push_back(view);
+        }
     );
     auto pub = hypha::Node().advertise<Image>(hypha::Topic{topic});
 
@@ -152,10 +157,10 @@ TEST_F(TypedViewFixture, AViewKeptPastItsCallbackKeepsItsSlotThenACopyPastTheBud
 
 TEST_F(TypedViewFixture, ReplacingTheKeptViewInTheCallbackKeepsEveryFrameInPlace)
 {
-    const std::string      topic = testTopic("/image");
-    hypha::ViewPtr<Image>  latest;
-    std::vector<Image>     seen;
-    auto views = hypha::Node().subscribe<hypha::View<Image>>(
+    const std::string     topic = testTopic("/image");
+    hypha::ViewPtr<Image> latest;
+    std::vector<Image>    seen;
+    auto                  views = hypha::Node().subscribe<hypha::View<Image>>(
         hypha::Topic{topic}, [&](const hypha::ViewPtr<Image>& view) {
             latest = view;
             seen.push_back(hypha::toMessage(*latest));
@@ -174,8 +179,8 @@ TEST_F(TypedViewFixture, ReplacingTheKeptViewInTheCallbackKeepsEveryFrameInPlace
 
 TEST_F(TypedViewFixture, APointCloudIteratorReadsAViewAsItReadsTheMessage)
 {
-    std::mt19937             random(7);
-    auto                     message = std::make_shared<const PointCloud2>(cloud(50, random));
+    std::mt19937 random(7);
+    auto         message = std::make_shared<const PointCloud2>(cloud(50, random));
     const hypha::ViewPtr<PointCloud2> view = message;
     EXPECT_EQ(view->data.data(), message->data.data()) << "a view of a message reads its array";
     sensor_msgs::PointCloud2ConstIterator<float>    fromMessage(*message, "y");

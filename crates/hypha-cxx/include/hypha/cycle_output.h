@@ -107,39 +107,30 @@ class Output final : public Port
         if (!measured.complete()) {
             return std::unexpected(Status(HYPHA_STATUS_INVALID_SCHEMA));
         }
-        const size_t length = measured.length();
-        const size_t headLength = length - capacityBytes;
-        if (harness != nullptr) {
-            return Loan<M>(
-                std::move(head),
-                nullptr,
-                length,
-                nullptr,
-                0,
-                this,
-                measured.gapOffset(),
-                capacityBytes,
-                headLength
-            );
+        const size_t                      length = measured.length();
+        uint8_t*                          bytes = nullptr;
+        uint64_t                          token = 0;
+        std::shared_ptr<detail::LentLink> link;
+        // A StepHarness loan is memory of the loan's own.
+        if (harness == nullptr) {
+            const ::HyphaStatus lent =
+                hypha_cycle_emission_lend(emission, this->index_, length, &bytes, &token);
+            if (lent != HYPHA_STATUS_OK) {
+                return std::unexpected(Status(lent));
+            }
+            this->link_->emission = emission;
+            link = this->link_;
         }
-        uint8_t*            bytes = nullptr;
-        uint64_t            token = 0;
-        const ::HyphaStatus lent =
-            hypha_cycle_emission_lend(emission, this->index_, length, &bytes, &token);
-        if (lent != HYPHA_STATUS_OK) {
-            return std::unexpected(Status(lent));
-        }
-        this->link_->emission = emission;
         return Loan<M>(
             std::move(head),
             bytes,
             length,
-            this->link_,
+            std::move(link),
             token,
             this,
             measured.gapOffset(),
             capacityBytes,
-            headLength
+            length - capacityBytes
         );
     }
 
