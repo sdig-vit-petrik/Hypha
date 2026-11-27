@@ -351,3 +351,69 @@ fn a_latest_and_a_queued_binding_on_one_history_count_their_own_losses() {
     assert_eq!(queued.lost_since_capture, 6);
     assert_eq!(latest.lost_since_capture, 0);
 }
+
+/// 90 is taken at 100. Then 250, from a publisher that stamps ahead of the clock, and
+/// 150 arrive: the step at 200 takes 150, the newest arrival before the cut, and passes
+/// 250. A reader rejects 150: the step itself through [`BindingCapture::reject`] when
+/// `own`, else another reader of the history.
+fn passed_ahead_then_rejected(own: bool) -> (CycleHistory, BindingCapture) {
+    let (mut history, mut binding) = latest_on(4);
+    push_ms(&mut history, [90]);
+    assert_eq!(step(&mut binding, &history, 100), Some(90));
+    push_ms(&mut history, [250, 150]);
+    assert_eq!(step(&mut binding, &history, 200), Some(150));
+    let taken = binding.samples[0].sequence;
+    assert!(history.reject(taken));
+    if own {
+        binding.reject(&history, taken);
+    }
+    (history, binding)
+}
+
+#[test]
+fn a_sample_passed_for_one_a_reader_rejected_counts_when_it_is_evicted() {
+    for own in [false, true] {
+        let (mut history, mut binding) = passed_ahead_then_rejected(own);
+        // 90, 250 and 150 are evicted, and nothing retained is before 300.
+        push_ms(&mut history, [305, 315, 325, 335]);
+        assert_eq!(step(&mut binding, &history, 300), None, "own {own}");
+        // 250, which was due at 300, and the rejected 150: an evicted sample that may
+        // have been rejected counts.
+        assert_eq!(binding.lost_since_capture, 2, "own {own}");
+    }
+}
+
+#[test]
+fn a_step_that_falls_back_to_an_older_sample_keeps_the_passed_one_counted() {
+    for own in [false, true] {
+        let (mut history, mut binding) = passed_ahead_then_rejected(own);
+        // At 210, 150 is rejected and 250 not admitted yet: the step takes 90 again.
+        assert_eq!(step(&mut binding, &history, 210), Some(90), "own {own}");
+        push_ms(&mut history, [305, 315, 325, 335]);
+        // 250 was the value due at 300 and is gone with 90 and 150.
+        assert_eq!(step(&mut binding, &history, 300), None, "own {own}");
+        assert_eq!(binding.lost_since_capture, 2, "own {own}: 250 and the rejected 150");
+    }
+}
+
+#[test]
+fn a_fallback_before_the_first_passed_sample_keeps_the_passed_one_counted() {
+    let (mut history, mut binding) = latest_on(5);
+    push_ms(&mut history, [90]);
+    assert_eq!(step(&mut binding, &history, 100), Some(90));
+    // 105 and 110 in order, then 250 stamped ahead of the clock, then 150.
+    push_ms(&mut history, [105, 110, 250, 150]);
+    assert_eq!(step(&mut binding, &history, 200), Some(150));
+    let taken = binding.samples[0].sequence;
+    assert!(history.reject(taken));
+    // 150 is rejected and 250 not admitted at 210: the step falls back to 110.
+    assert_eq!(step(&mut binding, &history, 210), Some(110));
+    // 90, 105, 110 and 250 are evicted; the rejected 150 stays.
+    push_ms(&mut history, [305, 315, 325, 335]);
+    let retained: Vec<u64> =
+        history.samples().iter().map(|sample| sample.framework_sent_nanos / MS).collect();
+    assert_eq!(retained, [150, 305, 315, 325, 335]);
+    // 250 was the value due at 300.
+    assert_eq!(step(&mut binding, &history, 300), None);
+    assert_eq!(binding.lost_since_capture, 1, "250 is lost; the binding holds 110 for good");
+}

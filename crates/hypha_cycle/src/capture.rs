@@ -120,9 +120,10 @@ pub struct BindingCapture {
     received_total: u64,
     delivered_total: u64,
     cursor: u64,
-    /// Under replay, the samples a latest capture passed over for the one it selected,
-    /// uncounted while that one is not rejected ([`BindingCapture::account_evictions`]).
-    superseded: Option<Superseded>,
+    /// Under replay, the oldest of the samples a latest capture passed over: they run up
+    /// to the newest selection, the sample before `cursor`, and stay uncounted while it is
+    /// not rejected ([`BindingCapture::account_evictions`]).
+    passed_from: Option<u64>,
     previous_latest_verdict: Option<InputVerdict>,
     supervision: Option<Supervision>,
     /// The capture clock at the first capture or evaluation; silence counts from it.
@@ -179,7 +180,7 @@ impl BindingCapture {
             received_total: 0,
             delivered_total: 0,
             cursor,
-            superseded: None,
+            passed_from: None,
             previous_latest_verdict: None,
             supervision: None,
             first_nanos: None,
@@ -599,11 +600,13 @@ impl BindingCapture {
     /// Invariant: a sample the binding passed over without holding it, evicted or not, is
     /// uncounted only while a newer sample that no reader rejected is retained for it or
     /// held by it. Every later cut admits that sample, so every later step takes it or a
-    /// newer one, and the passed sample is superseded in data time. The passed samples
-    /// wait in `superseded` with the sample that superseded them:
-    /// - a newer selection supersedes them as well, and the record extends to it;
-    /// - the superseding sample evicted with no rejection is a value for good, so they
-    ///   are superseded for good, and the record goes;
+    /// newer one, and the passed sample is superseded in data time. The passed samples run
+    /// from `passed_from` up to the newest selection, the sample before the cursor, which
+    /// never moves back:
+    /// - a newer selection supersedes them as well, and the run extends to it; an older
+    ///   one, a fallback past a rejected sample, supersedes none of them;
+    /// - the newest selection evicted with no rejection is a value for good, so they are
+    ///   superseded for good, and the run ends;
     /// - a capture that selects nothing has no such retained sample, since it would
     ///   select it: every one of them that is evicted counts, with those evicted unread
     ///   since, from past the sample the binding holds for good. One of them may be the
@@ -611,20 +614,25 @@ impl BindingCapture {
     ///
     /// A sample that may have been rejected before its eviction counts as rejected.
     fn account_evictions(&mut self, history: &CycleHistory, oldest: u64, selected: Option<u64>) {
-        let superseded_for_good = self.superseded.is_some_and(|superseded| {
-            before(superseded.by, oldest) && !may_have_been_rejected(history, superseded.by)
-        });
+        let newest_selected = self.cursor.wrapping_sub(1);
+        let superseded_for_good =
+            before(newest_selected, oldest) && !may_have_been_rejected(history, newest_selected);
         if superseded_for_good {
-            self.superseded = None;
+            self.passed_from = None;
         }
-        if let Some(by) = selected {
-            let from = self.superseded.map_or(self.cursor, |superseded| superseded.from);
-            self.superseded = before(from, by).then_some(Superseded { from, by });
-        } else {
-            let passed = self.superseded.take().map_or(self.cursor, |superseded| superseded.from);
-            let after_held = self.held_for_good(history, oldest).map(|held| held.wrapping_add(1));
-            let from = after_held.filter(|after| before(passed, *after)).unwrap_or(passed);
-            self.count_evicted_from(from, oldest);
+        match selected {
+            Some(selected) => {
+                if self.passed_from.is_none() && before(self.cursor, selected) {
+                    self.passed_from = Some(self.cursor);
+                }
+            }
+            None => {
+                let passed = self.passed_from.take().unwrap_or(self.cursor);
+                let after_held =
+                    self.held_for_good(history, oldest).map(|held| held.wrapping_add(1));
+                let from = after_held.filter(|after| before(passed, *after)).unwrap_or(passed);
+                self.count_evicted_from(from, oldest);
+            }
         }
     }
 
@@ -780,14 +788,6 @@ enum Examine {
     WithinLimit,
     /// Every one: the sample of a trigger step, which the schedule judged.
     Every,
-}
-
-/// Samples `from` up to `by` that a latest replay capture passed over for the sample
-/// `by`, which it selected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Superseded {
-    from: u64,
-    by: u64,
 }
 
 /// Whether a reader rejected the sample `sequence`, or may have before it was evicted:
