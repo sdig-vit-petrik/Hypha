@@ -3,11 +3,11 @@
 use crate::cli::{connect, parse_cli};
 use clap::{Parser, Subcommand};
 use hypha_node::sdk::SchemaIdentityCache;
-use hypha_node::sdk::{BusNode, RawSubscriber, ReceivedSample, ResolvedSchema};
+use hypha_node::sdk::{BusNode, RawSubscriber, ReceivedSample, ResolvedSchema, StreamKey};
 use hypha_tools::echo_args::EchoArgs;
 use hypha_tools::msg_plot::{plot_header, plot_row, plot_values};
 use hypha_tools::msg_reflect::{SchemaCache, decode_message, format_significant};
-use hypha_tools::stream::{StreamKey, StreamSelector, stream_label};
+use hypha_tools::stream::{StreamFlags, stream_label};
 use hypha_tools::{approx_f64, approx_f64_usize};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, VecDeque};
@@ -54,14 +54,14 @@ enum Verb {
         #[arg(long, value_name = "n", default_value_t = 100)]
         window: usize,
         #[command(flatten)]
-        selector: StreamSelector,
+        streams: StreamFlags,
     },
     /// Bandwidth and mean message size of each stream of one topic.
     Bw {
         /// Topic to measure.
         topic: String,
         #[command(flatten)]
-        selector: StreamSelector,
+        streams: StreamFlags,
     },
 }
 
@@ -115,7 +115,7 @@ fn run_list(bus: &BusNode, timeout_sec: f64) -> ExitCode {
 
 fn run_echo(bus: &BusNode, echo: &EchoArgs) -> ExitCode {
     let max_count = echo.max_count;
-    let mut followed = match Followed::open(bus, &echo.topic, &echo.selector, "echo") {
+    let mut followed = match Followed::open(bus, &echo.topic, &echo.streams, "echo") {
         Ok(followed) => followed,
         Err(code) => return code,
     };
@@ -269,8 +269,8 @@ impl RateWindow {
     }
 }
 
-fn run_hz(bus: &BusNode, topic: &str, window: usize, selector: &StreamSelector) -> ExitCode {
-    let mut followed = match Followed::open(bus, topic, selector, "hz") {
+fn run_hz(bus: &BusNode, topic: &str, window: usize, streams: &StreamFlags) -> ExitCode {
+    let mut followed = match Followed::open(bus, topic, streams, "hz") {
         Ok(followed) => followed,
         Err(code) => return code,
     };
@@ -367,8 +367,8 @@ impl BandwidthWindow {
     }
 }
 
-fn run_bw(bus: &BusNode, topic: &str, selector: &StreamSelector) -> ExitCode {
-    let mut followed = match Followed::open(bus, topic, selector, "bw") {
+fn run_bw(bus: &BusNode, topic: &str, streams: &StreamFlags) -> ExitCode {
+    let mut followed = match Followed::open(bus, topic, streams, "bw") {
         Ok(followed) => followed,
         Err(code) => return code,
     };
@@ -413,8 +413,8 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
     match cli.verb {
         Verb::List { timeout } => run_list(&bus, timeout),
         Verb::Echo { echo } => run_echo(&bus, &echo),
-        Verb::Hz { topic, window, selector } => run_hz(&bus, &topic, window, &selector),
-        Verb::Bw { topic, selector } => run_bw(&bus, &topic, &selector),
+        Verb::Hz { topic, window, streams } => run_hz(&bus, &topic, window, &streams),
+        Verb::Bw { topic, streams } => run_bw(&bus, &topic, &streams),
     }
 }
 

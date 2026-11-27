@@ -19,9 +19,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use hypha_node::sdk::BusNode;
-use hypha_tools::stream::StreamSelector;
-use hypha_tools::stream_follower::StreamFollower;
+use hypha_node::sdk::{BusNode, StreamFollower, StreamSelector};
 use inspector::SchemaCache;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;

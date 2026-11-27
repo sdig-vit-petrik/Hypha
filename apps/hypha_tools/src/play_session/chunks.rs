@@ -2,7 +2,7 @@
 
 use super::{CLOCK_TOPIC, Flow, Playback, Session};
 use crate::player::PlaybackItem;
-use crate::stream::StreamKey;
+use hypha_node::sdk::StreamKey;
 use std::time::Instant;
 
 impl Session<'_> {

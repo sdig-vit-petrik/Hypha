@@ -41,7 +41,6 @@ pub mod replay_report;
 pub mod replay_sync;
 pub mod ros2_bag;
 pub mod stream;
-pub mod stream_follower;
 pub mod terminal_ui;
 pub mod theme;
 pub mod utc_time;

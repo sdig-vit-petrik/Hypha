@@ -2,9 +2,8 @@
 //! `--type`/`--md5` selector lets through, including one that joins the name after the verb
 //! started, and the title that tells them apart when a name has several.
 
-use hypha_node::sdk::{BusNode, ReceivedSample};
-use hypha_tools::stream::{StreamKey, StreamSelector};
-use hypha_tools::stream_follower::StreamFollower;
+use hypha_node::sdk::{BusNode, ReceivedSample, StreamFollower, StreamKey, StreamSelector};
+use hypha_tools::stream::{StreamFlags, follower_title};
 use std::process::ExitCode;
 
 /// The streams of one topic name, followed for the verb `verb`.
@@ -24,9 +23,10 @@ impl<'bus> Followed<'bus> {
     pub(super) fn open(
         bus: &'bus BusNode,
         topic: &str,
-        selector: &StreamSelector,
+        flags: &StreamFlags,
         verb: &'static str,
     ) -> Result<Self, ExitCode> {
+        let selector = StreamSelector::from(flags);
         let mut follower = StreamFollower::new(bus, vec![topic.to_owned()], selector.clone(), 0)
             .map_err(|error| refused(verb, &error))?;
         follower.refresh(bus).map_err(|error| refused(verb, &error))?;
@@ -65,7 +65,7 @@ impl<'bus> Followed<'bus> {
 
     /// `stream` under its topic, with its type and MD5 start when the topic is shared.
     pub(super) fn title(&self, stream: &StreamKey) -> String {
-        self.follower.title(self.bus, stream)
+        follower_title(&self.follower, self.bus, stream)
     }
 }
 

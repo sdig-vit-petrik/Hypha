@@ -2,10 +2,8 @@
 
 use std::time::{Duration, Instant};
 
-use hypha_node::sdk::BusNode;
+use hypha_node::sdk::{BusNode, StreamFollower, StreamSelector};
 use hypha_testkit::unique_name;
-use hypha_tools::stream::StreamSelector;
-use hypha_tools::stream_follower::StreamFollower;
 
 #[test]
 #[allow(clippy::expect_used)]

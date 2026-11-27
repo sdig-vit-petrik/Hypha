@@ -92,6 +92,7 @@ pub mod clock;
 /// The acknowledgement rules of a lockstep `/clock`, shared with the clock driver.
 pub use hypha_runtime::clock_barrier;
 pub(crate) mod ffi;
+mod follow;
 mod loan;
 mod metrics;
 mod options;
@@ -108,6 +109,7 @@ pub mod sys {
     pub use hypha_sys::{ReadOnlyMap, map_read_only};
 }
 
+pub use follow::{StreamFollower, StreamKey, StreamSelector};
 pub use loan::{
     RawSample, RawSubscriber, ReceiveError, ReceivedSample, SampleIdentity, SubscriberCounters,
 };

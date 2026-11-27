@@ -1,6 +1,6 @@
 //! Command line of `hypha topic echo`.
 
-use crate::stream::StreamSelector;
+use crate::stream::StreamFlags;
 use clap::Args;
 
 /// What `hypha topic echo` was asked to do.
@@ -16,5 +16,5 @@ pub struct EchoArgs {
     pub plot: bool,
     /// Which streams of the topic to print.
     #[command(flatten)]
-    pub selector: StreamSelector,
+    pub streams: StreamFlags,
 }

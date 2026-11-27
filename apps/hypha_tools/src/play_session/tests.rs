@@ -112,7 +112,7 @@ impl<'bus> ClockedSession<'bus> {
     /// Hands the session a message at `offset` from the start; true when it went on.
     fn item(&mut self, offset: u64) -> bool {
         let clock =
-            crate::stream::StreamKey { topic: super::CLOCK_TOPIC.to_owned(), schema_hash: 0 };
+            hypha_node::sdk::StreamKey { topic: super::CLOCK_TOPIC.to_owned(), schema_hash: 0 };
         let item = crate::player::PlaybackItem {
             stream: &clock,
             bytes: &[0; 8],

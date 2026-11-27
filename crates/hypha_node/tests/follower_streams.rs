@@ -5,10 +5,8 @@
 
 use std::time::{Duration, Instant};
 
-use hypha_node::sdk::{BusNode, RawPublisher};
+use hypha_node::sdk::{BusNode, RawPublisher, StreamFollower, StreamKey, StreamSelector};
 use hypha_testkit::unique_name;
-use hypha_tools::stream::{StreamKey, StreamSelector};
-use hypha_tools::stream_follower::StreamFollower;
 
 const V1: &str = "b3087778e93fcd34cc8d65bc54e850d1";
 const V2: &str = "f79835def461350458ead76f07016dd7";
@@ -116,7 +114,7 @@ fn a_type_or_an_md5_flag_follows_only_the_streams_it_selects() {
     let mut v1 = publish_version(&peer, &topic, V1, DEFINITION_1);
     let mut v2 = publish_version(&peer, &topic, V2, DEFINITION_2);
 
-    let by_md5 = StreamSelector { data_type: None, md5: Some(V2[..8].to_owned()) };
+    let by_md5 = StreamSelector { data_type: None, md5_prefix: Some(V2[..8].to_owned()) };
     let mut follower = StreamFollower::new(&bus, vec![topic.clone()], by_md5, 8).expect("follower");
     follower.refresh(&bus).expect("refresh");
     assert_eq!(follower.followed(), 1, "one version by its MD5 prefix");
@@ -125,7 +123,7 @@ fn a_type_or_an_md5_flag_follows_only_the_streams_it_selects() {
     let seen = read_for(&mut follower, &bus, 1, 1);
     assert_eq!(seen, vec![(hash(V2), vec![2, 0, 0, 0, 0, 0, 0, 0])]);
 
-    let by_type = StreamSelector { data_type: Some("std_msgs/Other".to_owned()), md5: None };
+    let by_type = StreamSelector { data_type: Some("std_msgs/Other".to_owned()), md5_prefix: None };
     let mut none = StreamFollower::new(&bus, vec![topic], by_type, 8).expect("follower");
     none.refresh(&bus).expect("refresh");
     assert_eq!(none.followed(), 0, "no stream of that type");

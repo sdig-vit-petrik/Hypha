@@ -4,12 +4,11 @@
 
 use crate::cli::{connect, parse_cli};
 use clap::Parser;
-use hypha_node::sdk::BusNode;
+use hypha_node::sdk::{BusNode, StreamFollower, StreamKey, StreamSelector};
 use hypha_tools::record_session::RecorderSession;
 use hypha_tools::record_sync::SyncParticipant;
 use hypha_tools::recorder::{McapCompression, Recorder};
-use hypha_tools::stream::{StreamKey, StreamSelector};
-use hypha_tools::stream_follower::StreamFollower;
+use hypha_tools::stream::follower_title;
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::thread;
@@ -196,7 +195,7 @@ impl LossWatch {
             let previous = self.reported.get(&stream).map_or(0, |(_, reported)| *reported);
             let grew: bool = count > previous;
             if grew {
-                let title = follower.title(bus, &stream);
+                let title = follower_title(follower, bus, &stream);
                 eprintln!("hypha record: {title}: {count} samples lost");
                 self.reported.insert(stream, (title, count));
             }
@@ -333,7 +332,7 @@ fn answer_chunk(
         return Ok(Flow::Continue);
     }
     for (stream, count) in &lost {
-        let title = follower.title(bus, stream);
+        let title = follower_title(follower, bus, stream);
         eprintln!(
             "hypha record: --sync: {title} lost {count} sample(s) so far: its queue was full; lower hypha play --chunk so that a chunk holds fewer samples of that stream"
         );

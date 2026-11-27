@@ -20,11 +20,11 @@ use crate::replay_report::RateReport;
 use crate::replay_sync::{
     ChunkPlan, DEFAULT_CHUNK_NANOS, DEFAULT_SETTLE, DEFAULT_TIMEOUT, PROGRESS_TOPIC, Pace,
 };
-use crate::stream::{StreamKey, stream_title, type_label};
+use crate::stream::{stream_title, type_label};
 use crate::terminal_ui::TerminalController;
 use crate::utc_time::UtcRange;
 use hypha_node::sdk::clock_barrier::{CLOCK_RESEND_INTERVAL, Participants};
-use hypha_node::sdk::{BusNode, PublisherOptions, RawPublisher, RawSubscriber, WaitSet};
+use hypha_node::sdk::{BusNode, PublisherOptions, RawPublisher, RawSubscriber, StreamKey, WaitSet};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

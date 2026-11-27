@@ -35,7 +35,7 @@ of every row from a test run.
 | FSR-19 | `run:check`; `scripts/check-deps.sh` (`check.sh`): only `hypha_node` depends on `hypha_iceoryx2`, and no Rust crate depends on `hypha_ffi`; `check.sh` checks the generated header |  |
 | FSR-20 | `cxx:*`, `hypha_node/*` |  |
 | FSR-21 | `hypha_msggen/*`, `hypha_msgs/messages`; the installed SDK flow (`scripts/test-installed-sdk.sh`) |  |
-| FSR-22 | `hypha_tools/echo_plot_cli`, `hypha_tools/topic_follower`, `hypha_ffi/introspection_rows` | The O(1) clause has no measurement (R7). |
+| FSR-22 | `hypha_tools/echo_plot_cli`, `hypha_node/stream_follower`, `hypha_ffi/introspection_rows` | The O(1) clause has no measurement (R7). |
 | FSR-23 | `hypha_ffi/schema`, `hypha_ffi/schema_hash_resolution`, `hypha_iceoryx2/schema_retention` |  |
 | FSR-24 | `hypha_tools/test_recorder_player_core`, `hypha_tools/record_sync`, `hypha_tools/utc_replay_bus`, `hypha_tools/play_flow_control`, `hypha_ffi/replay_callbacks` |  |
 | FSR-25 | `hypha_iceoryx2/start_order_matrix` |  |

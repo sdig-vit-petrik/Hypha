@@ -2,9 +2,8 @@
 
 use crate::cli::{connect, parse_cli};
 use clap::Parser;
+use hypha_node::sdk::{StreamFollower, StreamSelector};
 use hypha_tools::foxglove::{BridgeConfig, FOXGLOVE_SUBPROTOCOL, FoxgloveBridge, ServerOptions};
-use hypha_tools::stream::StreamSelector;
-use hypha_tools::stream_follower::StreamFollower;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};

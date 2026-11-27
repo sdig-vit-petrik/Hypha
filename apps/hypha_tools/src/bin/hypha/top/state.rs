@@ -1,7 +1,7 @@
 //! App state: topic/bus stats, sort/tab/filter state, and value formatting.
 
+use hypha_node::sdk::StreamKey;
 use hypha_tools::approx_f64;
-use hypha_tools::stream::StreamKey;
 use std::collections::BTreeMap;
 use std::time::Instant;
 

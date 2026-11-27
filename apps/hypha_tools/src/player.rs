@@ -2,8 +2,8 @@
 
 use crate::approx_f64;
 use crate::recorder::MD5_METADATA_KEY;
-use crate::stream::StreamKey;
 use crate::utc_time::UtcRange;
+use hypha_node::sdk::StreamKey;
 use hypha_node::sdk::md5::md5_from_definition;
 use mcap::MessageStream;
 use mcap::sans_io::indexed_reader::{IndexedReadEvent, IndexedReader, IndexedReaderOptions};
