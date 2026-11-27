@@ -11,6 +11,11 @@
 //!   or `refused <message>`; then waits to be killed.
 //! - `call-and-exit`: a client; sends one call, prints `sent`, waits for a line on
 //!   stdin, and exits normally.
+//! - `client-hold`: a client; sends until its limit, prints `sent <n>`, and waits to be killed.
+//! - `descriptors <limit>`: sets the open-file limit to `<limit>`, then creates servers of
+//!   `<service>_<i>` until one is refused, and prints `refused after <count> <message>`.
+//!
+//! `HELPER_TIGHT=1` gives the service a policy of one client with one call in flight.
 //!
 //! A server prints `ready` once it exists, then sleeps in its request event: no polling.
 
@@ -41,11 +46,50 @@ fn main() {
         panic!("usage: <node> <service> <v1|v2> <mode> [argument]");
     };
     let md5 = if version == "v2" { V2 } else { V1 };
-    let spec = ServiceSpec::new(service, "std_srvs/SetBool", md5);
+    let mut spec = ServiceSpec::new(service, "std_srvs/SetBool", md5);
+    if std::env::var_os("HELPER_TIGHT").is_some() {
+        spec = spec.with_policy(hypha_core::port::ServicePolicy {
+            name: "tight".to_owned(),
+            max_clients: 1,
+            max_outstanding: 1,
+            ..hypha_core::port::ServicePolicy::default_service()
+        });
+    }
+    if mode == "descriptors" {
+        // Both limits, so the domain's first use cannot raise the soft one again.
+        let limit: u64 = rest.first().expect("a limit").parse().expect("a number");
+        let both = rustix::process::Rlimit { current: Some(limit), maximum: Some(limit) };
+        rustix::process::setrlimit(rustix::process::Resource::Nofile, both).expect("setrlimit");
+        let transport = Iox2Transport::with_name(node).expect("the node");
+        let mut servers = Vec::new();
+        loop {
+            let name = format!("{service}_{}", servers.len());
+            match transport.serve(&ServiceSpec::new(&name, "std_srvs/SetBool", md5)) {
+                Ok(server) => servers.push(server),
+                Err(cause) => {
+                    say(&format!("refused after {} {cause}", servers.len()));
+                    return;
+                }
+            }
+        }
+    }
     let transport = Iox2Transport::with_name(node).expect("the node");
 
+    if mode == "client-hold" {
+        // A client with every call in flight; it never exits by itself.
+        let mut client = transport.service_client(&spec, None, None).expect("the client");
+        let mut sent = 0;
+        while client.send(&[1], 0).is_ok() {
+            sent += 1;
+        }
+        say(&format!("sent {sent}"));
+        loop {
+            std::thread::sleep(Duration::from_secs(3600));
+        }
+    }
+
     if mode == "call-and-exit" {
-        let mut client = transport.service_client(&spec, None).expect("the client");
+        let mut client = transport.service_client(&spec, None, None).expect("the client");
         client.send(&[1], 0).expect("the call");
         say("sent");
         let mut line = String::new();

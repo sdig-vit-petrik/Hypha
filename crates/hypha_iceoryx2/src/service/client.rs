@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use hypha_core::port::{CallSendError, PortError, ServicePolicy};
 use hypha_wire::frame::{FLAG_FAILED, FLAG_REFUSED, FrameHeader, FrameMetadata};
-use iceoryx2::node::{NodeState, NodeView as _};
+use iceoryx2::identifiers::UniqueNodeId;
 use iceoryx2::port::listener::Listener;
 use iceoryx2::port::notifier::Notifier;
 use iceoryx2::prelude::{CallbackProgression, PortFactory as _};
@@ -65,7 +65,8 @@ pub enum Liveness {
     Dead,
     /// The stream has no server.
     NoServer,
-    /// Not probed: the stream was probed less than a second ago and nothing is known.
+    /// The server's node state could not be read (inaccessible, undefined, or the node
+    /// list failed): neither alive nor dead is known.
     Unknown,
 }
 
@@ -93,8 +94,18 @@ struct Call {
 /// How often one stream's server may be probed, per process.
 const PROBE_INTERVAL: Duration = Duration::from_secs(1);
 
-/// The last probe of each stream in this process: when, and what it found.
-static PROBES: LazyLock<Mutex<HashMap<String, (Instant, Liveness)>>> =
+/// One probe of a stream's server: when, which server node, and what it found.
+#[derive(Clone, Copy)]
+struct Probe {
+    at: Instant,
+    server: Option<UniqueNodeId>,
+    found: Liveness,
+}
+
+/// The last probe of each stream in this process. A result is reused only within
+/// [`PROBE_INTERVAL`] and while the stream's server is still the node it judged, so a new
+/// server that took the name over is never judged by its predecessor's death.
+static PROBES: LazyLock<Mutex<HashMap<String, Probe>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// A client of one stream. It belongs to one thread at a time.
@@ -177,11 +188,28 @@ impl Iox2Client {
         self.calls.iter().flatten().filter(|call| call.expired).count()
     }
 
-    /// True when the stream has a server now. A crashed server still counts until its
-    /// node is reclaimed; [`Self::probe_server`] tells the two apart.
+    /// True when the stream has a server now that no probe of this process found dead. It
+    /// reads the stream's server count and the last probe's result, nothing more: a server
+    /// that crashed and was not probed yet still counts.
     #[must_use]
     pub fn server_available(&self) -> bool {
-        self.service.dynamic_config().number_of_servers() > 0
+        let Some(server) = self.server_node() else {
+            return false;
+        };
+        let probes = crate::locked(&PROBES);
+        !probes
+            .get(&self.key.stream())
+            .is_some_and(|probe| probe.server == Some(server) && probe.found == Liveness::Dead)
+    }
+
+    /// The node of the stream's server now.
+    fn server_node(&self) -> Option<UniqueNodeId> {
+        let mut server = None;
+        self.service.dynamic_config().list_servers(|details| {
+            server = Some(details.node_id);
+            CallbackProgression::Stop
+        });
+        server
     }
 
     /// Open a listener on the event the server notifies after each answer, for a
@@ -227,7 +255,7 @@ impl Iox2Client {
         let mut loan = self.client.loan_slice_uninit(request.len()).map_err(|cause| {
             log::error!(target: "hypha/transport",
                 "hypha_iceoryx2: service '{}': cannot loan a request: {cause:?}", self.key.public());
-            CallSendError::Port(PortError::PoolExhausted)
+            CallSendError::Port(PortError::Backend(super::BACKEND_EXCHANGE))
         })?;
         *loan.user_header_mut() = Iox2FrameHeader::from(header);
         let pending = match loan.write_from_slice(request).send() {
@@ -238,7 +266,7 @@ impl Iox2Client {
             Err(cause) => {
                 log::error!(target: "hypha/transport",
                     "hypha_iceoryx2: service '{}': cannot send a request: {cause:?}", self.key.public());
-                return Err(CallSendError::Port(PortError::Backend(40)));
+                return Err(CallSendError::Port(PortError::Backend(super::BACKEND_EXCHANGE)));
             }
         };
         if pending.number_of_server_connections() == 0 {
@@ -304,13 +332,32 @@ impl Iox2Client {
         })
     }
 
-    /// Drop call `id`: its server was found dead.
-    pub fn abandon(&mut self, id: CallId) {
+    /// Drop call `id`, once its server was found dead.
+    ///
+    /// A call a live server still holds must not be dropped: iceoryx2 caps the requests a
+    /// server holds per client at the client's limit, and the server's next receive would
+    /// fail. So `abandon` checks that [`Self::probe_server`] found the stream's current
+    /// server dead, or that the stream has no server.
+    ///
+    /// # Errors
+    /// [`PortError::InvalidState`] when no probe found the current server dead; nothing is
+    /// dropped.
+    pub fn abandon(&mut self, id: CallId) -> Result<(), PortError> {
+        let current = self.server_node();
+        let dead = current.is_none_or(|server| {
+            crate::locked(&PROBES)
+                .get(&self.key.stream())
+                .is_some_and(|probe| probe.server == Some(server) && probe.found == Liveness::Dead)
+        });
+        if !dead {
+            return Err(PortError::InvalidState);
+        }
         for slot in &mut self.calls {
             if slot.as_ref().is_some_and(|call| call.sequence == id.0) {
                 *slot = None;
             }
         }
+        Ok(())
     }
 
     /// Whether the stream's server is alive. Probes at most once a second per stream in
@@ -318,38 +365,26 @@ impl Iox2Client {
     /// service, with filesystem calls, on the calling thread.
     pub fn probe_server(&mut self) -> Liveness {
         let stream = self.key.stream();
+        let server = self.server_node();
         {
             let probes = crate::locked(&PROBES);
-            if let Some((at, found)) = probes.get(&stream)
-                && at.elapsed() < PROBE_INTERVAL
+            if let Some(probe) = probes.get(&stream)
+                && probe.at.elapsed() < PROBE_INTERVAL
+                && probe.server == server
             {
-                return *found;
+                return probe.found;
             }
         }
-        let found = self.probe_now();
-        crate::locked(&PROBES).insert(stream, (Instant::now(), found));
-        found
-    }
-
-    fn probe_now(&self) -> Liveness {
-        let mut server_node = None;
-        self.service.dynamic_config().list_servers(|details| {
-            server_node = Some(details.node_id);
-            CallbackProgression::Stop
-        });
-        let Some(server_node) = server_node else {
-            return Liveness::NoServer;
+        let found = match server {
+            None => Liveness::NoServer,
+            Some(id) => match super::open::peer_node(&self.service, id) {
+                Ok(super::open::PeerNode::Alive { .. }) => Liveness::Alive,
+                Ok(super::open::PeerNode::Dead(_)) => Liveness::Dead,
+                Ok(super::open::PeerNode::Unknown) | Err(_) => Liveness::Unknown,
+            },
         };
-        let mut found = Liveness::Unknown;
-        let listed = self.service.nodes(|state| {
-            match &state {
-                NodeState::Alive(view) if *view.id() == server_node => found = Liveness::Alive,
-                NodeState::Dead(view) if *view.id() == server_node => found = Liveness::Dead,
-                _ => return CallbackProgression::Continue,
-            }
-            CallbackProgression::Stop
-        });
-        if listed.is_err() { Liveness::Unknown } else { found }
+        crate::locked(&PROBES).insert(stream, Probe { at: Instant::now(), server, found });
+        found
     }
 }
 

@@ -221,7 +221,7 @@ pub(crate) fn check_request(topic: &str, request: &QosRequest) -> Result<(), Por
     })
 }
 
-fn corrupted() -> PortError {
+pub(crate) fn corrupted() -> PortError {
     PortError::Backend(crate::service_open::BACKEND_SERVICE_CORRUPTED)
 }
 
@@ -266,14 +266,19 @@ fn parse_stamp(text: &str) -> Option<QosPolicy> {
 /// [`PortError::QosMismatch`] when the attribute is missing, repeated, or names no
 /// policy this build writes.
 pub(crate) fn policy_of_service(attributes: &AttributeSet) -> Result<QosPolicy, PortError> {
-    let key = qos_attribute_key()?;
-    let stamp_count = attributes.number_of_key_values(&key);
-    if stamp_count != 1 {
-        return Err(PortError::QosMismatch);
+    let text = attribute_text(attributes, QOS_ATTRIBUTE).ok_or(PortError::QosMismatch)?;
+    parse_stamp(&text).ok_or(PortError::QosMismatch)
+}
+
+/// The one value of attribute `key`, as text; `None` when it is missing, repeated or not
+/// UTF-8. Topic and service stamps are read through it.
+pub(crate) fn attribute_text(attributes: &AttributeSet, key: &str) -> Option<String> {
+    let key = AttributeKey::try_from(key).ok()?;
+    if attributes.number_of_key_values(&key) != 1 {
+        return None;
     }
-    let stamped = attributes.key_value(&key, 0).ok_or(PortError::QosMismatch)?;
-    let text = core::str::from_utf8(stamped.as_bytes()).map_err(|_| PortError::QosMismatch)?;
-    parse_stamp(text).ok_or(PortError::QosMismatch)
+    let value = attributes.key_value(&key, 0)?;
+    core::str::from_utf8(value.as_bytes()).ok().map(str::to_owned)
 }
 
 /// The payload limit of a publisher of `spec`.

@@ -137,9 +137,9 @@ impl ServiceSpec {
     /// [`ServiceError::InvalidName`], [`ServiceError::NameTooLong`],
     /// [`ServiceError::InvalidIdentity`] or [`ServiceError::InvalidPolicy`].
     pub fn validate(&self) -> Result<(), ServiceError> {
-        // `@` separates the stream key and `#` the role of a frame's code: neither may be
-        // part of a name, so no topic or other service seals a frame with this one's code.
-        let reserved = self.name.contains('@') || self.name.contains('#');
+        // `@` separates the stream key in the transport's names, so a name holding it could
+        // spell another service's stream or events.
+        let reserved = self.name.contains('@');
         if reserved || !TopicSpec::new(&self.name).has_valid_public_name() {
             return Err(ServiceError::InvalidName);
         }
@@ -161,7 +161,7 @@ pub struct ServerHolder {
     pub node: String,
     /// The holder's process id, when it can be read.
     pub pid: Option<i32>,
-    /// The type it serves and the first 16 hex digits of its MD5, when found.
+    /// The type it serves and the first 8 hex digits of its MD5, when found.
     pub served: Option<(String, String)>,
 }
 
@@ -170,7 +170,11 @@ impl fmt::Display for ServerHolder {
         if let Some((type_name, md5)) = &self.served {
             write!(out, "as {type_name} ({md5}) ")?;
         }
-        write!(out, "by '{}'", self.node)?;
+        if self.node.is_empty() {
+            write!(out, "by a node whose name cannot be read")?;
+        } else {
+            write!(out, "by '{}'", self.node)?;
+        }
         if let Some(pid) = self.pid {
             write!(out, " (pid {pid})")?;
         }
@@ -198,6 +202,13 @@ pub enum ServiceError {
     AlreadyServed(ServerHolder),
     /// The service exists with another policy.
     QosMismatch,
+    /// The process has too few file descriptors left for another service.
+    OutOfDescriptors {
+        /// Descriptors open now.
+        open: u64,
+        /// The soft limit.
+        limit: u64,
+    },
     /// The transport refused.
     Port(PortError),
 }
@@ -221,6 +232,11 @@ impl fmt::Display for ServiceError {
             Self::InvalidPolicy(why) => write!(out, "{why}"),
             Self::AlreadyServed(holder) => write!(out, "already served {holder}"),
             Self::QosMismatch => write!(out, "the service exists with another policy"),
+            Self::OutOfDescriptors { open, limit } => write!(
+                out,
+                "out of file descriptors: {open} open of this process's limit of {limit}; raise \
+                 the limit (ulimit -n)"
+            ),
             Self::Port(cause) => write!(out, "{cause}"),
         }
     }
@@ -332,7 +348,8 @@ mod tests {
             ServiceSpec::new("no_slash", "std_srvs/SetBool", MD5).validate(),
             Err(ServiceError::InvalidName)
         );
-        for reserved in ["/a@b", "/a#request"] {
+        assert_eq!(ServiceSpec::new("/a#b", "std_srvs/SetBool", MD5).validate(), Ok(()));
+        for reserved in ["/a@b", "/hypha/srv/a", "/hypha"] {
             assert_eq!(
                 ServiceSpec::new(reserved, "std_srvs/SetBool", MD5).validate(),
                 Err(ServiceError::InvalidName),

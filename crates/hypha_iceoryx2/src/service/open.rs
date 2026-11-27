@@ -6,6 +6,7 @@ use core::time::Duration;
 use hypha_core::port::{PortError, ServerHolder, ServiceError, ServicePolicy, ServiceSpec};
 use iceoryx2::node::{NodeState, NodeView as _};
 use iceoryx2::port::notifier::{Notifier, NotifierCreateError};
+use iceoryx2::port::port_name::PortName;
 use iceoryx2::prelude::*;
 use iceoryx2::service::attribute::{AttributeKey, AttributeSet, AttributeValue, AttributeVerifier};
 use iceoryx2::service::builder::request_response::{
@@ -13,7 +14,7 @@ use iceoryx2::service::builder::request_response::{
     RequestResponseOpenOrCreateError as OpenOrCreate,
 };
 
-use super::key::{StreamKey, public_name_of_stream};
+use super::key::StreamKey;
 use crate::header::Iox2FrameHeader;
 use crate::notification::EventLimits;
 use crate::transport::{Ipc, SharedNode};
@@ -78,10 +79,6 @@ pub(crate) fn parse_stamp(text: &str) -> Option<ServicePolicy> {
     Some(policy)
 }
 
-fn corrupted() -> PortError {
-    PortError::Backend(crate::service_open::BACKEND_SERVICE_CORRUPTED)
-}
-
 /// The attributes a stream requires of its existing service and defines on a new one.
 fn verifier(spec: &ServiceSpec) -> Result<AttributeVerifier, PortError> {
     let pairs = [
@@ -90,20 +87,16 @@ fn verifier(spec: &ServiceSpec) -> Result<AttributeVerifier, PortError> {
         (MD5_ATTRIBUTE, spec.md5.clone()),
     ];
     pairs.iter().try_fold(AttributeVerifier::new(), |verifier, (key, value)| {
-        let key = AttributeKey::try_from(*key).map_err(|_| corrupted())?;
-        let value = AttributeValue::try_from(value.as_str()).map_err(|_| corrupted())?;
-        verifier.require(&key, &value).map_err(|_| corrupted())
+        let key = AttributeKey::try_from(*key).map_err(|_| crate::qos::corrupted())?;
+        let value =
+            AttributeValue::try_from(value.as_str()).map_err(|_| crate::qos::corrupted())?;
+        verifier.require(&key, &value).map_err(|_| crate::qos::corrupted())
     })
 }
 
 /// One attribute of a service, as text.
 pub(crate) fn attribute(attributes: &AttributeSet, key: &str) -> Option<String> {
-    let key = AttributeKey::try_from(key).ok()?;
-    if attributes.number_of_key_values(&key) != 1 {
-        return None;
-    }
-    let value = attributes.key_value(&key, 0)?;
-    core::str::from_utf8(value.as_bytes()).ok().map(str::to_owned)
+    crate::qos::attribute_text(attributes, key)
 }
 
 /// One attempt to open or create a stream, with every setting hypha fixes
@@ -218,25 +211,87 @@ pub(crate) fn response_event_limits(policy: &ServicePolicy) -> EventLimits {
 /// holder, and servers created at the same moment.
 const LOCK_LIMITS: EventLimits = EventLimits { notifiers: 1, listeners: 1, nodes: 32 };
 
-/// Take the server lock of `key`'s name. A dead holder is reclaimed first; a live one
-/// refuses with its name, pid and the type it serves.
+/// The attribute that makes an event the server lock of a service: its public name.
+const LOCK_ATTRIBUTE: &str = "hypha.service_lock";
+
+/// Open or create the server lock of `key`'s name. The lock carries [`LOCK_ATTRIBUTE`]
+/// with the service's name, and opening requires it: an event of the lock's name without
+/// it was made by something other than a hypha server, and locks nothing.
 ///
 /// # Errors
-/// [`ServiceError::AlreadyServed`] for a live holder, [`ServiceError::Port`] otherwise.
+/// [`ServiceError::Port`] with [`super::BACKEND_LOCK_INVALID`] for an event that is not
+/// this name's lock, and with code 7 when the event cannot be opened.
+fn open_lock(
+    node: &SharedNode,
+    key: &StreamKey,
+) -> Result<iceoryx2::service::port_factory::event::PortFactory<Ipc>, ServiceError> {
+    use iceoryx2::service::builder::event::{EventOpenError, EventOpenOrCreateError};
+    let lock_name = ServiceName::new(&key.lock()).map_err(|_| ServiceError::InvalidName)?;
+    let attribute = AttributeKey::try_from(LOCK_ATTRIBUTE).map_err(|_| crate::qos::corrupted())?;
+    let name = AttributeValue::try_from(key.public()).map_err(|_| ServiceError::InvalidName)?;
+    let verifier =
+        AttributeVerifier::new().require(&attribute, &name).map_err(|_| crate::qos::corrupted())?;
+    let opened = crate::service_open::open_within_window(
+        "the service lock",
+        node,
+        PortError::Disconnected,
+        |node| {
+            node.service_builder(&lock_name)
+                .event()
+                .max_notifiers(LOCK_LIMITS.notifiers)
+                .max_listeners(LOCK_LIMITS.listeners)
+                .max_nodes(LOCK_LIMITS.nodes)
+                .open_or_create_with_attributes(&verifier)
+        },
+        crate::service_open::event_is_transient,
+    )?;
+    opened.map_err(|cause| {
+        if cause == EventOpenOrCreateError::EventOpenError(EventOpenError::IncompatibleAttributes) {
+            log::error!(target: "hypha/transport",
+                "hypha: service '{}': the event '{}' is not its server lock (something other \
+                 than a hypha server created it); refusing to serve", key.public(), key.lock());
+            ServiceError::Port(PortError::Backend(super::BACKEND_LOCK_INVALID))
+        } else {
+            log::error!(target: "hypha/transport",
+                "hypha_iceoryx2: service '{}': cannot open its server lock: {cause:?}", key.public());
+            ServiceError::Port(PortError::Backend(7))
+        }
+    })
+}
+
+/// The name the lock's notifier carries: the MD5 and type it serves, within iceoryx2's
+/// 64 bytes of a port name, so a refusal names them without a listing of the domain.
+fn served_label(spec: &ServiceSpec) -> Result<PortName, ServiceError> {
+    let full = format!("{}:{}", spec.md5, spec.type_name);
+    let limit = iceoryx2::constants::MAX_PORT_NAME_LENGTH;
+    let end =
+        (0..=full.len().min(limit)).rev().find(|end| full.is_char_boundary(*end)).unwrap_or(0);
+    PortName::new(full.get(..end).unwrap_or_default()).map_err(|_| ServiceError::InvalidIdentity)
+}
+
+/// The type and the first 8 hex digits of the MD5 that a lock's notifier name carries.
+fn served_of_label(label: &str) -> Option<(String, String)> {
+    let (md5, type_name) = label.split_once(':')?;
+    Some((type_name.to_owned(), md5.get(..8)?.to_owned()))
+}
+
+/// Take the server lock of `key`'s name for `spec`. A dead holder is reclaimed first; a
+/// live one refuses with its name, pid and the type it serves.
+///
+/// # Errors
+/// [`ServiceError::AlreadyServed`] for a live holder; [`ServiceError::Port`] with
+/// [`super::BACKEND_LOCK_INVALID`] when the event of the lock's name is not this name's
+/// lock, or with [`super::BACKEND_RECLAIM`] when a dead holder cannot be reclaimed.
 pub(crate) fn acquire_lock(
     node: &SharedNode,
     key: &StreamKey,
+    spec: &ServiceSpec,
 ) -> Result<Notifier<Ipc>, ServiceError> {
-    let lock_name = ServiceName::new(&key.lock()).map_err(|_| ServiceError::InvalidName)?;
+    let label = served_label(spec)?;
     let mut reclaimed_once = false;
     loop {
-        let service = crate::notification::open_event_service(
-            node,
-            &lock_name,
-            Some(LOCK_LIMITS),
-            "the service lock",
-        )?;
-        match service.notifier_builder().create() {
+        let service = open_lock(node, key)?;
+        match service.notifier_builder().name(&label).create() {
             Ok(notifier) => return Ok(notifier),
             Err(NotifierCreateError::ExceedsMaxSupportedNotifiers) => {}
             Err(cause) => {
@@ -245,46 +300,62 @@ pub(crate) fn acquire_lock(
                 return Err(ServiceError::Port(PortError::Backend(7)));
             }
         }
-        let mut holder_id = None;
+        let mut holder = None;
         service.dynamic_config().list_notifiers(|details| {
-            holder_id = Some(details.node_id);
+            holder = Some((details.node_id, details.notifier_name.as_str().to_owned()));
             CallbackProgression::Stop
         });
-        let Some(holder_id) = holder_id else {
+        let Some((holder_id, holder_label)) = holder else {
             // The holder left between the two calls: take the lock again.
             continue;
         };
-        let holder = holder_state(&service, holder_id)?;
-        match holder {
-            Holder::Dead(view) if !reclaimed_once => {
-                reclaim(key, *view);
+        match peer_node(&service, holder_id)? {
+            PeerNode::Dead(view) if !reclaimed_once => {
+                reclaim_dead(key, "its server", *view);
                 reclaimed_once = true;
             }
-            Holder::Dead(_) => return Err(ServiceError::Port(PortError::Backend(41))),
-            Holder::Alive(node_name, pid) | Holder::Other(node_name, pid) => {
-                let served = served_by(key, holder_id);
+            PeerNode::Dead(_) => {
+                return Err(ServiceError::Port(PortError::Backend(super::BACKEND_RECLAIM)));
+            }
+            PeerNode::Alive { name, pid } => {
                 return Err(ServiceError::AlreadyServed(ServerHolder {
-                    node: node_name,
+                    node: name,
                     pid,
-                    served,
+                    served: served_of_label(&holder_label),
+                }));
+            }
+            // A holder whose state cannot be read is never taken over.
+            PeerNode::Unknown => {
+                return Err(ServiceError::AlreadyServed(ServerHolder {
+                    node: String::new(),
+                    pid: None,
+                    served: served_of_label(&holder_label),
                 }));
             }
         }
     }
 }
 
-enum Holder {
-    Alive(String, Option<i32>),
+/// A node registered at a service, as its monitor reports it.
+pub(crate) enum PeerNode {
+    Alive {
+        name: String,
+        pid: Option<i32>,
+    },
     Dead(Box<iceoryx2::node::DeadNodeView<Ipc>>),
-    /// Inaccessible or undefined: never reclaimed.
-    Other(String, Option<i32>),
+    /// Not registered, inaccessible or undefined: never reclaimed.
+    Unknown,
 }
 
-fn holder_state(
+/// The state of node `id` among the nodes registered at `service`.
+///
+/// # Errors
+/// [`ServiceError::Port`] when the node list cannot be read.
+pub(crate) fn peer_node(
     service: &impl iceoryx2::service::port_factory::PortFactory<Service = Ipc>,
     id: iceoryx2::identifiers::UniqueNodeId,
-) -> Result<Holder, ServiceError> {
-    let mut found = None;
+) -> Result<PeerNode, ServiceError> {
+    let mut found = PeerNode::Unknown;
     service
         .nodes(|state| {
             let this = match &state {
@@ -295,17 +366,17 @@ fn holder_state(
             if this != id {
                 return CallbackProgression::Continue;
             }
-            found = Some(match state {
-                NodeState::Alive(view) => Holder::Alive(node_name(&view), pid_of(&view)),
-                NodeState::Dead(view) => Holder::Dead(Box::new(view)),
-                NodeState::Inaccessible(_) | NodeState::Undefined(_) => {
-                    Holder::Other(String::new(), None)
+            found = match state {
+                NodeState::Alive(view) => {
+                    PeerNode::Alive { name: node_name(&view), pid: pid_of(&view) }
                 }
-            });
+                NodeState::Dead(view) => PeerNode::Dead(Box::new(view)),
+                NodeState::Inaccessible(_) | NodeState::Undefined(_) => PeerNode::Unknown,
+            };
             CallbackProgression::Stop
         })
         .map_err(|cause| ServiceError::Port(crate::transport::node_list_failed(cause)))?;
-    Ok(found.unwrap_or_else(|| Holder::Other(String::new(), None)))
+    Ok(found)
 }
 
 pub(crate) fn node_name(view: &impl iceoryx2::node::NodeView) -> String {
@@ -316,53 +387,16 @@ pub(crate) fn pid_of(view: &impl iceoryx2::node::NodeView) -> Option<i32> {
     view.id().pid::<Ipc>().ok().map(|pid| pid.value())
 }
 
-/// Reclaim a dead node that holds a service's server slot, as its own restart would.
-fn reclaim(key: &StreamKey, view: iceoryx2::node::DeadNodeView<Ipc>) {
+/// Reclaim a dead node that holds `what` of a service, as its own restart would. Only a
+/// node that the monitor reports dead reaches here.
+pub(crate) fn reclaim_dead(key: &StreamKey, what: &str, view: iceoryx2::node::DeadNodeView<Ipc>) {
     let name = node_name(&view);
     let pid = pid_of(&view).map_or_else(|| "unknown".to_owned(), |pid| pid.to_string());
     match view.blocking_remove_stale_resources(crate::transport::RECLAIM_TIMEOUT) {
         Ok(()) => log::info!(target: "hypha/transport",
-            "hypha: service '{}': reclaimed dead node '{name}' (pid {pid}) that held its server", key.public()),
-        // Another process reclaims it at the same moment, or it is gone: try the lock again.
+            "hypha: service '{}': reclaimed dead node '{name}' (pid {pid}) that held {what}", key.public()),
+        // Another process reclaims it at the same moment, or it is gone: the caller tries again.
         Err(cause) => log::info!(target: "hypha/transport",
             "hypha: service '{}': dead node '{name}' (pid {pid}) not reclaimed here: {cause:?}", key.public()),
     }
-}
-
-/// The type and MD5 prefix of the stream of `key`'s name that node `holder` is
-/// registered at, for the refusal's message.
-fn served_by(
-    key: &StreamKey,
-    holder: iceoryx2::identifiers::UniqueNodeId,
-) -> Option<(String, String)> {
-    let config = crate::domain::config().ok()?;
-    let prefix = key.sibling_prefix();
-    let mut served = None;
-    let listed = Ipc::list(config, |details| {
-        let config = &details.static_details;
-        let name = config.name().as_str();
-        let is_stream = name.starts_with(&prefix) && public_name_of_stream(name).is_some();
-        let is_request_response = matches!(
-            config.messaging_pattern(),
-            iceoryx2::service::static_config::messaging_pattern::MessagingPattern::RequestResponse(
-                _
-            )
-        );
-        let holder_is_there = details.dynamic_details.as_ref().is_some_and(|dynamic| {
-            dynamic.nodes.iter().any(|state| match state {
-                NodeState::Alive(view) => *view.id() == holder,
-                NodeState::Dead(view) => *view.id() == holder,
-                NodeState::Inaccessible(id) | NodeState::Undefined(id) => *id == holder,
-            })
-        });
-        if !(is_stream && is_request_response && holder_is_there) {
-            return CallbackProgression::Continue;
-        }
-        let type_name = attribute(config.attributes(), TYPE_ATTRIBUTE).unwrap_or_default();
-        let md5 = attribute(config.attributes(), MD5_ATTRIBUTE).unwrap_or_default();
-        served = Some((type_name, md5.get(..8).unwrap_or_default().to_owned()));
-        CallbackProgression::Stop
-    });
-    listed.ok()?;
-    served
 }

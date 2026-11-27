@@ -9,7 +9,7 @@ use hypha_core::port::{PortError, ReplyError, ServicePolicy};
 use hypha_wire::frame::{FLAG_FAILED, FLAG_REFUSED, FrameHeader, FrameMetadata};
 use iceoryx2::port::listener::Listener;
 use iceoryx2::port::notifier::Notifier;
-use iceoryx2::prelude::PortFactory as _;
+use iceoryx2::prelude::{CallbackProgression, PortFactory as _};
 
 use super::key::StreamKey;
 use super::open::StreamFactory;
@@ -28,8 +28,8 @@ pub struct RequestHandle {
     generation: u32,
 }
 
-/// What [`Iox2Server::receive`] took: the handle and the request's frame metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What [`Iox2Server::receive`] took: the handle, the request's frame metadata and who sent it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceivedRequest {
     /// The slot that holds the request until it is answered.
     pub handle: RequestHandle,
@@ -41,6 +41,10 @@ pub struct ReceivedRequest {
     pub framework_sent_nanos: u64,
     /// The host monotonic time at the send.
     pub transport_sent_nanos: u64,
+    /// The client's node name; empty when it cannot be read.
+    pub client_node: String,
+    /// The client's port label (its node name unless it gave one).
+    pub client_port: String,
 }
 
 /// What a server counted. Each counter wraps.
@@ -56,7 +60,7 @@ pub struct ServerCounters {
     pub failed: u64,
     /// Requests whose client left before the answer.
     pub abandoned: u64,
-    /// Request frames that did not verify, dropped unanswered.
+    /// Requests refused as invalid: a frame that did not verify, or above the bound.
     pub invalid_requests: u64,
 }
 
@@ -76,6 +80,8 @@ pub struct Iox2Server {
     next_generation: u32,
     server_id: u64,
     counters: ServerCounters,
+    /// Who each client is, as requests name it: its id, node name and port label.
+    identities: Vec<(iceoryx2::identifiers::UniqueClientId, String, String)>,
     server: RrServer,
     response_notifier: Notifier<Ipc>,
     service: StreamFactory,
@@ -114,10 +120,9 @@ impl Iox2Server {
         lock: Notifier<Ipc>,
         server_id: u64,
     ) -> Self {
-        // iceoryx2 lets a client fill a server again with requests the server still holds
-        // after the client dropped them: twice the outstanding calls of each client.
-        let capacity =
-            policy.admitted_clients().saturating_mul(policy.max_outstanding).saturating_mul(2);
+        // iceoryx2 caps the requests a server holds for one client at that client's limit
+        // of calls in flight, so this many slots hold every request it can be made to hold.
+        let capacity = policy.admitted_clients().saturating_mul(policy.max_outstanding);
         let mut slots = Vec::with_capacity(capacity);
         slots.resize_with(capacity, || None);
         Self {
@@ -128,6 +133,7 @@ impl Iox2Server {
             next_generation: 0,
             server_id,
             counters: ServerCounters::default(),
+            identities: Vec::new(),
             server,
             response_notifier,
             service,
@@ -184,39 +190,73 @@ impl Iox2Server {
         )
     }
 
-    /// Take the next verified request, or `None` when none waits. A frame that does not
-    /// verify is dropped unanswered and counted.
+    /// Take the next verified request, or `None` when none waits.
+    ///
+    /// A request whose frame does not verify, or that is above the request bound, is
+    /// refused at once with `invalid request: <check>` and counted: its client gets a
+    /// refusal, never a disconnect that reads as the server leaving.
     ///
     /// # Errors
-    /// [`PortError::Backend`] when iceoryx2 cannot receive.
+    /// [`PortError::BorrowLimit`] when iceoryx2 refuses another request after the slots of
+    /// departed clients were dropped; [`PortError::Backend`] when it cannot receive.
     pub fn receive(&mut self) -> Result<Option<ReceivedRequest>, PortError> {
+        let mut dropped_abandoned = false;
         loop {
-            let Some(request) = self.server.receive().map_err(|cause| {
-                log::error!(target: "hypha/transport",
-                    "hypha_iceoryx2: service '{}': receive failed: {cause:?}", self.key.public());
-                PortError::Backend(2)
-            })?
-            else {
-                return Ok(None);
+            let request = match self.server.receive() {
+                Ok(Some(request)) => request,
+                Ok(None) => return Ok(None),
+                Err(iceoryx2::port::ReceiveError::ExceedsMaxBorrows) if !dropped_abandoned => {
+                    // iceoryx2 caps the requests held per client at its limit of calls in
+                    // flight; a client that left still counts until its slots are dropped.
+                    self.drop_abandoned();
+                    dropped_abandoned = true;
+                    continue;
+                }
+                Err(iceoryx2::port::ReceiveError::ExceedsMaxBorrows) => {
+                    return Err(PortError::BorrowLimit);
+                }
+                Err(cause) => {
+                    log::error!(target: "hypha/transport",
+                        "hypha_iceoryx2: service '{}': receive failed: {cause:?}", self.key.public());
+                    return Err(PortError::Backend(super::BACKEND_EXCHANGE));
+                }
             };
             let header = FrameHeader::from(*request.user_header());
-            let verified =
-                hypha_wire::frame::verify(self.key.request_code(), &header, request.payload())
-                    .is_ok()
-                    && header.metadata.schema_hash == self.key.hash();
-            if !verified {
+            let m = header.metadata;
+            let refusal = self.invalidity(&header, request.payload());
+            if let Some(reason) = refusal {
                 self.counters.invalid_requests = self.counters.invalid_requests.wrapping_add(1);
+                let reason = self.bounded_reason(&reason).to_owned();
+                // Sealed with the ids the frame claims: if they are the client's, it reads the
+                // refusal; if not, its own check refuses the answer. Either way it is told.
+                let _ = self.send_answer(
+                    &request,
+                    m.publisher_id,
+                    m.sequence,
+                    Answer::Refusal,
+                    reason.as_bytes(),
+                    0,
+                );
                 continue;
             }
             let Some(index) = self.slots.iter().position(Option::is_none) else {
-                // Unreachable while clients keep their limits: the table holds what iceoryx2
-                // lets them send. A request that finds no slot is dropped and counted.
-                self.counters.invalid_requests = self.counters.invalid_requests.wrapping_add(1);
+                // Unreachable: the table holds every request iceoryx2 lets the clients make
+                // the server hold. Refused rather than dropped, should it ever be reached.
+                debug_assert!(false, "the slot table of '{}' is full", self.key.public());
+                let reason = self.bounded_reason("server holds its limit of requests").to_owned();
+                let _ = self.send_answer(
+                    &request,
+                    m.publisher_id,
+                    m.sequence,
+                    Answer::Refusal,
+                    reason.as_bytes(),
+                    0,
+                );
                 continue;
             };
+            let (client_node, client_port) = self.identify(request.origin());
             let generation = self.next_generation;
             self.next_generation = self.next_generation.wrapping_add(1);
-            let m = header.metadata;
             let received = ReceivedRequest {
                 handle: RequestHandle {
                     index: u32::try_from(index).map_err(|_| PortError::ResourceLimit)?,
@@ -226,6 +266,8 @@ impl Iox2Server {
                 sequence: m.sequence,
                 framework_sent_nanos: m.framework_sent_nanos,
                 transport_sent_nanos: m.transport_sent_nanos,
+                client_node,
+                client_port,
             };
             if let Some(slot) = self.slots.get_mut(index) {
                 *slot = Some(Slot {
@@ -238,6 +280,52 @@ impl Iox2Server {
             self.counters.received = self.counters.received.wrapping_add(1);
             return Ok(Some(received));
         }
+    }
+
+    /// Why a received request cannot be served, or `None` when it can.
+    fn invalidity(&self, header: &FrameHeader, payload: &[u8]) -> Option<String> {
+        if hypha_wire::frame::verify(self.key.request_code(), header, payload).is_err() {
+            return Some("invalid request: crc".to_owned());
+        }
+        if header.metadata.schema_hash != self.key.hash() {
+            return Some("invalid request: schema".to_owned());
+        }
+        let limit = self.policy.max_request_bytes;
+        (payload.len() > limit).then(|| {
+            format!(
+                "invalid request: {} B above bound {limit} B, policy {}",
+                payload.len(),
+                self.policy.name
+            )
+        })
+    }
+
+    /// The node name and the port label of the client `origin`, cached per client.
+    fn identify(&mut self, origin: iceoryx2::identifiers::UniqueClientId) -> (String, String) {
+        if let Some((_, node, port)) = self.identities.iter().find(|(id, _, _)| *id == origin) {
+            return (node.clone(), port.clone());
+        }
+        let mut found = None;
+        self.service.dynamic_config().list_clients(|details| {
+            if details.client_id == origin {
+                found = Some((details.node_id, details.client_name.as_str().to_owned()));
+                return CallbackProgression::Stop;
+            }
+            CallbackProgression::Continue
+        });
+        let Some((node_id, port)) = found else {
+            return (String::new(), String::new());
+        };
+        let node = match super::open::peer_node(&self.service, node_id) {
+            Ok(super::open::PeerNode::Alive { name, .. }) => name,
+            _ => String::new(),
+        };
+        // Bounded by the clients the stream admits; departed clients are forgotten first.
+        if self.identities.len() >= self.policy.admitted_clients() {
+            self.identities.clear();
+        }
+        self.identities.push((origin, node.clone(), port.clone()));
+        (node, port)
     }
 
     /// The payload of a held request.
@@ -287,8 +375,8 @@ impl Iox2Server {
         self.answer(handle, Answer::Refusal, reason.as_bytes(), framework_nanos)
     }
 
-    /// Answer `handle` as failed (a handler that threw, a step that failed); the client's
-    /// outcome is `ServerLost(reason)`.
+    /// Answer `handle` as failed (a handler that threw, a step that failed); the client
+    /// reads [`CallEvent::Failed`](super::CallEvent::Failed) with `reason`.
     ///
     /// # Errors
     /// As [`Self::refuse`].
@@ -349,28 +437,14 @@ impl Iox2Server {
             self.counters.abandoned = self.counters.abandoned.wrapping_add(1);
             return Err(ReplyError::Disconnected);
         }
-        let now = u64::try_from(hypha_time::steady_now().nanos()).unwrap_or(0);
-        let metadata = FrameMetadata {
-            schema_hash: self.key.hash(),
-            publisher_id: self.server_id,
-            // The request's own sequence: a counter of the server's would show a gap to each client.
-            sequence: slot.sequence,
-            transport_sent_nanos: now,
-            framework_sent_nanos: framework_nanos,
-        };
-        let code = self.key.response_code(slot.client, slot.sequence);
-        let header = hypha_wire::frame::seal(code, metadata, kind.flags(), payload);
-        let mut loan = slot.request.loan_slice_uninit(payload.len()).map_err(|cause| {
-            log::error!(target: "hypha/transport",
-                "hypha_iceoryx2: service '{}': cannot loan a response: {cause:?}", self.key.public());
-            ReplyError::Port(PortError::PoolExhausted)
-        })?;
-        *loan.user_header_mut() = Iox2FrameHeader::from(header);
-        loan.write_from_slice(payload).send().map_err(|cause| {
-            log::error!(target: "hypha/transport",
-                "hypha_iceoryx2: service '{}': cannot send a response: {cause:?}", self.key.public());
-            ReplyError::Port(PortError::Backend(40))
-        })?;
+        self.send_answer(
+            &slot.request,
+            slot.client,
+            slot.sequence,
+            kind,
+            payload,
+            framework_nanos,
+        )?;
         drop(slot);
         let counter = match kind {
             Answer::Response => &mut self.counters.answered,
@@ -378,6 +452,42 @@ impl Iox2Server {
             Answer::Failure => &mut self.counters.failed,
         };
         *counter = counter.wrapping_add(1);
+        Ok(())
+    }
+
+    /// Seal and send one answer to `request`, call `sequence` of `client`, and wake the
+    /// clients.
+    fn send_answer(
+        &self,
+        request: &RrActive,
+        client: u64,
+        sequence: u64,
+        kind: Answer,
+        payload: &[u8],
+        framework_nanos: u64,
+    ) -> Result<(), ReplyError> {
+        let now = u64::try_from(hypha_time::steady_now().nanos()).unwrap_or(0);
+        let metadata = FrameMetadata {
+            schema_hash: self.key.hash(),
+            publisher_id: self.server_id,
+            // The request's own sequence: a counter of the server's would show a gap to each client.
+            sequence,
+            transport_sent_nanos: now,
+            framework_sent_nanos: framework_nanos,
+        };
+        let code = self.key.response_code(client, sequence);
+        let header = hypha_wire::frame::seal(code, metadata, kind.flags(), payload);
+        let mut loan = request.loan_slice_uninit(payload.len()).map_err(|cause| {
+            log::error!(target: "hypha/transport",
+                "hypha_iceoryx2: service '{}': cannot loan a response: {cause:?}", self.key.public());
+            ReplyError::Port(PortError::Backend(super::BACKEND_EXCHANGE))
+        })?;
+        *loan.user_header_mut() = Iox2FrameHeader::from(header);
+        loan.write_from_slice(payload).send().map_err(|cause| {
+            log::error!(target: "hypha/transport",
+                "hypha_iceoryx2: service '{}': cannot send a response: {cause:?}", self.key.public());
+            ReplyError::Port(PortError::Backend(super::BACKEND_EXCHANGE))
+        })?;
         crate::notification::notified(&self.response_notifier.notify());
         Ok(())
     }

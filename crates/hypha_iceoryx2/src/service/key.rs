@@ -7,6 +7,9 @@
 use hypha_core::port::{ServiceError, ServiceSpec};
 use hypha_wire::frame::TopicCode;
 
+/// The separator of the roles in a frame's code: a control character, never part of a name.
+const ROLE: char = '\u{1f}';
+
 /// The framework namespace every service's iceoryx2 services live under.
 pub(crate) const SERVICE_PREFIX: &str = "hypha/srv/";
 
@@ -64,20 +67,20 @@ impl StreamKey {
         format!("{SERVICE_PREFIX}{}", self.bare)
     }
 
-    /// The prefix every stream of this name starts with.
-    pub(crate) fn sibling_prefix(&self) -> String {
-        format!("{SERVICE_PREFIX}{}@", self.bare)
-    }
-
-    /// The code a request of this service is sealed for.
+    /// The code a request of this service is sealed for. The separator is a control
+    /// character, which no topic or service name may hold, so no topic frame and no frame
+    /// of another service is sealed with it.
     pub(crate) fn request_code(&self) -> TopicCode {
-        TopicCode::of(&format!("{}#request", self.public))
+        TopicCode::of(&format!("{}{ROLE}request", self.public))
     }
 
     /// The code the response to request `sequence` of client `client` is sealed for, so it
     /// verifies against that request only.
     pub(crate) fn response_code(&self, client: u64, sequence: u64) -> TopicCode {
-        TopicCode::of(&format!("{}#response/{client:016x}/{sequence:016x}", self.public))
+        TopicCode::of(&format!(
+            "{}{ROLE}response{ROLE}{client:016x}{ROLE}{sequence:016x}",
+            self.public
+        ))
     }
 }
 
@@ -127,6 +130,25 @@ mod tests {
         );
         assert_eq!(public_name_of_stream(&key.request_event()), None);
         assert_eq!(public_name_of_stream("odom"), None);
+    }
+
+    #[test]
+    fn no_topic_frame_seals_like_a_request_or_a_response() {
+        use hypha_core::port::TopicSpec;
+        let key = StreamKey::of(&ServiceSpec::new("/a", "std_srvs/SetBool", MD5)).unwrap();
+        // Topic names that spell the old separators are still valid topics, and their codes
+        // are not the service's.
+        for topic in ["/a#request", "/a#response/0000000000000001/0000000000000001", "/a"] {
+            assert!(TopicSpec::new(topic).has_valid_public_name(), "{topic}");
+            let code = hypha_wire::frame::TopicCode::of(topic);
+            assert_ne!(code, key.request_code(), "{topic}");
+            assert_ne!(code, key.response_code(1, 1), "{topic}");
+        }
+        let spelled = format!("/a{}request", super::ROLE);
+        assert!(
+            !TopicSpec::new(&spelled).has_valid_public_name(),
+            "no topic can spell the separator"
+        );
     }
 
     #[test]

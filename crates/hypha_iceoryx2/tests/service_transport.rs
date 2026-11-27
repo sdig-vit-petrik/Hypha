@@ -49,9 +49,23 @@ impl Helper {
     }
 
     fn start_named(node: &str, service: &str, version: &str, mode: &[&str]) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_hypha_iceoryx2_service_helper"))
-            .args([node, service, version])
-            .args(mode)
+        Self::spawn(&mut Self::command(node, service, version, mode))
+    }
+
+    /// A helper whose service has the [`tight`] policy.
+    fn start_tight(service: &str, mode: &[&str]) -> Self {
+        let mut command = Self::command(&unique_name("helper"), service, "v1", mode);
+        Self::spawn(command.env("HELPER_TIGHT", "1"))
+    }
+
+    fn command(node: &str, service: &str, version: &str, mode: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_hypha_iceoryx2_service_helper"));
+        command.args([node, service, version]).args(mode);
+        command
+    }
+
+    fn spawn(command: &mut Command) -> Self {
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -118,7 +132,7 @@ fn load_average() -> String {
 fn a_call_with_no_server_is_refused_at_once_and_nothing_is_pending() {
     let name = service_name();
     let transport = new_transport();
-    let mut client = transport.service_client(&spec(&name), None).expect("a client");
+    let mut client = transport.service_client(&spec(&name), None, None).expect("a client");
     let started = Instant::now();
     assert_eq!(client.send(&[1], 0), Err(CallSendError::NoServer));
     assert!(
@@ -136,14 +150,14 @@ fn a_call_with_no_server_is_refused_at_once_and_nothing_is_pending() {
 fn a_framed_round_trip_between_two_processes() {
     let name = service_name();
     let transport = new_transport();
-    let mut client = transport.service_client(&spec(&name), None).expect("a client");
+    let mut client = transport.service_client(&spec(&name), None, None).expect("a client");
     let graph = transport.graph_listener().expect("the graph listener");
     let mut server = Helper::start(&name, "v1", &["serve"]);
     assert_eq!(server.line(), "ready");
     // The server's creation wakes the graph listeners, so a waiting client can send.
     let mut woken = false;
-    graph.try_wait(|_| woken = true).expect("read the graph event");
-    assert!(woken || client.server_available(), "the server's creation is announced");
+    graph.timed_wait(|_| woken = true, Duration::from_secs(2)).expect("wait for the graph event");
+    assert!(woken, "the server's creation wakes the graph event");
     assert!(client.server_available());
     assert_eq!(client.probe_server(), Liveness::Alive);
 
@@ -239,7 +253,7 @@ fn several_processes_creating_the_server_at_once_give_exactly_one_server() {
 fn a_server_killed_during_a_call_is_found_dead_and_a_new_server_under_another_name_reclaims_it() {
     let name = service_name();
     let transport = new_transport();
-    let mut client = transport.service_client(&spec(&name), None).expect("a client");
+    let mut client = transport.service_client(&spec(&name), None, None).expect("a client");
     let mut holder = Helper::start(&name, "v1", &["hold"]);
     assert_eq!(holder.line(), "ready");
     let id = client.send(&[1], 0).expect("send");
@@ -285,7 +299,7 @@ fn a_server_that_exits_normally_loses_its_calls_at_the_next_poll() {
     let server_side = new_transport();
     let mut server = server_side.serve(&spec(&name)).expect("a server");
     let client_side = new_transport();
-    let mut client = client_side.service_client(&spec(&name), None).expect("a client");
+    let mut client = client_side.service_client(&spec(&name), None, None).expect("a client");
     let id = client.send(&[1], 0).expect("send");
     let held = server.receive().expect("receive").expect("a request");
     assert_eq!(held.sequence, id.0);
@@ -307,7 +321,7 @@ fn refusals_and_failures_reach_the_client_with_their_reasons() {
         let mut server = Helper::start(&name, "v1", &[mode]);
         assert_eq!(server.line(), "ready");
         let transport = new_transport();
-        let mut client = transport.service_client(&spec(&name), None).expect("a client");
+        let mut client = transport.service_client(&spec(&name), None, None).expect("a client");
         client.send(&[1], 0).expect("send");
         let reports = collect(&mut client, 1, Duration::from_secs(5));
         assert_eq!(reports.len(), 1, "{mode}");
@@ -321,7 +335,7 @@ fn a_request_and_a_response_above_their_bounds() {
     let mut server = Helper::start(&name, "v1", &["big"]);
     assert_eq!(server.line(), "ready");
     let transport = new_transport();
-    let mut client = transport.service_client(&spec(&name), None).expect("a client");
+    let mut client = transport.service_client(&spec(&name), None, None).expect("a client");
     let bound = ServicePolicy::default_service().max_request_bytes;
     assert_eq!(
         client.send(&vec![0; bound + 1], 0),
@@ -375,7 +389,7 @@ fn a_client_that_leaves_has_its_held_requests_dropped_and_counted() {
 fn a_response_that_does_not_verify_is_refused_and_counted() {
     let name = service_name();
     let transport = new_transport();
-    let mut client = transport.service_client(&spec(&name), None).expect("a client");
+    let mut client = transport.service_client(&spec(&name), None, None).expect("a client");
     // A raw iceoryx2 server on the stream that seals for another request.
     let raw = raw_node();
     let stream = raw_stream(&raw, &name);
@@ -402,7 +416,7 @@ fn a_response_that_does_not_verify_is_refused_and_counted() {
 }
 
 #[test]
-fn a_request_that_does_not_verify_is_dropped_and_counted() {
+fn a_request_that_does_not_verify_is_refused_and_counted() {
     let name = service_name();
     let transport = new_transport();
     let mut server = transport.serve(&spec(&name)).expect("a server");
@@ -425,7 +439,7 @@ fn a_client_at_its_limit_is_busy_at_once_and_an_expired_call_held_by_the_server_
     let server_side = new_transport();
     let mut server = server_side.serve(&spec(&name)).expect("a server");
     let client_side = new_transport();
-    let mut client = client_side.service_client(&spec(&name), Some(1)).expect("a client");
+    let mut client = client_side.service_client(&spec(&name), Some(1), None).expect("a client");
     let first = client.send(&[1], 0).expect("send");
     let started = Instant::now();
     assert_eq!(client.send(&[1], 0), Err(CallSendError::Busy { outstanding: 1, expired: 0 }));
@@ -451,19 +465,19 @@ fn many_clients_each_get_their_own_answers_and_the_limit_keeps_observer_slots() 
     let transports: Vec<Iox2Transport> = (0..policy.max_clients).map(|_| new_transport()).collect();
     let mut clients: Vec<Iox2Client> = transports
         .iter()
-        .map(|t| t.service_client(&spec(&name), None).expect("a declared client"))
+        .map(|t| t.service_client(&spec(&name), None, None).expect("a declared client"))
         .collect();
     let extra = new_transport();
     assert!(
         matches!(
-            extra.service_client(&spec(&name), None),
+            extra.service_client(&spec(&name), None, None),
             Err(ServiceError::Port(PortError::ResourceLimit))
         ),
         "a ninth declared client is refused"
     );
     let tool = Iox2Transport::with_name("_hyphacli_service_test").expect("a CLI node");
     let mut observer =
-        tool.service_client(&spec(&name), None).expect("a tool takes an observer slot");
+        tool.service_client(&spec(&name), None, None).expect("a tool takes an observer slot");
 
     for (index, client) in clients.iter_mut().enumerate() {
         for _ in 0..policy.max_outstanding {
@@ -520,7 +534,7 @@ fn the_tools_list_each_stream_with_its_server_and_clients() {
     let server_side = Iox2Transport::with_name(&server_node).expect("node");
     let _server = server_side.serve(&spec(&name)).expect("a server");
     let client_side = new_transport();
-    let _client = client_side.service_client(&spec(&name), None).expect("a client");
+    let _client = client_side.service_client(&spec(&name), None, None).expect("a client");
     let tool = new_transport();
     let streams = tool.list_services().expect("the list");
     let stream = streams.iter().find(|s| s.name == name).expect("the stream is listed");
@@ -540,7 +554,7 @@ fn a_stream_opened_with_another_policy_is_refused() {
     let transport = new_transport();
     let _server = transport.serve(&spec(&name)).expect("a server");
     let other = ServicePolicy { name: "camera".to_owned(), ..ServicePolicy::default_service() };
-    let refused = transport.service_client(&spec(&name).with_policy(other), None).err();
+    let refused = transport.service_client(&spec(&name).with_policy(other), None, None).err();
     assert_eq!(refused, Some(ServiceError::QosMismatch));
 }
 
@@ -557,7 +571,7 @@ fn measurements_of_memory_and_descriptors_per_service() {
     let fds_server = descriptors();
     let shm_server = shm_bytes();
     let client_side = transport_with_name("measure_client");
-    let client = client_side.service_client(&spec(&name), None).expect("a client");
+    let client = client_side.service_client(&spec(&name), None, None).expect("a client");
     let fds_client = descriptors();
     let shm_client = shm_bytes();
     let report = |label: &str, before: Option<u64>, after: Option<u64>| match (before, after) {
@@ -702,7 +716,7 @@ fn a_refusal_for_a_response_above_a_tiny_bound_still_reaches_the_client() {
     let server_side = new_transport();
     let mut server = server_side.serve(&spec).expect("a server");
     let client_side = new_transport();
-    let mut client = client_side.service_client(&spec, None).expect("a client");
+    let mut client = client_side.service_client(&spec, None, None).expect("a client");
     client.send(&[1], 0).expect("send");
     let held = server.receive().expect("receive").expect("the request");
     assert_eq!(
@@ -711,4 +725,173 @@ fn a_refusal_for_a_response_above_a_tiny_bound_still_reaches_the_client() {
     );
     let reports = collect(&mut client, 1, Duration::from_secs(2));
     assert_eq!(reports[0].event, CallEvent::Refused("response".to_owned()), "shortened to 8 bytes");
+}
+
+// The review of stage 1a: each test reproduces one scenario the reviewer found.
+
+/// The policy of a helper started with `HELPER_TIGHT=1`.
+fn tight(name: &str) -> ServiceSpec {
+    spec(name).with_policy(ServicePolicy {
+        name: "tight".to_owned(),
+        max_clients: 1,
+        max_outstanding: 1,
+        ..ServicePolicy::default_service()
+    })
+}
+
+#[test]
+fn a_topic_cannot_take_a_name_under_the_framework_prefix() {
+    let name = service_name();
+    let transport = new_transport();
+    // The wake-up event of topic `/hypha/srv/x` would be the server lock of service `/x`.
+    let lock_topic = format!("/hypha/srv{name}");
+    for topic in [lock_topic.as_str(), "/hypha/hk/graph/v1", "/hypha/anything"] {
+        let spec = hypha_core::port::TopicSpec::new(topic).with_type("std_msgs/String");
+        assert_eq!(transport.publish(&spec).err(), Some(PortError::InvalidTopic), "{topic}");
+        assert_eq!(transport.subscribe(&spec).err(), Some(PortError::InvalidTopic), "{topic}");
+    }
+    let intercept = format!("/hypha/intercept/{}/state", unique_name("backend"));
+    let spec = hypha_core::port::TopicSpec::new(&intercept).with_type("std_msgs/String");
+    assert!(transport.publish(&spec).is_ok(), "the tools' own namespace stays open");
+}
+
+#[test]
+fn an_event_of_the_lock_s_name_that_is_not_a_lock_refuses_every_server() {
+    let name = service_name();
+    // What a topic named `/hypha/srv<name>` left behind in an older build: an event of the
+    // lock's name with a topic's notifier slots.
+    let raw = raw_node();
+    let lock = format!("hypha/srv{name}");
+    let _impostor = raw
+        .service_builder(&ServiceName::new(&lock).expect("a name"))
+        .event()
+        .max_notifiers(8)
+        .max_listeners(16)
+        .max_nodes(64)
+        .create()
+        .expect("an event of the lock's name");
+    let first = new_transport();
+    let second = new_transport();
+    let served_v1 = first.serve(&ServiceSpec::new(&name, "std_srvs/SetBool", V1));
+    let served_v2 = second.serve(&ServiceSpec::new(&name, "std_srvs/SetBool", V2));
+    assert!(
+        served_v1.is_err() && served_v2.is_err(),
+        "a lock that is not a lock locks nothing, so no server may take it: v1 {:?}, v2 {:?}",
+        served_v1.as_ref().err(),
+        served_v2.as_ref().err()
+    );
+}
+
+#[test]
+fn a_new_server_after_a_killed_one_is_alive_at_once() {
+    let name = service_name();
+    let transport = new_transport();
+    let mut client = transport.service_client(&spec(&name), None, None).expect("a client");
+    let mut holder = Helper::start(&name, "v1", &["hold"]);
+    assert_eq!(holder.line(), "ready");
+    let id = client.send(&[1], 0).expect("send");
+    assert_eq!(holder.line(), format!("holding {}", id.0));
+    holder.kill();
+    assert!(client.expire(id));
+    assert_eq!(client.probe_server(), Liveness::Dead);
+
+    // Within the probe's second, a new server takes the name over.
+    let other = new_transport();
+    let mut server = other.serve(&spec(&name)).expect("the dead holder is reclaimed");
+    assert_eq!(collect(&mut client, 1, Duration::from_secs(2))[0].event, CallEvent::Lost);
+    assert!(client.server_available(), "the new server is available");
+    assert_eq!(client.probe_server(), Liveness::Alive, "the new server is not judged by the old");
+    let id = client.send(&[5], 0).expect("a call to the new server");
+    let held = loop {
+        if let Some(held) = server.receive().expect("receive") {
+            break held;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(held.sequence, id.0);
+    server.reply(held.handle, &[6], 0).expect("reply");
+    assert_eq!(
+        collect(&mut client, 1, Duration::from_secs(2))[0].event,
+        CallEvent::Answered(vec![6])
+    );
+}
+
+#[test]
+fn abandoning_a_call_a_live_server_holds_leaves_the_server_receiving() {
+    let name = service_name();
+    let server_side = new_transport();
+    let mut server = server_side.serve(&spec(&name)).expect("a server");
+    let client_side = new_transport();
+    let mut client = client_side.service_client(&spec(&name), Some(1), None).expect("a client");
+    let first = client.send(&[1], 0).expect("send");
+    let held = server.receive().expect("receive").expect("the request");
+    assert!(client.expire(first), "the live server holds it");
+    // The caller gives up on the call although the server is alive.
+    let _ = client.abandon(first);
+    assert_eq!(
+        client.send(&[2], 0),
+        Err(CallSendError::Busy { outstanding: 1, expired: 1 }),
+        "a call the server holds still takes its slot"
+    );
+    assert_eq!(server.receive().expect("the server keeps receiving"), None);
+    server.reply(held.handle, &[1], 0).expect("the late answer");
+    assert!(collect(&mut client, 1, Duration::from_secs(2))[0].late);
+
+    for round in 3..6 {
+        let id = client.send(&[round], 0).expect("a later call reaches the live server");
+        let request = server.receive().expect("the server keeps receiving").expect("the call");
+        assert_eq!(request.sequence, id.0);
+        server.reply(request.handle, &[round], 0).expect("reply");
+        let reports = collect(&mut client, 1, Duration::from_secs(2));
+        assert_eq!(reports[0].event, CallEvent::Answered(vec![round]));
+    }
+}
+
+#[test]
+fn tools_take_only_the_observer_slots() {
+    let name = service_name();
+    let policy = ServicePolicy::default_service();
+    let tools: Vec<Iox2Transport> = (0..=hypha_core::port::SERVICE_OBSERVER_CLIENTS)
+        .map(|_| Iox2Transport::with_name(&unique_name("_hyphacli_svc")).expect("a CLI node"))
+        .collect();
+    let (last, admitted) = tools.split_last().expect("tools");
+    let _observers: Vec<Iox2Client> = admitted
+        .iter()
+        .map(|tool| tool.service_client(&spec(&name), None, None).expect("an observer slot"))
+        .collect();
+    assert_eq!(
+        last.service_client(&spec(&name), None, None).err(),
+        Some(ServiceError::Port(PortError::ResourceLimit)),
+        "a tool past the observer slots is refused"
+    );
+    let declared: Vec<Iox2Transport> = (0..policy.max_clients).map(|_| new_transport()).collect();
+    let _clients: Vec<Iox2Client> = declared
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            node.service_client(&spec(&name), None, None)
+                .unwrap_or_else(|cause| panic!("declared client {index} keeps its slot: {cause}"))
+        })
+        .collect();
+}
+
+#[test]
+fn a_killed_client_of_a_one_off_name_gives_its_slot_back() {
+    let name = service_name();
+    let mut killed = Helper::start_tight(&name, &["client-hold"]);
+    assert_eq!(killed.line(), "sent 0", "no server: the client only holds its slot");
+    killed.kill();
+    let transport = new_transport();
+    let client = transport.service_client(&tight(&name), None, None);
+    assert!(client.is_ok(), "the dead client's slot is reclaimed: {:?}", client.err());
+}
+
+#[test]
+fn running_out_of_file_descriptors_names_the_limit() {
+    let name = service_name();
+    let mut helper = Helper::start(&name, "v1", &["descriptors", "96"]);
+    let line = helper.line();
+    println!("service_transport: {line}");
+    assert!(line.starts_with("refused after "), "{line}");
+    assert!(line.contains("out of file descriptors") && line.contains("96"), "{line}");
 }

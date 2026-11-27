@@ -1,7 +1,6 @@
 //! The service streams of a domain, for the tools (`hypha service list`).
 
 use hypha_core::port::{PortError, ServicePolicy};
-use iceoryx2::node::{NodeState, NodeView as _};
 use iceoryx2::prelude::*;
 use iceoryx2::service::static_config::messaging_pattern::MessagingPattern;
 
@@ -110,22 +109,18 @@ fn describe(
         }
         CallbackProgression::Continue
     });
-    let mut server_node = None;
-    if let Some(id) = server_node_id {
-        let _ = service.nodes(|state| {
-            let found = match &state {
-                NodeState::Alive(view) if *view.id() == id => {
-                    crate::discovery::discovered_node(view, true)
-                }
-                NodeState::Dead(view) if *view.id() == id => {
-                    crate::discovery::discovered_node(view, false)
-                }
-                _ => return CallbackProgression::Continue,
-            };
-            server_node = found;
-            CallbackProgression::Stop
-        });
-    }
+    let server_node = match server_node_id.map(|id| super::open::peer_node(&service, id)) {
+        Some(Ok(super::open::PeerNode::Alive { name, pid })) => Some(DiscoveredNode {
+            name,
+            executable: String::new(),
+            pid: pid.unwrap_or(0),
+            is_alive: true,
+        }),
+        Some(Ok(super::open::PeerNode::Dead(view))) => {
+            crate::discovery::discovered_node(&*view, false)
+        }
+        _ => None,
+    };
     Ok(Some(DiscoveredServiceStream {
         name: entry.public,
         type_name: entry.type_name,
