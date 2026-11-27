@@ -86,6 +86,13 @@ if(HYPHA_STANDARD_MSG_DIR AND IS_DIRECTORY "${HYPHA_STANDARD_MSG_DIR}")
     list(REMOVE_ITEM standard_closure "${standard_name}")
     _hypha_register_message_package(
       "${standard_name}" "${HYPHA_STANDARD_MSG_DIR}/${standard_name}" "${standard_closure}")
+    # A standard package of services (std_srvs) has ROS 2 alias headers too.
+    file(GLOB standard_srvs "${HYPHA_STANDARD_MSG_DIR}/${standard_name}/*.srv")
+    if(standard_srvs)
+      set_property(GLOBAL PROPERTY HYPHA_SRV_DIR_${standard_name}
+        "${HYPHA_STANDARD_MSG_DIR}/${standard_name}")
+      set_property(GLOBAL PROPERTY HYPHA_SRV_CLOSURE_${standard_name} "${standard_closure}")
+    endif()
   endforeach()
 endif()
 

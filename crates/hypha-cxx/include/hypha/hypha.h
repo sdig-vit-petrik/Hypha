@@ -26,6 +26,8 @@
 #include "hypha/metrics.h"
 #include "hypha/node.h"
 #include "hypha/publisher.h"
+#include "hypha/service.h"
+#include "hypha/service_client.h"
 #include "hypha/status.h"
 #include "hypha/subscriber.h"
 #include "hypha_base/clock.h"

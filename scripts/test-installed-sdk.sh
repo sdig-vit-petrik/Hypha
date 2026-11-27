@@ -43,7 +43,8 @@ cmake --build "${WORK_DIR}/consumer"
 
 # Message headers sit at their ROS 1 path, <package>/<Name>.h, with no prefix.
 echo "==> Checking the installed message header layout..."
-for header in include/std_msgs/Header.h include/hypha_msgs/NodeState.h include/hypha_msgs/ros_time.h; do
+for header in include/std_msgs/Header.h include/hypha_msgs/NodeState.h include/hypha_msgs/ros_time.h \
+    include/std_srvs/SetBool.h include/std_srvs/Trigger.h include/std_srvs/Empty.h; do
   if [ ! -f "${PREFIX}/${header}" ]; then
     echo "ERROR: installed ${header} is missing." >&2
     exit 1
@@ -233,23 +234,32 @@ target_link_libraries(run_node_probe PRIVATE hypha::sdk)
 EOF_RUN_NODE
 cat >"${RUN_NODE_DIR}/main.cpp" <<'EOF_RUN_NODE'
 #include <hypha/hypha.h>
+#include <std_srvs/SetBool.h>
 
-// The probe stops its own run from a timer, so it needs no other process.
-struct StopRun
-{
-    void operator()() const
-    {
-        hypha::requestStop();
-    }
-};
-
+// The probe calls a service of its own and stops its run on the answer, so it needs no
+// other process; any other outcome (none comes later than the 1 s timeout) fails it.
 class Probe final : public hypha::CycleNode
 {
   public:
     void setup(hypha::Node& node) override
     {
         this->setRate(hypha::Hz(100.0));
-        this->stop = node.timer(hypha::Duration::fromMillis(20), StopRun{});
+        this->server = node.advertiseService<std_srvs::SetBool>(
+            hypha::Service{"~/set_enabled"}, [](hypha::Request<std_srvs::SetBool>& request) {
+                static_cast<void>(request.reply({.success = request->data, .message = "on"}));
+            });
+        this->client = node.serviceClient<std_srvs::SetBool>(hypha::Service{"~/set_enabled"});
+        const hypha::CallStatus status = this->client.call(
+            {.data = true}, [this](const hypha::CallResult<std_srvs::SetBool>& result) {
+                if (result.ok() && result.response().success) {
+                    hypha::requestStop();
+                } else {
+                    this->failRun("set_enabled: " + hypha::describe(result));
+                }
+            });
+        if (status != hypha::CallStatus::Sent) {
+            this->failRun(std::string("set_enabled: ") + hypha::toString(status));
+        }
     }
 
     void step(const hypha::CycleTime&) override
@@ -257,7 +267,8 @@ class Probe final : public hypha::CycleNode
     }
 
   private:
-    hypha::Timer stop;
+    hypha::ServiceServer                       server;
+    hypha::ServiceClient<std_srvs::SetBool> client;
 };
 
 int main(int argc, char** argv)
