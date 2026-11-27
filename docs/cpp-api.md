@@ -526,6 +526,10 @@ threads or composes cycles (`examples/sensor_fusion/src/fusion_main.cpp`) from
 - `start()` binds the ports in declaration order. A failure names the cycle, the
   port and the status: `hypha: cycle 'controller_node': input 'topic_speed': NotAvailable`.
 - One process has one `CycleNode`; a second step is a composed `hypha::Cycle` (5.5).
+- On host time a rate step starts when the run wakes at its deadline: on Linux within the
+  kernel's wake-up latency, on macOS late by up to half the wait and at most about 10 ms
+  (execution-model.md §11). `CycleTime::now` is the wall time at the start of the step,
+  so it varies with that wake-up; it is not the scheduled deadline.
 - A `Latest` subscriber queues the policy's `maxDepth`, an `Arrivals` its `perStep`
   (section 7). The cycle history is sized below the ABI (`buffer_size + 1` for
   `Latest`, `buffer_size + perStep` for `Arrivals`) and counts samples, not bytes.
