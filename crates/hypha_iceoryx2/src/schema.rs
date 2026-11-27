@@ -216,6 +216,35 @@ fn release_schema(node: &crate::transport::SharedNode, stream: &Stream) -> Resul
     remove_empty_dir(&schema_dir().map_err(|cause| format!("{cause:?}"))?)
 }
 
+/// Removes the record of `stream`, whose service a probe found gone: the record of an
+/// endpoint whose process died, once a node start reclaimed its ports and the service went
+/// with them. Checked again under the exclusive lock, so a stream opened meanwhile keeps it.
+pub(crate) fn remove_orphan_record(stream: &Stream) -> Result<(), String> {
+    use iceoryx2::service::Service as _;
+    let _lock = lock_schemas(LockMode::Exclusive)?;
+    let config = crate::domain::config().map_err(|cause| format!("{cause:?}"))?;
+    let service = iceoryx2::prelude::ServiceName::new(&stream.service_name())
+        .map_err(|cause| format!("{cause:?}"))?;
+    let exists = crate::transport::Ipc::does_exist(
+        &service,
+        config,
+        iceoryx2::prelude::MessagingPattern::PublishSubscribe,
+    )
+    .map_err(|cause| format!("{cause:?}"))?;
+    if exists {
+        return Ok(());
+    }
+    let record = schema_file_path(&stream.topic, stream.schema_hash)
+        .map_err(|cause| format!("{cause:?}"))?;
+    match std::fs::remove_file(&record) {
+        Ok(()) => {}
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {}
+        Err(cause) => return Err(format!("cannot remove {}: {cause}", record.display())),
+    }
+    remove_empty_dir(&topic_dir(&stream.topic).map_err(|cause| format!("{cause:?}"))?)?;
+    remove_empty_dir(&schema_dir().map_err(|cause| format!("{cause:?}"))?)
+}
+
 /// Removes `dir` if it is empty; a missing or non-empty directory is left as it is.
 fn remove_empty_dir(dir: &Path) -> Result<(), String> {
     match std::fs::remove_dir(dir) {

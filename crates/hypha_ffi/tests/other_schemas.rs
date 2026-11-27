@@ -226,8 +226,9 @@ fn a_flapping_other_version_is_said_at_most_once_in_ten_seconds() {
     }
 }
 
-/// The peer of the cross-process test: it publishes version 2 on `HYPHA_REVIEW_TOPIC` for
-/// `HYPHA_REVIEW_MILLIS` milliseconds. It does nothing when it runs on its own.
+/// The peer of the cross-process tests: it publishes version 2 on `HYPHA_REVIEW_TOPIC`, or
+/// version 1 with `HYPHA_REVIEW_OWN`, for `HYPHA_REVIEW_MILLIS` milliseconds. It does
+/// nothing when it runs on its own.
 #[test]
 #[ignore = "the peer process of the_warning_names_a_version_published_by_another_process"]
 fn review_peer_publishes_version_2() {
@@ -244,7 +245,8 @@ fn review_peer_publishes_version_2() {
         waitset: ptr::null_mut(),
         subscriber: ptr::null_mut(),
     };
-    let (md5, definition) = VERSION_2;
+    let (md5, definition) =
+        if std::env::var("HYPHA_REVIEW_OWN").is_ok() { (MD5, "uint32 value\n") } else { VERSION_2 };
     let publisher = publish(&fixture, DATA_TYPE, md5, definition);
     std::thread::sleep(std::time::Duration::from_millis(millis));
     unsafe {
@@ -281,6 +283,37 @@ fn the_warning_names_a_version_published_by_another_process() {
             .is_some_and(|line| line.contains("published are std_msgs/Counter (f79835de)"))
     );
     assert_eq!(count, 1);
+    unsafe {
+        hypha_node_destroy(fixture.node);
+    }
+}
+
+/// A subscriber created after the publisher of its own version was killed: the port the
+/// killed process left is no publisher once a refresh judged its node dead, so the
+/// subscriber warns that its stream has none.
+#[test]
+fn a_subscriber_after_its_publisher_was_killed_reports_no_publisher() {
+    let topic = format!("/{}", unique("killed_own"));
+    let exe = std::env::current_exe().expect("the test binary");
+    let mut peer = std::process::Command::new(exe)
+        .args(["--ignored", "--exact", "review_peer_publishes_version_2"])
+        .env("HYPHA_REVIEW_TOPIC", &topic)
+        .env("HYPHA_REVIEW_OWN", "1")
+        .env("HYPHA_REVIEW_MILLIS", "30000")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("the peer process");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    peer.kill().expect("kill");
+    peer.wait().expect("wait");
+    let fixture = fixture_on("killed_own", &topic, 100_000_000);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while warning_lines(&fixture).is_empty() && std::time::Instant::now() < deadline {
+        run_for(fixture.waitset, 200_000_000);
+    }
+    assert_eq!(warning_lines(&fixture).len(), 1, "the killed publisher's port is no publisher");
+    assert_eq!(other_schemas(&fixture), 0);
     unsafe {
         hypha_node_destroy(fixture.node);
     }

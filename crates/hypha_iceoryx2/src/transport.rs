@@ -285,8 +285,8 @@ const RECLAIM_TIMEOUT: StdDuration = StdDuration::from_secs(1);
 
 /// Remove the resources of the dead nodes a node called `node_name` reclaims
 /// when it starts: its own crashed runs and every dead CLI tool node
-/// (`_hyphacli_<tool>`). A dead CLI tool node that cannot be reclaimed is logged
-/// and the node still starts.
+/// (`_hyphacli_<tool>`). A dead CLI tool node that cannot be reclaimed is logged and the
+/// node still starts.
 ///
 /// # Errors
 /// [`PortError::Backend`] with [`BACKEND_RECLAIM_FAILED`] when the node's own dead run

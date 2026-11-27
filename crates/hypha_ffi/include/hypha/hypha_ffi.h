@@ -1741,8 +1741,9 @@ HyphaStatus hypha_subscribe_typed(struct HyphaNode *node,
 HyphaStatus hypha_subscriber_publisher_count(const struct HyphaSubscriber *subscriber,
                                              size_t *out);
 
-// Write the eight counters of `subscriber` to `*out`, the values of the subscriber
-// metrics of the same names. Each is read atomically, the eight not at one instant. Any
+// Write the nine counters of `subscriber` to `*out`: eight are the values of the
+// subscriber metrics of the same names, and `other_schemas`, which may be
+// `HYPHA_NOT_CHECKED`, has no metric. Each is read atomically, the nine not at one instant. Any
 // thread may call it. `InvalidArgument`, with `*out` unwritten, when `subscriber` or
 // `out` is null.
 //

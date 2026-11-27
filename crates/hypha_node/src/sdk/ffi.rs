@@ -14,9 +14,9 @@ pub(crate) use crate::safe::{
     list_nodes, list_service_ports, loan_send, node_create, node_default_waitset, node_destroy,
     node_metrics, node_name, node_ok, node_shutdown, publish_with_qos, publisher_loan_frame,
     publisher_min_subscriber_buffer, sample_identity, sample_payload, schema_lookup,
-    schema_resolve_hash, schema_resolve_hash_now, subscribe_typed, subscriber_metrics,
-    subscriber_publisher_count, subscriber_receive, subscriber_topic, waitset_attach_subscription,
-    waitset_detach, waitset_request_stop, waitset_run,
+    schema_resolve_hash, schema_resolve_hash_now, subscribe_typed, subscriber_counters,
+    subscriber_metrics, subscriber_publisher_count, subscriber_receive, subscriber_topic,
+    waitset_attach_subscription, waitset_detach, waitset_request_stop, waitset_run,
 };
 
 pub(crate) const HYPHA_STATUS_OK: i32 = HyphaStatus::Ok as i32;

@@ -2,11 +2,11 @@
 //! topic list its streams, and one open per stream reads its live publishers. Nothing is
 //! kept open, so a version that left leaves no record, no descriptor and no policy.
 
-#![allow(clippy::expect_used, clippy::print_stdout)]
+#![allow(clippy::expect_used, clippy::print_stdout, clippy::panic)]
 
 use std::time::Instant;
 
-use hypha_core::port::{QosPolicy, QosRequest, TopicSpec};
+use hypha_core::port::{PortError, QosPolicy, QosRequest, TopicSpec};
 use hypha_iceoryx2::{Iox2Transport, topic_records};
 use hypha_testkit::unique_name;
 
@@ -38,14 +38,13 @@ fn vk(topic: &str, k: u32) -> TopicSpec {
 /// version 1's.
 fn others(transport: &Iox2Transport, topic: &str) -> Vec<u64> {
     let own = hypha_wire::schema_hash_from_md5(V1_MD5).expect("hash");
-    let dead = transport.dead_nodes().expect("dead nodes");
     topic_records(topic)
         .expect("records")
         .into_iter()
         .filter(|stream| stream.schema_hash != own)
         .filter(|stream| {
-            let ports = transport.publisher_ports(topic, stream.schema_hash).expect("probe");
-            ports.is_some_and(|ports| ports.live(&dead) > 0)
+            let live = transport.live_publishers(topic, stream.schema_hash).expect("probe");
+            live.is_some_and(|live| live > 0)
         })
         .map(|stream| stream.schema_hash)
         .collect()
@@ -184,7 +183,8 @@ fn a_killed_publisher_of_another_version_is_not_reported() {
 }
 
 /// What one refresh of a watched topic costs with `n` other streams, each with a live
-/// publisher: one read of the records and of the dead nodes, and one open per stream.
+/// publisher: one read of the records, and per stream one open and the node states of
+/// that one service.
 #[test]
 fn the_cost_of_a_refresh_with_n_other_streams() {
     for n in [0_u32, 1, 4, 32] {
@@ -202,24 +202,151 @@ fn the_cost_of_a_refresh_with_n_other_streams() {
         let records = start.elapsed() / rounds;
         let start = Instant::now();
         for _ in 0..rounds {
-            let _ = transport.dead_nodes().expect("dead nodes");
-        }
-        let dead = start.elapsed() / rounds;
-        let start = Instant::now();
-        for _ in 0..rounds {
-            for stream in topic_records(&topic).expect("records") {
-                let _ = transport.publisher_ports(&topic, stream.schema_hash).expect("probe");
-            }
-        }
-        let opens = start.elapsed() / rounds;
-        let start = Instant::now();
-        for _ in 0..rounds {
             assert_eq!(others(&transport, &topic).len(), n as usize);
         }
         println!(
-            "refresh with {n} other streams: {:?}: records {records:?}, records and one open per \
-             stream {opens:?}, dead nodes {dead:?}",
+            "refresh with {n} other streams: {:?}, of which records {records:?}",
             start.elapsed() / rounds,
         );
     }
+}
+
+/// Version `k` with `policy`, a reader of one sample.
+fn tight(topic: &str, k: u32, policy: &QosPolicy) -> TopicSpec {
+    vk(topic, k).keeping(1).with_qos(QosRequest::Declared(policy.clone()))
+}
+
+/// A probe's open takes a node slot of the stream (`max_nodes` is `max_publishers` plus the
+/// subscribers the stream admits): on a stream whose slots are all taken the probe is
+/// refused, and a refresh keeps its last result for the topic.
+#[test]
+fn a_probe_of_a_stream_whose_node_slots_are_taken_is_refused() {
+    let topic = format!("/{}", unique_name("probe_full"));
+    let policy = QosPolicy::new("tight", 1, 1, 1);
+    let publisher_node = Iox2Transport::with_name(&unique_name("probe_full_pub")).expect("node");
+    let _publisher = publisher_node.publish(&tight(&topic, 2, &policy)).expect("v2 publisher");
+    // Node slots: max_publishers + max_subscribers + 3 observer slots = 5.
+    let mut nodes = Vec::new();
+    let mut holders = Vec::new();
+    let reader_node = Iox2Transport::with_name(&unique_name("probe_full_sub")).expect("node");
+    holders.push(reader_node.subscribe(&tight(&topic, 2, &policy)).expect("declared reader"));
+    nodes.push(reader_node);
+    for _ in 0..3 {
+        let node = Iox2Transport::with_name(&unique_name("probe_full_obs")).expect("node");
+        let observer = TopicSpec::new(&topic).with_type("rv/Kind").with_md5(&md5_of(2)).keeping(1);
+        holders.push(node.subscribe(&observer).expect("observer"));
+        nodes.push(node);
+    }
+    let watcher = Iox2Transport::with_name(&unique_name("probe_full_watch")).expect("node");
+    let hash = hypha_wire::schema_hash_from_md5(&md5_of(2)).expect("hash");
+    let probed = watcher.live_publishers(&topic, hash);
+    assert!(matches!(probed, Err(PortError::ResourceLimit)), "{probed:?}");
+}
+
+/// While a probe's open lasts it holds a node slot, so an endpoint that needs the last slot
+/// of the stream at that instant is refused with `ResourceLimit`.
+#[test]
+fn a_probe_can_hold_the_last_node_slot_an_endpoint_needs() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let topic = format!("/{}", unique_name("probe_slot"));
+    let policy = QosPolicy::new("tight", 1, 1, 1);
+    let publisher_node = Iox2Transport::with_name(&unique_name("probe_slot_pub")).expect("node");
+    let _publisher = publisher_node.publish(&tight(&topic, 2, &policy)).expect("v2 publisher");
+    // Four of the five node slots taken: the reader below and a probe compete for the last.
+    let mut nodes = Vec::new();
+    let mut holders = Vec::new();
+    for _ in 0..3 {
+        let node = Iox2Transport::with_name(&unique_name("probe_slot_obs")).expect("node");
+        let observer = TopicSpec::new(&topic).with_type("rv/Kind").with_md5(&md5_of(2)).keeping(1);
+        holders.push(node.subscribe(&observer).expect("observer"));
+        nodes.push(node);
+    }
+    let hash = hypha_wire::schema_hash_from_md5(&md5_of(2)).expect("hash");
+    let stop = Arc::new(AtomicBool::new(false));
+    let probing = {
+        let stop = Arc::clone(&stop);
+        let topic = topic.clone();
+        std::thread::spawn(move || {
+            let probes: Vec<_> = (0..2)
+                .map(|_| Iox2Transport::with_name(&unique_name("probe_slot_probe")).expect("node"))
+                .collect();
+            while !stop.load(Ordering::Relaxed) {
+                for probe in &probes {
+                    let _ = probe.live_publishers(&topic, hash);
+                }
+            }
+        })
+    };
+    let reader_node = Iox2Transport::with_name(&unique_name("probe_slot_sub")).expect("node");
+    let mut refused = 0_u32;
+    let deadline =
+        Instant::now().checked_add(std::time::Duration::from_secs(10)).expect("deadline");
+    while refused == 0 && Instant::now() < deadline {
+        match reader_node.subscribe(&tight(&topic, 2, &policy)) {
+            Ok(reader) => drop(reader),
+            Err(PortError::ResourceLimit) => refused = refused.saturating_add(1),
+            Err(other) => panic!("{other:?}"),
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    probing.join().expect("prober");
+    assert!(refused > 0, "no probe ever held the reader's slot in 10 s");
+}
+
+#[test]
+#[ignore = "the peer of a_killed_publishers_record_goes_with_the_reclaim_of_its_node"]
+fn probe_peer_publishes_under_a_name() {
+    let (Ok(topic), Ok(name)) = (std::env::var("PROBE_TOPIC"), std::env::var("PROBE_NAME")) else {
+        return;
+    };
+    let transport = Iox2Transport::with_name(&name).expect("transport");
+    let _publisher = std::env::var("PROBE_PUBLISH")
+        .is_ok()
+        .then(|| transport.publish(&vk(&topic, 7)).expect("v7"));
+    println!("ready");
+    std::thread::sleep(std::time::Duration::from_secs(60));
+}
+
+/// A peer process named `name`, publishing version 7 on `topic` when `publish`.
+fn named_peer(topic: &str, name: &str, publish: bool) -> std::process::Child {
+    use std::io::{BufRead, BufReader};
+    let mut command = std::process::Command::new(std::env::current_exe().expect("binary"));
+    command
+        .args(["--ignored", "--exact", "probe_peer_publishes_under_a_name", "--nocapture"])
+        .env("PROBE_TOPIC", topic)
+        .env("PROBE_NAME", name)
+        .stdout(std::process::Stdio::piped());
+    if publish {
+        command.env("PROBE_PUBLISH", "1");
+    }
+    let mut child = command.spawn().expect("peer");
+    let mut lines = BufReader::new(child.stdout.take().expect("stdout")).lines();
+    assert!(lines.any(|line| line.is_ok_and(|line| line.contains("ready"))));
+    child
+}
+
+/// A publisher killed with SIGKILL leaves its stream's record. Once the node start of its
+/// name reclaimed its ports, and the service went with them, the next probe of the stream,
+/// as a refresh makes, removes the record.
+#[test]
+fn a_killed_publishers_record_goes_once_its_stream_is_reclaimed() {
+    let topic = format!("/{}", unique_name("probe_reclaim"));
+    let name = unique_name("probe_reclaim_peer");
+    let hash = hypha_wire::schema_hash_from_md5(&md5_of(7)).expect("hash");
+    let mut child = named_peer(&topic, &name, true);
+    child.kill().expect("kill");
+    child.wait().expect("wait");
+    let recorded = |topic: &str| -> Vec<u64> {
+        topic_records(topic).expect("records").iter().map(|stream| stream.schema_hash).collect()
+    };
+    assert_eq!(recorded(&topic), [hash], "the killed endpoint could not remove its record");
+    // The node starts again under its name, without the publisher: it reclaims the dead run.
+    let mut again = named_peer(&topic, &name, false);
+    let watcher = Iox2Transport::with_name(&unique_name("probe_reclaim_watch")).expect("node");
+    assert_eq!(watcher.live_publishers(&topic, hash).expect("probe"), None);
+    let after = recorded(&topic);
+    again.kill().expect("kill");
+    again.wait().expect("wait");
+    assert!(after.is_empty(), "the reclaimed stream's record is gone: {after:x?}");
 }

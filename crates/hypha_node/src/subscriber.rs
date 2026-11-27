@@ -614,8 +614,8 @@ pub fn subscriber_counters(endpoint: &HyphaSubscriber) -> HyphaSubscriberCounter
         other_schemas: endpoint
             .watch
             .as_ref()
-            .and_then(crate::topic_streams::Watch::count)
-            .unwrap_or(HYPHA_NOT_CHECKED),
+            .and_then(crate::topic_streams::Watch::others)
+            .map_or(HYPHA_NOT_CHECKED, |others| u64::try_from(others.len()).unwrap_or(u64::MAX)),
     }
 }
 
@@ -630,7 +630,6 @@ pub(crate) fn emit_subscriber_metrics(endpoint: &HyphaSubscriber, emit: &mut dyn
     emit("loan.budget", counters.loan_budget);
     emit("loan.held", counters.loan_held);
     emit("loan.refused", counters.loan_refused);
-    emit("topic.other_schemas", counters.other_schemas);
 }
 
 pub(crate) fn host_now_nanos() -> u64 {

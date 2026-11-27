@@ -4,7 +4,7 @@
 use hypha_node::sdk::{BusNode, SubscriberOptions};
 use hypha_testkit::unique_name;
 
-const SUBSCRIBER_NAMES: [&str; 9] = [
+const SUBSCRIBER_NAMES: [&str; 8] = [
     "integrity.invalid_frame",
     "integrity.corrupt_payload",
     "integrity.schema_mismatch",
@@ -13,7 +13,6 @@ const SUBSCRIBER_NAMES: [&str; 9] = [
     "loan.budget",
     "loan.held",
     "loan.refused",
-    "topic.other_schemas",
 ];
 
 #[test]

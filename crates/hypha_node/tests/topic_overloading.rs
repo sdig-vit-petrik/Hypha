@@ -411,12 +411,12 @@ fn two_versions_of_one_type_share_a_topic_through_a_migration() {
     let mut v2_in = subscribe_once_published(&bus, &topic, &VERSION_2);
     let mut v1_seen = Drained::default();
     let mut v2_seen = Drained::default();
-    let shown = |subscriber: &RawSubscriber| metric(subscriber, "topic.other_schemas");
+    let shown = RawSubscriber::other_schemas;
     let deadline = deadline_in(20);
     while v1_seen.payloads.len() < 6
         || v2_seen.payloads.len() < 6
-        || shown(&v1_in) != 1
-        || shown(&v2_in) != 1
+        || shown(&v1_in) != Some(1)
+        || shown(&v2_in) != Some(1)
     {
         assert!(Instant::now() < deadline, "{v1_seen:?} {v2_seen:?}");
         let _ = run.run_for(Duration::from_millis(20));
@@ -430,7 +430,7 @@ fn two_versions_of_one_type_share_a_topic_through_a_migration() {
     let _ = v1_peer.kill();
     let _ = v1_peer.wait();
     let deadline = deadline_in(20);
-    while shown(&v2_in) != 0 {
+    while shown(&v2_in) != Some(0) {
         assert!(Instant::now() < deadline, "version 2's reader still shows the killed version");
         let _ = run.run_for(Duration::from_millis(20));
         add(&mut v2_seen, drain(&mut v2_in));

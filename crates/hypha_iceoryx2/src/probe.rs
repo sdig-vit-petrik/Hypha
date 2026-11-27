@@ -1,5 +1,5 @@
 //! What one stream of a topic has now, read without keeping anything open: the probe of
-//! the other streams that a node's housekeeping runs for the topics it subscribes to.
+//! the streams that a node's housekeeping runs for the topics it subscribes to.
 
 use hypha_core::port::PortError;
 use iceoryx2::identifiers::UniqueNodeId;
@@ -7,71 +7,83 @@ use iceoryx2::identifiers::UniqueNodeId;
 use crate::stream::Stream;
 use crate::transport::Iox2Transport;
 
-/// The nodes of the domain that iceoryx2 reports dead, read once for a whole probe.
-#[derive(Debug)]
-pub struct DeadNodes(Vec<UniqueNodeId>);
-
 impl Iox2Transport {
-    /// The dead nodes of the domain now: one read of the node registry.
+    /// The publishers of the stream of `schema_hash` on `topic` whose node is alive: one
+    /// open attempt, with no retry and no wait, for the nodes of the publisher ports, and
+    /// the states of the nodes registered at that one service (`Service::details`), so the
+    /// cost does not grow with the nodes of the domain. Nothing stays open. `Ok(None)` when
+    /// the stream does not exist or is being created or removed. The record of a stream that
+    /// does not exist is removed: its endpoints died and a node start reclaimed their ports.
+    ///
+    /// The open takes one node slot of the stream while it lasts: on a stream whose slots
+    /// are all taken it fails with [`PortError::ResourceLimit`], and an endpoint that needs
+    /// the last slot meanwhile is refused.
     ///
     /// # Errors
-    /// [`PortError::Backend`] when the registry cannot be read.
-    pub fn dead_nodes(&self) -> Result<DeadNodes, PortError> {
-        crate::endpoint::dead_node_ids().map(DeadNodes)
-    }
-
-    /// The nodes of the publisher ports of the stream of `schema_hash` on `topic`: one open
-    /// attempt, no retry and no wait, and the service handle is dropped before it returns.
-    /// `Ok(None)` when the stream does not exist or is being created or removed; a later
-    /// probe tries again.
-    ///
-    /// # Errors
-    /// [`PortError`] when the session is gone or the open fails for another reason.
-    pub fn publisher_ports(
+    /// [`PortError`] when the session is gone, the open fails for another reason, or the
+    /// service's node states cannot be read.
+    pub fn live_publishers(
         &self,
         topic: &str,
         schema_hash: u64,
-    ) -> Result<Option<PublisherPorts>, PortError> {
+    ) -> Result<Option<usize>, PortError> {
+        use iceoryx2::node::{NodeState, NodeView as _};
         use iceoryx2::prelude::CallbackProgression;
+        use iceoryx2::service::Service as _;
         use iceoryx2::service::builder::publish_subscribe::PublishSubscribeOpenError as Open;
         use iceoryx2::service::port_factory::PortFactory as _;
+
         let stream = Stream { topic: topic.to_owned(), schema_hash };
         let name = iceoryx2::prelude::ServiceName::new(&stream.service_name())
             .map_err(|_| PortError::InvalidTopic)?;
-        let locked_node = crate::locked(&self.node);
-        let node_ref = locked_node.as_ref().ok_or(PortError::Backend(1))?;
-        match crate::transport::data_service_builder(node_ref, &name).open() {
-            Ok(service) => {
-                let mut owners = Vec::new();
-                service.dynamic_config().list_publishers(|details| {
-                    owners.push(details.node_id);
-                    CallbackProgression::Continue
-                });
-                Ok(Some(PublisherPorts(owners)))
+        let owners = {
+            let locked_node = crate::locked(&self.node);
+            let node_ref = locked_node.as_ref().ok_or(PortError::Backend(1))?;
+            match crate::transport::data_service_builder(node_ref, &name).open() {
+                Ok(service) => {
+                    let mut owners: Vec<UniqueNodeId> = Vec::new();
+                    service.dynamic_config().list_publishers(|details| {
+                        owners.push(details.node_id);
+                        CallbackProgression::Continue
+                    });
+                    owners
+                }
+                Err(Open::DoesNotExist) => {
+                    if let Err(cause) = crate::schema::remove_orphan_record(&stream) {
+                        log::warn!(target: "hypha/schema",
+                            "hypha: the record of a gone stream of topic '{topic}' stays: {cause}");
+                    }
+                    return Ok(None);
+                }
+                Err(cause) if crate::service_open::publish_subscribe_open_is_transient(cause) => {
+                    return Ok(None);
+                }
+                Err(cause) => {
+                    return Err(crate::service_open::publish_subscribe_open_port_error(cause));
+                }
             }
-            Err(Open::DoesNotExist) => Ok(None),
-            Err(cause) if crate::service_open::publish_subscribe_open_is_transient(cause) => {
-                Ok(None)
-            }
-            Err(cause) => Err(crate::service_open::publish_subscribe_open_port_error(cause)),
+        };
+        if owners.is_empty() {
+            return Ok(Some(0));
         }
-    }
-}
-
-/// The nodes of the publisher ports of one stream, as a probe read them.
-#[derive(Debug)]
-pub struct PublisherPorts(Vec<UniqueNodeId>);
-
-impl PublisherPorts {
-    /// True when the stream has no publisher port at all.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// The ports whose node is not one of `dead`.
-    #[must_use]
-    pub fn live(&self, dead: &DeadNodes) -> usize {
-        self.0.iter().filter(|owner| !dead.0.contains(owner)).count()
+        let config = crate::domain::config()?;
+        let details = crate::transport::Ipc::details(
+            &name,
+            config,
+            iceoryx2::prelude::MessagingPattern::PublishSubscribe,
+        )
+        .map_err(|_| PortError::Backend(5))?;
+        let Some(nodes) = details.and_then(|details| details.dynamic_details) else {
+            return Ok(None);
+        };
+        let dead: Vec<UniqueNodeId> = nodes
+            .nodes
+            .iter()
+            .filter_map(|state| match state {
+                NodeState::Dead(view) => Some(*view.id()),
+                _ => None,
+            })
+            .collect();
+        Ok(Some(owners.iter().filter(|owner| !dead.contains(owner)).count()))
     }
 }

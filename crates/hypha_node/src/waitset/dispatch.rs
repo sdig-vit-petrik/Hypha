@@ -478,11 +478,17 @@ impl Dispatcher for CallbackDispatcher<'_> {
         if sliced {
             return Some(std::time::Duration::ZERO);
         }
+        // The housekeeping's next round, or the rest of one a pass left unfinished.
+        let housekeeping = self.node.topic_streams.next_wake(std::time::Instant::now());
         let host_timers = !self.node.on_sim_time();
         let live = self.registrations.iter().filter(|r| !is_detached_in(self.detached, r.id));
-        let deadline = live.filter_map(|r| host_deadline(&r.target, host_timers)).min()?;
+        let Some(deadline) = live.filter_map(|r| host_deadline(&r.target, host_timers)).min()
+        else {
+            return housekeeping;
+        };
         let remaining = deadline.saturating_sub(hypha_time::steady_now().nanos());
-        Some(std::time::Duration::from_nanos(u64::try_from(remaining).unwrap_or(0)))
+        let timed = std::time::Duration::from_nanos(u64::try_from(remaining).unwrap_or(0));
+        Some(housekeeping.map_or(timed, |soon| soon.min(timed)))
     }
 }
 
