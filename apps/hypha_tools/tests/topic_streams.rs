@@ -32,6 +32,7 @@ struct Verb {
     child: common::Killed,
     lines: mpsc::Receiver<String>,
     seen: Vec<String>,
+    errors: mpsc::Receiver<String>,
 }
 
 fn spawn(args: &[&str]) -> Verb {
@@ -39,19 +40,27 @@ fn spawn(args: &[&str]) -> Verb {
         .arg("topic")
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("hypha topic");
-    let stdout = child.stdout.take().expect("stdout");
     let (sender, lines) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if sender.send(line).is_err() {
-                return;
+    let (error_sender, errors) = mpsc::channel();
+    for (stream, sender) in [
+        (Box::new(child.stdout.take().expect("stdout")) as Box<dyn std::io::Read + Send>, sender),
+        (
+            Box::new(child.stderr.take().expect("stderr")) as Box<dyn std::io::Read + Send>,
+            error_sender,
+        ),
+    ] {
+        std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                if sender.send(line).is_err() {
+                    return;
+                }
             }
-        }
-    });
-    Verb { child: common::Killed(child), lines, seen: Vec::new() }
+        });
+    }
+    Verb { child: common::Killed(child), lines, seen: Vec::new(), errors }
 }
 
 impl Verb {
@@ -60,6 +69,11 @@ impl Verb {
         while let Ok(line) = self.lines.try_recv() {
             self.seen.push(line);
         }
+    }
+
+    /// What the verb said on standard error, for the message of a failed assertion.
+    fn errors(&self) -> String {
+        self.errors.try_iter().collect::<Vec<_>>().join("\n")
     }
 
     fn exited(&mut self) -> bool {
@@ -132,8 +146,9 @@ fn echo_prints_every_stream_of_the_name_each_under_its_label() {
 
     let text = echo.seen.join("\n");
     println!("{text}");
-    assert!(has(&echo.seen, &format!("# {}", label_of(VERSION_1))), "{text}");
-    assert!(has(&echo.seen, &format!("# {}", label_of(VERSION_2))), "{text}");
+    let errors = echo.errors();
+    assert!(has(&echo.seen, &format!("# {}", label_of(VERSION_1))), "{text} // {errors}");
+    assert!(has(&echo.seen, &format!("# {}", label_of(VERSION_2))), "{text} // {errors}");
     assert!(has(&echo.seen, "weight"), "the second version's fields are decoded: {text}");
     assert!(echo.child.wait().expect("status").success());
 }
@@ -186,22 +201,24 @@ fn a_selector_follows_one_stream_and_prints_it_as_a_topic_of_one() {
 #[test]
 fn echo_started_before_any_publisher_waits_and_follows_streams_as_they_join() {
     let (bus, topic) = setup("ts_late");
-    let mut echo = spawn(&["echo", &topic, "--count", "6"]);
+    let mut echo = spawn(&["echo", &topic]);
     std::thread::sleep(Duration::from_millis(500));
     assert!(!echo.exited(), "it waits for the topic");
 
     let mut versions = Versions::publish_first(&bus, &topic);
-    until(&mut echo, &mut versions, |seen| has(seen, "value: 7") || has(seen, "value:7"));
-    echo.collect();
+    until(&mut echo, &mut versions, |seen| has(seen, "value: 7"));
     assert!(!has(&echo.seen, "# "), "one stream: no label: {:?}", echo.seen);
 
-    // The migration: the second version joins a name that is already being echoed.
+    // The migration: the second version joins a name that is already being echoed. The
+    // listing that finds it takes as long as the domain makes it, so the test waits for both.
     versions.join_second(&bus);
-    until(&mut echo, &mut versions, |_| false);
+    let both = [format!("# {}", label_of(VERSION_1)), format!("# {}", label_of(VERSION_2))];
+    until(&mut echo, &mut versions, |seen| both.iter().all(|label| has(seen, label)));
     let text = echo.seen.join("\n");
     println!("{text}");
-    assert!(has(&echo.seen, &format!("# {}", label_of(VERSION_1))), "{text}");
-    assert!(has(&echo.seen, &format!("# {}", label_of(VERSION_2))), "{text}");
+    for label in &both {
+        assert!(has(&echo.seen, label), "{text} // {}", echo.errors());
+    }
 }
 
 #[test]

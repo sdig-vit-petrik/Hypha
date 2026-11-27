@@ -319,7 +319,7 @@ fn answer_chunk(
         return Ok(Flow::Continue);
     };
     // A stream that came before the chunk's data is followed before the chunk is answered.
-    follower.refresh_if_changed(bus)?;
+    follower.settle(bus)?;
     while let Some(sample) = follower.next_sample()? {
         record_one(session, &sample);
     }

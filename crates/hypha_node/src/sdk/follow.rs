@@ -90,12 +90,25 @@ impl std::fmt::Display for StreamSelector {
 /// follows streams; this only bounds the damage of a lost one.
 const BACKSTOP: Duration = Duration::from_secs(2);
 
+/// The shortest time between two listings, and at least [`IDLE_SHARE`] times the last
+/// listing's own duration. A listing reads every service of the domain, which takes tens of
+/// milliseconds in a domain of thousands, so a burst of events, a system starting, is one
+/// listing; the events the follower's own subscriptions raise wait too.
+const SPACING: Duration = Duration::from_millis(100);
+
+/// How many times longer than a listing the follower waits before the next one: the caller's
+/// thread spends at most one fifth of its time listing, however busy the graph is.
+const IDLE_SHARE: u32 = 4;
+
 /// One subscription for each followed stream, refreshed when the graph changes.
 pub struct StreamFollower {
     keys: Vec<String>,
     selector: StreamSelector,
     depth: usize,
     graph: GraphWatch,
+    /// An event came since the last listing.
+    pending: bool,
+    next_listing: Instant,
     next_backstop: Instant,
     subscribers: BTreeMap<StreamKey, RawSubscriber>,
     order: Vec<StreamKey>,
@@ -119,6 +132,8 @@ impl StreamFollower {
             selector,
             depth,
             graph: bus.graph_watch()?,
+            pending: false,
+            next_listing: Instant::now(),
             next_backstop: Instant::now(),
             subscribers: BTreeMap::new(),
             order: Vec::new(),
@@ -145,7 +160,8 @@ impl StreamFollower {
     /// Returns an error when the streams cannot be listed or a matching stream refuses
     /// its subscription. The other matching streams are still added.
     pub fn refresh(&mut self, bus: &BusNode) -> Result<usize, String> {
-        self.next_backstop = Instant::now().checked_add(BACKSTOP).unwrap_or_else(Instant::now);
+        self.pending = false;
+        let started = Instant::now();
         let mut added = 0_usize;
         let mut failures = Vec::new();
         for stream in bus.list_topics()? {
@@ -163,19 +179,34 @@ impl StreamFollower {
                 Err(error) => failures.push(format!("cannot follow '{}': {error}", key.topic)),
             }
         }
+        let done = Instant::now();
+        let spacing = SPACING.max(done.duration_since(started).saturating_mul(IDLE_SHARE));
+        self.next_listing = done.checked_add(spacing).unwrap_or(done);
+        self.next_backstop = done.checked_add(BACKSTOP).unwrap_or(done);
         if failures.is_empty() { Ok(added) } else { Err(failures.join("; ")) }
     }
 
-    /// Refreshes when the graph changed since the last call, or after the backstop: one
-    /// non-blocking read otherwise.
+    /// Refreshes when the graph changed since the last listing, at most once per [`SPACING`],
+    /// or after the backstop: one non-blocking read otherwise.
     ///
     /// # Errors
     /// Returns an error when the graph event cannot be read, or as [`Self::refresh`] does.
     pub fn refresh_if_changed(&mut self, bus: &BusNode) -> Result<usize, String> {
-        if !self.graph.changed()? && Instant::now() < self.next_backstop {
-            return Ok(0);
-        }
-        self.refresh(bus)
+        self.pending |= self.graph.changed()?;
+        let now = Instant::now();
+        let due = now >= self.next_backstop || (self.pending && now >= self.next_listing);
+        if due { self.refresh(bus) } else { Ok(0) }
+    }
+
+    /// Refreshes now when the graph changed since the last listing, spacing or not: for a
+    /// reader that must have every stream that exists before it goes on, such as a recorder
+    /// that answers a replay's chunk.
+    ///
+    /// # Errors
+    /// Returns an error when the graph event cannot be read, or as [`Self::refresh`] does.
+    pub fn settle(&mut self, bus: &BusNode) -> Result<usize, String> {
+        self.pending |= self.graph.changed()?;
+        if self.pending { self.refresh(bus) } else { Ok(0) }
     }
 
     /// Takes the next sample from any followed stream, as the transport's loan: the caller
