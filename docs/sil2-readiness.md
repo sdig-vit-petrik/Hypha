@@ -335,7 +335,7 @@ functions it has that are not needed.
 | Element | Role | State |
 |---|---|---|
 | iceoryx2 0.10.1 (28 crates), with one vendored patch | The whole transport: shared memory, lock-free queues, discovery, events | Treated as a black channel for data (4.14). Not assessed for the properties hypha relies on: no blocking, bounded memory, crash cleanup, read-only mapping. |
-| `crc32c` | The frame checksum | Not assessed. |
+| `crc-fast` | The frame checksum | Not assessed. |
 | `toml`, `serde`, `winnow` | Configuration parsing at start-up | Fuzzed through `config_load`. Not assessed. |
 | `libc`, `rustix` | Operating-system calls | Not assessed. |
 | Rust `std`, `core`, `alloc` | Runtime library | Not assessed (see G-15). |

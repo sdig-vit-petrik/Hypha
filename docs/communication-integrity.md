@@ -37,6 +37,23 @@ its check.
 
 The payload is the ROS 1 serialized message. The library never decodes it.
 
+The CRC-32C is computed by the `crc-fast` crate: the CPU's CRC-32C instructions fused
+with carry-less multiplication (PMULL on aarch64, PCLMULQDQ on x86_64), chosen at run
+time, and a table on a CPU with neither. Every path gives the standard CRC-32C:
+`hypha_wire/crc32c_check_value` pins it to the published check values and to
+`crc32c` 0.6.8, the implementation before, so frames of either build verify in the other.
+
+The code costs one read of the payload at each end: the publisher's at each send, and
+each subscriber endpoint's at each frame it takes. Two subscribers of one topic in one
+process each verify the frame. A cycle input verifies a frame when it drains it and
+decodes it later from its history with no second pass.
+
+On an Apple M1 Pro (macOS, release build, `cargo bench -p hypha_wire --bench integrity`)
+the code of a 15 MiB payload read from memory takes 0.33 ms, less than a `memcpy` of
+it (0.39 ms), and that of a 64-byte message 18 ns. Linux aarch64 on the same machine
+takes the same path and, measured in a container under heavy load, about half the time of
+a `memcpy` of the payload. x86_64 is not measured.
+
 ## 3. Faults and the check that covers each
 
 The fault list is the communication errors of IEC 61784-3. "Refused" means the frame never reaches the
