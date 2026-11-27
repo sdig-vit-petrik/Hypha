@@ -20,8 +20,9 @@ const METADATA: FrameMetadata = FrameMetadata {
     framework_sent_nanos: 5,
 };
 
-/// The integrity code as hypha computed it with `crc32c` 0.6.8: the topic code, then the
-/// little-endian magic, flags and metadata, then the payload.
+/// The integrity code of an `IOX7` frame as hypha computed it with `crc32c` 0.6.8: the
+/// topic code, then the little-endian magic, flags, metadata and `payload_len`, then the
+/// payload.
 fn earlier_integrity_code(topic: &str, header: &FrameHeader, payload: &[u8]) -> u32 {
     let m = header.metadata;
     let mut crc =
@@ -32,6 +33,7 @@ fn earlier_integrity_code(topic: &str, header: &FrameHeader, payload: &[u8]) -> 
     {
         crc = crc32c::crc32c_append(crc, &field.to_le_bytes());
     }
+    crc = crc32c::crc32c_append(crc, &header.payload_len.to_le_bytes());
     crc32c::crc32c_append(crc, payload)
 }
 
@@ -91,8 +93,9 @@ fn a_frame_is_sealed_with_the_code_the_earlier_implementation_gave_it() {
     assert!(verify(TopicCode::of(topic), &header, &payload).is_ok());
 }
 
-/// The integrity code of the frame above, sealed by hypha with `crc32c` 0.6.8.
-const SEALED_BY_0_6_8: u32 = 0x144D_FD1A;
+/// The integrity code of the frame above, sealed by hypha with `crc32c` 0.6.8 (`develop`
+/// `b585a30`, the first `IOX7` frame).
+const SEALED_BY_0_6_8: u32 = 0xB163_2C5B;
 
 #[test]
 fn the_integrity_code_equals_the_earlier_one_at_every_size_and_alignment() {
