@@ -11,7 +11,6 @@
 #include <rosgraph_msgs/Clock.h>
 #include <std_msgs/Float64.h>
 
-#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -143,8 +142,6 @@ TEST_F(ClockDriverFixture, PublishesTheStartThenClockAfterEachStep)
     const auto started = simulator.start(*this->node);
     ASSERT_TRUE(started.has_value()) << started.error();
     ASSERT_TRUE(this->node->runFor(50_ms).ok());
-    // A value the peer answers late is sent again; each value counts once.
-    seen.erase(std::unique(seen.begin(), seen.end()), seen.end());
     ASSERT_FALSE(seen.empty());
     ASSERT_LE(seen.size(), simulator.deadlines.size() + 1U);
     std::vector<int64_t> expected{kStart};
@@ -164,8 +161,10 @@ TEST_F(ClockDriverFixture, PacesToTheRealTimeFactor)
     const auto started = simulator.start(*this->node);
     ASSERT_TRUE(started.has_value()) << started.error();
     ASSERT_TRUE(this->node->runFor(200_ms).ok());
-    EXPECT_GE(simulator.deadlines.size(), 18U);
-    EXPECT_LE(simulator.deadlines.size(), 23U);
+    // The start value runs no step: at 100 Hz the steps due within 200 ms are those at
+    // 10 ms .. 200 ms after the acknowledged start, at most 20.
+    EXPECT_GE(simulator.deadlines.size(), 17U);
+    EXPECT_LE(simulator.deadlines.size(), 22U);
 }
 
 class Alone final : public hypha::CycleNode

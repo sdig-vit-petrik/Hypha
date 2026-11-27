@@ -1029,8 +1029,9 @@ HyphaStatus hypha_config_resolve_key(const struct HyphaConfig *config,
 // Make an uncommitted rate cycle drive `/clock`; its period is the clock step. Commit
 // enables process-wide simulated time at `start_nanos`. The driver publishes
 // `/clock = start_nanos` with no step; its first step runs at `start_nanos` plus one
-// period. `options` is read for the call only. `InvalidArgument`: null pointer, a negative start, a zero timeout, a factor that
-// is negative or not finite, a cycle without a rate, or a triggered cycle.
+// period. `options` is read for the call only. `InvalidArgument`: null pointer, a
+// negative start, a zero timeout, a factor that is negative or not finite, a cycle
+// without a rate, or a triggered cycle.
 // `InvalidState`: committed cycle, or its `WaitSet` runs.
 //
 // # Safety

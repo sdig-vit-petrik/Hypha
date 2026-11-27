@@ -227,9 +227,9 @@ pub enum DriverAction {
         /// The new clock value, in nanoseconds.
         deadline: i64,
     },
-    /// Publish `/clock = value` with no step, then call [`DriverSchedule::sent`]: the
+    /// Announce `/clock = value` with no step, then call [`DriverSchedule::sent`]: the
     /// start value, or an awaited value again.
-    Publish {
+    Announce {
         /// The clock value awaited, in nanoseconds.
         value: i64,
     },
@@ -257,9 +257,13 @@ struct Awaited {
 
 /// The lockstep schedule of a clock driver: `/clock` advances only once every required
 /// participant has acknowledged the previous value. The start value is the start
-/// barrier, as `hypha play` runs it: it goes out with no step, and the first step, at
-/// start + period, waits until every expected participant has acknowledged it. A step's
-/// outputs therefore reach every expected participant.
+/// barrier: it goes out with no step, and the first step, at start + period, waits until
+/// every expected participant has acknowledged it. Unlike `hypha play`, the barrier does
+/// not wait for a connected `/clock_progress` publisher that has not reported, so a
+/// participant that is not expected counts only from its first report. The first step's
+/// outputs reach the subscribers that existed when each expected node first reported; a
+/// node reports once one of its `WaitSet`s offers, so a cycle or subscriber it adds later
+/// can miss early steps.
 #[derive(Debug, Clone)]
 pub struct DriverSchedule {
     options: DriverOptions,
@@ -329,7 +333,7 @@ impl DriverSchedule {
     #[must_use]
     pub fn next(&mut self, now: Instant) -> DriverAction {
         let Some(awaited) = self.awaited else {
-            return DriverAction::Publish { value: self.options.start_nanos };
+            return DriverAction::Announce { value: self.options.start_nanos };
         };
         let mut required = self.participants.names();
         for name in &self.options.expected {
@@ -367,7 +371,7 @@ impl DriverSchedule {
             return DriverAction::Fail { silent: unheard, last_clock_nanos: None };
         }
         if now.saturating_duration_since(awaited.last_send) >= CLOCK_RESEND_INTERVAL {
-            return DriverAction::Publish { value: awaited.value };
+            return DriverAction::Announce { value: awaited.value };
         }
         DriverAction::Wait
     }

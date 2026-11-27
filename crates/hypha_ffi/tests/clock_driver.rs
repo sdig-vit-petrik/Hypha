@@ -535,7 +535,8 @@ fn a_driver_steps_only_after_every_participant_acknowledges() {
 fn the_driver_reads_its_participants_output_one_step_later() {
     let run = Loop::new(&Mode::Triggered, true, 5_000 * MS);
     run.run(30, false);
-    for step in run.driver.steps().iter().skip(2) {
+    // The first step, at start + period, has nothing to read: the echo starts at the second.
+    for step in run.driver.steps().iter().skip(1) {
         let echo = step.seen.expect("the echo of the previous step");
         assert_eq!(
             i64::try_from(echo).unwrap(),

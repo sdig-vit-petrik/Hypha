@@ -253,7 +253,7 @@ fn new_refuses_a_non_positive_period_timeout_or_factor() {
 fn the_start_value_goes_out_with_no_step_and_the_first_step_is_one_period_later() {
     let now = Instant::now();
     let mut schedule = driver(&["a"], now);
-    assert_eq!(schedule.next(now), DriverAction::Publish { value: 0 });
+    assert_eq!(schedule.next(now), DriverAction::Announce { value: 0 });
     schedule.sent(0, 5, now);
     assert_eq!(schedule.next(now), DriverAction::Wait);
     schedule.observe("a", 0, 5, now);
@@ -264,13 +264,13 @@ fn the_start_value_goes_out_with_no_step_and_the_first_step_is_one_period_later(
 fn no_step_runs_while_an_expected_participant_never_reports() {
     let t0 = Instant::now();
     let mut schedule = driver(&["a"], t0);
-    assert_eq!(schedule.next(t0), DriverAction::Publish { value: 0 });
+    assert_eq!(schedule.next(t0), DriverAction::Announce { value: 0 });
     schedule.sent(0, 1, t0);
     let mut now = t0;
     while now < t0 + NAMED_START_TIMEOUT {
         let action = schedule.next(now);
         assert!(
-            matches!(action, DriverAction::Wait | DriverAction::Publish { value: 0 }),
+            matches!(action, DriverAction::Wait | DriverAction::Announce { value: 0 }),
             "{action:?} at {:?}",
             now - t0
         );
@@ -289,7 +289,7 @@ fn no_step_runs_while_an_expected_participant_never_reports() {
 fn the_driver_waits_for_every_required_participant() {
     let now = Instant::now();
     let mut schedule = driver(&["a", "b"], now);
-    assert_eq!(schedule.next(now), DriverAction::Publish { value: 0 });
+    assert_eq!(schedule.next(now), DriverAction::Announce { value: 0 });
     schedule.sent(0, 5, now);
     schedule.observe("a", 0, 5, now);
     assert_eq!(schedule.next(now), DriverAction::Wait);
@@ -322,7 +322,7 @@ fn an_ack_before_the_floor_does_not_count() {
 fn a_late_participant_becomes_required_from_its_first_report() {
     let now = Instant::now();
     let mut schedule = driver(&["a"], now);
-    assert_eq!(schedule.next(now), DriverAction::Publish { value: 0 });
+    assert_eq!(schedule.next(now), DriverAction::Announce { value: 0 });
     schedule.sent(0, 1, now);
     schedule.observe("a", 0, 1, now);
     for deadline in [10, 20] {
@@ -342,7 +342,7 @@ fn an_unacknowledged_value_is_resent_every_interval() {
     let mut schedule = driver(&["a"], t0);
     schedule.sent(0, 5, t0);
     assert_eq!(schedule.next(t0 + 199 * MS), DriverAction::Wait);
-    assert_eq!(schedule.next(t0 + 200 * MS), DriverAction::Publish { value: 0 });
+    assert_eq!(schedule.next(t0 + 200 * MS), DriverAction::Announce { value: 0 });
     schedule.sent(0, 9, t0 + 200 * MS);
     assert_eq!(schedule.next(t0 + 399 * MS), DriverAction::Wait);
     // A resend keeps the first floor: an answer to the first sample still counts.
@@ -385,7 +385,7 @@ fn a_real_time_factor_paces_the_steps() {
     let options =
         DriverOptions { period_nanos: 10_000_000, real_time_factor: Some(1.0), ..options(&["a"]) };
     let mut schedule = DriverSchedule::new(options, t0).unwrap();
-    assert_eq!(schedule.next(t0), DriverAction::Publish { value: 0 });
+    assert_eq!(schedule.next(t0), DriverAction::Announce { value: 0 });
     schedule.sent(0, 1, t0);
     schedule.observe("a", 0, 1, t0);
     assert_eq!(schedule.next(t0 + 9 * MS), DriverAction::Wait);

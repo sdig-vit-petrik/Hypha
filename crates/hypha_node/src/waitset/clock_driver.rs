@@ -90,7 +90,7 @@ pub(crate) fn attach_driver_cycle(
 }
 
 impl CallbackDispatcher<'_> {
-    /// One turn of the driver cycle `attachment`: read the reports, then step, publish,
+    /// One turn of the driver cycle `attachment`: read the reports, then step, announce,
     /// wait or fail as its schedule says.
     pub(super) fn run_driver(&mut self, attachment: AttachmentId) -> Progression {
         self.driver_turn(attachment)
@@ -145,7 +145,7 @@ impl CallbackDispatcher<'_> {
                 log::error!(target: "hypha", "hypha: clock driver '{}': the next clock value is not representable", cycle.name());
                 Err(Error::InvalidState)
             }
-            DriverAction::Publish { value } => {
+            DriverAction::Announce { value } => {
                 publish_clock(state, value)?;
                 Ok(Progression::Continue)
             }

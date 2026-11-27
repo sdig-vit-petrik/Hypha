@@ -216,11 +216,14 @@ in `hypha_runtime::clock_barrier`; `hypha play` reaches them through `hypha::clo
   framework send stamp, and `/clock = D'` goes out after the step's outputs. A participant
   therefore reads the driver's step-D' outputs together with `/clock = D'`, and the driver
   reads at D' what the participants sent for D.
-- **Start.** The first value is the configured start, and it is the start barrier, as the
-  player's (4.3): the driver publishes `/clock = start` with no step and resends it until
-  every expected name has acknowledged it. The first step runs at start + period, so its
-  outputs reach every expected participant: a node reports only once it has committed a
-  cycle on simulated time, and that cycle's inputs exist by then. An expected name that
+- **Start.** The first value is the configured start, and it is the start barrier: the
+  driver publishes `/clock = start` with no step and resends it until every expected name
+  has acknowledged it. Unlike the player's barrier (5), it has no `--settle` wait for a
+  connected `/clock_progress` publisher that has not reported, so a participant that is
+  not expected counts only from its first report. The first step runs at start + period,
+  so its outputs reach the subscribers that existed when each expected node first
+  reported. A node reports once one of its `WaitSet`s offers (4.2), so a cycle or
+  subscriber it adds later can miss early steps. An expected name that
   never reports within 30 s fails the run with `Timeout`, and no step has run. A simulator
   therefore publishes its initial state in the step at start + period, stamped with that
   time; nothing is stamped at the start value. A step at the start value after the
