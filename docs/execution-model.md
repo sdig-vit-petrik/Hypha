@@ -848,7 +848,8 @@ host:
   first clock value that the cycle sees, so its phase does not depend on when
   the node started. A clock value is a `/clock` sample, a `setSimTime` or
   `advanceSimTime`, or an `enableSimTime` with a start. The zero that a node
-  starts with is a placeholder, not a value, and does not set the phase.
+  starts with is a placeholder, not a value, and does not set the phase;
+  `hypha::isClockValid()` is false until the clock has a value.
 - **One step per expired deadline.** When the clock moves past deadlines
   `D1 < D2 < … ≤ now`, the inputs are drained once, and the cycle then runs one
   step for each deadline. Each step has `now = Di`,

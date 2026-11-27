@@ -12,7 +12,6 @@
 
 #include <atomic>
 #include <exception>
-#include <optional>
 #include <thread>
 #include <type_traits>
 
@@ -37,7 +36,7 @@ class Locator final : public hypha::ApplicationNode
         this->pose_ = node.advertise<geometry_msgs::PoseStamped>("pose");  // [ports.outputs.pose]
         this->timer_ =
             node.timer(hypha::Duration::fromMillis(100), hypha::bind<&Locator::onTick>(*this));
-        this->tf_.emplace(node);  // TransformBuffer has no default constructor
+        this->tf_ = hypha::TransformBuffer(node);  // a member like the others, assigned here
     }
 
   private:
@@ -46,11 +45,7 @@ class Locator final : public hypha::ApplicationNode
         geometry_msgs::PoseStamped pose;
         pose.header = scan->header;
         pose.pose.position.x = this->gain_ * static_cast<double>(scan->width);  // the node's logic
-        if (!this->pose_.publish(pose)) {
-            HYPHA_LOG_WARN_THROTTLE(
-                1.0, "pose not sent: {}", this->pose_.lastPublishStatus().name()
-            );
-        }
+        this->pose_.publishOrWarn(pose);  // a refusal is logged: topic, status, once a second
     }
 
     void onTick()
@@ -62,7 +57,7 @@ class Locator final : public hypha::ApplicationNode
     hypha::Subscriber<sensor_msgs::PointCloud2>  scan_;
     hypha::Publisher<geometry_msgs::PoseStamped> pose_;
     hypha::Timer                                 timer_;
-    std::optional<hypha::TransformBuffer>        tf_;
+    hypha::TransformBuffer                       tf_;
 };
 
 sensor_msgs::PointCloud2 readFromDevice();  // the driver's blocking read, with a timeout
