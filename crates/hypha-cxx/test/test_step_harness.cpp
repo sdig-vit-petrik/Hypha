@@ -3,17 +3,21 @@
 
 #include "hypha/config.h"
 #include "hypha/cycle_node.h"
+#include "hypha/cycle_transforms.h"
 #include "hypha/hypha.h"
 #include "hypha/testing.h"
 
 #include "test_types.h"
 
+#include <geometry_msgs/TransformStamped.h>
 #include <gtest/gtest.h>
 #include <std_msgs/Float64.h>
 #include <std_msgs/UInt32.h>
+#include <tf2_msgs/TFMessage.h>
 
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -1247,4 +1251,175 @@ TEST(StepHarnessOptionalPorts, TheHarnessEnablesTheOptionalPortsThatAStartEnable
     hypha::testing::StepHarness harness{node};
     EXPECT_EQ(node.enabledPorts(), started);
     EXPECT_EQ(started, (std::vector<bool>{true, true, false, false, true, false}));
+}
+
+// ---- #248: the Transforms port under the harness ----------------------------------
+
+namespace {
+
+using Looked = std::expected<geometry_msgs::TransformStamped, hypha::TransformError>;
+
+/// One question a step asks its Transforms port.
+struct Question
+{
+    std::string            target;
+    std::string            source;
+    std::optional<int64_t> at;  // a lookup at this time, else the latest common time
+};
+
+/// A step that asks its Transforms port each of its questions.
+class Mapper final : public hypha::CycleNode
+{
+  public:
+    Mapper()
+    {
+        this->setRate(hypha::Hz(100.0));
+    }
+
+    hypha::Transforms     tf{*this};
+    std::vector<Question> questions;
+    std::vector<Looked>   answers;
+
+    void step(const hypha::CycleTime&) override
+    {
+        this->answers.clear();
+        for (const Question& question : this->questions) {
+            this->answers.push_back(
+                question.at.has_value()
+                    ? this->tf.lookup(
+                          question.target, question.source, Time::fromNanos(*question.at)
+                      )
+                    : this->tf.lookupLatest(question.target, question.source)
+            );
+        }
+    }
+};
+
+constexpr int64_t kSecond = 1'000'000'000;
+
+geometry_msgs::TransformStamped stamped(
+    const std::string& parent, const std::string& child, uint32_t seconds, double x, double w = 1.0
+)
+{
+    geometry_msgs::TransformStamped item{};
+    item.header.frame_id = parent;
+    item.header.stamp.secs = seconds;
+    item.child_frame_id = child;
+    item.transform.translation.x = x;
+    item.transform.rotation.w = w;
+    return item;
+}
+
+}  // namespace
+
+TEST(StepHarnessTransforms, AStepThatLooksUpATransformGetsTheAnswerOfAnEmptyBuffer)
+{
+    Mapper mapper;
+    mapper.questions = {{"map", "lidar", std::nullopt}, {"map", "lidar", kSecond}};
+    hypha::testing::StepHarness harness{mapper};
+    harness.step(mapper);
+    ASSERT_EQ(mapper.answers.size(), 2U);
+    for (const Looked& answer : mapper.answers) {
+        ASSERT_FALSE(answer.has_value());
+        EXPECT_EQ(answer.error(), hypha::TransformError::UnknownFrame);
+    }
+}
+
+TEST(StepHarnessTransforms, ADeliveredTransformIsFoundAtItsStampAndBetweenTwoStampsInterpolated)
+{
+    Mapper                      mapper;
+    hypha::testing::StepHarness harness{mapper};
+    harness.deliver(mapper.tf, {stamped("map", "base", 1, 1.0), stamped("map", "base", 3, 3.0)});
+    harness.deliverStatic(mapper.tf, {stamped("base", "lidar", 0, 0.5)});
+    mapper.questions = {
+        {"map", "base", kSecond},
+        {"map", "base", 2 * kSecond},
+        {"map", "lidar", 2 * kSecond},
+        {"base", "lidar", 100 * kSecond},
+        {"map", "lidar", std::nullopt},
+    };
+    harness.step(mapper);
+    ASSERT_EQ(mapper.answers.size(), 5U);
+    for (const Looked& answer : mapper.answers) {
+        ASSERT_TRUE(answer.has_value()) << hypha::name(answer.error());
+    }
+    EXPECT_DOUBLE_EQ(mapper.answers[0]->transform.translation.x, 1.0) << "at its stamp";
+    EXPECT_DOUBLE_EQ(mapper.answers[1]->transform.translation.x, 2.0) << "halfway";
+    EXPECT_EQ(mapper.answers[1]->header.stamp.secs, 2U);
+    EXPECT_DOUBLE_EQ(mapper.answers[2]->transform.translation.x, 2.5) << "the static composed";
+    EXPECT_DOUBLE_EQ(mapper.answers[3]->transform.translation.x, 0.5) << "a static holds always";
+    EXPECT_EQ(mapper.answers[4]->header.stamp.secs, 3U) << "the latest common time";
+
+    mapper.questions = {{"map", "base", 2 * kSecond}};
+    harness.step(mapper);
+    ASSERT_TRUE(mapper.answers.at(0).has_value()) << "the buffer outlives a step";
+}
+
+TEST(StepHarnessTransforms, ATransformThatWasNotDeliveredIsMissedAsACycleMissesIt)
+{
+    Mapper                      mapper;
+    hypha::testing::StepHarness harness{mapper};
+    harness.deliver(mapper.tf, {stamped("map", "base", 5, 1.0), stamped("map", "base", 6, 2.0)});
+    harness.deliver(mapper.tf, {stamped("odom", "wheel", 5, 1.0)});
+    mapper.questions = {
+        {"map", "lidar", 5 * kSecond},
+        {"map", "base", 4 * kSecond},
+        {"map", "base", 7 * kSecond},
+        {"map", "wheel", 5 * kSecond},
+        {"", "base", std::nullopt},
+    };
+    harness.step(mapper);
+    const std::vector<hypha::TransformError> expected{
+        hypha::TransformError::UnknownFrame,
+        hypha::TransformError::BeforeBuffer,
+        hypha::TransformError::AfterBuffer,
+        hypha::TransformError::NotConnected,
+        hypha::TransformError::InvalidFrame,
+    };
+    ASSERT_EQ(mapper.answers.size(), expected.size());
+    for (size_t index = 0; index < expected.size(); ++index) {
+        ASSERT_FALSE(mapper.answers[index].has_value()) << "question " << index;
+        EXPECT_EQ(mapper.answers[index].error(), expected[index]) << "question " << index;
+    }
+}
+
+TEST(StepHarnessTransforms, ATransformTheCycleRefusesIsLeftOutAndItsFrameAnswersRefused)
+{
+    Mapper                      mapper;
+    hypha::testing::StepHarness harness{mapper};
+    harness.deliver(mapper.tf, {stamped("map", "base", 1, 1.0, 0.0)});  // no unit quaternion
+    mapper.questions = {{"map", "base", kSecond}};
+    harness.step(mapper);
+    ASSERT_FALSE(mapper.answers.at(0).has_value());
+    EXPECT_EQ(mapper.answers[0].error(), hypha::TransformError::Refused);
+}
+
+TEST(StepHarnessTransforms, ALookupOutsideAStepStillThrows)
+{
+    Mapper                      mapper;
+    hypha::testing::StepHarness harness{mapper};
+    harness.deliver(mapper.tf, {stamped("map", "base", 1, 1.0)});
+    EXPECT_THROW(static_cast<void>(mapper.tf.lookupLatest("map", "base")), std::logic_error);
+}
+
+TEST(StepHarnessTransforms, ACacheThatAStartRefusesIsRefusedByDeliver)
+{
+    class NoCache final : public hypha::CycleNode
+    {
+      public:
+        NoCache()
+        {
+            this->setRate(hypha::Hz(100.0));
+        }
+
+        hypha::Transforms tf{*this, hypha::Duration::fromNanos(0)};
+
+        void step(const hypha::CycleTime&) override
+        {
+        }
+    };
+
+    NoCache                     node;
+    hypha::testing::StepHarness harness{node};
+    EXPECT_THROW(harness.deliver(node.tf, {stamped("map", "base", 1, 1.0)}), std::invalid_argument);
 }

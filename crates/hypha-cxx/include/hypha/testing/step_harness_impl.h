@@ -58,6 +58,45 @@ inline void* StepHarness::storeFor(const Port& port, void* (*make)(), void (*des
     return this->stores_.back().sent;
 }
 
+/// The buffer of @p port, made empty on first use: a step that looks up a transform nobody
+/// delivered gets the answer of a started cycle's empty TF input. The library refuses a
+/// cache that a start refuses.
+inline const HyphaTransformBuffer* StepHarness::transformsFor(const Port& port, int64_t cacheNanos)
+{
+    for (const FedTransforms& held : this->transforms_) {
+        if (held.port == &port) {
+            return held.buffer.get();
+        }
+    }
+    HyphaTransformBuffer* created = nullptr;
+    const uint64_t        cache = cacheNanos > 0 ? static_cast<uint64_t>(cacheNanos) : 0U;
+    const ::HyphaStatus   status = backend::createFedTransformBuffer(cache, &created);
+    if (status != HYPHA_STATUS_OK) {
+        throw std::invalid_argument(
+            "hypha: a Transforms port needs a positive cache: " + std::string(Status(status).name())
+        );
+    }
+    this->transforms_.push_back(FedTransforms{&port, backend::UniqueTransformBuffer(created)});
+    return created;
+}
+
+inline void StepHarness::feed(
+    Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms, bool isStatic
+)
+{
+    tf2_msgs::TFMessage message;
+    message.transforms = std::move(transforms);
+    std::vector<uint8_t> payload;
+    codec::encode(message, payload);
+    const HyphaTransformBuffer* buffer = this->transformsFor(port, port.cache_.nanos());
+    const ::HyphaStatus         status = backend::transformBufferFeed(buffer, payload, isStatic);
+    if (status != HYPHA_STATUS_OK) {
+        throw std::runtime_error(
+            "hypha: deliver() on a Transforms port refused: " + std::string(Status(status).name())
+        );
+    }
+}
+
 /// A disabled input never receives a sample in a started cycle, and no step judges it, so a
 /// test that gives it a value or a verdict tests a state that cannot occur: refuse it, and
 /// say what enables the port.

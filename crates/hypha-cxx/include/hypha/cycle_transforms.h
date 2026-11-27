@@ -4,6 +4,7 @@
 /// Transforms: a cycle's TF input.
 
 #include "hypha/backend/cycle.h"
+#include "hypha/backend/transform_buffer.h"
 #include "hypha/backend/typed.h"
 #include "hypha/cycle_port.h"
 #include "hypha/cycle_runtime.h"
@@ -63,6 +64,8 @@ class Transforms final : public Port
     }
 
   private:
+    friend class testing::StepHarness;
+
     ::HyphaStatus bind(HyphaCycle* cycle) override
     {
         const int64_t cacheNanos = this->cache_.nanos();
@@ -119,14 +122,20 @@ class Transforms final : public Port
     std::expected<geometry_msgs::TransformStamped, TransformError>
     find(std::string_view target, std::string_view source, std::optional<int64_t> atNanos) const
     {
-        if (this->image_ == nullptr) {
+        uint32_t                    result = 0;
+        HyphaTransform              raw{};
+        ::HyphaStatus               status = HYPHA_STATUS_OK;
+        detail::CaptureStore* const harness = this->harnessStore();
+        if (harness != nullptr) {
+            const HyphaTransformBuffer* fed = harness->transformsFor(*this, this->cache_.nanos());
+            status = backend::transformBufferLookup(fed, target, source, atNanos, &result, &raw);
+        } else if (this->image_ != nullptr) {
+            status = backend::cycleImageLookupTransform(
+                this->image_, this->index_, target, source, atNanos, &result, &raw
+            );
+        } else {
             throw std::logic_error("hypha: Transforms::lookup() outside a step");
         }
-        uint32_t            result = 0;
-        HyphaTransform      raw{};
-        const ::HyphaStatus status = backend::cycleImageLookupTransform(
-            this->image_, this->index_, target, source, atNanos, &result, &raw
-        );
         if (status != HYPHA_STATUS_OK) {
             throw std::runtime_error(
                 "hypha: Transforms::lookup() refused with status " + std::to_string(status)

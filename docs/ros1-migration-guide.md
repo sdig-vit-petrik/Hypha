@@ -476,7 +476,11 @@ TEST(SpeedControllerStep, CommandsAfterAUsableSpeedArrived)
   `docs/cpp-api.md`, "Test a step without a bus". An `optionalTopic` input or output is
   enabled in the harness only when the test's TOML gives its table a non-empty `topic`
   (below); with no table, no `topic` or `topic = ""` it is disabled, and `deliver()`,
-  `set()`, `setStale()` and `setStagnant()` on a disabled input throw. The harness moves
+  `set()`, `setStale()` and `setStagnant()` on a disabled input throw. A `Transforms`
+  port gets its transforms from `harness.deliver(node.tf, {...})` (`/tf`) and
+  `harness.deliverStatic(node.tf, {...})` (`/tf_static`), so a step that transforms a
+  measurement from a sensor frame is tested with that frame's transform, not only with
+  identity frames. The harness moves
   no clock: the
   step reads the `CycleTime` it is given, for its decisions and for the stamps it
   writes. Ported code that still calls `hypha::now()` gets the process clock in a

@@ -20,6 +20,8 @@
 ///  - the counters of an input: received() counts in the next step each sample given to
 ///    deliver() or set(), deliveredCount() each one that step takes as usable;
 ///    setNeverArrived() sets both to zero;
+///  - the answers of a Transforms port, from the transforms given to deliver() and
+///    deliverStatic(): the library code of a cycle's TF input looks them up;
 ///  - the bound of perStep() on the sends of a step;
 ///  - what a disabled port does: deliver(), set(), setStale() and setStagnant() on a
 ///    disabled input are refused, since a started cycle gives it no sample and never judges
@@ -45,12 +47,15 @@
 /// Not part of hypha/hypha.h. The harness keeps pointers to the cycle and its ports, so
 /// declare it after them. A send the step refused and caught still fails step().
 
+#include "hypha/backend/handles.h"
+#include "hypha/backend/ros1_codec.h"
 #include "hypha/config.h"
 #include "hypha/cycle_arrivals.h"
 #include "hypha/cycle_latest.h"
 #include "hypha/cycle_node.h"
 #include "hypha/cycle_output.h"
 #include "hypha/cycle_runtime.h"
+#include "hypha/cycle_transforms.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -222,6 +227,21 @@ class StepHarness final : private detail::CaptureStore
         StepHarness::judge(port, HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, false);
     }
 
+    /// @brief The Transforms port receives @p transforms on `/tf`: each later step looks
+    ///        them up as a started cycle's TF input does, which keeps `cache` of history
+    ///        per frame. A transform that input refuses is left out, and a lookup on its
+    ///        frame answers TransformError::Refused.
+    void deliver(Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms)
+    {
+        this->feed(port, std::move(transforms), false);
+    }
+
+    /// @brief As deliver(Transforms&), on `/tf_static`: transforms that hold at every time.
+    void deliverStatic(Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms)
+    {
+        this->feed(port, std::move(transforms), true);
+    }
+
     /// @brief The port's alive value has (or has not) stopped changing.
     /// @throws std::logic_error when the port is disabled.
     template <typename M>
@@ -298,6 +318,13 @@ class StepHarness final : private detail::CaptureStore
         uint64_t              accepted;
     };
 
+    /// The transforms a Transforms port holds, in a buffer the harness feeds.
+    struct FedTransforms
+    {
+        const Port*                    port;
+        backend::UniqueTransformBuffer buffer;
+    };
+
     struct NodeStep
     {
         CycleNode* node;
@@ -329,6 +356,9 @@ class StepHarness final : private detail::CaptureStore
     void        wirePorts();
     static bool startWouldEnable(const detail::TopicSource& topic);
     void*       storeFor(const Port& port, void* (*make)(), void (*destroy)(void*)) override;
+    const HyphaTransformBuffer* transformsFor(const Port& port, int64_t cacheNanos) override;
+    void
+    feed(Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms, bool isStatic);
     template <typename M>
     static void requireEnabled(const Input<M>& port, const char* call);
     template <typename M>
@@ -373,12 +403,13 @@ class StepHarness final : private detail::CaptureStore
     void rethrowLatched();
     void endStep() noexcept;
 
-    Cycle&                cycle_;
-    std::vector<Store>    stores_;
-    std::vector<Pending>  pending_;
-    std::vector<Pending>  running_;
-    std::vector<Delivery> deliveries_;
-    std::vector<Intake>   intakes_;
+    Cycle&                     cycle_;
+    std::vector<Store>         stores_;
+    std::vector<Pending>       pending_;
+    std::vector<Pending>       running_;
+    std::vector<Delivery>      deliveries_;
+    std::vector<Intake>        intakes_;
+    std::vector<FedTransforms> transforms_;
 };
 
 }  // namespace hypha::testing

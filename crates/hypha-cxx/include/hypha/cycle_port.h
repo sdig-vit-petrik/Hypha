@@ -32,11 +32,13 @@ class McapReplay;
 
 namespace detail {
 
-/// @brief Where a testing::StepHarness step keeps what each output sends.
+/// @brief Where a testing::StepHarness step keeps what each output sends, and the
+///        transforms each Transforms port holds.
 class CaptureStore
 {
   public:
     virtual void* storeFor(const Port& port, void* (*make)(), void (*destroy)(void*)) = 0;
+    virtual const HyphaTransformBuffer* transformsFor(const Port& port, int64_t cacheNanos) = 0;
 
   protected:
     ~CaptureStore() = default;
