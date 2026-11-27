@@ -149,7 +149,8 @@ TEST_F(ClockDriverFixture, PublishesTheStartThenClockAfterEachStep)
     ASSERT_LE(seen.size(), simulator.deadlines.size() + 1U);
     std::vector<int64_t> expected{kStart};
     expected.insert(
-        expected.end(), simulator.deadlines.begin(),
+        expected.end(),
+        simulator.deadlines.begin(),
         simulator.deadlines.begin() + static_cast<long>(seen.size() - 1U)
     );
     EXPECT_EQ(seen, expected);
