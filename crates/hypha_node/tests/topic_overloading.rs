@@ -206,7 +206,7 @@ fn a_frame_of_another_schema_than_its_stream_is_still_a_schema_mismatch() {
     let deadline = deadline_in(20);
     while metric(&v1_in, "integrity.schema_mismatch") == 0 {
         assert!(Instant::now() < deadline, "the wrong frame was not refused");
-        assert!(drain(&mut v1_in).payloads.is_empty());
+        assert_eq!(drain(&mut v1_in).payloads, Vec::<Vec<u8>>::new());
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(metric(&v1_in, "integrity.schema_mismatch"), 1);
