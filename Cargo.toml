@@ -4,8 +4,10 @@ members = ["crates/hypha_time", "crates/hypha_wire", "crates/hypha_msgdef", "cra
     "apps/hypha_tools", "apps/hypha_ros_bridge"]
 exclude = ["fuzz", "vendor"]
 
-# iceoryx2-cal with a smaller reallocation limit: vendor/README.md.
+# iceoryx2-cal with a smaller reallocation limit, iceoryx2 with a slice truncate:
+# vendor/README.md.
 [patch.crates-io]
+iceoryx2 = { path = "vendor/iceoryx2" }
 iceoryx2-cal = { path = "vendor/iceoryx2-cal" }
 
 [workspace.dependencies]

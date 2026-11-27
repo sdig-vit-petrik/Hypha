@@ -4,6 +4,16 @@ Third-party crates hypha patches. Each is the published crate unchanged except f
 lines marked `hypha patch`. `Cargo.toml` points `[patch.crates-io]` at them. Update a
 vendored crate together with its upstream version in `Cargo.lock`, and re-apply the patch.
 
+## iceoryx2 0.10.1
+
+`src/sample_mut.rs`: `SampleMut<_, [T], _>::truncate(n)` shortens a loaned slice to its
+first `n` elements before the send. It sets the element count of the sample header, as
+iceoryx2's own flatbuffer path does after the payload is written (`SampleMutUninit::
+__internal_finish_serialized`); the chunk keeps its size. hypha uses it for a typed loan whose
+message is shorter than the bytes it reserved (`hypha_loan_shrink`, issue #255).
+
+Remove the patch when iceoryx2 can shorten a loaned slice.
+
 ## iceoryx2-cal 0.10.1
 
 `src/resizable_shared_memory/dynamic.rs`: `MAX_NUMBER_OF_REALLOCATIONS` is 32 instead of
