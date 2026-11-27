@@ -78,10 +78,8 @@ impl Iox2WaitSet {
             let Some(wait_slice) = next_wait_slice(deadline, has_pending_work, first) else {
                 return RunReport::deadline();
             };
-            let wait_slice = match dispatcher.next_timed_wait() {
-                Some(timed_wait) => wait_slice.min(timed_wait),
-                None => wait_slice,
-            };
+            let due = dispatcher.next_deadline();
+            let wait_slice = due.map_or(wait_slice, |due| wait_slice.min(time_until(due)));
 
             let mut stop_requested = false;
             let wait = waitset.wait_and_process_once_with_timeout(
@@ -167,6 +165,12 @@ fn next_wait_slice(
         return first_turn.then_some(Duration::ZERO);
     }
     Some(slice.min(remaining))
+}
+
+/// How long from now until `deadline` on the host's monotonic clock; zero once it passed.
+fn time_until(deadline: hypha_time::Time) -> Duration {
+    let remaining = deadline.nanos().saturating_sub(hypha_time::steady_now().nanos());
+    Duration::from_nanos(u64::try_from(remaining).unwrap_or(0))
 }
 
 type EventGuards<'w, 'l> = Vec<(usize, iceoryx2::waitset::WaitSetGuard<'w, 'l, Ipc>)>;

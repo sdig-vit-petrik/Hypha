@@ -29,7 +29,7 @@ pub enum Trigger {
     /// Run on a fixed period, whatever the publisher does.
     Periodic(Duration),
     /// Run when the dispatcher's own deadline is due, with no native guard (see
-    /// [`Dispatcher::next_timed_wait`]).
+    /// [`Dispatcher::next_deadline`]).
     Timed,
 }
 
@@ -77,9 +77,9 @@ pub trait Dispatcher {
         Progression::Continue
     }
 
-    /// The longest the next native wait may last for the earliest [`Trigger::Timed`]
-    /// deadline, or `None`; `Some(Duration::ZERO)` when one is already due.
-    fn next_timed_wait(&mut self) -> Option<Duration> {
+    /// The earliest [`Trigger::Timed`] deadline on the host's monotonic clock
+    /// ([`hypha_time::steady_now`]), or `None`. A deadline that has passed is due now.
+    fn next_deadline(&mut self) -> Option<hypha_time::Time> {
         None
     }
 }
