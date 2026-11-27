@@ -1,4 +1,8 @@
 //! A timed deadline ends the native wait at the deadline, not at the next whole millisecond.
+//!
+//! Linux only: macOS's kernel coalesces timers and defers a wake-up by up to half the wait,
+//! so there every wake of a loaded host can come 0.65 ms after a 1.3 ms deadline.
+#![cfg(target_os = "linux")]
 #![allow(clippy::expect_used, clippy::arithmetic_side_effects)]
 
 use core::time::Duration;
