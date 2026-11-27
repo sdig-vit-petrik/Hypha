@@ -186,6 +186,46 @@ TEST_F(QosFixture, ASpecialisationOfQosOfDeclaresItsPolicy)
     EXPECT_NE(full.find("ResourceLimit"), std::string::npos) << full;
 }
 
+// A topic name carries more than one message type (topic name overloading, #209), but the
+// service of a name has one policy: types the application maps to different policies cannot
+// share a name, and the second endpoint is refused with QosMismatch.
+TEST_F(QosFixture, TwoTypesOfOneNameWithTheSamePolicyShareTheTopic)
+{
+    const std::string topic = testTopic("/overload_same_policy");
+    auto              first = this->node->advertise<Float64>(hypha::Topic{topic});
+    auto              second = this->node->advertise<std_msgs::String>(hypha::Topic{topic});
+    EXPECT_TRUE(first.enabled());
+    EXPECT_TRUE(second.enabled());
+}
+
+TEST_F(QosFixture, TwoTypesOfOneNameWithTwoPoliciesAreRefusedWhicheverComesFirst)
+{
+    const std::string colourFirst = testTopic("/overload_colour_first");
+    auto colour = this->node->advertise<std_msgs::ColorRGBA>(hypha::Topic{colourFirst});
+    ASSERT_TRUE(colour.enabled());
+    const std::string refusedDefault = refusalOf([&colourFirst, this] {
+        static_cast<void>(this->node->advertise<Float64>(hypha::Topic{colourFirst}));
+    });
+    EXPECT_NE(refusedDefault.find("QosMismatch"), std::string::npos) << refusedDefault;
+
+    const std::string defaultFirst = testTopic("/overload_default_first");
+    auto              plain = this->node->advertise<Float64>(hypha::Topic{defaultFirst});
+    ASSERT_TRUE(plain.enabled());
+    const std::string refusedColour = refusalOf([&defaultFirst, this] {
+        static_cast<void>(this->node->advertise<std_msgs::ColorRGBA>(hypha::Topic{defaultFirst}));
+    });
+    EXPECT_NE(refusedColour.find("QosMismatch"), std::string::npos) << refusedColour;
+}
+
+TEST_F(QosFixture, ThePolicyOptionOfAPortLetsTwoTypesOfOneNameShareAPolicy)
+{
+    const std::string topic = testTopic("/overload_option");
+    auto              first = this->node->advertise<Float64>(hypha::Topic{topic}, qos_test::OTHER);
+    auto second = this->node->advertise<std_msgs::ColorRGBA>(hypha::Topic{topic}, qos_test::OTHER);
+    EXPECT_TRUE(first.enabled());
+    EXPECT_TRUE(second.enabled());
+}
+
 TEST_F(QosFixture, TheQosOptionOfAPortWinsOverThePolicyOfTheType)
 {
     const std::string topic = testTopic("/option_wins");

@@ -357,6 +357,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_step_harness.cpp
     test/test_raw_endpoints.cpp
     test/test_qos.cpp
+    test/test_topic_overloading.cpp
   )
   # Every public header compiles on its own: one generated translation unit each.
   file(GLOB_RECURSE HYPHA_PUBLIC_HEADERS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/include"
