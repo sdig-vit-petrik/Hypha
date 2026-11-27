@@ -1,8 +1,9 @@
 //! Content-addressed file store and synchronous resolution for schemas, at
 //! `<config.global.root_path()>/<config.global.prefix>_hypha_schemas/<hex(topic)>/<schema_hash:016x>`.
 //!
-//! A topic's schemas live as long as its data service: the endpoint that drops
-//! the last port removes the topic's directory ([`SchemaRelease`]). One lock file
+//! A schema lives as long as its stream: the endpoint that drops the last port of a
+//! stream removes its file, and the topic's directory once it is empty
+//! ([`SchemaRelease`]). One lock file
 //! per domain orders that removal against writes, and every wait for it is bounded
 //! by [`SCHEMA_LOCK_TIMEOUT`] so a frozen holder blocks no node.
 
@@ -11,6 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration as StdDuration;
 
 use hypha_core::port::{PortError, SchemaSelector, TopicSpec};
+
+use crate::stream::Stream;
 use hypha_wire::schema_record::{
     MAX_SCHEMA_RECORD_LEN, parse_schema_record, schema_record_frame_len, write_schema_record,
 };
@@ -144,11 +147,11 @@ fn lock_schemas(mode: LockMode) -> Result<std::fs::File, String> {
     }
 }
 
-/// True while any port of `topic`'s data service is open in any process of the domain.
-fn topic_in_use(topic: &str) -> Result<bool, String> {
+/// True while any port of the data service of `stream` is open in any process of the domain.
+fn stream_in_use(stream: &Stream) -> Result<bool, String> {
     use iceoryx2::service::Service as _;
     let config = crate::domain::config().map_err(|cause| format!("{cause:?}"))?;
-    let name = iceoryx2::prelude::ServiceName::new(&crate::transport::service_name_for(topic))
+    let name = iceoryx2::prelude::ServiceName::new(&stream.service_name())
         .map_err(|cause| format!("{cause:?}"))?;
     crate::transport::Ipc::does_exist(
         &name,
@@ -158,46 +161,54 @@ fn topic_in_use(topic: &str) -> Result<bool, String> {
     .map_err(|cause| format!("cannot tell whether the topic is still open: {cause:?}"))
 }
 
-/// Removes the schemas of a topic when it drops, if no port of its data service is
-/// left in any process. An endpoint holds it as its last field.
+/// Removes the schema of a stream when it drops, if no port of its data service is left
+/// in any process. An endpoint holds it as its last field.
 #[derive(Debug)]
 pub(crate) struct SchemaRelease {
-    topic: String,
+    stream: Stream,
 }
 
 impl SchemaRelease {
-    pub(crate) fn new(topic: &str) -> Self {
-        Self { topic: topic.to_owned() }
+    pub(crate) fn new(stream: &Stream) -> Self {
+        Self { stream: stream.clone() }
     }
 }
 
 impl Drop for SchemaRelease {
     fn drop(&mut self) {
-        if let Err(cause) = release_schemas(&self.topic) {
+        if let Err(cause) = release_schema(&self.stream) {
             log::warn!(target: "hypha/schema",
-                "hypha_iceoryx2: the schemas of topic '{}' stay on disk: {cause}", self.topic);
+                "hypha_iceoryx2: the schema {:016x} of topic '{}' stays on disk: {cause}",
+                self.stream.schema_hash, self.stream.topic);
         }
     }
 }
 
-/// Removes the schema directory of `topic` when its data service is gone.
-fn release_schemas(topic: &str) -> Result<(), String> {
+/// Removes the schema file of `stream` when its data service is gone, then the topic's
+/// directory and the domain's when they are empty.
+fn release_schema(stream: &Stream) -> Result<(), String> {
     // No lock for the usual case: the last port to drop checks again under the lock.
-    if topic_in_use(topic)? {
+    if stream_in_use(stream)? {
         return Ok(());
     }
     let _lock = lock_schemas(LockMode::Exclusive)?;
-    if topic_in_use(topic)? {
+    if stream_in_use(stream)? {
         return Ok(());
     }
-    let dir = topic_dir(topic).map_err(|cause| format!("{cause:?}"))?;
-    match std::fs::remove_dir_all(&dir) {
+    let file = schema_file_path(&stream.topic, stream.schema_hash)
+        .map_err(|cause| format!("{cause:?}"))?;
+    match std::fs::remove_file(&file) {
         Ok(()) => {}
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {}
-        Err(cause) => return Err(format!("cannot remove {}: {cause}", dir.display())),
+        Err(cause) => return Err(format!("cannot remove {}: {cause}", file.display())),
     }
-    let domain_dir = schema_dir().map_err(|cause| format!("{cause:?}"))?;
-    match std::fs::remove_dir(&domain_dir) {
+    remove_empty_dir(&topic_dir(&stream.topic).map_err(|cause| format!("{cause:?}"))?)?;
+    remove_empty_dir(&schema_dir().map_err(|cause| format!("{cause:?}"))?)
+}
+
+/// Removes `dir` if it is empty; a missing or non-empty directory is left as it is.
+fn remove_empty_dir(dir: &Path) -> Result<(), String> {
+    match std::fs::remove_dir(dir) {
         Ok(()) => Ok(()),
         Err(cause)
             if matches!(
@@ -207,7 +218,7 @@ fn release_schemas(topic: &str) -> Result<(), String> {
         {
             Ok(())
         }
-        Err(cause) => Err(format!("cannot remove {}: {cause}", domain_dir.display())),
+        Err(cause) => Err(format!("cannot remove {}: {cause}", dir.display())),
     }
 }
 

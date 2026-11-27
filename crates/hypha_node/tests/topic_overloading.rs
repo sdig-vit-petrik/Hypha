@@ -1,8 +1,8 @@
-//! Topic name overloading (#209): one topic name carries more than one message type, and
-//! each type is its own stream. The transport keys a topic by its name alone; each frame
-//! carries the hash of its schema, and a subscriber that names a type keeps only the frames
-//! of that type. These tests observe it through the Rust SDK, with two types of two MD5s,
-//! in one process and in two.
+//! Topic name overloading (#209): one topic name carries more than one schema, and each
+//! schema is its own stream: a typed subscriber never meets a frame of another schema. The
+//! case that matters is a migration, two versions of one message type (one type name, two
+//! MD5s) on one topic. These tests observe it through the Rust SDK, with two types and with
+//! two versions of one type, in one process and in two.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::process::{Command, Stdio};
@@ -30,6 +30,20 @@ const SECOND: Kind = Kind {
     data_type: "overload_test/Second",
     md5: "581e4b1bda6a172aa19e1038a38e01eb",
     definition: "int32 value\nstring label\n",
+};
+
+/// Version 1 of a message under migration: the same type name as [`VERSION_2`].
+const VERSION_1: Kind = Kind {
+    data_type: "overload_test/Reading",
+    md5: "581e4b1bda6a172aa19e1038a38e01eb",
+    definition: "int32 value\nstring label\n",
+};
+
+/// Version 2: one field more, so another MD5.
+const VERSION_2: Kind = Kind {
+    data_type: "overload_test/Reading",
+    md5: "f79835def461350458ead76f07016dd7",
+    definition: "int32 value\nstring label\nfloat64 weight\n",
 };
 
 /// The instant `seconds` from now: the bound of a wait.
@@ -130,36 +144,72 @@ fn each_typed_subscriber_of_a_name_returns_only_the_frames_of_its_type() {
 }
 
 #[test]
-fn the_frames_of_the_other_type_come_back_as_refusals_of_a_typed_receive_and_are_counted() {
+fn the_frames_of_the_other_type_never_reach_a_typed_subscriber_and_nothing_is_counted() {
     let bus = BusNode::new(&unique_name("overload_refusals")).expect("node");
     let topic = format!("/overload/{}", unique_name("refusals"));
     let mut first_out = publisher(&bus, &topic, &FIRST);
     let mut second_out = publisher(&bus, &topic, &SECOND);
     let mut first_in = typed_subscriber(&bus, &topic, &FIRST);
 
-    for index in 0_u8..3 {
-        assert!(first_out.publish(&[index, 0, 0, 0]));
-    }
     for index in 0_u8..4 {
         assert!(second_out.publish(&[index, 0, 0, 0, 0, 0, 0, 0]));
     }
-    let mut seen = Drained::default();
+    for index in 0_u8..3 {
+        assert!(first_out.publish(&[index, 0, 0, 0]));
+    }
+    let seen = drain_until(&mut first_in, 3);
+    std::thread::sleep(Duration::from_millis(20));
+    let after = drain(&mut first_in);
+
+    // The other type is another stream: its frames are no refusal, no schema mismatch.
+    assert_eq!(seen.payloads.len(), 3);
+    assert_eq!((seen.refusals, after.refusals, after.payloads.len()), (0, 0, 0));
+    for counter in [
+        "integrity.schema_mismatch",
+        "integrity.sequence_gap",
+        "integrity.invalid_frame",
+        "integrity.corrupt_payload",
+    ] {
+        assert_eq!(metric(&first_in, counter), 0, "{counter}");
+    }
+    assert_eq!(first_in.missing_sequences().expect("count"), 0);
+}
+
+/// A frame whose header names another schema than the stream it travels on is a fault, and
+/// still counted as one: here a transport publisher of version 1's stream stamps version 2.
+#[test]
+fn a_frame_of_another_schema_than_its_stream_is_still_a_schema_mismatch() {
+    use hypha_core::port::TopicSpec;
+    let bus = BusNode::new(&unique_name("overload_wrong_hash")).expect("node");
+    let topic = format!("/overload/{}", unique_name("wrong_hash"));
+    let transport = hypha_iceoryx2::Iox2Transport::with_name(&unique_name("overload_wrong_sender"))
+        .expect("transport");
+    let spec = TopicSpec::new(&topic)
+        .with_type(VERSION_1.data_type)
+        .with_md5(VERSION_1.md5)
+        .with_definition(VERSION_1.definition);
+    let wrong = transport.publish(&spec).expect("publisher of version 1's stream");
+    let mut v1_in = typed_subscriber(&bus, &topic, &VERSION_1);
+
+    let now = u64::try_from(hypha_time::steady_now().nanos()).expect("a steady time");
+    let mut loan = wrong.loan(8).expect("loan");
+    loan.as_mut_bytes().copy_from_slice(&payload_of(&VERSION_2, 1));
+    let metadata = hypha_wire::frame::FrameMetadata {
+        schema_hash: schema_hash(&VERSION_2),
+        publisher_id: 1,
+        sequence: 1,
+        transport_sent_nanos: now,
+        framework_sent_nanos: now,
+    };
+    loan.send_frame(metadata, 0).expect("send");
+
     let deadline = deadline_in(20);
-    while seen.payloads.len() < 3 || seen.refusals < 4 {
-        assert!(Instant::now() < deadline, "{seen:?}");
-        let more = drain(&mut first_in);
-        seen.payloads.extend(more.payloads);
-        seen.refusals = seen.refusals.saturating_add(more.refusals);
+    while metric(&v1_in, "integrity.schema_mismatch") == 0 {
+        assert!(Instant::now() < deadline, "the wrong frame was not refused");
+        assert!(drain(&mut v1_in).payloads.is_empty());
         std::thread::sleep(Duration::from_millis(5));
     }
-
-    // A raw receive reports each frame of the other type as an error to step past, and
-    // counts it as a schema mismatch: no sequence gap, no lost frame.
-    assert_eq!(seen.payloads.len(), 3);
-    assert_eq!(seen.refusals, 4);
-    assert_eq!(metric(&first_in, "integrity.schema_mismatch"), 4);
-    assert_eq!(metric(&first_in, "integrity.sequence_gap"), 0);
-    assert_eq!(first_in.missing_sequences().expect("count"), 0);
+    assert_eq!(metric(&v1_in, "integrity.schema_mismatch"), 1);
 }
 
 #[test]
@@ -208,24 +258,35 @@ fn an_untyped_subscriber_reads_both_types_and_each_hash_resolves_to_its_own_iden
 }
 
 #[test]
-fn the_bus_lists_one_topic_for_a_name_of_two_types() {
+fn the_bus_lists_one_stream_for_each_version_of_a_name() {
     let bus = BusNode::new(&unique_name("overload_list")).expect("node");
     let reader = BusNode::new(&unique_name("overload_list_reader")).expect("node");
     let topic = format!("/overload/{}", unique_name("list"));
-    let _first_out = publisher(&bus, &topic, &FIRST);
-    let _second_out = publisher(&bus, &topic, &SECOND);
+    let _first_out = publisher(&bus, &topic, &VERSION_1);
+    let _second_out = publisher(&bus, &topic, &VERSION_2);
 
     let listed = reader.list_topics().expect("topics");
-    let entries: Vec<_> = listed.iter().filter(|entry| entry.name == topic).collect();
-    assert_eq!(entries.len(), 1, "{entries:?}");
-    assert!(entries.iter().all(|entry| entry.published));
+    let mut hashes: Vec<u64> = listed
+        .iter()
+        .filter(|entry| entry.name == topic && entry.published)
+        .map(|entry| entry.schema_hash)
+        .collect();
+    hashes.sort_unstable();
+    let mut expected = [schema_hash(&VERSION_1), schema_hash(&VERSION_2)];
+    expected.sort_unstable();
+    assert_eq!(hashes, expected);
 }
 
-/// The peer of the two-process test: it publishes one type on the topic named by
-/// `HYPHA_OVERLOAD_TOPIC`, the second unless `HYPHA_OVERLOAD_KIND` is `first`, as many
-/// frames as `HYPHA_OVERLOAD_FRAMES` says (40), `HYPHA_OVERLOAD_PERIOD_MS` apart (25). It
-/// does nothing when it runs on its own; the test below starts it as a process of its own,
-/// with `--ignored`, and so can a person who wants traffic of two types for a tool.
+fn schema_hash(kind: &Kind) -> u64 {
+    hypha_wire::schema_hash_from_md5(kind.md5).expect("a schema hash")
+}
+
+/// The peer of the two-process tests: it publishes one type on the topic named by
+/// `HYPHA_OVERLOAD_TOPIC`, by `HYPHA_OVERLOAD_KIND` (`first`, `version_1`, `version_2`, else
+/// the second type), as many frames as `HYPHA_OVERLOAD_FRAMES` says (40),
+/// `HYPHA_OVERLOAD_PERIOD_MS` apart (25). It does nothing when it runs on its own; the tests
+/// below start it as a process of its own, with `--ignored`, and so can a person who wants
+/// traffic of two types for a tool.
 #[test]
 #[ignore = "the peer process of two_processes_publishing_two_types_on_one_name_are_read_by_type"]
 fn overload_peer_publishes_one_type() {
@@ -233,17 +294,55 @@ fn overload_peer_publishes_one_type() {
     let setting = |name: &str, default: u64| {
         std::env::var(name).ok().and_then(|text| text.parse().ok()).unwrap_or(default)
     };
-    let first = std::env::var("HYPHA_OVERLOAD_KIND").is_ok_and(|kind| kind == "first");
-    let kind = if first { &FIRST } else { &SECOND };
+    let kind = match std::env::var("HYPHA_OVERLOAD_KIND").as_deref() {
+        Ok("first") => &FIRST,
+        Ok("version_1") => &VERSION_1,
+        Ok("version_2") => &VERSION_2,
+        _ => &SECOND,
+    };
     let bus = BusNode::new(&unique_name("overload_peer")).expect("peer node");
     let mut out = publisher(&bus, &topic, kind);
     for index in 0..setting("HYPHA_OVERLOAD_FRAMES", 40) {
         let tag = u8::try_from(index % 100).unwrap_or(0);
-        let payload: &[u8] =
-            if first { &[tag, 0, 0, 0] } else { &[tag.saturating_add(100), 0, 0, 0, 0, 0, 0, 0] };
-        assert!(out.publish(payload));
+        let payload = payload_of(kind, tag);
+        assert!(out.publish(&payload));
         std::thread::sleep(Duration::from_millis(setting("HYPHA_OVERLOAD_PERIOD_MS", 25)));
     }
+}
+
+/// A payload of `kind` tagged `tag`: four bytes for the first type, eight for the others.
+fn payload_of(kind: &Kind, tag: u8) -> Vec<u8> {
+    if kind.md5 == FIRST.md5 { vec![tag, 0, 0, 0] } else { vec![tag, 0, 0, 0, 0, 0, 0, 0] }
+}
+
+/// A typed subscriber of `kind` on `topic`, once a publisher opened the stream of `kind`:
+/// a subscriber that declares no policy does not create a stream.
+fn subscribe_once_published(bus: &BusNode, topic: &str, kind: &Kind) -> RawSubscriber {
+    let deadline = deadline_in(20);
+    loop {
+        let options = SubscriberOptions::default().keeping(16);
+        match bus.subscribe_raw_with_schema(topic, kind.data_type, kind.md5, options) {
+            Ok(subscriber) => return subscriber,
+            Err(error) => {
+                assert!(Instant::now() < deadline, "{} never published: {error}", kind.md5);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Starts the peer process publishing `kind` on `topic`, `frames` frames.
+fn start_peer(topic: &str, kind: &str, frames: u32) -> std::process::Child {
+    let exe = std::env::current_exe().expect("the test binary");
+    Command::new(exe)
+        .args(["--ignored", "--exact", "overload_peer_publishes_one_type"])
+        .env("HYPHA_OVERLOAD_TOPIC", topic)
+        .env("HYPHA_OVERLOAD_KIND", kind)
+        .env("HYPHA_OVERLOAD_FRAMES", frames.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the peer process")
 }
 
 #[test]
@@ -252,16 +351,8 @@ fn two_processes_publishing_two_types_on_one_name_are_read_by_type() {
     let topic = format!("/overload/{}", unique_name("two_processes"));
     let mut first_out = publisher(&bus, &topic, &FIRST);
     let mut first_in = typed_subscriber(&bus, &topic, &FIRST);
-    let mut second_in = typed_subscriber(&bus, &topic, &SECOND);
-
-    let exe = std::env::current_exe().expect("the test binary");
-    let mut peer = Command::new(exe)
-        .args(["--ignored", "--exact", "overload_peer_publishes_one_type"])
-        .env("HYPHA_OVERLOAD_TOPIC", &topic)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("the peer process");
+    let mut peer = start_peer(&topic, "second", 400);
+    let mut second_in = subscribe_once_published(&bus, &topic, &SECOND);
 
     let mut sent = 0_u8;
     let deadline = deadline_in(30);
@@ -290,7 +381,47 @@ fn two_processes_publishing_two_types_on_one_name_are_read_by_type() {
 
     assert!(first_seen.payloads.iter().all(|payload| payload.len() == 4), "{first_seen:?}");
     assert!(second_seen.payloads.iter().all(|payload| payload.len() == 8), "{second_seen:?}");
-    // Each reader met the other process's or the other type's frames as refusals only.
-    assert!(first_seen.refusals > 0, "the first type's reader met no frame of the second type");
-    assert!(second_seen.refusals > 0, "the second type's reader met no frame of the first type");
+    assert_eq!((first_seen.refusals, second_seen.refusals), (0, 0), "no frame of the other type");
+}
+
+/// A migration: version 1 runs, version 2 joins from another process on the same topic,
+/// each pair talks and nothing is counted as a fault; then version 1's publisher leaves and
+/// its subscriber, which keeps running, has no publisher while version 2 still flows.
+#[test]
+fn two_versions_of_one_type_share_a_topic_through_a_migration() {
+    let bus = BusNode::new(&unique_name("overload_migration")).expect("node");
+    let topic = format!("/overload/{}", unique_name("migration"));
+    let mut v1_out = publisher(&bus, &topic, &VERSION_1);
+    let mut v1_in = typed_subscriber(&bus, &topic, &VERSION_1);
+    for tag in 0_u8..3 {
+        assert!(v1_out.publish(&payload_of(&VERSION_1, tag)));
+    }
+    assert_eq!(drain_until(&mut v1_in, 3).refusals, 0);
+
+    let mut peer = start_peer(&topic, "version_2", 400);
+    let mut v2_in = subscribe_once_published(&bus, &topic, &VERSION_2);
+    for tag in 3_u8..6 {
+        assert!(v1_out.publish(&payload_of(&VERSION_1, tag)));
+    }
+    let v1_seen = drain_until(&mut v1_in, 3);
+    let v2_seen = drain_until(&mut v2_in, 3);
+    assert_eq!(
+        v1_seen.payloads,
+        (3_u8..6).map(|tag| payload_of(&VERSION_1, tag)).collect::<Vec<_>>()
+    );
+    assert!(v2_seen.payloads.iter().all(|payload| payload.len() == 8), "{v2_seen:?}");
+
+    drop(v1_out);
+    let v2_later = drain_until(&mut v2_in, 3);
+    let v1_later = drain(&mut v1_in);
+    let _ = peer.kill();
+    let _ = peer.wait();
+
+    assert_eq!(v1_in.publisher_count().expect("count"), 0, "version 1 has no publisher left");
+    assert!(v1_later.payloads.is_empty(), "{v1_later:?}");
+    for (subscriber, seen) in [(&v1_in, &v1_seen), (&v2_in, &v2_later)] {
+        assert_eq!(seen.refusals, 0);
+        assert_eq!(metric(subscriber, "integrity.schema_mismatch"), 0);
+    }
+    assert_eq!(v1_later.refusals, 0);
 }

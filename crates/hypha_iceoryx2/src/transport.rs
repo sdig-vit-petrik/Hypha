@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration as StdDuration;
 
 use hypha_core::port::{
-    PayloadCapacity, PortError, QosPolicy, QosRequest, TopicSpec, is_valid_topic_pattern,
+    PayloadCapacity, PortError, QosPolicy, QosRequest, SchemaScope, TopicSpec,
+    is_valid_topic_pattern,
 };
 use iceoryx2::port::notifier::Notifier;
 use iceoryx2::prelude::*;
@@ -15,16 +16,10 @@ use crate::header::Iox2FrameHeader;
 use crate::latch::LatchedPort;
 use crate::notification::create_notifier;
 use crate::qos;
+use crate::stream::Stream;
 
 /// The thread-safe service variant, so an endpoint can be served on another thread.
 pub(crate) type Ipc = iceoryx2::service::ipc_threadsafe::Service;
-
-/// The bus name of `topic`: the topic without one leading `/`, so `/odom` and
-/// `odom` are one service. Its wake-up event service has the same name.
-#[must_use]
-pub fn service_name_for(topic: &str) -> String {
-    topic.strip_prefix('/').unwrap_or(topic).to_owned()
-}
 
 /// The first buffer size of a growable publisher that names none.
 const GROWABLE_INITIAL_PAYLOAD: usize = 4096;
@@ -148,9 +143,9 @@ impl Iox2Transport {
         if !spec.definition.is_empty() && !spec.has_valid_schema_identity() {
             return Err(PortError::InvalidTopic);
         }
-        let name = service_name_for(&spec.name);
+        let stream = Stream::of(spec)?;
         let service_name: ServiceName =
-            name.as_str().try_into().map_err(|_| PortError::InvalidTopic)?;
+            stream.service_name().as_str().try_into().map_err(|_| PortError::InvalidTopic)?;
 
         qos::check_request(&spec.name, &spec.qos)?;
         // Resolved before the service exists, so a refused publisher creates none.
@@ -164,7 +159,7 @@ impl Iox2Transport {
         }
         let port_name = node_port_name(&self.node)?;
         // Declared before the service, so on an early return it drops after it.
-        let schema_release = crate::schema::SchemaRelease::new(&spec.name);
+        let schema_release = crate::schema::SchemaRelease::new(&stream);
         let opened = open_data_service(&self.node, &service_name, &spec.name, &spec.qos, true)?;
         let policy = opened.policy;
         // A bounded publisher has one fixed data segment; a growable one adds segments on demand.
@@ -216,7 +211,7 @@ impl Iox2Transport {
         // Every publisher notifies; a scheduled subscriber has no listener to signal.
         let notifier = Arc::new(create_notifier(
             &self.node,
-            &service_name_for(&spec.name),
+            service_name.as_str(),
             Some(crate::notification::EventLimits::of_topic(&service)),
         )?);
 
@@ -472,7 +467,8 @@ impl Iox2Transport {
     /// Create a subscriber for `spec`.
     ///
     ///
-    /// A name with `*` follows every matching topic that exists now, not later ones.
+    /// A subscriber reads the stream of its own schema. A name with `*`, or a spec that
+    /// reads every schema, follows every matching stream that exists now, not later ones.
     ///
     /// # Errors
     /// [`PortError::InvalidTopic`] when the name is empty or refused. The other
@@ -481,12 +477,18 @@ impl Iox2Transport {
         if !spec.is_valid() {
             return Err(PortError::InvalidTopic);
         }
-        if spec.name.contains('*') {
-            if !is_valid_topic_pattern(&spec.name) {
+        let is_pattern = spec.name.contains('*');
+        if is_pattern || spec.schemas == SchemaScope::Every {
+            let is_valid_name = if is_pattern {
+                is_valid_topic_pattern(&spec.name)
+            } else {
+                spec.has_valid_public_name()
+            };
+            if !is_valid_name {
                 return Err(PortError::InvalidTopic);
             }
             qos::check_request(&spec.name, &spec.qos)?;
-            let subscriber = Iox2Subscriber::new_wildcard(&self.node, spec)?;
+            let subscriber = Iox2Subscriber::new_set(&self.node, spec)?;
             self.announce_subscriber();
             return Ok(subscriber);
         }
@@ -498,12 +500,12 @@ impl Iox2Transport {
         }
         qos::check_request(&spec.name, &spec.qos)?;
         let port_name = node_port_name(&self.node)?;
-        let name = service_name_for(&spec.name);
+        let stream = Stream::of(spec)?;
         let service_name: ServiceName =
-            name.as_str().try_into().map_err(|_| PortError::InvalidTopic)?;
+            stream.service_name().as_str().try_into().map_err(|_| PortError::InvalidTopic)?;
 
         // Declared before the service, so on an early return it drops after it.
-        let schema_release = crate::schema::SchemaRelease::new(&spec.name);
+        let schema_release = crate::schema::SchemaRelease::new(&stream);
         let may_create = qos::subscriber_may_create(&spec.name, &spec.qos);
         let opened =
             open_data_service(&self.node, &service_name, &spec.name, &spec.qos, may_create)?;
@@ -531,7 +533,7 @@ impl Iox2Transport {
             subscriber,
             created_nanos,
             service,
-            &spec.name,
+            stream,
             self.node.clone(),
             schema_release,
         );

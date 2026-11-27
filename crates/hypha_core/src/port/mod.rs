@@ -12,7 +12,7 @@ pub use error::PortError;
 pub use spec::{
     CLI_NODE_PREFIX, MAX_NODE_NAME_LENGTH, MAX_POLICY_DEPTH, MAX_POLICY_NAME_LENGTH,
     MAX_POLICY_PUBLISHERS, MAX_POLICY_SUBSCRIBERS, PUBLISHER_LOANED_SAMPLES, PayloadCapacity,
-    QosPolicy, QosRequest, SchemaSelector, TopicSpec, is_cli_node_name, is_identifier,
+    QosPolicy, QosRequest, SchemaScope, SchemaSelector, TopicSpec, is_cli_node_name, is_identifier,
     is_node_name, is_valid_topic_name, is_valid_topic_pattern, resolve_node_name,
     topic_matches_pattern,
 };

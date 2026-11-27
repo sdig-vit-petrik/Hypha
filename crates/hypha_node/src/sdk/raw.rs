@@ -44,11 +44,15 @@ pub struct NodeInfo {
     pub is_alive: bool,
 }
 
-/// A topic currently open on the hypha bus.
+/// A stream currently open on the hypha bus: one topic and one schema. A topic of two
+/// schemas is two of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopicInfo {
     /// Topic name.
     pub name: String,
+    /// The schema hash of the stream's frames, as [`crate::sdk::SampleIdentity::schema_hash`]; 0 for
+    /// the stream of no schema.
+    pub schema_hash: u64,
     /// At least one publisher exists outside the caller.
     pub published: bool,
     /// At least one subscriber exists outside the caller.
@@ -186,8 +190,7 @@ impl BusNode {
         list_nodes()
     }
 
-    /// Lists topics currently open on the bus.
-    ///
+    /// Lists the streams currently open on the bus: a topic of two schemas is two entries.
     ///
     /// The result does not include the caller's own ports.
     ///

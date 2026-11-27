@@ -401,11 +401,16 @@ pub fn subscribe_typed(
     if !data_type.is_empty() {
         spec = spec.with_type(data_type);
     }
+    // An MD5 selects the stream of its schema; without one the subscriber reads them all.
+    spec = match expected_md5 {
+        Some(md5) => spec.with_md5(md5),
+        None => spec.reading_every_schema(),
+    };
     if !definition.is_empty() {
-        let Some(md5) = expected_md5.filter(|_| !data_type.is_empty()) else {
+        if expected_md5.is_none() || data_type.is_empty() {
             return Err(Error::InvalidSchema);
-        };
-        spec = spec.with_type(data_type).with_md5(md5).with_definition(definition);
+        }
+        spec = spec.with_definition(definition);
     }
     let port = node.transport.subscribe(&spec).map_err(Error::from)?;
     let depth = port.buffer_size();

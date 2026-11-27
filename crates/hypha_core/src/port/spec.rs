@@ -152,6 +152,8 @@ pub struct TopicSpec {
     pub initial_payload: usize,
     /// The service policy this endpoint declares, or none.
     pub qos: QosRequest,
+    /// The streams of the topic a subscription reads. A publisher sends on its own.
+    pub schemas: SchemaScope,
 }
 
 impl TopicSpec {
@@ -169,6 +171,7 @@ impl TopicSpec {
             payload_capacity: PayloadCapacity::default(),
             initial_payload: 0,
             qos: QosRequest::Undeclared,
+            schemas: SchemaScope::Own,
         }
     }
 
@@ -272,6 +275,36 @@ impl TopicSpec {
         self.definition = def.to_string();
         self
     }
+
+    /// The same subscription, reading every stream of the topic whatever its schema.
+    #[must_use]
+    pub fn reading_every_schema(mut self) -> Self {
+        self.schemas = SchemaScope::Every;
+        self
+    }
+
+    /// The schema hash of this endpoint's own stream: its MD5's, or 0 when it names no
+    /// MD5. `None` for an MD5 that is not one.
+    #[must_use]
+    pub fn stream_schema_hash(&self) -> Option<u64> {
+        if self.md5.is_empty() {
+            return Some(0);
+        }
+        hypha_wire::schema_hash_from_md5(&self.md5)
+    }
+}
+
+/// The streams of a topic that a subscription reads. A topic carries one stream for each
+/// schema that its endpoints name (topic name overloading): the stream of an endpoint is
+/// the one of its MD5, or the stream of no schema when it names none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SchemaScope {
+    /// The stream of the subscription's own schema.
+    #[default]
+    Own,
+    /// Every stream of the topic that exists when the subscription is created, whatever
+    /// its schema. Such a subscription never creates a stream.
+    Every,
 }
 
 /// Which schema record a lookup accepts.

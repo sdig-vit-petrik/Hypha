@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 8
+#define HYPHA_ABI_REVISION 9
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -671,10 +671,13 @@ typedef struct HyphaNodeInfo {
 typedef void (*HyphaNodeCallback)(const struct HyphaNodeInfo *info,
                                   void *user_data);
 
-// Endpoint counts for one data service.
+// Endpoint counts for one stream: one topic and one schema.
 typedef struct HyphaServicePortInfo {
-  // Topic service name.
+  // The topic name, NUL-terminated, borrowed for the callback only.
   const char *name;
+  // The schema hash of the stream's frames: the first eight bytes of the MD5, as
+  // `HyphaSampleIdentity.schema_hash`; 0 for the stream of no schema.
+  uint64_t schema_hash;
   // Active publisher count.
   size_t publishers;
   // Active subscriber count.
@@ -1528,9 +1531,9 @@ HyphaStatus hypha_list_nodes(HyphaNodeCallback callback,
 HyphaStatus hypha_topic_validate_public_name(const char *topic,
                                              size_t topic_len);
 
-// List every data service and its active endpoint counts. A topic is reported without
-// its leading `/`. `InvalidFrame`: a service name could not be reported, so the listing
-// is incomplete.
+// List every stream (one topic and one schema) and its active endpoint counts: a topic
+// of two schemas is reported twice, once with each `schema_hash`. `InvalidFrame`: a
+// topic name could not be reported, so the listing is incomplete.
 //
 // # Safety
 // `node` must remain valid for the call. `user_data` is passed through to `callback`
