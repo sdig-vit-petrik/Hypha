@@ -70,8 +70,12 @@ struct Peer
 
     Peer()
     {
-        auto subscribed = hypha::subscribeRawOfType(
-            "/clock", "rosgraph_msgs/Clock", [this](const hypha::RawSample& sample) {
+        const hypha::RawType clockType{
+            .dataType = hypha::codec::dataType<rosgraph_msgs::Clock>(),
+            .md5 = hypha::codec::md5Sum<rosgraph_msgs::Clock>()
+        };
+        auto subscribed =
+            hypha::subscribeRawOfType("/clock", clockType, [this](const hypha::RawSample& sample) {
                 uint32_t secs = 0;
                 uint32_t nsecs = 0;
                 if (sample.bytes.size() != 8) {
@@ -84,8 +88,7 @@ struct Peer
                 report.clock_nanos = static_cast<uint64_t>(secs) * 1'000'000'000U + nsecs;
                 report.clock_sent_nanos = static_cast<uint64_t>(sample.transportSent.nanos());
                 static_cast<void>(this->progress.publish(report));
-            }
-        );
+            });
         if (subscribed.has_value()) {
             this->clock.emplace(std::move(*subscribed));
         }

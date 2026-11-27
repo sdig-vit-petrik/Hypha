@@ -335,8 +335,10 @@ impl Dispatcher for CallbackDispatcher<'_> {
                     (subscriber, callback)
                 }
                 Target::LatchReplay => {
-                    // Replay latched topics after a subscriber was created.
+                    // An endpoint came or went: replay latched topics to a new subscriber,
+                    // and refresh the streams of the watched topics.
                     self.node.transport.replay_latched();
+                    self.node.topic_streams.graph_changed();
                     return EventOutcome::Drained;
                 }
                 // These are time-driven. A trigger wake only wakes the turn.
@@ -437,14 +439,20 @@ impl Dispatcher for CallbackDispatcher<'_> {
     }
 
     fn on_tick(&mut self) -> Progression {
+        let now_nanos = crate::subscriber::host_now_nanos();
         for registration in &*self.registrations {
             if is_detached_in(self.detached, registration.id) {
                 continue;
             }
             if let Target::Subscription { ref subscriber, .. } = registration.target {
-                subscriber.check_no_publisher_warning();
+                subscriber.check_no_publisher_warning(now_nanos);
             }
         }
+        for cycle in self.cycles {
+            crate::cycle::check_input_publishers(cycle, now_nanos);
+        }
+        // The node's housekeeping, after the turn and outside every step.
+        self.node.topic_streams.housekeep(&self.node.transport, now_nanos);
         // Every dispatch sweep ends here, so an unbounded run is observed too.
         self.health.record_sweep_end();
         Progression::Continue
@@ -483,9 +491,12 @@ impl Dispatcher for CallbackDispatcher<'_> {
         }
         let host_timers = !self.node.on_sim_time();
         let live = self.registrations.iter().filter(|r| !is_detached_in(self.detached, r.id));
-        live.filter_map(|r| host_deadline(&r.target, host_timers))
-            .min()
-            .map(hypha_time::Time::from_nanos)
+        let timers = live.filter_map(|r| host_deadline(&r.target, host_timers)).min();
+        // The housekeeping's next round, or the rest of one a pass left unfinished: a
+        // deadline like a timer's, so the timer that ends the wait ends it for this too.
+        let housekeeping =
+            self.node.topic_streams.next_deadline(crate::subscriber::host_now_nanos());
+        timers.into_iter().chain(housekeeping).min().map(hypha_time::Time::from_nanos)
     }
 }
 

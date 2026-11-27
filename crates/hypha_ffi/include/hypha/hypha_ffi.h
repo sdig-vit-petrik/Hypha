@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 8
+#define HYPHA_ABI_REVISION 9
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -95,6 +95,10 @@
 // The SDK default of `HyphaSubscriberOptions::no_publisher_warning_after_nanos`; the
 // ABI value zero disables the warning.
 #define HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS 5000000000
+
+// `HyphaSubscriberCounters.other_schemas` before the other streams of the subscriber's
+// topic were checked, and for a subscriber of no single stream.
+#define HYPHA_NOT_CHECKED UINT64_MAX
 
 // What the callback asks the run loop to do next.
 #define HYPHA_ACTION_CONTINUE 0
@@ -671,10 +675,13 @@ typedef struct HyphaNodeInfo {
 typedef void (*HyphaNodeCallback)(const struct HyphaNodeInfo *info,
                                   void *user_data);
 
-// Endpoint counts for one data service.
+// Endpoint counts for one stream: one topic and one schema.
 typedef struct HyphaServicePortInfo {
-  // Topic service name.
+  // The topic name, NUL-terminated, borrowed for the callback only.
   const char *name;
+  // The schema hash of the stream's frames: the first eight bytes of the MD5, as
+  // `HyphaSampleIdentity.schema_hash`; 0 for the stream of no schema.
+  uint64_t schema_hash;
   // Active publisher count.
   size_t publishers;
   // Active subscriber count.
@@ -776,9 +783,9 @@ typedef struct HyphaSubscriberOptions {
   struct HyphaQos qos;
 } HyphaSubscriberOptions;
 
-// The counters of one subscriber, as `hypha_subscriber_counters` writes them: eight
-// `uint64_t`, 64 bytes, owned by the caller, with nothing to destroy. Every counter but
-// `loan_budget` and `loan_held` only grows, and wraps.
+// The counters of one subscriber, as `hypha_subscriber_counters` writes them: nine
+// `uint64_t`, 72 bytes, owned by the caller, with nothing to destroy. Every counter but
+// `loan_budget`, `loan_held` and `other_schemas` only grows, and wraps.
 typedef struct HyphaSubscriberCounters {
   // `integrity.sequence_gap`: frames refused because their sequence was not newer
   // than the last accepted one of their publisher. A lost frame is not one.
@@ -787,7 +794,8 @@ typedef struct HyphaSubscriberCounters {
   uint64_t invalid_frame;
   // `integrity.corrupt_payload`: frames whose CRC-32C does not match.
   uint64_t corrupt_payload;
-  // `integrity.schema_mismatch`: frames of another schema than the subscriber expects.
+  // `integrity.schema_mismatch`: frames whose header names another schema than the
+  // stream they arrived on, a fault of their sender.
   uint64_t schema_mismatch;
   // `integrity.invalid_timestamp`: frames sent later than the host clock reads.
   uint64_t invalid_timestamp;
@@ -797,6 +805,12 @@ typedef struct HyphaSubscriberCounters {
   uint64_t loan_held;
   // `loan.refused`: owning receives refused because the budget was full.
   uint64_t loan_refused;
+  // `topic.other_schemas`: the other schemas (MD5s) of the subscriber's topic that a
+  // live publisher sends, as the node's housekeeping last found them, at most a second
+  // old while its default `WaitSet` runs. [`HYPHA_NOT_CHECKED`] before the first check,
+  // and for a subscriber of no single stream. A fact about the topic, not a fault count:
+  // a migration has two versions on it.
+  uint64_t other_schemas;
 } HyphaSubscriberCounters;
 
 // A transform a sender checks before it sends it: where the child sits in the parent,
@@ -1528,9 +1542,9 @@ HyphaStatus hypha_list_nodes(HyphaNodeCallback callback,
 HyphaStatus hypha_topic_validate_public_name(const char *topic,
                                              size_t topic_len);
 
-// List every data service and its active endpoint counts. A topic is reported without
-// its leading `/`. `InvalidFrame`: a service name could not be reported, so the listing
-// is incomplete.
+// List every stream (one topic and one schema) and its active endpoint counts: a topic
+// of two schemas is reported twice, once with each `schema_hash`. `InvalidFrame`: a
+// topic name could not be reported, so the listing is incomplete.
 //
 // # Safety
 // `node` must remain valid for the call. `user_data` is passed through to `callback`
@@ -1696,7 +1710,10 @@ HyphaStatus hypha_schema_lookup(const struct HyphaNode *node,
                                 size_t *definition_len);
 
 // Subscribe to `topic` with `options` and record `data_type` (null: empty) in the node
-// introspection. `definition` (length 0: none) is the definition of `expected_md5`
+// introspection. A topic carries one stream for each schema: with `expected_md5` the
+// subscriber reads that schema's stream alone, and without one (length 0) every stream of
+// the topic that exists at creation, polled, creating none (`NotAvailable` when there is
+// none). `definition` (length 0: none) is the definition of `expected_md5`
 // (length 0: none); with one, a non-empty `data_type` and a valid `expected_md5` are
 // required (`InvalidSchema` otherwise). `InvalidArgument`: a null `node`, `options` or
 // `out`. `InvalidTopic`: a `~/` topic on a CLI tool node.
@@ -1724,8 +1741,9 @@ HyphaStatus hypha_subscribe_typed(struct HyphaNode *node,
 HyphaStatus hypha_subscriber_publisher_count(const struct HyphaSubscriber *subscriber,
                                              size_t *out);
 
-// Write the eight counters of `subscriber` to `*out`, the values of the subscriber
-// metrics of the same names. Each is read atomically, the eight not at one instant. Any
+// Write the nine counters of `subscriber` to `*out`: eight are the values of the
+// subscriber metrics of the same names, and `other_schemas`, which may be
+// `HYPHA_NOT_CHECKED`, has no metric. Each is read atomically, the nine not at one instant. Any
 // thread may call it. `InvalidArgument`, with `*out` unwritten, when `subscriber` or
 // `out` is null.
 //

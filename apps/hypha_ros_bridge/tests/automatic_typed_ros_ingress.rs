@@ -518,7 +518,11 @@ fn a_typed_consumer_accepts_automatic_ros_ingress_and_follows_a_schema_change() 
         "a reader in another process must resolve the bridged schema"
     );
 
-    // The talker restarts under the same node name with a changed definition.
+    // The talker restarts under the same node name with a changed definition, which is a
+    // stream of its own: this test opens it too.
+    let _opener_v2 = consumer
+        .publish_raw(&topic, CounterV2::TYPE_NAME, CounterV2::SCHEMA_HASH, "")
+        .expect("the opener of the second version");
     let mut counter_v2 = typed_consumer::<CounterV2>(&consumer, &topic);
     let second_talker = FakePublisher::start(FakeSchema {
         topic: topic.clone(),
@@ -533,13 +537,13 @@ fn a_typed_consumer_accepts_automatic_ros_ingress_and_follows_a_schema_change() 
         .expect("the typed consumer of the new schema must receive the restarted talker");
     assert!(second.value > 0, "the new body must decode as the new counter");
 
-    // The old schema's consumer refuses the new frames instead of decoding them.
-    // Samples it queued before the restart are legitimate; discard them first.
+    // The new schema is another stream: the old schema's consumer meets none of its
+    // frames and counts nothing. Samples it queued before the restart are legitimate;
+    // discard them first.
     while let Ok(Some(_)) = counter_v1.try_receive() {}
     let late_v1 = receive_within::<CounterV1>(&mut counter_v1, DRAIN_PERIOD);
-    let mismatches_after_change = schema_mismatches(&counter_v1);
     assert!(late_v1.is_none(), "a frame of the new schema must not reach the old consumer");
-    assert!(mismatches_after_change > 0, "the old consumer must count the new schema as foreign");
+    assert_eq!(schema_mismatches(&counter_v1), 0, "a frame of another stream is no fault");
 
     stop.store(true, Ordering::Release);
     second_talker.stop();

@@ -341,11 +341,11 @@ impl HyphaWaitSet {
     /// `InvalidState` during a run, which holds the native set.
     fn native_attach(
         &self,
-        listener: Option<hypha_iceoryx2::Iox2Listener>,
+        listeners: Vec<hypha_iceoryx2::Iox2Listener>,
         trigger: Trigger,
     ) -> Result<AttachmentId, Error> {
         let mut native = self.native.try_borrow_mut().map_err(|_| Error::InvalidState)?;
-        native.attach(listener, trigger).map_err(Error::from)
+        native.attach(listeners, trigger).map_err(Error::from)
     }
 }
 

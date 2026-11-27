@@ -16,9 +16,9 @@ fn listener_slots(label: &str, request: QosRequest) -> usize {
     let first = transport.subscribe(&spec).expect("first subscriber");
     let mut listeners = Vec::new();
     loop {
-        match first.open_listener() {
-            Ok(listener) => {
-                listeners.push(listener.expect("a literal topic has an event service"));
+        match first.open_listeners() {
+            Ok(mut listener) => {
+                listeners.push(listener.pop().expect("a literal topic has an event service"));
             }
             Err(cause) => {
                 assert_eq!(
@@ -36,7 +36,7 @@ fn listener_slots(label: &str, request: QosRequest) -> usize {
 
     let opened = listeners.len();
     drop(listeners.pop());
-    assert!(first.open_listener().is_ok(), "a listener opens once a slot is free");
+    assert!(first.open_listeners().is_ok(), "a listener opens once a slot is free");
     opened
 }
 

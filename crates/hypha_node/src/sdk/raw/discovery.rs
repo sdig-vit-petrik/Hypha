@@ -37,6 +37,7 @@ pub(super) fn list_topic_ports(node: &ffi::HyphaNode) -> Result<Vec<TopicInfo>, 
     let mut collect = |service: &ffi::ListedServicePort<'_>| {
         topics.push(TopicInfo {
             name: service.name.to_string_lossy().into_owned(),
+            schema_hash: service.schema_hash,
             published: service.publishers > 0,
             subscribed: service.subscribers > 0,
         });

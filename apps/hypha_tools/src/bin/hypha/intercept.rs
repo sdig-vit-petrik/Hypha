@@ -115,6 +115,9 @@ fn run(cli: &Cli) -> Result<(), String> {
         first = false;
         backend.resolve_pending();
         backend.attach_waiting();
+        if last_sent.elapsed() >= STATE_PERIOD {
+            backend.notice_schema_changes();
+        }
         let state = toml::to_string(&backend.state()).map_err(|error| error.to_string())?;
         if state != last_state || last_sent.elapsed() >= STATE_PERIOD {
             publish_state(&mut state_publisher, &state)?;
@@ -280,6 +283,27 @@ impl Backend<'_> {
         match running.attachment {
             Some(id) => self.waitset.detach(id),
             None => Ok(()),
+        }
+    }
+
+    /// Tells each attached relay which streams of its input have a publisher, so it sees a
+    /// producer that went over to another schema. A failed listing is tried again at the
+    /// next state period.
+    fn notice_schema_changes(&self) {
+        let topics = match self.bus.list_topics() {
+            Ok(topics) => topics,
+            Err(error) => {
+                eprintln!("hypha intercept: cannot list the topics: {error}");
+                return;
+            }
+        };
+        for running in self.running.iter().filter(|running| running.attachment.is_some()) {
+            let published: Vec<u64> = topics
+                .iter()
+                .filter(|topic| topic.name == running.spec.input && topic.published)
+                .map(|topic| topic.schema_hash)
+                .collect();
+            lock(&running.entry).relay.input_published(&published);
         }
     }
 

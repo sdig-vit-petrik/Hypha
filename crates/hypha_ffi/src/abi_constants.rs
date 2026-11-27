@@ -124,6 +124,11 @@ same_as_node!(HYPHA_CONFIG_VALUE_TEXT, parameter_parse);
 pub const HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS: u64 = 5_000_000_000;
 same_as_node!(HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS, subscriber);
 
+/// `HyphaSubscriberCounters.other_schemas` before the other streams of the subscriber's
+/// topic were checked, and for a subscriber of no single stream.
+pub const HYPHA_NOT_CHECKED: u64 = u64::MAX;
+same_as_node!(HYPHA_NOT_CHECKED, subscriber);
+
 /// What the callback asks the run loop to do next.
 pub const HYPHA_ACTION_CONTINUE: u32 = 0;
 same_as_node!(HYPHA_ACTION_CONTINUE, waitset);

@@ -44,11 +44,15 @@ pub struct NodeInfo {
     pub is_alive: bool,
 }
 
-/// A topic currently open on the hypha bus.
+/// A stream currently open on the hypha bus: one topic and one schema. A topic of two
+/// schemas is two of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopicInfo {
     /// Topic name.
     pub name: String,
+    /// The schema hash of the stream's frames, as [`crate::sdk::SampleIdentity::schema_hash`]; 0 for
+    /// the stream of no schema.
+    pub schema_hash: u64,
     /// At least one publisher exists outside the caller.
     pub published: bool,
     /// At least one subscriber exists outside the caller.
@@ -83,9 +87,10 @@ impl BusNode {
 
     /// Subscribes to a literal topic or a wildcard pattern (`"**"`).
     ///
-    /// A `*` must be a whole segment, and `**` must be the last one. Without a message
-    /// type the subscription is refused for a topic nobody has opened yet. A `depth` of
-    /// zero keeps as many samples as the topic's service policy allows.
+    /// A `*` must be a whole segment, and `**` must be the last one. It names no schema, so
+    /// it reads every stream of each matching topic, one per schema, that exists when it is
+    /// created; it is refused for a topic nobody has opened yet. A `depth` of zero keeps as
+    /// many samples as the topic's service policy allows.
     /// # Errors
     /// Returns a message when the library refuses the subscription.
     pub fn subscribe_raw(
@@ -109,9 +114,9 @@ impl BusNode {
         subscribe_on(&self.node, topic_pattern, "", "", options)
     }
 
-    /// Subscribes to messages of `data_type` with MD5 `md5`, and makes the library drop
-    /// every frame whose schema hash is not `md5`'s. A topic that no publisher has opened
-    /// is `NotAvailable`, except a framework topic.
+    /// Subscribes to the stream of `md5` on the topic: messages of `data_type` with that
+    /// MD5, and no frame of another schema of the topic. A stream that no publisher has
+    /// opened is `NotAvailable`, except on a framework topic.
     ///
     /// # Errors
     /// Returns a message when the library refuses the subscription.
@@ -186,8 +191,7 @@ impl BusNode {
         list_nodes()
     }
 
-    /// Lists topics currently open on the bus.
-    ///
+    /// Lists the streams currently open on the bus: a topic of two schemas is two entries.
     ///
     /// The result does not include the caller's own ports.
     ///

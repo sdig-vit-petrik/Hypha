@@ -111,9 +111,8 @@ impl CycleInputSource {
         let Some(subscriber) = self.subscriber.as_deref() else {
             return if self.history.is_none() { Ok(()) } else { Err(Error::InvalidState) };
         };
-        subscriber.check_no_publisher_warning();
         // Zero: the receive reads the clock only once a frame arrives, so an idle input
-        // reads no clock.
+        // reads no clock. Its no-publisher check runs in the housekeeping of the turn.
         let mut now = 0;
 
         let Some(history) = self.history.as_ref() else {

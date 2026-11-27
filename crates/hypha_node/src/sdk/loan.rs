@@ -115,6 +115,15 @@ impl RawSubscriber {
         Ok(crate::sdk::metrics::collect(|emit| ffi::subscriber_metrics(subscriber, emit)))
     }
 
+    /// The other schemas (MD5s) of this subscriber's topic that a live publisher sends, as
+    /// its node's housekeeping last found them: `None` before the first check, which comes
+    /// only while a run of the node's `WaitSet` goes on, and for a subscriber of no single
+    /// stream. A fact about the topic, not a fault.
+    #[must_use]
+    pub fn other_schemas(&self) -> Option<u64> {
+        other_schemas_of(&self.subscriber)
+    }
+
     /// Counts the frames this subscriber lost before it read them: the sequence
     /// values skipped between accepted frames of one publisher. The count only grows.
     ///
@@ -158,12 +167,24 @@ impl SubscriberCounters {
         self.subscriber.missing_sequences()
     }
 
+    /// The other schemas of the subscriber's topic, as [`RawSubscriber::other_schemas`].
+    #[must_use]
+    pub fn other_schemas(&self) -> Option<u64> {
+        other_schemas_of(&self.subscriber)
+    }
+
     /// Every metric of the subscriber, as [`RawSubscriber::metrics`].
     #[must_use]
     pub fn metrics(&self) -> Vec<(String, u64)> {
         let subscriber = &self.subscriber;
         crate::sdk::metrics::collect(|emit| ffi::subscriber_metrics(subscriber, emit))
     }
+}
+
+/// The `other_schemas` counter of `subscriber`, `None` for "not checked".
+fn other_schemas_of(subscriber: &ffi::HyphaSubscriber) -> Option<u64> {
+    let other_schemas = ffi::subscriber_counters(subscriber).other_schemas;
+    (other_schemas != crate::subscriber::HYPHA_NOT_CHECKED).then_some(other_schemas)
 }
 
 /// Open a raw subscriber without registering it with an executor.

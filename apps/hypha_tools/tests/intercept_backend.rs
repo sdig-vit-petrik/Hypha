@@ -386,7 +386,17 @@ fn schema_change_reports_on_the_state_topic() {
     std::thread::sleep(Duration::from_millis(200));
     assert!(consumer.try_receive().expect("receive").is_none(), "nothing forwarded");
 
-    // Saving the interception again rebuilds it on the producer's new schema.
+    // Saving the interception again rebuilds it on the producer's new schema, which is a
+    // stream of its own on the output too.
+    let _new_output = bench
+        .bus
+        .publish_raw(&bench.output, DATA_TYPE, &md5, OTHER_DEFINITION)
+        .expect("the new output's opener");
+    let options = SubscriberOptions::default().keeping(8);
+    let mut consumer = bench
+        .bus
+        .subscribe_raw_with_schema(&bench.output, DATA_TYPE, &md5, options)
+        .expect("a consumer of the new schema");
     bench.write(2, true, &[("status", bits("0x0002"))]);
     let out = bench.await_output(&mut other, &mut consumer, &5_u32.to_le_bytes(), |_| true);
     assert_eq!(out, 7_u32.to_le_bytes());

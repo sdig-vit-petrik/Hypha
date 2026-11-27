@@ -18,11 +18,14 @@ pub struct ListedNode<'a> {
     pub alive: bool,
 }
 
-/// One data service, as `list_service_ports` reports it.
+/// One stream, a topic and a schema, as `list_service_ports` reports it.
 #[derive(Debug, Clone, Copy)]
 pub struct ListedServicePort<'a> {
-    /// Topic service name.
+    /// The topic name.
     pub name: &'a CStr,
+    /// The schema hash of the stream's frames: the first eight bytes of the MD5, 0 for
+    /// the stream of no schema.
+    pub schema_hash: u64,
     /// Active publisher count.
     pub publishers: usize,
     /// Active subscriber count.
@@ -53,7 +56,8 @@ pub fn list_nodes(emit: &mut dyn FnMut(&ListedNode<'_>)) -> Result<(), Error> {
     Ok(())
 }
 
-/// Report every data service of the domain and its active endpoint counts to `emit`.
+/// Report every stream of the domain and its active endpoint counts to `emit`: a topic of
+/// two schemas is reported twice, once with each schema hash.
 ///
 /// # Errors
 /// [`Error::Backend`] when the services cannot be read. [`Error::InvalidFrame`] after
@@ -71,6 +75,7 @@ pub fn list_service_ports(
         };
         emit(&ListedServicePort {
             name: &name,
+            schema_hash: service.schema_hash,
             publishers: service.publishers,
             subscribers: service.subscribers,
         });
@@ -98,11 +103,14 @@ pub struct HyphaNodeInfo {
 pub type HyphaNodeCallback =
     Option<extern "C" fn(info: *const HyphaNodeInfo, user_data: *mut std::os::raw::c_void)>;
 
-/// Endpoint counts for one data service.
+/// Endpoint counts for one stream: one topic and one schema.
 #[repr(C)]
 pub struct HyphaServicePortInfo {
-    /// Topic service name.
+    /// The topic name, NUL-terminated, borrowed for the callback only.
     pub name: *const std::os::raw::c_char,
+    /// The schema hash of the stream's frames: the first eight bytes of the MD5, as
+    /// `HyphaSampleIdentity.schema_hash`; 0 for the stream of no schema.
+    pub schema_hash: u64,
     /// Active publisher count.
     pub publishers: usize,
     /// Active subscriber count.

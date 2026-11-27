@@ -369,6 +369,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_step_harness.cpp
     test/test_raw_endpoints.cpp
     test/test_qos.cpp
+    test/test_topic_overloading.cpp
     test/test_sensor_msgs_companions.cpp
     test/test_sensor_msgs_ros2_names.cpp
   )

@@ -73,7 +73,7 @@ fn assert_wakes_follow_the_timer(dispatcher: &TimerDispatcher, what: &str) {
 fn a_waitset_with_only_a_timer_wakes_at_the_timer_rate() {
     let transport = Iox2Transport::with_name(&unique_name("cadence_timer")).expect("transport");
     let mut waitset = transport.waitset(&unique_name("cadence_timer_ctl")).expect("waitset");
-    waitset.attach(None, Trigger::Timed).expect("attach the timer");
+    waitset.attach(Vec::new(), Trigger::Timed).expect("attach the timer");
 
     let mut dispatcher = TimerDispatcher::new();
     let _report = waitset.run_for(BUDGET, RUN_LENGTH, &mut dispatcher);
@@ -91,9 +91,9 @@ fn an_idle_subscription_adds_no_wake() {
         .with_qos(QosRequest::Declared(QosPolicy::new("cadence", 8, 16, 8)));
     let subscriber = transport.subscribe(&spec).expect("subscribe");
     let mut waitset = transport.waitset(&unique_name("cadence_event_ctl")).expect("waitset");
-    let listener = subscriber.open_listener().expect("open a listener");
+    let listener = subscriber.open_listeners().expect("open a listener");
     waitset.attach(listener, Trigger::Event).expect("attach the subscription");
-    waitset.attach(None, Trigger::Timed).expect("attach the timer");
+    waitset.attach(Vec::new(), Trigger::Timed).expect("attach the timer");
 
     let mut dispatcher = TimerDispatcher::new();
     let _report = waitset.run_for(BUDGET, RUN_LENGTH, &mut dispatcher);

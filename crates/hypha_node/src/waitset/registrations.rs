@@ -257,15 +257,16 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
     match request {
         Request::Subscription { subscriber, callback } => {
             let previous = subscriber.attach_for_dispatch()?;
-            // A wildcard subscription has no event service, so it is read on the poll period.
+            // A wildcard pattern has no event service, so it is read on the poll period; a
+            // topic has one per stream, and a sample on any of them wakes the run.
             let attached =
-                subscriber.port.open_listener().map_err(Error::from).and_then(|listener| {
-                    let trigger = if listener.is_some() {
-                        Trigger::Event
-                    } else {
+                subscriber.port.open_listeners().map_err(Error::from).and_then(|listeners| {
+                    let trigger = if listeners.is_empty() {
                         Trigger::Periodic(WILDCARD_POLL_PERIOD)
+                    } else {
+                        Trigger::Event
                     };
-                    set.native_attach(listener, trigger)
+                    set.native_attach(listeners, trigger)
                 });
             match attached {
                 Ok(id) => {
@@ -289,7 +290,7 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
             let node_clock = set.node().uses_sim_time;
             let sim_time = set.node().on_sim_time();
             let wake = timer_wake(period, node_clock, sim_time);
-            let id = set.native_attach(None, wake)?;
+            let id = set.native_attach(Vec::new(), wake)?;
             // A cycle on simulated time keeps its deadlines on the epoch grid.
             let timer = match (cycle.is_some() && sim_time, hypha_time::sim_time_has_value()) {
                 (true, true) => {
@@ -312,17 +313,17 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
             let schedule = hypha_runtime::trigger_schedule::TriggerSchedule::new(&silences_nanos)
                 .ok_or(Error::InvalidArgument)?;
             let wake = triggered_wake(set, schedule.shortest(), notified);
-            let id = set.native_attach(None, wake)?;
+            let id = set.native_attach(Vec::new(), wake)?;
             let state = super::triggered::TriggeredCycle::new(cycle, schedule);
             Ok((id, Target::Triggered(state)))
         }
         Request::Driver(driver) => {
             let wake = Trigger::Periodic(super::clock_driver::ACK_POLL_INTERVAL);
-            let id = set.native_attach(None, wake)?;
+            let id = set.native_attach(Vec::new(), wake)?;
             Ok((id, Target::Driver(driver)))
         }
         Request::TriggerWake { listener } => {
-            let id = set.native_attach(Some(*listener), Trigger::Event)?;
+            let id = set.native_attach(vec![*listener], Trigger::Event)?;
             Ok((id, Target::TriggerWake))
         }
     }
@@ -363,13 +364,13 @@ pub(crate) fn attach_triggered_cycle(
     set: &HyphaWaitSet,
     cycle: &Cycle,
     silences_nanos: Vec<i64>,
-    listeners: Vec<Option<Box<hypha_iceoryx2::Iox2Listener>>>,
+    listeners: Vec<Vec<hypha_iceoryx2::Iox2Listener>>,
 ) -> Result<(HyphaAttachmentId, Vec<HyphaAttachmentId>), Error> {
-    let notified = listeners.iter().all(Option::is_some);
+    let notified = listeners.iter().all(|trigger| !trigger.is_empty());
     let wake = attach(set, Request::Triggered { cycle: cycle.id, silences_nanos, notified })?;
     let mut attached = Vec::with_capacity(listeners.len());
     for listener in listeners.into_iter().flatten() {
-        match attach(set, Request::TriggerWake { listener }) {
+        match attach(set, Request::TriggerWake { listener: Box::new(listener) }) {
             Ok(id) => attached.push(id),
             Err(error) => {
                 for id in attached.into_iter().chain([wake]) {

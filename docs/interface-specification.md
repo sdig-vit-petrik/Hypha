@@ -240,9 +240,9 @@ its own.
 in the fixed order of the table below; `hypha_node_metrics` emits them through one
 `HyphaMetricCallback`. The header states the callback, null and partial-output rules.
 
-`hypha_subscriber_counters` writes the eight subscriber counters as one
-`HyphaSubscriberCounters` struct (one `uint64_t` per metric, owned by the caller); the
-metrics are emitted from that struct, so the C, C++ and Rust numbers cannot differ. Any
+`hypha_subscriber_counters` writes the nine subscriber counters as one
+`HyphaSubscriberCounters` struct (one `uint64_t` each, owned by the caller); the eight
+subscriber metrics are emitted from that struct, so the C, C++ and Rust numbers cannot differ. Any
 thread may read it, also during a run that dispatches the subscriber.
 `integrity.sequence_gap` counts refused duplicate or reordered frames; a lost frame is
 counted by `hypha_subscriber_missing_sequences`.
@@ -269,11 +269,14 @@ counted by `hypha_subscriber_missing_sequences`.
 
 `loan.budget` is the effective per-subscriber budget of owning samples; `loan.held`
 is the number of samples the subscriber holds; `loan.refused` counts receives refused
-because the budget was full.
+because the budget was full. The struct's ninth field, `other_schemas`, has no metric: it
+is the number of other schemas (MD5s) of the subscriber's topic that a live publisher
+sends, as the node's housekeeping last found them, or `HYPHA_NOT_CHECKED` before a check
+(see [Streams](#streams)): a fact about the topic, not a fault count.
 
 ## Service limits and wildcards
 
-A topic's service limits are its policy (`crates/hypha_iceoryx2/src/qos.rs`): the
+A stream's service limits are its policy (`crates/hypha_iceoryx2/src/qos.rs`): the
 publishers and subscribers it admits and its `max_depth`. The creator declares the
 policy (`HyphaQos`) or takes hypha's `default` policy, stamps it on the service, and an
 opener that declares a different one is refused with `QosMismatch`. No endpoint option
@@ -316,7 +319,9 @@ A framework topic (`/clock`, `/clock_progress`) holds at most 32 publishers,
 `/clock_progress` counts. Any other topic holds the limits of its policy. After a change of
 these values run `hypha clean` with the domain stopped: a stale segment keeps its old limits.
 
-A wildcard subscriber attaches only to a publish-subscribe service that already exists.
+A wildcard subscriber, and a subscriber that names no MD5, attaches only to streams that
+already exist: of each topic its pattern matches, the stream of its MD5, or every stream
+of the topic when it names none.
 It never creates one, it never follows a request-response service of the same name,
 and it resolves the pattern **once**, when the subscription is created. Matching a pattern
 enumerates every service on the machine, and the backend builds each service's
@@ -329,6 +334,102 @@ A node that must follow a topic created later lists topics itself and
 subscribes to them by name. The matching rule is `hypha_core::port::topic_matches_pattern`,
 which the Rust SDK re-exports as `hypha_node::sdk::topic_matches_pattern`, so both routes select
 the same set without a node repeating the rules; the C ABI carries no copy of it.
+
+## Streams
+
+A topic name carries one **stream** for each schema hash (topic name overloading, #209):
+the first eight bytes of the MD5, the `schema_hash` of the frame header. A stream is an
+iceoryx2 publish-subscribe service of its own, named `<topic without its leading
+/>@<schema hash in 16 lower-case hex digits>` (`crates/hypha_iceoryx2/src/stream.rs`),
+with a wake-up event service of the same name. So each stream has its own policy, its
+own subscriber queues and publisher slots, and wakes only its own subscribers.
+
+| Endpoint | Stream |
+|---|---|
+| Publisher | the stream of its MD5 |
+| Subscriber that names an MD5 (every typed C++ endpoint, `subscribeRawOfType`, `subscribe_raw_with_schema`) | the stream of its MD5: a frame of another schema of the topic never reaches it. Like any subscriber it creates the stream only when it declares a policy or reads a framework topic |
+| Subscriber that names no MD5 (`subscribeRaw`, `subscribe_raw`, the tools) | every stream of the topic that exists when it is created, woken by a listener on each; it creates none, follows no stream created later, and is `NotAvailable` when the topic has none |
+| Wildcard subscriber | of each matching topic, the stream of its MD5, or every stream when it names none; read every 1 ms |
+
+A topic name is at most 238 bytes after its `/` (`hypha_core::port::MAX_TOPIC_NAME_BYTES`):
+a stream's service name adds 17 bytes to iceoryx2's 255. An endpoint that names an MD5
+writes its stream's record in a directory named by the whole topic name in hex, so its
+name is at most 126 bytes (`MAX_RECORDED_TOPIC_NAME_BYTES`); the transport refuses a
+longer one with a line that says so.
+
+`hypha_list_service_ports` reports each stream with its `schema_hash` and its publisher
+ports, a dead node's included until a node start reclaims it, so a topic of two schemas is
+two entries. The clock driver, which refuses to start while another process publishes
+`/clock`, asks each listed `/clock` stream for its publishers whose node is alive. Every endpoint that names an
+MD5 writes the record of its stream, `<hex(topic)>/<schema hash>`, after its port exists: its
+type, MD5 and definition, or an empty file when it has no definition. The records of a topic
+are the list of its streams. A record lives while its stream has a port: the endpoint whose
+drop leaves the stream with no publisher and no subscriber removes it, and the topic's
+directory once it is empty. A record whose endpoints died stays until a node start in the
+domain reclaims a dead node: it then removes every record whose stream is gone. Two message types whose definitions give one MD5 (ROS 1
+computes the MD5 from the definition, not the type name) share a stream and its policy, as
+their bytes are the same. A node of a hypha build before the streams opens another service
+name and does not see a stream: two release lines do not share a domain
+(release-policy.md §2). A listing of the services (`hypha_list_service_ports`, a wildcard
+or a subscription without an MD5) that meets data services of such a build warns once per
+process: `hypha: <n> topics of another hypha build are in this domain: they are not
+visible to this build`.
+
+**Other streams of a topic.** Each typed subscriber of one stream watches its topic in its
+node (`crates/hypha_node/src/topic_streams.rs`). The node's housekeeping refreshes the
+watched topics in rounds, after a turn of its default `WaitSet`'s run, never inside a step
+or a cycle's capture: after a graph event, at most once per 100 ms, and at least once a
+second. The graph event fires when a subscriber is created and when a publisher is created
+or dropped, and every node of the domain listens to it, so the start of a system of `p`
+publishers and `s` subscribers in `n` nodes wakes each node about `p + s` times, `n (p + s)`
+wakes in all; each node starts at most one round per 100 ms whatever their number. A refresh
+of a topic reads its records and, per stream, makes one open attempt with no retry and no
+wait, reads the nodes of its publisher ports and the states of the nodes registered at that
+one service (iceoryx2's `Service::details`), and drops the handle; nothing stays open
+between refreshes, and the cost does not grow with the nodes of the domain. A stream being
+created or removed counts as having no publisher until the next round. A read that fails
+(a full stream, a corrupted service, a missing session) leaves the topic's last result, or
+"not checked", and is logged. One pass does at most four reads (a topic's records, one
+stream's publishers) and the run comes back after 1 ms while the round is unfinished; a
+round ends when its topics are read, so an idle node wakes every 1 ms only during a round
+and once a second between rounds. Measured on macOS under load: a topic's records 40 µs to
+0.5 ms (0 to 32 other streams), one stream's publishers about 1 ms in a debug build (0.31 ms
+in release, the review's figure); an idle node with 1, 4, 10 and 30 watched topics knew
+every other version after 11, 15, 42 and 114 ms, and spent 0.72 s of CPU in 10 s with 30
+topics of two versions each (none with no watched topic). A 1 kHz callback's longest gap was
+the same with and without another version published, 6 to 21 ms on that loaded machine. A
+subscriber reads its topic's streams with one lock and one `Arc` clone, and opens nothing.
+
+Each open of a stream by a refresh takes one node slot of the stream while it lasts, as an
+endpoint does, and so does the check of the record release when an endpoint drops
+(`max_nodes` is the policy's `max_publishers` plus the subscribers it admits, with no
+spare). On a stream whose node slots are all taken the refresh is refused with
+`ResourceLimit` and keeps the topic's last result, and an endpoint that needs the last slot
+at the instant a refresh holds it is refused with `ResourceLimit`: a policy sized to the
+exact number of endpoints can see that under churn.
+
+The fact has three states: not checked (before the first refresh, for a subscriber of no
+single stream, and for a node whose default `WaitSet` does not run), none, or these. The
+subscriber counter `topic.other_schemas` (no metric carries it) is `HYPHA_NOT_CHECKED`
+(`UINT64_MAX`) or the count of other schemas with a live publisher, the Rust SDK's
+`RawSubscriber::other_schemas` an `Option`; `RequiredInput` has `other_schemas_checked` and
+`other_schemas`, one entry per live other version (schema hash, type and MD5, the last two
+empty for a stream without a definition).
+
+A subscriber of one stream checks its stream once a second, from the run that drives it:
+it warns after its no-publisher delay while its stream has no publisher, again when the
+published schemas change while it still has none, at most once in 10 s, naming them by type
+and the first eight hex digits of the MD5 (`-` and the hash for a stream without a
+definition):
+
+```text
+hypha: topic '/odom' has publishers, none of type nav_msgs/Odometry (cd5e73d1): published are nav_msgs/Odometry (9e1f0d3a)
+```
+
+With no other schema published the line is `no publisher connected to topic '<t>' in
+domain '<d>' after <n> ms; ...`. The check reads the stream's publisher ports and the
+topic's streams as the last refresh found them; a port of the stream counts as a publisher
+until a refresh finds no live one on it.
 
 ## Wire frame
 

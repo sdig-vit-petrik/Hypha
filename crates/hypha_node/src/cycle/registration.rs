@@ -352,15 +352,15 @@ pub fn cycle_commit(set: &HyphaWaitSet, cycle: CycleId) -> Result<(), Error> {
 
 enum Attach {
     Timer,
-    Triggered { silences: Vec<i64>, listeners: Vec<Option<Box<hypha_iceoryx2::Iox2Listener>>> },
+    Triggered { silences: Vec<i64>, listeners: Vec<Vec<hypha_iceoryx2::Iox2Listener>> },
     Driver(super::DriverSetup),
 }
 
-/// A listener on the topic of each trigger of `registration`, in port order. A wildcard
-/// subscriber has none: the periodic wake serves it.
+/// The listeners of each trigger of `registration`, in port order: one per stream it
+/// reads. A wildcard subscriber has none: the periodic wake serves it.
 fn trigger_listeners(
     registration: &CycleStep,
-) -> Result<Vec<Option<Box<hypha_iceoryx2::Iox2Listener>>>, Error> {
+) -> Result<Vec<Vec<hypha_iceoryx2::Iox2Listener>>, Error> {
     registration
         .runtime
         .triggers()
@@ -368,8 +368,7 @@ fn trigger_listeners(
         .map(|&index| {
             let source = registration.inputs.get(index);
             let subscriber = source.and_then(|source| source.subscriber.as_deref());
-            let listener = subscriber.ok_or(Error::InvalidState)?.port.open_listener();
-            Ok(listener.map_err(Error::from)?.map(Box::new))
+            subscriber.ok_or(Error::InvalidState)?.port.open_listeners().map_err(Error::from)
         })
         .collect()
 }

@@ -88,7 +88,7 @@ fn a_timed_deadline_ends_the_wait_within_a_fraction_of_a_millisecond() {
     const WAKES: usize = 50;
     let transport = Iox2Transport::with_name(&unique_name("timed_wake")).expect("transport");
     let mut waitset = transport.waitset(&unique_name("timed_wake_ctl")).expect("waitset");
-    waitset.attach(None, Trigger::Timed).expect("attach the timer");
+    waitset.attach(Vec::new(), Trigger::Timed).expect("attach the timer");
 
     let mut dispatcher = DeadlineDispatcher::new(WAKES, false);
     let _report = waitset.run_for(BUDGET, Duration::from_secs(10), &mut dispatcher);
@@ -109,11 +109,11 @@ fn a_deadline_moved_earlier_during_a_wait_is_met() {
     const WAKES: usize = 20;
     let transport = Iox2Transport::with_name(&unique_name("timed_moved")).expect("transport");
     let mut waitset = transport.waitset(&unique_name("timed_moved_ctl")).expect("waitset");
-    waitset.attach(None, Trigger::Timed).expect("attach the timer");
+    waitset.attach(Vec::new(), Trigger::Timed).expect("attach the timer");
     // Each tick ends a wait armed for a deadline far ahead and moves the deadline to 1.3 ms
     // after it: the timer must be set again for the next wait.
     waitset
-        .attach(None, Trigger::Periodic(Duration::from_millis(30)))
+        .attach(Vec::new(), Trigger::Periodic(Duration::from_millis(30)))
         .expect("attach the interval");
 
     let mut dispatcher = DeadlineDispatcher::new(WAKES, true);

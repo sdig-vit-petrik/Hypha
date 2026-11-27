@@ -1,9 +1,10 @@
 //! The transport port over iceoryx2 shared memory, the only crate that names
 //! iceoryx2.
 //!
-//! [`Iox2Transport`] is one session: one iceoryx2 node, one service per topic.
-//! [`service_name_for`] removes a leading `/`: the topic `/odom` is the service
-//! `odom`. Each sample carries its hypha frame header as the iceoryx2 user header.
+//! [`Iox2Transport`] is one session: one iceoryx2 node, one service per stream, which is
+//! one topic name and one schema. [`stream_service_name`] names it: the topic `/odom` of
+//! the schema hash `h` is the service `odom@<h in 16 hex digits>`. Each sample carries
+//! its hypha frame header as the iceoryx2 user header.
 //!
 //! A topic's policy (`qos.rs`) is stamped on the service by its creator, and an
 //! opener that declares a different one is refused.
@@ -90,12 +91,14 @@ pub mod host_resources;
 mod latch;
 mod notification;
 mod preflight;
+mod probe;
 mod publisher_nodes;
 pub mod qos;
 mod refusal_episode;
 mod schema;
 mod service_open;
 mod shm_capacity;
+mod stream;
 mod subscriber_port;
 mod transport;
 pub mod waitset;
@@ -105,8 +108,11 @@ pub use domain::MAX_BORROWED_SAMPLES;
 pub use endpoint::{Iox2Loan, Iox2Publisher, Iox2Sample, Iox2Subscriber};
 pub use notification::failed_notifications;
 pub use publisher_nodes::node_names;
-pub use schema::{invalid_record_count, lookup_schema, schema_file_path};
-pub use transport::{GRAPH_EVENT, Iox2Transport, service_name_for};
+pub use schema::{
+    RecordedStream, invalid_record_count, lookup_schema, schema_file_path, topic_records,
+};
+pub use stream::stream_service_name;
+pub use transport::{GRAPH_EVENT, Iox2Transport};
 pub use waitset::{
     Dispatcher, EventOutcome, Iox2Listener, Iox2WaitSet, Progression, StopHandle, Trigger,
 };

@@ -82,8 +82,8 @@ impl<'bus> Responder<'bus> {
         let clock = bus
             .subscribe_raw_with_schema(
                 "/clock",
-                "rosgraph_msgs/Clock",
-                "",
+                hypha_node::sdk::msgs::rosgraph_msgs::Clock::TYPE_NAME,
+                hypha_node::sdk::msgs::rosgraph_msgs::Clock::SCHEMA_HASH,
                 hypha_node::sdk::SubscriberOptions::default().keeping(8),
             )
             .expect("a clock subscriber");

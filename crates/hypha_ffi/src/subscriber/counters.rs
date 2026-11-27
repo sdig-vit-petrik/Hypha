@@ -6,8 +6,9 @@ use hypha_node::HyphaSubscriberCounters;
 use hypha_node::safe::{HyphaSubscriber, subscriber_counters};
 use hypha_node::status::HyphaStatus;
 
-/// Write the eight counters of `subscriber` to `*out`, the values of the subscriber
-/// metrics of the same names. Each is read atomically, the eight not at one instant. Any
+/// Write the nine counters of `subscriber` to `*out`: eight are the values of the
+/// subscriber metrics of the same names, and `other_schemas`, which may be
+/// `HYPHA_NOT_CHECKED`, has no metric. Each is read atomically, the nine not at one instant. Any
 /// thread may call it. `InvalidArgument`, with `*out` unwritten, when `subscriber` or
 /// `out` is null.
 ///
