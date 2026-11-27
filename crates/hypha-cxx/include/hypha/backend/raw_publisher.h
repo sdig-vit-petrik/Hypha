@@ -237,6 +237,24 @@ class RawPublisherHandle
         return LoanedBuffer(loaned, bytes, size);
     }
 
+    /// @brief loan() for a buffer the caller may ask for again: a refusal takes no sequence,
+    ///        so subscribers count no lost frame. PoolExhausted for a full pool, LoanLimit
+    ///        while this publisher's callers hold all its loans.
+    [[nodiscard]] std::expected<LoanedBuffer, Status> reserve(size_t size) const
+    {
+        if (!this->valid) {
+            return std::unexpected(Status(HYPHA_STATUS_INVALID_STATE));
+        }
+        HyphaLoan*   loaned = nullptr;
+        uint8_t*     bytes = nullptr;
+        const Status loanStatus =
+            hypha_publisher_reserve_frame(this->publisher.get(), size, &loaned, &bytes);
+        if (loanStatus != HYPHA_STATUS_OK) {
+            return std::unexpected(Status(loanStatus));
+        }
+        return LoanedBuffer(loaned, bytes, size);
+    }
+
     [[nodiscard]] Status publishLoan(LoanedBuffer&& loaned) const
     {
         if (!this->valid) {

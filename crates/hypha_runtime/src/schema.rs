@@ -105,7 +105,13 @@ fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn is_resource_limit(cause: &PortError) -> bool {
-    matches!(cause, PortError::PoolExhausted | PortError::BorrowLimit | PortError::ResourceLimit)
+    matches!(
+        cause,
+        PortError::PoolExhausted
+            | PortError::LoanLimit
+            | PortError::BorrowLimit
+            | PortError::ResourceLimit
+    )
 }
 
 /// Synchronized schema cache and lookup health for one node session.

@@ -68,6 +68,7 @@ T hypha_publish_with_qos
 T hypha_publisher_destroy
 T hypha_publisher_loan_frame
 T hypha_publisher_min_subscriber_buffer
+T hypha_publisher_reserve_frame
 T hypha_publisher_subscriber_count
 T hypha_schema_lookup
 T hypha_subscribe_typed

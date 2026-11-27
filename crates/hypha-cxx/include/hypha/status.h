@@ -38,6 +38,7 @@ struct Status
         InvalidState = HYPHA_STATUS_INVALID_STATE,
         ClockRewound = HYPHA_STATUS_CLOCK_REWOUND,
         ApplicationFailed = HYPHA_STATUS_APPLICATION_FAILED,
+        LoanLimit = HYPHA_STATUS_LOAN_LIMIT,
     };
 
     Code code{Ok};
@@ -125,6 +126,8 @@ struct Status
                 return "ClockRewound";
             case ApplicationFailed:
                 return "ApplicationFailed";
+            case LoanLimit:
+                return "LoanLimit";
         }
         return "Unknown";
     }

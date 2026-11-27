@@ -36,15 +36,16 @@ pub(crate) const BACKEND_SEND_UNDELIVERED: u32 = 39;
 /// Backend code of a send that failed inside iceoryx2.
 pub(crate) const BACKEND_SEND_INTERNAL: u32 = 40;
 
-/// The status of a refused loan. A full pool and the publisher's loan budget are
-/// [`PortError::PoolExhausted`]; every other refusal names its cause.
+/// The status of a refused loan: a full pool is [`PortError::PoolExhausted`], the
+/// publisher's own loan budget [`PortError::LoanLimit`]; every other refusal names its cause.
 pub(crate) fn loan_port_error(
     cause: LoanError,
     requested: usize,
     max_payload: Option<usize>,
 ) -> PortError {
     match cause {
-        LoanError::OutOfMemory | LoanError::ExceedsMaxLoans => PortError::PoolExhausted,
+        LoanError::OutOfMemory => PortError::PoolExhausted,
+        LoanError::ExceedsMaxLoans => PortError::LoanLimit,
         LoanError::ExceedsMaxLoanSize => match max_payload {
             Some(limit) => PortError::TooLarge { requested, limit },
             None => PortError::Backend(BACKEND_LOAN_INTERNAL),
@@ -199,8 +200,9 @@ impl Iox2Publisher {
     ///
     /// # Errors
     /// [`PortError::TooLarge`] when `size` exceeds the payload capacity,
-    /// [`PortError::PoolExhausted`] when no buffer is free; any other refusal names
-    /// its cause. A publisher never waits for a slow subscriber.
+    /// [`PortError::PoolExhausted`] when no buffer is free, [`PortError::LoanLimit`] when
+    /// this publisher's callers hold all its loans; any other refusal names its cause. A
+    /// publisher never waits for a slow subscriber.
     pub fn loan(&self, size: usize) -> Result<Iox2Loan, PortError> {
         if let Some(limit) = self.max_payload.filter(|limit| size > *limit) {
             return Err(PortError::TooLarge { requested: size, limit });
@@ -600,7 +602,7 @@ mod tests {
     #[test]
     fn a_full_pool_and_the_loan_budget_are_pool_exhaustion() {
         assert_eq!(loan_port_error(LoanError::OutOfMemory, 8, None), PortError::PoolExhausted);
-        assert_eq!(loan_port_error(LoanError::ExceedsMaxLoans, 8, None), PortError::PoolExhausted);
+        assert_eq!(loan_port_error(LoanError::ExceedsMaxLoans, 8, None), PortError::LoanLimit);
     }
 
     #[test]
