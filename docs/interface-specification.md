@@ -89,7 +89,8 @@ The cycle calls (`hypha_cycle_*`, `hypha_input_source_*`) give these causes:
 - **A loan must be released.** `hypha_publisher_loan_frame` hands
   out a buffer that is returned by either `hypha_loan_send` or
   `hypha_loan_drop`. Losing the pointer holds a transport buffer until the
-  publisher is destroyed.
+  publisher is destroyed. `hypha_loan_shrink` shortens an unsent loan to its first bytes
+  (never longer): the slot keeps its size, subscribers see the shorter payload.
 - **A callback context moves only on success.** A successful attach or cycle
   creation takes the `context` and its `release`, and calls `release` exactly once,
   after no callback can run again. A refused call leaves the context to the caller.

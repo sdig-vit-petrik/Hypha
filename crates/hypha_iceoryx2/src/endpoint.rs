@@ -100,6 +100,20 @@ impl Iox2Loan {
         self.len() == 0
     }
 
+    /// Shorten the message to its first `len` bytes before the send. The slot keeps
+    /// its size; subscribers see `len` bytes.
+    ///
+    /// # Errors
+    /// [`PortError::TooLarge`] when `len` is longer than the buffer, which is unchanged.
+    pub fn shrink(&mut self, len: usize) -> Result<(), PortError> {
+        let limit = self.len();
+        if len > limit {
+            return Err(PortError::TooLarge { requested: len, limit });
+        }
+        self.sample.truncate(len);
+        Ok(())
+    }
+
     /// Seal the payload with `metadata` and `flags`, then send it, consuming the
     /// loan. Dropping the loan without sending returns the slot to the publisher.
     /// A failed wake notification is logged and counted ([`crate::failed_notifications`]),

@@ -59,6 +59,17 @@ pub fn loan_send(mut loan: HyphaLoan, framework_sent_nanos: i64) -> Result<(), E
     loan.send_frame()
 }
 
+/// Shorten a loan to its first `payload_size` bytes, for a message that came out shorter
+/// than the bytes it reserved. The bytes kept are not moved.
+///
+/// # Errors
+/// `InvalidArgument` for a size longer than the loan, which is unchanged; `InvalidState`
+/// for a loan already sent.
+pub fn loan_shrink(loan: &mut HyphaLoan, payload_size: usize) -> Result<(), Error> {
+    let inner = loan.inner.as_mut().ok_or(Error::InvalidState)?;
+    inner.shrink(payload_size).map_err(|_| Error::InvalidArgument)
+}
+
 /// Borrow a frame of `payload_size` payload bytes from `endpoint`.
 ///
 /// The frame takes its sequence number when it is sent, so a loan that is refused or

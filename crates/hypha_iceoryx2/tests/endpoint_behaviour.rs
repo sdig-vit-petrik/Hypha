@@ -77,6 +77,30 @@ fn a_published_message_arrives_in_shared_storage() {
 
 #[test]
 #[allow(clippy::expect_used)]
+fn a_shrunk_loan_arrives_with_its_first_bytes_and_a_longer_size_is_refused() {
+    let transport = Iox2Transport::with_name(&unique_name("loan_shrink")).expect("transport");
+    let topic = format!("/{}", unique_name("shrink"));
+    let spec = TopicSpec::new(&topic).with_type("std_msgs/String").keeping(2);
+    let publisher = transport.publish(&spec).expect("publisher");
+    let subscriber = transport.subscribe(&spec).expect("subscriber");
+
+    let mut loan = publisher.loan(8).expect("loan");
+    loan.as_mut_bytes().copy_from_slice(b"payload!");
+    assert!(matches!(loan.shrink(9), Err(PortError::TooLarge { requested: 9, limit: 8 })));
+    assert_eq!(loan.len(), 8);
+    loan.shrink(4).expect("shrink");
+    assert_eq!(loan.as_bytes(), b"payl");
+    loan.shrink(6).expect_err("a shrunk loan does not grow back");
+    loan.send_frame(sealed_send::metadata(), 0).expect("send");
+
+    let sample = subscriber.try_receive().expect("receive").expect("sample");
+    assert_eq!(sample.payload(), b"payl");
+    hypha_wire::frame::verify(sample.topic_code(), &sample.header(), sample.payload())
+        .expect("the seal covers the shrunk payload");
+}
+
+#[test]
+#[allow(clippy::expect_used)]
 fn a_wildcard_subscriber_discovers_matching_topics() {
     let transport = Iox2Transport::with_name(&unique_name("coverage_wildcard")).expect("transport");
     let prefix = format!("/{}", unique_name("wildcard"));

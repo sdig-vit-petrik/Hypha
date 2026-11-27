@@ -46,6 +46,7 @@ T hypha_list_nodes
 T hypha_list_service_ports
 T hypha_loan_drop
 T hypha_loan_send
+T hypha_loan_shrink
 T hypha_log_enabled
 T hypha_log_module_register
 T hypha_log_write
