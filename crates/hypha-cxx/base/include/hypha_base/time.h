@@ -90,6 +90,25 @@ constexpr int64_t nanosFromSeconds(double seconds)
     return saturatingAdd(saturatingMul(whole, 1000000000), fraction);
 }
 
+/// @brief `nanos / 1e9` as a double: the nearest one up to 2^53 ns, and above that nearly.
+///
+/// `double(nanos) / 1e9` rounds twice above 2^53 ns (104 days): the conversion of the
+/// nanoseconds already drops low bits, to a multiple of 256 ns at a stamp since the epoch (#253).
+/// Up to 2^53 ns both operands are exact and the single division is the nearest double. Above,
+/// the whole seconds and the remainder (`/` and `%` truncate toward zero, so negatives mirror)
+/// are each exact in a double, the division of the remainder rounds far below the spacing of
+/// the result, and the sum rounds once. The result is the nearest double except where the exact
+/// value lies within about 1e-16 s of a midpoint between two doubles, where it may be the
+/// other neighbour.
+constexpr double secondsFromNanos(int64_t nanos)
+{
+    constexpr int64_t kExactNanos = int64_t{1} << 53;
+    if (nanos >= -kExactNanos && nanos <= kExactNanos) {
+        return static_cast<double>(nanos) / 1e9;
+    }
+    return static_cast<double>(nanos / 1000000000) + static_cast<double>(nanos % 1000000000) / 1e9;
+}
+
 }  // namespace detail
 
 /// @brief A signed time span with nanosecond resolution.
@@ -144,9 +163,10 @@ class Duration
         return this->nanoseconds;
     }
 
+    /// @brief The span in seconds: the double nearest to the exact value.
     constexpr double seconds() const
     {
-        return static_cast<double>(this->nanoseconds) / 1e9;
+        return detail::secondsFromNanos(this->nanoseconds);
     }
 
     constexpr std::chrono::nanoseconds chrono() const
@@ -244,9 +264,10 @@ class Time
         return this->nanoseconds;
     }
 
+    /// @brief The time in seconds since the epoch: the double nearest to the exact value.
     constexpr double seconds() const
     {
-        return static_cast<double>(this->nanoseconds) / 1e9;
+        return detail::secondsFromNanos(this->nanoseconds);
     }
 
     /// @brief Sentinel meaning "time is not yet known". A default-constructed Time is zero.
