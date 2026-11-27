@@ -303,6 +303,8 @@ calling thread.
   the time at which the algorithm runs. Measure elapsed real time with `hypha::steadyNow()`. The duration of a callback includes the
   decode, the step and the encode. The capture time stays separate: the library
   judges the samples once, at capture, and never again at callback entry.
+- On host time `CycleTime::now` (and `stamp`) is the wall time read when the step
+  starts, not its scheduled deadline, so it varies with how late the run woke (section 11).
 - `CycleTime::missed` counts the periods that passed without a step since the
   previous step: a per-step delta, 0 when the step is on time, never a running
   total (`Cycle::health()` keeps the total). A host timer starts its periods at
@@ -800,7 +802,11 @@ and the run's wait ends at its deadline; on simulated time it follows `/clock`. 
 A timer is the one periodic registration: the host-time interval
 (`HYPHA_ATTACH_INTERVAL`) is gone, and the C++ SDK has no host-time timer. A
 host timer is due on the monotonic clock: the `WaitSet` sleeps until its next deadline,
-and a step of the system clock neither delays nor advances it.
+and a step of the system clock neither delays nor advances it. On Linux a `timerfd` armed
+with the deadline ends the wait, so a timer runs within the kernel's wake-up latency of its
+deadline (the wait needs `timerfd`: without it creating a `WaitSet` fails with `Backend`
+code 42); on macOS the wait is `select` with a timeout in microseconds, which the kernel's
+timer coalescing defers by up to half the wait, and by at most about 10 ms.
 
 A timer callback runs on the same thread as your subscription callbacks,
 and never at the same time as one of them.

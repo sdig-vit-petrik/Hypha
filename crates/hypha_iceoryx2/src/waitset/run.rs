@@ -51,6 +51,10 @@ impl Iox2WaitSet {
         let Ok(control_guard) = waitset.attach_notification(&self.control.listener) else {
             return RunReport::setup_failed(PortError::Backend(32));
         };
+        let _timer_guard = match self.timer.attach(&waitset) {
+            Ok(guard) => guard,
+            Err(cause) => return RunReport::setup_failed(cause),
+        };
 
         let (mut event_guards, mut interval_guards) = (Vec::new(), Vec::new());
         if let Err(report) = build_guards(
@@ -78,10 +82,14 @@ impl Iox2WaitSet {
             let Some(wait_slice) = next_wait_slice(deadline, has_pending_work, first) else {
                 return RunReport::deadline();
             };
-            let wait_slice = match dispatcher.next_timed_wait() {
-                Some(timed_wait) => wait_slice.min(timed_wait),
-                None => wait_slice,
-            };
+            let due = dispatcher.next_deadline();
+            let wait_slice = due.map_or(wait_slice, |due| wait_slice.min(time_until(due)));
+            // The timer ends a blocking wait at `due`, which the wait's timeout may overshoot.
+            if !wait_slice.is_zero()
+                && let Err(cause) = self.timer.arm(due)
+            {
+                return RunReport::runtime_failed(cause, None);
+            }
 
             let mut stop_requested = false;
             let wait = waitset.wait_and_process_once_with_timeout(
@@ -167,6 +175,12 @@ fn next_wait_slice(
         return first_turn.then_some(Duration::ZERO);
     }
     Some(slice.min(remaining))
+}
+
+/// How long from now until `deadline` on the host's monotonic clock; zero once it passed.
+fn time_until(deadline: hypha_time::Time) -> Duration {
+    let remaining = deadline.nanos().saturating_sub(hypha_time::steady_now().nanos());
+    Duration::from_nanos(u64::try_from(remaining).unwrap_or(0))
 }
 
 type EventGuards<'w, 'l> = Vec<(usize, iceoryx2::waitset::WaitSetGuard<'w, 'l, Ipc>)>;

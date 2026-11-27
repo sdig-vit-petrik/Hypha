@@ -460,7 +460,7 @@ impl Dispatcher for CallbackDispatcher<'_> {
 
     /// The wait may last until the earliest host deadline. Under simulated time the
     /// timers hold no host deadline, and a canceled timer holds none.
-    fn next_timed_wait(&mut self) -> Option<std::time::Duration> {
+    fn next_deadline(&mut self) -> Option<hypha_time::Time> {
         // What a callback attached or reset takes effect before this wait.
         self.admit_attached();
         self.apply_timer_resets();
@@ -471,13 +471,13 @@ impl Dispatcher for CallbackDispatcher<'_> {
             _ => false,
         });
         if sliced {
-            return Some(std::time::Duration::ZERO);
+            return Some(hypha_time::steady_now());
         }
         let host_timers = !self.node.on_sim_time();
         let live = self.registrations.iter().filter(|r| !is_detached_in(self.detached, r.id));
-        let deadline = live.filter_map(|r| host_deadline(&r.target, host_timers)).min()?;
-        let remaining = deadline.saturating_sub(hypha_time::steady_now().nanos());
-        Some(std::time::Duration::from_nanos(u64::try_from(remaining).unwrap_or(0)))
+        live.filter_map(|r| host_deadline(&r.target, host_timers))
+            .min()
+            .map(hypha_time::Time::from_nanos)
     }
 }
 

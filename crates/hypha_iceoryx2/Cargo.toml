@@ -20,7 +20,7 @@ iceoryx2-bb-posix = "=0.10.1"
 log = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1.4", default-features = false, features = ["std", "fs", "process"] }
+rustix = { version = "1.1.4", default-features = false, features = ["std", "fs", "process", "time"] }
 
 [dev-dependencies]
 hypha_testkit = { path = "../hypha_testkit" }
