@@ -565,7 +565,8 @@ LockInput(hypha::Cycle& cycle, const std::string& name)
   (`ports/twist_mux/src/twist_mux.cpp`); a misspelt framework key is still refused.
 - **A transport hint has no counterpart.** `ros::TransportHints().tcpNoDelay()`, `udp()`, and
   the parameters that set them (`odom0_nodelay`) are dropped: between the nodes of one host
-  the transport is shared memory, with nothing to choose. Delete the call and the key, and list them in the change description.
+  the transport is shared memory, with nothing to choose. Delete the call and the key, and
+  list them in the change description.
 - **A queue size per input becomes a number of samples per step.** See the queue-sizing
   paragraph of [section 4](#4-ros-1-to-hypha-map): `queue_size` is not `perStep`.
 
@@ -1897,12 +1898,56 @@ as [examples/sensor_pipeline](../examples/sensor_pipeline/README.md) does for th
    (a driver whose outputs are each off unless a topic is set) runs with every output off and
    exits 0, so the case does not apply there: test that node's own rule instead (for "at least
    one output", a file with every topic empty exits 78, §10.2).
-   `startup_exit_code.cmake` is not installed with the SDK, but `hypha_add_test` is
-   (`hyphaTesting.cmake`). A port against the installed SDK copies
-   `examples/sensor_pipeline/startup_exit_code.cmake` from the hypha source tree into its
-   own test folder, and registers each case with `hypha_add_test` and `-P` on that copy, as
-   the example's `CMakeLists.txt` does. Installing the script beside `hyphaTesting.cmake`
-   is a follow-up.
+   `startup_exit_code.cmake` is **not installed** with the SDK; `hypha_add_test` is
+   (`hyphaTesting.cmake`). A port against the installed SDK cannot reach the hypha source
+   tree, so the script is printed here: save it as `test/startup_exit_code.cmake` of the port
+   (it is `examples/sensor_pipeline/startup_exit_code.cmake`, which is the reference), and
+   register each case with `hypha_add_test` and `-P` on it. Installing the script beside
+   `hyphaTesting.cmake` is a follow-up.
+
+```cmake
+# Runs the node NODE with the parameter file of CASE and fails unless it exits with
+# EXPECTED. cmake -P passes NODE, CASE, EXPECTED and WORK_DIR, and CONFIG (a valid
+# parameter file of the node) for noports.
+get_filename_component(node_name "${NODE}" NAME)
+set(parameter_file "${WORK_DIR}/${node_name}_${CASE}.toml")
+file(REMOVE "${parameter_file}")
+if(CASE STREQUAL "malformed")
+  file(WRITE "${parameter_file}" "report_period_ms = \n[unterminated\n")
+elseif(CASE STREQUAL "noports")
+  file(READ "${CONFIG}" parameters)
+  string(REGEX REPLACE "\\[ports\\.[a-z]+\\.[a-z_]+\\]\n[^\n]*\n" "" parameters "${parameters}")
+  file(WRITE "${parameter_file}" "${parameters}")
+elseif(NOT CASE STREQUAL "missing")
+  message(FATAL_ERROR "unknown case '${CASE}'")
+endif()
+
+execute_process(
+  COMMAND "${NODE}" "${parameter_file}"
+  RESULT_VARIABLE exit_code
+  OUTPUT_VARIABLE output
+  ERROR_VARIABLE output
+  TIMEOUT 30
+)
+file(REMOVE "${parameter_file}")
+if(NOT exit_code STREQUAL "${EXPECTED}")
+  message(FATAL_ERROR "${node_name} ${CASE}: exit code '${exit_code}', expected ${EXPECTED}\n${output}")
+endif()
+```
+
+```cmake
+foreach(case IN ITEMS missing malformed noports)  # drop noports when every port is optional
+  hypha_add_test(speed_controller_startup_${case}
+    COMMAND ${CMAKE_COMMAND}
+      -DNODE=$<TARGET_FILE:speed_controller>
+      -DCASE=${case}
+      -DCONFIG=${CMAKE_CURRENT_SOURCE_DIR}/config/speed_controller.toml
+      -DEXPECTED=78
+      -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/test/startup_exit_code.cmake")
+endforeach()
+```
+
 3. **The bus.** Replay a recorded input into the running node and compare its output
    by stamp: `replay_check.sh`, registered as `sensor_pipeline_replay_check`. The
    recipe, and the comparison with a ROS golden, are in the example's README.
