@@ -370,12 +370,20 @@ and each version of a type (its MD5), so `subscribe<A>("/x", ...)` and
 `subscribe<B>("/x", ...)`, a `Latest<A>` and an `Arrivals<B>` on one port name, or an
 `Output<A>` and an `Output<B>` on one name, are independent: each endpoint sends and reads
 its own type's stream, with its own verdict, `silence_ms`, queue and policy, and a frame
-of the other type is neither delivered nor counted. This is how a message is migrated:
-version 1 and version 2 of `pkg::Odometry` (one type name, two definitions) run on the
-same topic while the nodes are rebuilt one by one. A subscriber whose version nobody
-publishes receives nothing, keeps its verdict (`NeverArrived`, or `Stale` once its
-publisher left), and after the no-publisher delay of 5 s logs, once and again when the
-published versions change:
+of the other type is neither delivered nor counted as a fault. The stream is the MD5, not
+the type name: two type names of one definition share a stream and its policy. This is how
+a message is migrated: version 1 and version 2 of `pkg::Odometry` (one type name, two
+definitions) run on the same topic while the nodes are rebuilt one by one.
+
+Another version on the topic is shown, never hidden: `sub.metrics().otherSchemas` counts
+the other MD5s that a publisher sends on the topic, and the `~/state` row of a cycle input
+names them (`RequiredInput.other_schemas`, type and MD5), checked once a second by the
+run. A peer that is still on the old version therefore shows beside a current one. The
+verdict says what the data says: an input whose version nobody publishes is `NeverArrived`
+if it never had a publisher, `Stale` after its `silence_ms` once it had one, and `Usable`
+on the last value when it has no limit. While its own stream has no publisher, a subscriber
+logs after the no-publisher delay of 5 s, again when the published versions change, at
+most once in 10 s:
 
 ```text
 hypha: topic '/odom' has publishers, none of type pkg/Odometry (581e4b1b): published are pkg/Odometry (f79835de)
@@ -805,7 +813,8 @@ them with `subscribeRawOfType`, and `examples/bench/src/bench.cpp` uses `subscri
 A `RawType` needs a data type, and its md5 is 32 lower-case hexadecimal digits; the md5
 names the endpoint's stream of the topic, so `subscribeRawOfType(topic, type, ...)` reads
 the messages of `type.md5` alone, and `subscribeRaw` (no type) every stream of each
-matching topic that exists at creation. A raw endpoint without a `hypha::Qos` adopts the
+matching topic that exists at creation: of a literal topic it is woken by a sample on any
+of them, a pattern is read every 1 ms. A raw endpoint without a `hypha::Qos` adopts the
 stream's service (section 7). A raw callback's
 bytes are valid only during the callback; copy them to keep them. A wildcard
 subscription is read every 1 ms (execution model §8). Reference: `<hypha/raw_api.h>`,
@@ -843,10 +852,11 @@ struct hypha::QosOf<my_msgs::Image>
   (`~/introspection`) to `reportQos` (2 publishers, 2 subscribers, depth 1, 1 KiB
   first slot: only tools read them, from the observer slots). An application cannot
   remap them.
-- A later endpoint of the same type (the same MD5) with another policy is refused with
-  `QosMismatch`, and the log names both policies: `advertise` and `subscribe` throw, a
-  cycle fails `start()`. An endpoint of another type on the same name is on its own
-  stream and is never refused for this.
+- A later endpoint of the same definition (the same MD5) with another policy is refused
+  with `QosMismatch`, and the log names both policies: `advertise` and `subscribe` throw, a
+  cycle fails `start()`. An endpoint of another MD5 on the same name is on its own stream
+  and is not refused for this; two type names of one definition share a stream, and their
+  `QosOf<M>` must agree.
 - A raw endpoint, a player or a bridge that opens a topic first creates it with
   `default`, and a typed endpoint with another policy is then refused. Start the
   application nodes first, or map the type to `default`.

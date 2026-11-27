@@ -645,7 +645,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | rosbag record / play | `hypha record` / `hypha play` (`apps/`) |
 | roslaunch | `hypha launch` |
 | roscore | None. Nodes find each other through shared memory |
-| A second message type or MD5 on a topic: roscore refuses the connection (`md5sum mismatch`) | Each type and each version (MD5) is its own stream of the topic: both are delivered, each to its own subscribers, and two versions of a message can run side by side during a migration. A subscriber whose version nobody publishes gets nothing and, after 5 s, `topic '<t>' has publishers, none of type <T> (<md5>): published are <T> (<other md5>)`; its input stays `NeverArrived` (cpp-api.md §5) |
+| A second message type or MD5 on a topic: roscore refuses the connection (`md5sum mismatch`) | Each type and each version (MD5) is its own stream of the topic: both are delivered, each to its own subscribers, and two versions of a message can run side by side during a migration. A subscriber whose version nobody publishes gets nothing; its counters (`otherSchemas`) and its `~/state` row (`other_schemas`) name the version that is published, and after 5 s without a publisher of its own it logs `topic '<t>' has publishers, none of type <T> (<md5>): published are <T> (<other md5>)`. Its input is `NeverArrived` if it never had a publisher, else `Stale` after its `silence_ms`, or `Usable` on the last value when it has no limit (cpp-api.md §5) |
 
 **Queue sizing:** `queue_size` has no counterpart: there are no transport depths,
 history samples or history byte limits to tune. A topic's service policy (`hypha::Qos`,

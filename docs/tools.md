@@ -55,8 +55,10 @@ topic registry on this bus, only observed traffic. A topic that has never
 published will not appear. Each line names the type and the first eight hex digits of
 its MD5, `/odom  [nav_msgs/Odometry (cd5e73d1)]`: a topic that carries two types, or two
 versions of one type, is two lines (topic name overloading, cpp-api.md §5). `echo`,
-`hz`, `bw` and `hypha record` read every type of a topic together, and a recording keeps
-one type per channel; giving them one stream each is open (#209).
+`hz`, `bw` and `hypha record` read the streams of a topic that exist when they first see
+its name, together: a version that joins the topic later is not echoed, measured or
+recorded, and a recording keeps one type per channel, so a second type that it does see
+is dropped with an error line. Following each stream on its own is part two of #209.
 
 `echo -p` prints one CSV row for each message, as `rostopic echo -p` does. The
 first line is the header: `%time` and the column names. `%time` is the frame's

@@ -240,7 +240,7 @@ its own.
 in the fixed order of the table below; `hypha_node_metrics` emits them through one
 `HyphaMetricCallback`. The header states the callback, null and partial-output rules.
 
-`hypha_subscriber_counters` writes the eight subscriber counters as one
+`hypha_subscriber_counters` writes the nine subscriber counters as one
 `HyphaSubscriberCounters` struct (one `uint64_t` per metric, owned by the caller); the
 metrics are emitted from that struct, so the C, C++ and Rust numbers cannot differ. Any
 thread may read it, also during a run that dispatches the subscriber.
@@ -265,11 +265,13 @@ counted by `hypha_subscriber_missing_sequences`.
 | Transforms | `tf.refused`, `tf.undecodable` | `hypha_node_metrics` with a node: transforms that a transform buffer or TF input of the node refused, and messages on their topics that did not decode, since the node began |
 | Schema | `schema.invalid_records`, `schema.unavailable_lookups`, `schema.resource_limit_failures` | `hypha_node_metrics` with a node |
 | Log (process-wide) | `log.lines_written`, `log.write_failures`, `log.rejected_lines` | `hypha_node_metrics`, with or without a node |
-| Subscriber | `integrity.invalid_frame`, `integrity.corrupt_payload`, `integrity.schema_mismatch`, `integrity.sequence_gap`, `integrity.invalid_timestamp`, `loan.budget`, `loan.held`, `loan.refused` | `RawSubscriber::metrics` (Rust SDK); `hypha_subscriber_counters` (C ABI, as a struct) |
+| Subscriber | `integrity.invalid_frame`, `integrity.corrupt_payload`, `integrity.schema_mismatch`, `integrity.sequence_gap`, `integrity.invalid_timestamp`, `loan.budget`, `loan.held`, `loan.refused`, `topic.other_schemas` | `RawSubscriber::metrics` (Rust SDK); `hypha_subscriber_counters` (C ABI, as a struct) |
 
 `loan.budget` is the effective per-subscriber budget of owning samples; `loan.held`
 is the number of samples the subscriber holds; `loan.refused` counts receives refused
-because the budget was full.
+because the budget was full. `topic.other_schemas` is the number of other schemas (MD5s)
+of the subscriber's topic that a publisher sends, as the run that drives the subscriber
+last checked (see [Streams](#streams)): a fact about the topic, not a fault count.
 
 ## Service limits and wildcards
 
@@ -345,30 +347,42 @@ own subscriber queues and publisher slots, and wakes only its own subscribers.
 |---|---|
 | Publisher | the stream of its MD5 |
 | Subscriber that names an MD5 (every typed C++ endpoint, `subscribeRawOfType`, `subscribe_raw_with_schema`) | the stream of its MD5: a frame of another schema of the topic never reaches it. Like any subscriber it creates the stream only when it declares a policy or reads a framework topic |
-| Subscriber that names no MD5 (`subscribeRaw`, `subscribe_raw`, the tools) | every stream of the topic that exists when it is created, polled every 1 ms like a wildcard; it creates none, and is `NotAvailable` when the topic has none |
-| Wildcard subscriber | of each matching topic, the stream of its MD5, or every stream when it names none |
+| Subscriber that names no MD5 (`subscribeRaw`, `subscribe_raw`, the tools) | every stream of the topic that exists when it is created, woken by a listener on each; it creates none, follows no stream created later, and is `NotAvailable` when the topic has none |
+| Wildcard subscriber | of each matching topic, the stream of its MD5, or every stream when it names none; read every 1 ms |
+
+A topic name is at most 126 bytes after its `/` (`hypha_core::port::MAX_TOPIC_NAME_BYTES`):
+the schema store names a topic's directory by the whole name in hex in a 255-byte file
+name, and a stream's service name adds 17 bytes. The name check refuses a longer one.
 
 `hypha_list_service_ports` reports each stream with its `schema_hash`, so a topic of two
-schemas is two entries. A schema record lives as long as its stream. Two message types
-whose definitions give one MD5 (ROS 1 computes the MD5 from the definition, not the type
-name) share a stream, as their bytes are the same. A node of a hypha build before the
-streams opens another service name and does not see a stream: two release lines do not
-share a domain (release-policy.md §2).
+schemas is two entries. Every endpoint writes a marker of its stream beside the schema
+records, `<hex(topic)>/<schema hash>.stream`, with its type and MD5, whether or not it has a
+definition; a record and a marker live as long as their stream. Two message types whose
+definitions give one MD5 (ROS 1 computes the MD5 from the definition, not the type name)
+share a stream and its policy, as their bytes are the same. A node of a hypha build before
+the streams opens another service name and does not see a stream: two release lines do not
+share a domain (release-policy.md §2). A listing of the services (`hypha_list_service_ports`,
+a wildcard or a subscription without an MD5) that meets data services of such a build warns
+once per process: `hypha: <n> topics of another hypha build are in this domain: they are
+not visible to this build`.
 
-After its no-publisher delay a subscriber of one stream whose stream has no publisher
-warns once, and again when the published schemas of the topic change while it still has
-none, and after the delay again when a publisher it had leaves. It reads the topic's schema
-records (one directory) and the publisher counts of their streams, and names them by type
-and the first eight hex digits of the MD5:
+The run that drives a subscriber of one stream checks it once a second: it records the
+other schemas of the topic that a publisher sends (the subscriber counter
+`topic.other_schemas`, and `RequiredInput.other_schemas` of `~/state` for a cycle input),
+and warns after its no-publisher delay while its own stream has no publisher, again when
+the published schemas change while it still has none, at most once in 10 s, naming them by
+type and the first eight hex digits of the MD5:
 
 ```text
 hypha: topic '/odom' has publishers, none of type nav_msgs/Odometry (cd5e73d1): published are nav_msgs/Odometry (9e1f0d3a)
 ```
 
 With no other schema published the line is `no publisher connected to topic '<t>' in
-domain '<d>' after <n> ms; ...`. While the stream has a publisher a check is one atomic
-read a second. A stream whose publishers named no definition has no record and is not
-named.
+domain '<d>' after <n> ms; ...`. A check reads the modification time of the topic's marker
+directory and the publisher count of each other stream it has opened, a few atomic reads
+(9 µs with one other stream, measured on macOS); it reads the directory and opens a stream
+only when the directory changed, and keeps the streams it opened open. It never lists the
+services of the domain. A publisher port of a dead node counts until a node reclaims it.
 
 ## Wire frame
 

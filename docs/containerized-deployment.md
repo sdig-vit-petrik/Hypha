@@ -288,6 +288,7 @@ Every node logs to its container's stderr (`docker compose logs <service>`).
 | `/dev/shm and /tmp/iceoryx2 are not shared by the same processes (markers … vs …)` | a container lacks one of the two mounts, or only one volume was reset | mount both volumes everywhere; reset both together (§4) |
 | `no publisher connected to topic '<t>' in domain '<d>' after <n> ms` | the publisher is not running, runs in another domain, or is on another `hypha-shm` | check `HYPHA_DOMAIN` and that every container mounts the same `hypha-shm` |
 | `topic '<t>' has publishers, none of type <T> (<md5>): published are <U> (<md5>)` | the publishers send another type or another version of the type (another MD5) | rebuild one side against the same message definition, or publish both versions during a migration |
+| `<n> topics of another hypha build are in this domain: they are not visible to this build` | containers run hypha builds from before and after the streams of #209 | use one hypha build in all containers; reset the bus |
 | exit code 135, `ending on SIGBUS, most likely because shared memory (/dev/shm) is full` at the crash | SIGBUS: `hypha-shm` is full | look for `may need <n> bytes of shared memory` at start; enlarge `size=` |
 | `depth <d> exceeds the <n> the service's QoS policy allows` | a subscriber asks for a queue deeper than the topic's policy allows | use depth 0 (the service's depth) or at most `<n>`; a deeper queue needs a creator that declares a deeper policy |
 | `topic '<t>' refused a frame: CRC mismatch` | something writes into `hypha-shm` | see §5 |
