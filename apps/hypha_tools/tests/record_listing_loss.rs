@@ -60,8 +60,7 @@ fn a_listing_does_not_cost_a_recorder_of_a_busy_topic_its_samples() {
     std::fs::remove_file(&path).expect("remove");
     let lost: u64 = summary
         .lines()
-        .find_map(|line| line.trim().strip_suffix(" samples").and_then(|l| l.rsplit(' ').next()))
-        .and_then(|n| n.parse().ok().or(None))
+        .find_map(|line| line.split(" lost ").nth(1)?.split(' ').next()?.parse().ok())
         .unwrap_or(0);
     println!("MEASURED published {count} in {SECONDS} s, recorder reports lost {lost}");
     println!("{summary}");

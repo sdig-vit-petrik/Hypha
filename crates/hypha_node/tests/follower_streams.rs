@@ -265,3 +265,27 @@ fn the_streams_a_selector_lets_go_are_kept_with_their_schema() {
     let known: Vec<_> = skipped.iter().filter_map(|(_, schema)| schema.as_ref()).collect();
     assert_eq!(known.len(), 1, "one of them has no definition to name it by");
 }
+
+/// A stream that nothing publishes any more is not a second stream of the name: nothing is
+/// sent on it, so tools do not label the name (L5 of the fourth review of #268).
+#[test]
+fn a_stream_without_a_publisher_does_not_make_its_name_shared() {
+    let bus = BusNode::new(&unique_name("rv_idle")).expect("bus node");
+    let peer = BusNode::new(&unique_name("rv_idle_peer")).expect("peer");
+    let topic = format!("/{}/odom", unique_name("rv_idle"));
+    let _v1 = publish_version(&peer, &topic, V1, DEFINITION_1);
+    let v2 = publish_version(&peer, &topic, V2, DEFINITION_2);
+    let mut follower = Following::new(&bus, vec![topic.clone()], StreamSelector::default(), 8);
+    follower.refresh(&bus).expect("first listing");
+    let first = StreamKey { topic: topic.clone(), schema_hash: hash(V1) };
+    assert!(follower.shares_its_name(&first), "two published streams");
+    drop(v2);
+    let started = Instant::now();
+    while follower.shares_its_name(&first) {
+        assert!(started.elapsed() < Duration::from_secs(20), "the departure is not listed");
+        follower.refresh(&bus).expect("listing");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(follower.followed(), 2, "both are still followed");
+    assert_eq!(follower.missing(&[topic]), Vec::<String>::new());
+}

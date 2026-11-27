@@ -37,11 +37,13 @@ while a ROS 1 topic carries one type: in automatic mode the bridge follows every
 bridges the first one that delivers a sample on a name. It drops the samples of the others
 and says so once for each stream, naming both types: `<topic> carries more than one stream
 and a ROS 1 topic carries one type: bridging <type> (<md5>), the first; not bridging <type>
-(<md5>)`. The choice ends when no publisher of the bridged stream is left, and the next
-stream to deliver takes its place (the ROS publisher is advertised again with its type). A
+(<md5>)`. The choice on the hypha side ends when no publisher of the bridged stream is left, and the
+next stream to deliver is the new first. A ROS 1 topic keeps its type under its subscribers,
+so the type first advertised to ROS stays while the topic is advertised: a sample of another
+version is dropped and a WARNING says once, naming both types, that it is not bridged. A
 name counts as published or subscribed when any of its streams is. This was tested on a bus
 without a ROS master: the choice, the once-only report and the take-over; the ROS side of
-it (advertising again, the ROS 1 to hypha route of a topic with several versions) was read,
+it (the first type staying advertised, the ROS 1 to hypha route of a topic with several versions) was read,
 not run.
 
 Automatic ROS 1 to hypha routes carry the ROS publisher's real type, md5 and

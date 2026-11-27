@@ -488,6 +488,7 @@ impl StreamFollower {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::StreamSelector;
     use crate::sdk::ResolvedSchema;
@@ -532,5 +533,23 @@ mod tests {
     fn a_selector_reads_back_as_its_flags() {
         let both = StreamSelector { data_type: Some("a/B".into()), md5_prefix: Some("b3".into()) };
         assert_eq!(both.to_string(), "--type a/B --md5 b3");
+    }
+
+    /// A listing that fails is not retried on every pass, nor reported on each (M3 of the fourth
+    /// review of #268): its next time and the backstop are set before its result is read.
+    #[test]
+    fn a_failed_listing_is_not_due_again_at_once() {
+        let bus = crate::sdk::BusNode::new(&format!("follow_failed_{}", std::process::id()))
+            .expect("a bus node");
+        let mut listings = super::StreamListings::new(&bus).expect("listings");
+        let failed = listings.take_listing(|| Err("the registry is unreadable".to_owned()));
+        assert_eq!(failed, Err("the registry is unreadable".to_owned()));
+        assert!(!listings.pending);
+        assert!(listings.next_listing > std::time::Instant::now());
+        assert!(listings.next_backstop > std::time::Instant::now());
+        assert!(
+            listings.list_if_changed(&bus).expect("a read").is_none(),
+            "nothing is due right after a failure"
+        );
     }
 }

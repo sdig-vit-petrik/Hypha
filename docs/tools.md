@@ -61,24 +61,26 @@ versions of one type, is two lines (topic name overloading, cpp-api.md §5).
 
 **A topic of several streams.** A topic name carries one stream for each schema, and
 `echo`, `hz` and `bw` read all of them: each stream is followed on its own, and one that
-joins the name after the tool started, a second version in a migration, is followed from
-its first sample (the tool hears the graph event of a publisher or subscriber that comes
-or goes, and lists the streams again once, at most every 100 ms; see "The cost of following
-streams" below). A tool started before any publisher waits, says so once, and follows
+joins the name after the tool started, a second version in a migration, is followed from the
+moment the tool learns of it (it hears the graph event of a publisher or subscriber that
+comes or goes; see "Following streams" below), and says on standard error how many samples
+the stream had sent before. A tool started before any publisher waits, says so once, and follows
 whichever stream appears first. While a name has one stream the output is what it always
 was; once it has more, each stream says which it is:
 
-- `echo` prints a `# <type> (<md5 start>)` comment line after the `---` of each message, and
-  `echo -p` prints that line before the header of a stream. A row has the columns of the
-  header above it, so when the stream of the next row is another, its header is printed
-  again: no row is ever misaligned.
+- `echo` prints a `# <type> (<md5 start>)` comment line after the `---` of each message.
+  `echo -p` prints one table, so it refuses a name with several streams: it prints nothing,
+  names the streams with their type and MD5 start, says to pick one with `--type` or
+  `--md5`, and exits 1. One stream, selected or alone, prints as it always did.
 - `hz` and `bw` keep one window for each stream and print a title line,
   `<topic> [<type> (<md5 start>)]:`, before each stream's figures.
 
 `--type <type>` follows only the streams of that message type, and `--md5 <prefix>` only
 the streams whose MD5 starts with those hex digits (not case sensitive); together, the
 streams that satisfy both. A flag needs the stream's schema: a stream whose publisher gave
-no definition matches none, and is followed once a publisher that gave one joins it. One
+no definition matches none, and is followed once a publisher that gave one joins it. When the
+flags match no stream of the name, the tool lists the streams the name has (a stream without a
+definition by its hash) and waits. One
 stream selected is printed as a topic of one stream. The flags are the same on all three.
 
 `echo -p` prints one CSV row for each message, as `rostopic echo -p` does. The
@@ -268,24 +270,47 @@ subscription for each stream (a topic name and a schema hash) that matches its p
 and the `--type`/`--md5` flags, and one for each stream that joins later.
 
 It learns of a new stream from the graph event, the one a node's own housekeeping hears:
-every publisher and subscriber that is created or dropped notifies it. The follower opens
-a listener of the event before its first listing, so no stream falls between the two, and
-asks it on the tool's own thread, one non-blocking read per pass of the tool's loop. It
-lists the streams again only when the event fired, at most once per 100 ms and at most one
-fifth of its time (the next listing waits four times as long as the last took), and after
-2 s with no event, in case a notification was lost (the sender logs a failed one). A stream
-is subscribed by its schema hash without a listing of its own, so a stream whose
-publisher gave no definition is read too; its type is looked up only for a `--type` or
-`--md5` flag, and for a label.
+every publisher and subscriber that is created or dropped notifies it. The tool opens a
+listener of the event before its first listing, so no stream falls between the two. A thread
+of the tool's own (the SDK creates none) sleeps until the event wakes it and lists the
+streams, at most once per 100 ms and at most one fifth of its time (the next listing waits
+four times as long as the last took), and after 2 s with no event, in case a notification
+was lost (the sender logs a failed one). The tool's loop takes what the thread found and
+subscribes to the new streams, which is cheap: a stream is subscribed by its schema hash, with
+no listing of its own, so a stream whose publisher gave no definition is read too; its type
+is looked up only for a `--type` or `--md5` flag and for a label. A `--sync` recorder lists on
+its own thread instead, before it answers a chunk, because it must have every stream there is.
 
-The cost on the tool's thread, measured in a release build on a loaded development
-machine (load average 15): a pass with nothing to learn takes 1 µs (4 to 13 µs in a debug
-build); a listing takes 70 ms with one stream and 120 ms with 100 (it reads the state of
-every service of the domain), and the first listing that follows 100 streams, with their
-subscriptions, 170 ms. The listing blocks the loop, and a fast topic can overrun its queue
-meanwhile: the recorder counts and reports that as a loss, as it does any. Each followed
-stream takes one observer slot of its service for each tool (`RESERVED_OBSERVER_SUBSCRIBERS`,
-3): a fourth tool on one stream is refused, and says so.
+The cost, measured in a release build on a loaded development machine (load average 15): a
+pass of the loop with nothing to learn takes 1 µs (4 to 13 µs in a debug build); a listing,
+which reads the state of every service of the domain, takes 70 ms with one stream and 120 ms
+with 100, on the helper thread, and the first listing that follows 100 streams, with their
+subscriptions, 170 ms. A 1 kHz topic recorded for 6 s while the graph is quiet lost 165 to 168
+samples to the backstop's listings when the loop listed itself, and 0 (5 runs of 8; 7, 14 and
+124 in the others, with a build running beside) with the helper thread. Each followed stream takes one observer
+slot of its service for each tool (`RESERVED_OBSERVER_SUBSCRIBERS`, 3): a fourth tool on one
+stream is refused, and says `all 3 observer slots of '<stream>' are taken by other tools`.
+
+**What a late stream sent before it was followed.** A publisher's first frame has sequence 1,
+so the first sequence a subscriber accepts from a publisher, less one, is the number of that
+publisher's frames the tool never saw. The tools count them for a publisher known to have
+come after them: every publisher of a stream that a later listing than the first showed, and
+the publishers that joined a followed stream since a listing showed one more publisher on it.
+They do not count a publisher that ran when the tool started (its history is not the tool's
+to record), nor a latched publisher's replayed sample (a latched stream is not judged), and a
+second publisher that joins a stream that had one is told from a quiet one by the listing's
+count alone. `hypha record` prints `hypha record: <stream>: <n> samples were sent before it
+was followed` as it finds them and `<stream> sent <n> samples before it was followed` under
+`Recorded messages:` (the recording is not failed for it, as a node that starts during a
+recording cannot be avoided); `echo` and `hz` print one such line on standard error; `--sync`
+fails the recording on them. At 100 Hz a late stream's first 17 samples were counted, and the
+recording began at counter 17; at 1 kHz 135 and 135 (`record_late_streams.rs`).
+
+**Not followers.** `hypha topic list` listens on `**` for its `--timeout` and names the
+streams that publish while it listens, among those that exist when it starts: a stream that
+starts later in the window is not listed. `hypha intercept` relays one named input and
+subscribes to the streams that exist when it starts; it relays one type, and a change of the
+type is the configuration's to make. Neither follows a stream that joins later.
 
 ---
 
@@ -348,16 +373,20 @@ timestamps remain unchanged.
 types, or two versions of one type, is two MCAP channels of one topic, each with its own
 schema (the definition of its stream) and its `md5sum` metadata, and a stream that joins a
 followed name after the recording began, a second version in a migration, is recorded from
-its first sample. It says `hypha record: following <n> more stream(s), <m> in all` on
-standard error when one joins. A recording of one type on a topic is the file the recorder
+the moment the recorder followed it, and the recording says how many samples it sent before
+("What a late stream sent before it was followed", above). It says `hypha record: following
+<n> more stream(s), <m> in all` on standard error when one joins. A recording of one type on a topic is the file the recorder
 always wrote, byte for byte (MCAP library 0.25; with more than one channel the library
 writes the records of its summary in hash-map order, so two runs differ in the order of
 records, not in content). The counts under `Recorded messages:` and a loss line are per
 stream: a topic of several streams is shown as `<topic> [<type> (<md5 start>)]`, one of one
 as `<topic>`. Under `--sync` a second stream is no failure, since each stream is a channel of
 its own: the recorder follows a stream that came before a chunk's data before it answers
-the chunk, and a stream that appears during a chunk is recorded from the chunk after the
-one in which it was seen. What stays by name: `--topics <name>` and `--sync`'s wait for
+the chunk. A stream that appears during a chunk is followed when the chunk is answered, so
+what it sent first is not in the recording: `--sync` fails, naming the stream and the count.
+A stream that exists and refuses the recorder's subscription (other tools hold its observer
+slots) fails a `--sync` recording at once, naming the stream and the limit; an observer says
+so on standard error and records its other streams. What stays by name: `--topics <name>` and `--sync`'s wait for
 "every `--topics` entry has a publisher" are satisfied by a stream of any schema. A sample
 that cannot be recorded (its schema unresolved, no framework stamp) is dropped and reported
 once for its stream, and fails a `--sync` recording; the recorder does not silently write a
