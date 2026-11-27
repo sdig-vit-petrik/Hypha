@@ -1,328 +1,483 @@
 # Native services
 
-Design for #132: typed request and response between nodes, from a ROS 1 `.srv`. Status:
-proposal, with a spike that checks its transport assumptions
-(`crates/hypha_iceoryx2/tests/service_spike.rs`). Nothing here is implemented. Each
-decision gives its reason. Where it differs from the proposal in the issue, it says so.
+Design for #132: typed request and response between nodes, from a ROS 1 `.srv`.
 
-Readers: the owner, who decides; whoever implements the stages of section 11.
+Status: accepted design, after an independent review whose seventeen changes are folded
+in. Not implemented yet; stage 1a (the transport) is next. Each decision gives its reason. Where the author checked a change against the code
+and kept a different mechanism, an **author's note** says so, with the evidence.
+
+Readers: the owner, who decides, and whoever implements the stages of section 11.
 
 ## 0. Why now, and what the design must serve
 
 Every port that needs a call builds one out of two topics, and each builds a different
-one (issue #132): `mrs_bridge/Call` in `examples/mrs/host/include/mrs_host/service.h`,
-`hypha_rclcpp_msgs/ServiceCall` in the Autoware shim, and a `request_id` field added to
-`nav_msgs/GetMap` in the `map_server` port, which changes its MD5. The vetting reports
-in the playground show where services stop a port:
+one (issue #132):
+
+- `mrs_bridge/Call` in `examples/mrs/host/include/mrs_host/service.h`;
+- `hypha_rclcpp_msgs/ServiceCall` in the Autoware shim;
+- a `request_id` field added to `nav_msgs/GetMap` in the `map_server` port, which changes
+  its MD5.
+
+The vetting reports in the playground show where services stop a port:
 
 | Port | Services | Without them |
 |---|---|---|
-| MRS UAV system | 10 servers (4 `control_manager`, 3 `LandoffTracker`, 1 `uav_manager`, 2 simulator) and 19 clients (mission 9, teleop 5, `uav_manager` 5). Arming, offboard, `toggle_output`, `switch_controller`, `switch_tracker`, takeoff, `goto` | The flight. They are the control interface of the system. |
+| MRS UAV system | 10 servers (4 `control_manager`, 3 `LandoffTracker`, 1 `uav_manager`, 2 simulator) and 19 clients (mission 9, teleop 5, `uav_manager` 5): arming, offboard, `toggle_output`, `switch_controller`, `switch_tracker`, takeoff, `goto` | The flight. These services are the control interface of the system. |
 | Autoware | the EKF's `trigger_node_srv`: the node publishes nothing until it is called with `true` | The estimate. `gnss_pose_initializer` is a workaround. |
-| `arena_camera` | seven setters (`set_exposure`, `set_gain`, ...) and `set_camera_info` | Dropped from the port. |
+| `arena_camera` | seven setters (`set_exposure`, `set_gain`, ...) and `set_camera_info`, called by operators | Dropped from the port. |
 | `map_server`, `diagnostic_aggregator` | `static_map`, `change_map` | Waiting, or a third wire format. |
 
-Two shapes cover all of it. A **setter or a switch**: the handler answers at once
-(`switch_tracker`, `set_exposure`, `arming`, `trigger_node`). A **sequence**: the handler
-starts work, calls other services, and answers when done (`uav_manager` takeoff: switch
-the controller, switch the tracker, wait 0.3 s, call the tracker's takeoff, answer).
-ROS 1 runs the sequence inside the callback, blocking a spinner thread on each nested
-`call()` and on `ros::Duration(0.3).sleep()`
-(`mrs_uav_managers/src/uav_manager.cpp:1480-1560`).
+Two shapes cover all of it.
+
+- **A setter or a switch:** the handler answers at once (`switch_tracker`, `set_exposure`,
+  `arming`, `trigger_node`).
+- **A sequence:** the handler starts work, calls other services, and answers when done. In
+  `uav_manager` takeoff: switch the controller, switch the tracker, wait 0.3 s, call the
+  tracker's takeoff, answer. ROS 1 runs the whole sequence inside the callback, blocking a
+  spinner thread on each nested `call()` and on `ros::Duration(0.3).sleep()`
+  (`mrs_uav_managers/src/uav_manager.cpp:1480-1590`).
 
 ## 1. What a service is
 
-**Decision.** A service is a name and a `.srv` type. A client sends one request and
-gets exactly one outcome. A server answers each request once. A name resolves as a topic
-name does (absolute, relative to the node's namespace, `~/` private), from a port table
-or a literal. Within one service, a stream is identified by its name plus the MD5 of the
-`.srv` type, as a topic stream is identified by its name plus the message MD5
-(PR #266). Each stream has at most one server.
+**Decision.** A service is a name and a `.srv` type. A server answers each request once.
+A client sends one request and gets exactly one outcome.
+
+A name resolves as a topic name does: absolute, relative to the node's namespace, or `~/`
+private, from a port table or a literal. A stream is the name plus the MD5 of the `.srv`
+type, as a topic stream is the name plus the message MD5 (PR #266). **A name has at most
+one server, across all its versions.**
 
 *Reason.* A ROS 1 porter expects one name and one type. The `.srv` MD5 already exists:
 `hypha_msggen` emits `Request`, `Response` and the service type with ROS 1's service MD5
-over both halves (`hypha_msgdef::resolve::service_identity`). FSR-21 already requires the
-generation. Using the same stream key as topics gives a client and a server of two
-versions of one `.srv` the behaviour that topics get during a migration (each version is
-its own stream, and neither fails). Users then learn one naming rule, not two.
+over both halves (`hypha_msgdef::resolve::service_identity`), and FSR-21 already requires
+that generation.
+
+The stream key lets clients of two versions coexist and get a clear answer. One server
+per name keeps the rule ROS 1 users rely on: one node answers `/uav1/arming`. Two servers
+of two versions of `arming` would be two sources of truth for one command.
 
 | Situation | Behaviour |
 |---|---|
-| A second server for a stream | Its creation fails with `ResourceLimit`. The message names the holder: `hypha: service '/uav1/arming' (std_srvs/SetBool 09fb0352): already served by node 'hw_api' (pid 4711)`. Spike: iceoryx2 refuses it (`ExceedsMaxSupportedServers`). |
-| The holder is a dead node | The same refusal, which names the node as dead and says how to free the slot: the node restarts under its name, and its reclaim frees the slot, or `hypha clean` runs. A server never takes a dead node's slot itself, because FSR-26 gives a dead node's resources to its own restart. Spike: the dead server keeps the slot until its node is reclaimed, and then a new server is created. |
-| A client before its server | Not an error (FSR-25: start order must not matter). `ready()` says whether a live server of the client's stream exists now. A call made with no server ends `NoServer`. There is no `waitForExistence`. Section 10 says what a porter writes instead. |
-| A server of another version only | `NoServer`. The client logs once, and again when the situation changes: `hypha: service '<s>' has a server, not of type <T> (<md5>): served is <T> (<md5>)`, the topic warning of PR #266 in service form. |
-| A server that exits normally mid-call | The outstanding calls end `ServerLost` on the client's next turn. The server's teardown wakes its clients. |
-| A server that crashes mid-call | Section 5: `ServerLost` at the call's deadline. |
+| A second server on the name, same version or another | Its creation fails with `ResourceLimit`. The message names the holder: `hypha: service '/uav1/arming': already served as std_srvs/SetBool (09fb0352) by 'hw_api' (pid 4711)`. |
+| The holder is a dead node | The new server reclaims the dead node, as that node's own restart would. It logs `hypha: service '<s>': reclaimed dead node '<n>' (pid <p>) that held its server`, and then creates the server. A live node cannot be taken over: iceoryx2's monitor lock decides which nodes are dead. The precedent is the reclaim of dead CLI nodes by any node (`hypha_core/src/port/spec.rs:362-366`). |
+| A client starts before its server | Not an error (FSR-25). A call made while no server exists stays pending inside the client, using one of its outstanding slots. It is sent when a server appears, which is checked on the graph event and at each turn. It ends `NoServer` only at its deadline. |
+| Only a server of another version exists | The call ends `NoServer` at its deadline. The client reports the "other versions" fact of topic overloading: `hypha: service '<s>' is served as <T> (<md5>), not as <T> (<md5>)`. |
+| The server exits normally during a call | The outstanding calls end `ServerLost` at the client's next turn. Destroying the server ends every slot of its table (section 2). |
+| The server crashes during a call | `ServerLost`, found by the liveness probe at the call's timeout (section 5). |
 
-Two servers of one stream would need a rule for which one answers, and ROS 1 has none,
-so they are refused.
+`client.ready()` says whether a live server of the client's stream exists now.
+`client.exists()` is the ROS 1 spelling of the same call. `client.waitForServer(timeout)`
+waits for one; like `callAndWait`, it is refused on a dispatch thread (section 3).
 
 ## 2. The server's execution model
 
-**Decision.** Option (c) of the brief: one mechanism with two front ends.
+**Decision.** There is one mechanism with two front ends.
 
-- **Underneath** the node's `WaitSet` holds the server's queue of received requests. A
-  request event wakes the run. No timer and no poll is involved (spike: the server process
-  sleeps in `timed_wait` of the request event and wakes within the round trip below).
-- **A cycle** reads requests as an input port, `hypha::Requests<Srv>`. They are queued
-  arrivals with the cycle's capture, budget and replay rules. The step answers through the
-  handle it is given.
+- **Underneath** the server owns a fixed table of `clients × outstanding` slots, each
+  holding one received request. A request event wakes the run; no timer and no poll is
+  involved.
+- **A cycle** reads requests as an input port, `hypha::Requests<Srv>`, with the cycle's
+  capture, budget and replay rules. The step answers through the handle it is given.
 - **A plain node or `ApplicationNode`** registers a callback,
-  `node.advertiseService<Srv>(name, handler)`, which runs on the `WaitSet` thread between
-  turns, as a subscription callback does.
+  `node.advertiseService<Srv>(name, handler)`. The callback runs on the `WaitSet` thread
+  between turns, as a subscription callback does.
 
 *Reason.* The MRS managers are cycle nodes. `control_manager` is a triggered cycle, and
 its four servers already answer inside its step, through `Arrivals` of request topics
-(`examples/mrs/managers/control_manager.cpp:429-470`). A server that runs beside the step
-would bring back the concurrency that cycles exist to remove: a `switch_tracker` callback
-that changes the active tracker between two steps that read it. A camera or a map server
-is a plain or application node with no cycle, and a callback is the natural form there.
-One queue underneath keeps the integrity, the limits and the counters in one place in
-Rust (FSR-19). The issue made the cycle port a follow-up. This design puts it in the first
-version, because the flight is a cycle-node system.
+(`examples/mrs/managers/control_manager.cpp:429-470`). A server that ran beside the step
+would bring back the concurrency that cycles remove: a `switch_tracker` callback that
+changes the active tracker between two steps that read it.
 
-**Replies.** A handler gets a `hypha::Request<Srv>&` and does one of three things with it:
+A camera or a map server is a plain or application node with no cycle, and a callback is
+the natural form there. One table underneath keeps the integrity, the limits and the
+counters in one place in Rust (FSR-19). The cycle port is in the first version, not a
+follow-up, because the flight runs on cycle nodes.
+
+**Answers.** A handler gets a `hypha::Request<Srv>&` and does one of three things with it:
 
 - `reply(response)` answers it.
-- `refuse()` gives the client the outcome `Refused`, as a ROS 1 callback does when it
-  returns `false`.
-- `defer()` returns a `hypha::Deferred<Srv>`. This is a move-only handle that the node
-  keeps and answers in a later step or callback. Its destructor refuses the request if it
-  was not answered. It may be answered from another thread, which the spike's
-  `an_active_request_and_a_pending_response_are_send` confirms is possible: iceoryx2's
-  `ActiveRequest` is `Send` on the thread-safe service.
+- `refuse()` or `refuse("why")` gives the client `Refused`, as a ROS 1 callback does when
+  it returns `false`.
+- `defer()` returns a `hypha::Deferred<Srv>` to answer later.
 
-A request that leaves its handler with none of the three is refused, counted
-(`service.unanswered`) and logged once. It is never left pending without an owner.
-Deferred replies are in scope now: `uav_manager` takeoff needs them, `mrs::Serve` already
-offers them (its handler returns `std::nullopt` and later calls `respond(ticket, ...)`),
-and Autoware's `component_interface_utils` handlers need them (issue). The number a
-server may hold deferred is bounded (section 6).
+A request that a step or a callback **read** and left without any of the three is
+refused, counted (`service.unanswered`) and logged once. A request that a step **never
+read** stays queued for a later step. A step that never calls `port.requests()` therefore
+refuses nothing. That case is bounded by `per_step` and by the client's timeout. Without
+this rule, the quick-start idiom `if (!speed.usable()) return;` would silently refuse
+every call.
 
-**In a step, replies leave after the step**, in reply order with its outputs. A step that
-fails sends none of its outputs (FSR-38), and its captured requests then end `Refused`
-with the reason `server step failed`. The client always gets an outcome, and a failed step
-has no visible effect. A deferred handle that is answered in a later step follows that
-step's rule.
+**`Deferred` is a handle into the server's table**, not the request itself. A deferred
+request stays in its slot, and `Deferred` holds the slot index and a weak reference to the
+server.
+
+*Reason.* In iceoryx2 0.10.1 an `ActiveRequest` holds an `Arc` of the server's shared
+state (`active_request.rs:95`), and the server's slot is released only when that state
+drops (`port/server.rs:211-218`). A `Deferred` that owned the `ActiveRequest` and outlived
+the server would keep the server registered, so its clients would never see
+`ServerLost`, and a restart of the server in the same process would be refused.
+
+| `Deferred` | Rule |
+|---|---|
+| Construction | Default-constructible and empty. `request.defer()` fills it. Move-only. `explicit operator bool` says whether it holds a request, so no `std::optional<Deferred>` is needed. |
+| `reply(response)`, `refuse(...)` | Answer the slot. Afterwards the handle is empty. |
+| Destroyed while holding a request | Refuses it, logged once. |
+| Its server destroyed first | Every slot ends, and clients see `ServerLost`. A later `reply()` returns `Disconnected`. |
+| The client gone | Each turn the server drops the slots whose client is gone (`ActiveRequest::is_connected()`) and counts them as `abandoned`. A later `reply()` returns `Disconnected`. |
+| Answered from another thread | Allowed. That thread sends at once, stamped with the process's framework time. Such an answer is not part of a deterministic replay. |
+
+Bounds: the server holds at most `clients × outstanding` requests, deferred ones
+included. iceoryx2 sizes a client for one more generation of requests that the server
+still holds after the client dropped them (`static_config/request_response.rs:103-125`).
+A client whose calls timed out while the server still holds them could therefore exceed
+that, and its send would fail with a transport error that no outcome names. So a `call()`
+that would exceed the limit returns `Busy`, and `describe()` says
+`the server still holds N expired calls of this client`.
+
+**In a step, answers leave after the step**, in order with its outputs. A step that fails
+sends none of its outputs (FSR-38).
+
+A request that a **failed** server step read ends `ServerLost` with the reason
+`server step failed`. It does not end `Refused`: C++ state that the step changed before it
+threw is not rolled back, so the call may have had an effect. A handler that throws ends
+`ServerLost` the same way, and the throw counts as the server's `Panic`. A deferred handle
+that is answered in a later step follows that step's rule.
 
 **Not chosen.**
 
 - A handler that returns the response (`Response handle(const Request&)`). It cannot
-  defer, so a second form would be needed for the sequence shape. One handle form serves
-  both, and `request.reply({...})` is as short.
-- Long-running work in a service. ROS 1 guidance says to use an action for it. A
-  deferred reply answers when a short sequence ends. It does not stream progress.
+  defer, so the sequence shape would need a second form. One handle form serves both, and
+  `request.reply({...})` is as short.
+- Long-running work in a service. ROS 1 guidance says to use an action for it. A deferred
+  answer closes a short sequence; it streams no progress.
 
 ## 3. The client's execution model
 
-**Decision.** Inside a run, a call is asynchronous, and its outcome arrives later:
+**Decision.** Inside a run, a call is asynchronous, and its outcome arrives later.
 
-- **In a cycle** a `hypha::Calls<Srv>` port is both the output and the input of calls.
-  `call(request)` in a step stages the request. It is sent after the step succeeds, like
-  an output, so a failed step sends no request. Its outcome is an input of a later step:
-  `calls.result()` (or `results()` when more than one may be outstanding).
-- **In a plain node** `client.call(request, onResult)` sends at once. `onResult` runs on
+- **In a cycle,** a `hypha::Calls<Srv>` port is both the output and the input of calls.
+  `call(request)` in a step stages the request, which is sent after the step succeeds, as
+  an output is. The outcome is an input of a later step: `calls.result()`, or
+  `calls.results()` when more than one may be outstanding.
+- **In a plain node,** `client.call(request, onResult)` sends at once. `onResult` runs on
   the `WaitSet` thread at a later turn, never inside `call()`.
 
-There is one rule for both. `call()` refuses only what it can know locally: `Busy` when
-the client already has its limit of outstanding calls, and `TooLarge` when the request is
-above the service's bound. Everything else is an outcome, delivered exactly once, later:
-`Answered`, `Refused`, `NoServer`, `ServerLost`, `DeadlineExpired`, `InvalidResponse`.
-The issue has `send` return `NotAvailable` when there is no server. In a step the send
-happens after the step, so `NoServer` cannot be a return value there. Making it an outcome
-everywhere keeps one rule.
+`call()` returns `[[nodiscard]] hypha::CallStatus`, one of `Sent`, `Busy` or `TooLarge`.
+It refuses only what it can know locally:
 
-**The deadline** is required. It is in the client's framework time and is given in code
-(`hypha::timeout(d)`) or in its table (`timeout_ms`). A client without one is refused at
-start, and the message names the key. There is no wait without an end. In framework time,
-a replay expires the same deadlines on every run.
+- `Busy`: the client is at its outstanding limit. That includes calls that the server
+  still holds after they timed out (section 2).
+- `TooLarge`: the request is above the service's bound.
 
-**A blocking call** (`callAndWait(request)`) exists only for a client on a thread that
-runs no `WaitSet`: a tool, a test, or a worker thread of an `ApplicationNode`. The wait is
-on the caller's thread and uses the client's own response event. The library starts no
-thread, so FSR-14 holds. On a thread that is running a `WaitSet` dispatch it is refused
-with `InvalidState`, and the message says what to write:
-`hypha: callAndWait on the run thread would wait for the thread that must deliver its
-answer; use a Calls port in a cycle or call(request, onResult) in a callback`. The test is
-"is this thread inside a dispatch". It is done at run time because C++ cannot see it at
-compile time. Schema lookup inside a callback already applies the same rule
+Every `Sent` call ends in exactly one outcome, delivered in exactly one step (or one
+callback):
+
+| Outcome | When | `mayHaveRun()` | `safeToRetry()` |
+|---|---|---|---|
+| `Answered` | the server replied. `ok()` is true | yes | no |
+| `Refused(reason)` | `refuse()` or `refuse("why")`; a `Deferred` destroyed unanswered; a response above its bound; a request that a step read and did not answer | no | yes |
+| `NoServer` | no live server of the stream until the timeout | no | yes |
+| `NotSent` | the client step that staged the call failed, so nothing was sent | no | yes |
+| `ServerLost(reason)` | the server crashed or exited; a handler threw; a server step failed; the response did not verify. The reason is in `describe()` and in the counters | yes | no |
+| `Timeout` | no answer within the timeout | yes | no |
+
+An outcome that the step does not read is dropped at the end of that step and counted
+(`results_unread`). A port used to fire calls and forget them therefore does not wedge.
+`client.pending()` says whether a call is outstanding.
+
+**The timeout** is a field of the service's policy (section 6), 1 s by default. Code
+(`hypha::timeout(d)`) or a client's table (`timeout_ms`) overrides it per client.
+`describe()` names where the value came from: `timeout after 1 s (policy
+defaultService)`. It is counted in the client's framework time, so a replay times out
+the same calls on every run (section 4).
+
+**A blocking client is its own kind:** `node.serviceClient<Srv>(name,
+hypha::blocking)`. It is never attached to a `WaitSet`, and it offers `callAndWait(request)`
+and `waitForServer(timeout)`. The caller's thread waits on the client's own response
+event. The library starts no thread, so FSR-14 holds.
+
+These calls are for a tool, a test, or a worker thread of an `ApplicationNode`. On a
+thread that is running a `WaitSet` dispatch they are refused with `InvalidState`, and the
+message says what to write instead: `hypha: callAndWait on the run thread would wait for
+the thread that must deliver its answer; use a Calls port in a cycle or call(request,
+onResult) in a callback`. The check is made at run time, because C++ cannot see "inside a
+dispatch" at compile time. Schema lookup inside a callback already follows the same rule
 (execution-model.md §5.1).
 
-*Reason.* A blocking call in a step stalls every other input of the node. With a server in
-the same `WaitSet` it can never be answered, and under lockstep it holds the replay until
-`--timeout` (`replay-flow-control.md` §6.7). The common ROS 1 pattern is "in a callback,
-call another node's service and use the result". It becomes a state over steps in a
-cycle, or a continuation in a plain node. Section 8 shows the `uav_manager` takeoff
-written this way. It comes out shorter than the hand-written `callStep` state machine of
-the current port.
+*Reason.* A blocking call in a step stalls every other input of the node. With its server
+in the same `WaitSet`, it can never be answered. Under lockstep it holds the replay until
+`--timeout` (replay-flow-control.md §6.7).
+
+The common ROS 1 pattern is "in a callback, call another node's service and use the
+result". In a cycle it becomes a state over steps, written by hand or with `hypha::Sequence`
+(section 8.2). In a plain node it becomes a continuation.
 
 ## 4. Time, lockstep, recording, replay
 
 **Stamps.** A request carries the client's framework send time in its frame header
-(`framework_sent_nanos`), as a topic frame does. For a staged call that is the step's
-time. A response carries the server's time when it was answered.
+(`framework_sent_nanos`), as a topic frame does. For a staged call, that is the time of the
+step that staged it. A response carries the time of the server's step or callback that
+answered it.
 
-**Lockstep (decision, as the issue proposes).** The response edge is an ordinary upstream
-edge, so a participant server is an upstream of its participant clients. The request edge
-does not hold the server. It is the loop's delay element:
+**Lockstep (decision).** Requests are an input of the server's cycle. A step at deadline
+D takes the requests stamped strictly before D; a trigger or fallback step at T takes
+those stamped strictly before T. They are ordered by stamp, then client node name, then
+client port name, then sequence.
 
-- The server admits requests at `/clock` sample boundaries. When it reads the sample
-  `C(k)`, it admits every request stamped at or before the previous sample's value
-  `C(k-1)`, in the order (stamp, client id, sequence). The steps of that sample see them.
-- This is deterministic. A participant sends its data before its progress report
-  (`replay-flow-control.md` §4.2). The player sends `C(k)` only after every participant
-  acknowledged `C(k-1)`. So every request stamped at or before `C(k-1)` is in the queue
-  when `C(k)` is read, and none stamped later can be admitted.
-- No loop holds. The client waits for the server's progress. The server waits for no
-  client. A response is stamped later than the request it answers.
-- The cost: under replay a call takes one clock sample (one `--chunk`) longer than it does
-  live. A deadline shorter than one chunk expires. The docs must say so.
+Every participant client is an upstream of the server (§6.4 of replay-flow-control.md),
+and every participant server is an upstream of its clients. Both edges are cut strictly.
+A client and its server therefore form the two-node feedback loop of §6.4, which does not
+deadlock.
 
-A server that is a plain callback node takes no part, as for topics
-(execution-model.md §11.2). Its responses are stamped when they are sent, and a replay
-with it is not deterministic. That is the existing rule for plain callbacks.
+execution-model.md §6.6 item 5 changes with this. A triggered step at T needs an upstream
+that feeds only non-trigger inputs (queued inputs, requests, responses) to report T − 1 ns,
+not T, because those inputs are already cut strictly before T. This removes the deadlock
+of a triggered client that calls a triggered server.
 
-**Recording (decision).** The first version records no service traffic. `hypha record`
-follows publish-subscribe services only, so a request-response service is invisible to it
-by construction. A recording can therefore never call a live server. That fixes the
-replay hazard of the topic pair: a recorded `trigger_node` request started the live EKF
-again. In stage 4 a server can publish what it served on an observer stream
-`<service>/calls` (request, response, outcome, client, stamps), and only while a reader is
-subscribed. `hypha record` records that stream like any other.
+*Reason.* This is the cut every other input uses, so the served step depends only on
+stamps. An earlier draft admitted requests at `/clock` sample boundaries. Under that rule
+the served step depended on things outside the system under test:
 
-**Replay (decision).** `hypha play` never publishes service traffic by default. Two later
-modes use the recorded `calls` stream:
+- on `--chunk`;
+- on attached observers, because the player shortens a chunk to the smallest subscriber
+  buffer over all subscribers, `hypha topic echo` and Foxglove included;
+- on `/clock` resends during a wait, and so on host load;
+- on `--loop` and on backward seek;
+- on the per-run random client ids of `next_publisher_id`.
 
-- `--serve <service>`: the player is the server, for a client under test. It answers in
-  recorded order and refuses on a mismatch of the request.
-- `--call <service>`: the player is the client, for a server under test. It sends the
-  recorded requests at their stamps and reports responses that differ.
+A timeout tuned live would also have expired in replay only. All of that is gone. The tie
+order uses names, which are the same on every run, not ids.
 
-Neither is in the first version. A system replayed today with services between its
-participants still runs deterministically, by the lockstep rule above, because the calls
-are re-made live.
+**Timeouts under simulated time.** A call sent at S times out at the client's first step
+with D ≥ S + timeout. That is deterministic, with a resolution of the client's period.
+
+**Order inside one `WaitSet`.** A client and its server may be cycles of one node. The
+strict cut makes their order irrelevant: a request stamped D is never served by a server
+step at D. Stage 1c tests this.
+
+**Remaining non-determinism, to document:**
+
+- a client or a server that is a plain callback, which takes no part in lockstep
+  (execution-model.md §11.2);
+- a `Deferred` answered from a worker thread;
+- a call made before a non-participant server started;
+- the first chunk of a replay without `--nodes`.
+
+**Recording (decision).** `hypha record` does not record the request-response services.
+It follows publish-subscribe services only, so a recording can never call a live server.
+That removes the replay hazard of the topic pair, where a recorded `trigger_node` request
+started the live EKF again.
+
+What is recorded is the **call log** of stage 1b. Each client publishes
+`hypha_msgs/ServiceCall` on a topic in the service's namespace, carrying:
+
+- the service, the client node, the port and the sequence;
+- the outcome;
+- the sent and done stamps;
+- the request bytes and the response bytes, bounded by the policy.
+
+It publishes only while someone subscribes, which costs one atomic read per call.
+`hypha record` records the log by default, `hypha play` never republishes it, and
+`hypha top` reads it.
+
+**Replay (decision).** `hypha play` never makes or answers a call by default. Two later
+modes read the call log:
+
+- `--serve <service>`: the player answers a client under test in recorded order.
+- `--call <service>`: the player makes the recorded calls into a server under test and
+  reports differing responses.
+
+Neither is in stage 1. A replay of a system whose participants call each other repeats
+exactly by the lockstep rule above, because the calls are made again live.
 
 ## 5. Integrity and failure semantics
 
-**Frames (decision).** Both directions carry the full frame header and its checks, and
-the header layout is unchanged (communication-integrity.md §2, FSR-09/10). The CRC's start
-value binds the frame to its role:
+**Frames (decision).** Both directions carry the full frame header and its checks, and the
+header layout is unchanged (communication-integrity.md §2, FSR-09/10). The CRC's start
+value binds each frame to its role:
 
 - A request is sealed for `<service>#request`.
 - A response is sealed for `<service>#response/<client id>/<request sequence>`.
 
 So a response verifies only against the request it answers. It cannot pass as a request,
-as a topic frame, or as the answer to another call. The spike checks all three
-(`a_framed_round_trip...`: a response does not verify against the next sequence or as a
-request). The issue proposed adding the client id and sequence to the response header.
-Putting them in the start value achieves the same binding without a new header field,
-and FSR-03's overhead stays 104 bytes. A hypha server drops its `ActiveRequest` when it
-replies, and a hypha client drops the pending call when it takes the first response.
-Either drop closes the call's channel, so a second response has nowhere to go. The spike
-did not test a misbehaving sender that answers twice before the client reads. Stage 1a
-tests it, and the response's sequence check refuses the second as `sequence_gap`.
+as a topic frame, or as the answer to another call. Stage 1a tests all three.
+FSR-03's overhead stays 104 bytes.
+
+**Sequences.** A request carries its client's own sequence. A response carries the
+sequence of the request it answers, not a counter of the server's: one server counter
+across all its clients would look like a gap to each of them. Responses therefore count no
+`sequence_gap`, and requests count no gaps either. A client may legitimately leave numbers
+unused, for example a call that ended `NotSent`.
+
+**Answer kinds.** The response flags carry the kind, inside the CRC: an answer, a refusal
+(`FLAG_REFUSED`; the payload is the UTF-8 reason), or a failure (`FLAG_FAILED`, for a
+handler that threw or a failed step; the payload is the reason). The transport then
+reports `ServerLost(reason)`.
+
+A hypha server drops its `ActiveRequest` when it answers, and a hypha client drops the
+pending call when it takes the first response. Either drop closes the call's channel, so a
+second response has nowhere to go.
 
 | Case | Client outcome | Detected by |
 |---|---|---|
-| No server of the stream when the call is sent | `NoServer` | iceoryx2 reports 0 server connections at send (spike: `a_request_that_no_server_takes_is_seen_at_send`) |
-| Outstanding limit | `call()` returns `Busy`; nothing sent | the client's count (iceoryx2 `ExceedsMaxActiveRequests`) |
-| Request above the bound | `call()` returns `TooLarge` | encode |
-| Server refuses, throws, or its step fails | `Refused` | the server. A throw also counts as the server's `Panic` |
-| Server exits or destroys its endpoint | `ServerLost`, at the next turn | iceoryx2 disconnects the pending call. The server's teardown notifies its clients |
-| Server crashes (SIGKILL) | `ServerLost` at the deadline | Spike: iceoryx2 alone still reports the call connected and keeps the server's slot. The service's node list reports the server's node dead within 1.4 to 3.7 ms. At the deadline the client probes that list once (one probe: 0.55 to 1.8 ms at load 51) and reports `ServerLost` instead of `DeadlineExpired`. |
-| Server restarts | New calls reach the new server. No old request is served again | the restart reclaims its dead node, which disconnects the old calls (spike: `is_connected()` false after the reclaim) |
-| No answer within the deadline | `DeadlineExpired`. A late response is dropped and counted (`late_responses`) | the client, in framework time |
-| Response corrupt, misrouted, repeated, or of another schema | `InvalidResponse` at once, counted in the frame counters | the frame checks above |
-| Client gone before the answer | `reply()` reports `Disconnected` to the server, and the server's counter counts it | iceoryx2 `ActiveRequest::is_connected()` |
-| A server queue that is full | Cannot happen | iceoryx2 sizes each client's queue to that client's outstanding limit (`port/server.rs:437`, `buffer_size: max_active_requests_per_client`). A request is never dropped silently. |
+| No live server of the stream until the timeout | `NoServer` | iceoryx2 reports 0 server connections at each send attempt |
+| Outstanding limit, expired calls the server still holds | `call()` returns `Busy`; nothing sent | the client's count of its own and its held calls |
+| Request above its bound | `call()` returns `TooLarge` | encode |
+| Response above its bound | `reply()` returns `TooLarge` to the server. The client gets `Refused("response N B above bound 4096 B, policy defaultService")` | the server |
+| Server refuses, or a request read and not answered | `Refused(reason)` | the server, flag `FLAG_REFUSED` |
+| A handler throws, or a server step fails | `ServerLost(reason)` | the server, flag `FLAG_FAILED` |
+| Server exits or destroys its endpoint | `ServerLost`, at the next turn | iceoryx2 disconnects the pending call when the server's table is dropped |
+| Server crashes (SIGKILL) | `ServerLost`, at the call's timeout | iceoryx2 alone keeps such a call connected. At a timeout of a still-connected call, the client probes the server's node once (below) and reports `ServerLost` instead of `Timeout` |
+| Server restarts | New calls reach the new server. No old request is served again | the restart, or a new server, reclaims the dead node, which disconnects the old calls |
+| No answer within the timeout | `Timeout`. A late response is dropped and counted (`late_responses`) | the client, in framework time |
+| Response corrupt, misrouted, or of another schema | `ServerLost("invalid response: <check>")`, counted in the frame counters | the frame checks |
+| Client gone before the answer | The server drops the slot and counts it as `abandoned`. A later `reply()` returns `Disconnected` | iceoryx2 `ActiveRequest::is_connected()` |
+| A server queue that is full | Cannot happen. A request is never dropped silently | iceoryx2 sizes each client's queue to its outstanding limit (`port/server.rs:437`); the client counts its held calls |
 
-**Delivery.** A request is executed at most once. A call gets exactly one outcome. Hypha
-does not retry, and it does not recognise a retried request: a retry is a new call with a
-new sequence. A server that must be idempotent (MRS `goto` sent again) is idempotent in
-its logic, as in ROS 1. Exactly-once execution would need a server-side history of call
-ids that survives a restart. That is a database, not middleware.
+**The liveness probe** runs only at a timeout of a call that is still connected, and at
+most once per service per second, on the run thread. Its cost was measured in the spike:
+0.55 to 1.8 ms per probe at load average 51.
+
+*Author's note (change 16).* The review names `Node::state_of`, which scans every node of
+the domain with filesystem calls. The probe uses the service's own node list
+(`PortFactory::nodes`, `service/port_factory/request_response.rs:173`), which visits only
+the nodes registered at that service. That is the per-stream form PR #266 adopted for the
+same reason. The rate limit is kept as the review states it.
+
+**Delivery.** A request is executed at most once, and a call gets exactly one outcome.
+hypha does not retry, and it does not recognise a retried request: a retry is a new call
+with a new sequence. `mayHaveRun()` and `safeToRetry()` tell the application which
+outcomes allow a blind retry.
+
+A server that must be idempotent, such as MRS `goto` sent again, is idempotent in its own
+logic, as in ROS 1. Exactly-once execution would need a server-side history of call ids
+that survives a restart. That is a database, not middleware.
 
 ## 6. Policy and resources
 
 **Decision.** A service has a policy, as a topic does (cpp-api.md §7). It is a
-`hypha::ServicePolicy` named in one header that both ends include, mapped to the type by
-`hypha::ServicePolicyOf<Srv>`, and stamped on the service. An opener with another policy
-is refused with `QosMismatch`.
+`hypha::ServicePolicy`, named in one header that both ends include, mapped to the type by
+`hypha::ServicePolicyOf<Srv>`, and stamped on the service. An opener that declares another
+policy is refused with `QosMismatch`.
 
 | Field | Default (`defaultService`) | Meaning |
 |---|---|---|
-| `clients` | 8 (+3 for tools, as observer slots) | iceoryx2 `max_clients` |
+| `clients` | 8, plus 3 observer slots for tools | iceoryx2 `max_clients` = clients + observers |
 | `outstanding` | 2 per client | iceoryx2 `max_active_requests_per_client`. A `Calls` port asks for 1 by default |
-| `requestBytes`, `responseBytes` | the encoded size of a fixed-size half, otherwise 4 KiB | the bound of each half. A larger message is `TooLarge` |
-| servers | 1, not configurable | `max_servers = 1` |
-| responses per request | 1, not configurable | `max_response_buffer_size = 1` |
-| fire-and-forget, safe overflow | off, not configurable | `enable_fire_and_forget_requests(false)`; a request is never overwritten |
+| `requestBytes`, `responseBytes` | the encoded size of a fixed-size half, otherwise 4 KiB | the bound of each half. A larger one gives `TooLarge` |
+| `timeout` | 1 s | a call's timeout, unless the client overrides it |
 
-*Reason.* A bound is required. Without one each service is growable, which is the issue's
-"Payload" fault (166 KB of bookkeeping per growable publisher, no `/dev/shm` check).
-4 KiB holds every `std_srvs` call and every MRS and camera call. `nav_msgs/GetMap` or a
-point-cloud response declares its own policy. The memory follows from the policy: each
-client holds `outstanding x requestBytes` and the server about `clients x outstanding x
-responseBytes`, so the default is about 64 KiB per side. The pool sizing that iceoryx2
-derives from these numbers has not been measured, so stage 1 measures it (section 12).
-A server can hold at most `clients x outstanding` requests deferred, by construction.
+**Transport settings, fixed.** `apply_hypha_defaults` (`hypha_iceoryx2/src/domain.rs`)
+covers publish-subscribe and events only. Left at iceoryx2's defaults, request-response
+would get:
 
-**Idle cost.** None. A server with no calls sleeps in its request event, and a client with
-none outstanding has no deadline in the `WaitSet`. A client wakes on its service's response
-event. Each woken client checks its own outstanding calls (at most `outstanding` atomic
-loads), so clients of one service wake each other. A per-client event would remove those
-wake-ups, at the cost of one event service per client. That waits until a measurement shows
-the wake-ups matter.
+- `RetryUntilDelivered` for both backpressure strategies, which is a send that spins on
+  the run thread;
+- `max_nodes` 20.
 
-**Loans.** The first version copies a request or response into its slot, as typed
-publishing does today. A typed loan follows the typed loan of topics (PR #261), once that
-lands.
+Every hypha service therefore sets these explicitly:
+
+| Setting | Value |
+|---|---|
+| backpressure, client and server | `DiscardData` |
+| `max_servers` | 1 |
+| `max_nodes` | `clients + observers + 1` |
+| `max_response_buffer_size` | 1 |
+| `max_borrowed_responses_per_pending_response` | 1 |
+| server `max_loaned_responses_per_request` | 1 |
+| `max_loaned_requests` | 1 |
+| fire-and-forget, safe overflow of requests and of responses | off |
+
+A send to a peer whose queue is full, or to no peer, returns at once. Stage 1a tests it.
+
+**Memory.** A server's data segment holds `clients × 2·outstanding × (response buffer +
+borrowed + loaned)` chunks (`static_config/request_response.rs:127-143`). With the
+default policy and iceoryx2's defaults for the last three, that is 11 × 4 × 5 chunks of
+4 KiB, about 880 KiB per server, or about 26 MB for 30 services. With the settings above it
+is 11 × 4 × 3, about 530 KiB. The earlier estimate of 64 KiB was wrong. Section 12 gives
+the measurement.
+
+**Names** are at most 219 bytes. iceoryx2's `MAX_SERVICE_NAME_LENGTH` is 255, and the
+prefix `hypha/srv/`, the key `@<16 hex>` and the event suffix `/response` take 36. A longer
+name is refused at creation, and the message says 219.
+
+**Large messages.** `nav_msgs/GetMap`, `GetPlan`, and MRS `TrajectoryReferenceSrv` or
+`PathSrv` beyond about 100 points exceed 4 KiB.
+
+- A request above the bound gives `TooLarge` from `call()`.
+- A response above it gives `TooLarge` from `reply()`, and the client gets `Refused` with
+  the sizes.
+
+A port can declare a larger policy. The migration guide row says what to do instead: data
+of map size goes on a latched topic, and a service carries a small request and its
+acknowledgement. A 32 MB policy with the default client counts pins gigabytes.
+
+**Idle cost.** None. A server with no calls sleeps in its request event. A client with no
+call outstanding has no timeout in the `WaitSet`. A client wakes on its stream's response
+event, and each woken client checks its own outstanding calls (at most `outstanding`
+atomic loads), so clients of one service wake each other. A per-client event would remove
+those wake-ups at the cost of one event service per client. That waits for a measurement.
+
+**Loans.** Stage 1 copies a request or a response into its slot, as typed publishing does
+today. A typed loan follows the typed loan of topics (PR #261).
 
 ## 7. Transport
 
-**Decision: iceoryx2 request-response.** The service is `hypha/srv/<name>@<md5 16 hex>`
-with `[u8]` payloads and the frame header as the user header of both directions. It
-comes with two event services, `.../request` (servers listen) and `.../response` (clients
-listen). The `hypha/` namespace is already the framework's (`hypha/hk/graph/v1`), so
-these names cannot meet a topic.
+**Decision: iceoryx2 request-response.** It uses three iceoryx2 services per stream:
 
-The alternative is two publish-subscribe streams with a correlation id, which is what
-all three ports do today.
+| iceoryx2 service | Pattern | Who | Purpose |
+|---|---|---|---|
+| `hypha/srv/<name>@<md5 16 hex>` | request-response, `[u8]` payloads, the frame header as the user header of both directions | the server and its clients | the calls |
+| `hypha/srv/<name>/request` | event, one listener | the server listens, clients notify | wakes the server; its single listener slot is the name's server lock |
+| `hypha/srv/<name>@<md5 16 hex>/response` | event | clients listen, the server notifies | wakes the clients |
+
+The `hypha/` namespace is already the framework's (`hypha/hk/graph/v1`), so none of these
+names can collide with a topic.
+
+**One server per name.** The review's mechanism: server creation lists the sibling
+streams `hypha/srv/<name>@*`, refuses when one has a live server, and tolerates a race of
+two servers created at once, logging it at the next graph event.
+
+*Author's note (change 7).* The rule is kept. It is enforced by the single listener slot
+of the name-level request event instead. A server takes that slot before it creates its
+stream's server port. iceoryx2 refuses a second listener atomically
+(`ExceedsMaxSupportedListeners`), whatever the version, so two servers created at once
+cannot both succeed, and nothing needs logging later. The sibling listing remains, only on
+the refusal path, to name the type that the holder serves. Stage 1a tests the race with
+several processes.
+
+The alternative is two publish-subscribe streams with a correlation id, which is what all
+three ports do today.
 
 | Point | iceoryx2 request-response | Two pub/sub streams |
 |---|---|---|
 | Routing | A response goes to the asking client only | Every client reads every response and drops the others. Any process can answer with a matching id |
-| Readiness | Counts servers | "The request topic has a subscriber": `hypha record`, `topic echo` and Foxglove are subscribers too |
-| One server | Enforced by iceoryx2 (spike) | Not expressible |
-| Server loss | Graceful: the call disconnects. Crash: the service's node list (spike) | Nothing. The client waits for its own deadline |
-| Overflow | Per-client queues that cannot overflow | A request topic can overflow, and the loss is a gap the client never sees |
-| Frame header and integrity | Fits: user headers on both directions (spike) | Fits: already built |
-| Lockstep | A dedicated rule (section 4) | A feedback loop of two topics between callback nodes holds until `--timeout` (#103) |
-| Recording and replay | Not recorded. Stage 4 adds an observer stream | Recorded, and replayed into live servers: the hazard |
-| Discovery and tools | New: `list_service_ports` must list request-response services | Free, but as topics, which they are not |
+| Readiness | Counts servers | "The request topic has a subscriber", and `hypha record`, `topic echo` and Foxglove are subscribers too |
+| One server | Enforced (above) | Not expressible |
+| Server loss | Graceful: the call disconnects. Crash: the node probe | Nothing. The client waits for its own timeout |
+| Overflow | Per-client queues that cannot overflow | A request topic can overflow, and the client never sees the loss |
+| Frame header and integrity | Fits: a user header in both directions | Fits: already built |
+| Lockstep | The strict cut and the two upstream edges (section 4) | A feedback loop of two topics between callback nodes holds until `--timeout` (#103) |
+| Recording and replay | Not recorded; the call log is | Recorded, and replayed into live servers: the hazard |
+| Discovery and tools | New: request-response services are listed for the tools | Free, but listed as topics, which they are not |
 | Topic overloading | The same stream key | Free |
 | Loans | Later (#261) | #261 |
-| Dead-node reclaim | The same node reclaim covers client and server ports (spike) | Existing |
-| Risk | Newer iceoryx2 API with no use in hypha yet (`grep -r request_response crates` finds none). Spike: four tests pass on the first run | Mature and tested in hypha |
+| Dead-node reclaim | The same node reclaim covers client and server ports | Existing |
+| Risk | An iceoryx2 API that hypha did not use before stage 1a | Mature and tested in hypha |
 
 The topic pair has a real advantage: recording, echo, overloading and loans come free,
 with machinery that hypha has already tested. Its faults are routing, readiness, server
-loss and the replay hazard, and none of them can be fixed above the transport. These are
-exactly the faults that make a service a control interface instead of a convenience. The
-request-response pattern removes them. The spike removed the main doubt about it (section
-12), and the work the pattern does not give for free is bounded: discovery rows, a
-lockstep rule, and an observer stream.
+loss and the replay hazard. None of them can be fixed above the transport, and they are
+exactly the faults that make a service a control interface instead of a convenience.
 
-**What iceoryx2 offers that hypha does not use**: response streams (several responses per
-request), several servers per service, fire-and-forget, safe overflow, flatbuffer
-payloads. They stay off because the scope is deliberately narrow.
+**What iceoryx2 offers that stays off:** response streams, several servers per service,
+fire-and-forget, safe overflow, and flatbuffer payloads. The scope is narrow on purpose.
 
 ## 8. The API
 
 ### 8.1 C++: a server in a `CycleNode` (MRS `control_manager`, `switch_tracker`)
 
-ROS 1 (`mrs_uav_managers/src/control_manager/control_manager.cpp:4223`):
+ROS 1, abridged (`mrs_uav_managers/src/control_manager/control_manager.cpp:4223`):
 
 ```cpp
 service_server_switch_tracker_ = nh_.advertiseService("switch_tracker_in", &ControlManager::callbackSwitchTracker, this);
@@ -336,7 +491,14 @@ bool ControlManager::callbackSwitchTracker(mrs_msgs::String::Request& req, mrs_m
     res.success = false;
     return true;
   }
-  std::tie(res.success, res.message) = switchTracker(req.value);
+  if (rc_goto_active_) {
+    res.message = "can not switch tracker, RC joystick is active";
+    res.success = false;
+    return true;
+  }
+  auto [success, response] = switchTracker(req.value);
+  res.success = success;
+  res.message = response;
   return true;
 }
 ```
@@ -346,39 +508,60 @@ hypha:
 ```cpp
 class ControlManager final : public hypha::CycleNode {
   public:
-    hypha::Requests<mrs_msgs::String> switchTracker{*this, "switch_tracker"};
-    // ... the other inputs; setTrigger(odometry) in setup()
+    hypha::Requests<mrs_msgs::String> switchTrackerRequests{*this, "switch_tracker"};
+    hypha::Arrivals<nav_msgs::Odometry> odometry{*this, "odometry"};
+    // ... the other ports
+
+    void setup(hypha::Node&) override {
+        this->setTrigger(this->odometry);
+    }
 
     void step(const hypha::CycleTime& time) override {
-        for (hypha::Request<mrs_msgs::String>& request : this->switchTracker.requests()) {
+        for (hypha::Request<mrs_msgs::String>& request : this->switchTrackerRequests.requests()) {
             if (this->failsafe_triggered_ || this->eland_triggered_) {
                 request.reply({.success = false, .message = "can not switch tracker, eland or failsafe active"});
+                continue;
+            }
+            if (this->rc_goto_active_) {
+                request.reply({.success = false, .message = "can not switch tracker, RC joystick is active"});
                 continue;
             }
             auto [success, message] = this->switchTracker(request->value);
             request.reply({.success = success, .message = message});
         }
-        // ... the control step, which sees the switch it just made
+        this->control(time);   // sees the tracker it just switched to
     }
+
+  private:
+    std::pair<bool, std::string> switchTracker(const std::string& name);
+    void control(const hypha::CycleTime& time);
 };
 ```
 
 ```toml
 [ports.servers.switch_tracker]
 service = "~/switch_tracker"     # /uav1/control_manager/switch_tracker
+per_step = 8
 ```
 
-The switch happens at a step boundary, before the control step of the same iteration.
-It cannot interleave with a step. `is_initialized_` disappears: a step does not run
-before `start()`.
+The switch happens at a step boundary, before the control step of the same iteration, so
+it never interleaves with a step. `is_initialized_` disappears, because a step does not
+run before `start()`. The requests wait for the next odometry trigger, at most one period
+at 100 Hz. Stage 3 lets a `Requests` port trigger a step itself.
 
 ### 8.2 C++: a chain of calls with a deferred answer (MRS `uav_manager` takeoff)
 
-ROS 1 runs the sequence inside the callback (`uav_manager.cpp:1480-1560`): `switchControllerSrv()`,
-`switchTrackerSrv()`, `ros::Duration(0.3).sleep()`, `takeoffSrv()`, each a blocking
-`call()`, then `return true` with the response.
+ROS 1 (`uav_manager.cpp:1348-1590`, then `timerTakeoff`, `:843-900`). The callback checks
+the state. It then switches the controller, and on failure turns the control output off
+and disarms. It switches the tracker, with the same failure path. It sleeps 0.3 s, calls
+the tracker's takeoff with `goal = _takeoff_height_`, and on failure calls `eland`. Then
+it replies. Each step is a blocking `call()`.
 
-hypha: the server defers, and each call is a step of a state machine.
+Later a timer waits for the tracker to report its goal and then reach it, and switches to
+the after-takeoff tracker and controller. Their results are logged, not acted on.
+
+**With `hypha::Sequence`** (stage 1c, section 9): a coroutine in one SDK header, resumed
+only by `seq.advance()` in the step, on the run thread.
 
 ```cpp
 class UavManager final : public hypha::CycleNode {
@@ -389,74 +572,219 @@ class UavManager final : public hypha::CycleNode {
     hypha::Calls<mrs_msgs::Vec1>       trackerTakeoff{*this, "tracker_takeoff"};
     hypha::Calls<std_srvs::SetBool>    toggleOutput{*this, "toggle_output"};
     hypha::Calls<std_srvs::SetBool>    arming{*this, "arming"};
+    hypha::Calls<std_srvs::Trigger>    eland{*this, "eland"};
+    hypha::Latest<mrs_msgs::ControlManagerDiagnostics> diagnostics{*this, "control_manager_diagnostics"};
+
+    void step(const hypha::CycleTime&) override {
+        for (hypha::Request<std_srvs::Trigger>& request : this->takeoff.requests()) {
+            if (auto why = this->checkTakeoff()) {
+                request.reply({.success = false, .message = *why});
+            } else if (this->takeoffSeq_.running() || this->afterSeq_.running()) {
+                request.reply({.success = false, .message = "takeoff in progress"});
+            } else {
+                this->takeoffSeq_.start(request.defer(), this->runTakeoff());
+            }
+        }
+        this->takeoffSeq_.advance();
+        this->afterSeq_.advance();
+    }
+
+  private:
+    hypha::Task<std_srvs::Trigger::Response> runTakeoff() {
+        auto a = co_await this->switchController.call({.value = this->takeoffController_});
+        if (!succeeded(a)) co_return this->disarm("could not activate '" + this->takeoffController_ + "' for takeoff", a);
+        auto b = co_await this->switchTracker.call({.value = this->takeoffTracker_});
+        if (!succeeded(b)) co_return this->disarm("could not activate '" + this->takeoffTracker_ + "' for takeoff", b);
+        co_await hypha::sleepFor(hypha::Duration::fromMillis(300));   // upstream: the motors ramp up
+        auto c = co_await this->trackerTakeoff.call({.goal = this->takeoffHeight_});
+        if (!succeeded(c)) {
+            this->send(this->eland, {});
+            co_return failure("takeoff was not successful", c);
+        }
+        ++this->numberOfTakeoffs_;
+        this->afterSeq_.start(this->afterTakeoff());
+        co_return {.success = true, .message = "taking off"};
+    }
+
+    /// timerTakeoff(): wait until the tracker has the goal, then until it is done.
+    hypha::Task<void> afterTakeoff() {
+        co_await hypha::until([this] { return this->trackerHas(true); });
+        co_await hypha::until([this] { return this->trackerHas(false); });
+        if (auto r = co_await this->switchTracker.call({.value = this->afterTakeoffTracker_}); !succeeded(r))
+            HYPHA_LOG_ERROR("could not switch to '{}' after takeoff: {}", this->afterTakeoffTracker_, hypha::describe(r));
+        if (auto r = co_await this->switchController.call({.value = this->afterTakeoffController_}); !succeeded(r))
+            HYPHA_LOG_ERROR("could not switch to '{}' after takeoff: {}", this->afterTakeoffController_, hypha::describe(r));
+    }
+
+    bool trackerHas(bool goal) const {
+        return this->diagnostics.usable() && this->diagnostics->active_tracker == this->takeoffTracker_
+            && this->diagnostics->tracker_status.have_goal == goal;
+    }
+
+    std_srvs::Trigger::Response disarm(const std::string& what, const auto& result) {
+        this->send(this->toggleOutput, {.data = false});
+        this->send(this->arming, {.data = false});
+        return failure(what, result);
+    }
+
+    template <class Srv>
+    void send(hypha::Calls<Srv>& port, const typename Srv::Request& request) {
+        if (port.call(request) != hypha::CallStatus::Sent)
+            HYPHA_LOG_ERROR("{}: not sent ({})", port.name(), hypha::toString(port.lastStatus()));
+    }
+
+    template <class Srv>
+    static bool succeeded(const hypha::CallResult<Srv>& r) { return r.ok() && r.response().success; }
+
+    template <class Srv>
+    static std_srvs::Trigger::Response failure(const std::string& what, const hypha::CallResult<Srv>& r) {
+        HYPHA_LOG_ERROR("takeoff failed: {} ({})", what, hypha::describe(r));
+        return {.success = false, .message = what + " (" + hypha::describe(r) + ")"};
+    }
+
+    std::optional<std::string> checkTakeoff() const;   // the upstream checks of callbackTakeoff()
+
+    hypha::Sequence<std_srvs::Trigger> takeoffSeq_{*this};
+    hypha::Sequence<void>              afterSeq_{*this};
+    std::string takeoffController_, takeoffTracker_, afterTakeoffController_, afterTakeoffTracker_;
+    double      takeoffHeight_{0.0};
+    uint32_t    numberOfTakeoffs_{0};
+};
+```
+
+The rules of `hypha::Sequence`:
+
+- `co_await calls.call(req)` gives the `CallResult`. A call that returns `Busy` or
+  `TooLarge` resumes at once with that status as the result.
+- `co_await hypha::sleepFor(d)` waits in framework time. `co_await hypha::until(pred)`
+  checks `pred` at each `advance()`.
+- `co_return` answers the `Deferred` given to `start()`.
+- Destroying the sequence destroys its frame, and the `Deferred` then refuses.
+- One heap frame is allocated per `start()`.
+- Never hold a reference to step-local data, or to an input value, across a `co_await`.
+
+**The same without the helper**, an explicit state machine. It is what stage 1c can
+express before `Sequence` exists, and what `Sequence` compiles to in spirit:
+
+```cpp
+class UavManager final : public hypha::CycleNode {
+  public:
+    // the same ports as above
 
     void step(const hypha::CycleTime& time) override {
         for (hypha::Request<std_srvs::Trigger>& request : this->takeoff.requests()) {
-            if (auto refusal = this->checkTakeoff()) {          // the upstream checks
-                request.reply({.success = false, .message = *refusal});
-            } else if (this->pending_) {
+            if (auto why = this->checkTakeoff()) {
+                request.reply({.success = false, .message = *why});
+            } else if (this->state_ != State::Idle) {
                 request.reply({.success = false, .message = "takeoff in progress"});
             } else {
                 this->pending_ = request.defer();
-                this->switchController.call({.value = this->takeoffController_});
-                this->state_ = State::SwitchController;
+                this->callOrFail(this->switchController, {.value = this->takeoffController_}, State::SwitchController);
             }
         }
         this->advance(time);
     }
 
   private:
-    enum class State { Idle, SwitchController, SwitchTracker, Settle, TrackerTakeoff };
+    enum class State {
+        Idle, SwitchController, SwitchTracker, Settle, TrackerTakeoff,   // the service is open
+        WaitForGoal, TakingOff, AfterTracker, AfterController            // answered; after takeoff
+    };
 
     void advance(const hypha::CycleTime& time) {
         switch (this->state_) {
-            case State::Idle: return;
+            case State::Idle:
+                return;
             case State::SwitchController:
                 if (auto r = this->switchController.result()) {
-                    if (!succeeded(*r)) return this->abort("could not activate the takeoff controller", *r);
-                    this->switchTracker.call({.value = this->takeoffTracker_});
-                    this->state_ = State::SwitchTracker;
+                    if (!succeeded(*r)) return this->disarm("could not activate '" + this->takeoffController_ + "' for takeoff", *r);
+                    this->callOrFail(this->switchTracker, {.value = this->takeoffTracker_}, State::SwitchTracker);
                 }
                 return;
             case State::SwitchTracker:
                 if (auto r = this->switchTracker.result()) {
-                    if (!succeeded(*r)) return this->abort("could not activate the takeoff tracker", *r);
-                    this->settleUntil_ = time.now + hypha::Duration::fromMillis(300);   // upstream sleeps 0.3 s
+                    if (!succeeded(*r)) return this->disarm("could not activate '" + this->takeoffTracker_ + "' for takeoff", *r);
+                    this->settleUntil_ = time.now + hypha::Duration::fromMillis(300);
                     this->state_ = State::Settle;
                 }
                 return;
             case State::Settle:
-                if (time.now >= this->settleUntil_) {
-                    this->trackerTakeoff.call({});
-                    this->state_ = State::TrackerTakeoff;
-                }
+                if (time.now >= this->settleUntil_)
+                    this->callOrFail(this->trackerTakeoff, {.goal = this->takeoffHeight_}, State::TrackerTakeoff);
                 return;
             case State::TrackerTakeoff:
                 if (auto r = this->trackerTakeoff.result()) {
-                    if (!succeeded(*r)) return this->abort("takeoff failed", *r);
-                    this->pending_->reply({.success = true, .message = "taking off"});
-                    this->pending_.reset();
+                    if (!succeeded(*r)) {
+                        this->send(this->eland, {});
+                        return this->finish(failure("takeoff was not successful", *r));
+                    }
+                    ++this->numberOfTakeoffs_;
+                    this->pending_.reply({.success = true, .message = "taking off"});
+                    this->state_ = State::WaitForGoal;
+                }
+                return;
+            case State::WaitForGoal:
+                if (this->trackerHas(true)) this->state_ = State::TakingOff;
+                return;
+            case State::TakingOff:
+                if (this->trackerHas(false))
+                    this->callOrLog(this->switchTracker, {.value = this->afterTakeoffTracker_}, State::AfterTracker);
+                return;
+            case State::AfterTracker:
+                if (auto r = this->switchTracker.result()) {
+                    if (!succeeded(*r)) HYPHA_LOG_ERROR("could not switch to '{}' after takeoff: {}", this->afterTakeoffTracker_, hypha::describe(*r));
+                    this->callOrLog(this->switchController, {.value = this->afterTakeoffController_}, State::AfterController);
+                }
+                return;
+            case State::AfterController:
+                if (auto r = this->switchController.result()) {
+                    if (!succeeded(*r)) HYPHA_LOG_ERROR("could not switch to '{}' after takeoff: {}", this->afterTakeoffController_, hypha::describe(*r));
                     this->state_ = State::Idle;
                 }
                 return;
         }
     }
 
+    /// A call of the open sequence: a call that is not sent ends it with a refusal.
     template <class Srv>
-    static bool succeeded(const hypha::CallResult<Srv>& r) { return r.answered() && r.response().success; }
+    void callOrFail(hypha::Calls<Srv>& port, const typename Srv::Request& request, State next) {
+        if (const hypha::CallStatus status = port.call(request); status != hypha::CallStatus::Sent) {
+            this->send(this->toggleOutput, {.data = false});
+            this->send(this->arming, {.data = false});
+            return this->finish({.success = false, .message = std::string(port.name()) + ": " + hypha::toString(status)});
+        }
+        this->state_ = next;
+    }
+
+    /// A call after the answer: a call that is not sent is logged and the sequence ends.
+    template <class Srv>
+    void callOrLog(hypha::Calls<Srv>& port, const typename Srv::Request& request, State next) {
+        if (const hypha::CallStatus status = port.call(request); status != hypha::CallStatus::Sent) {
+            HYPHA_LOG_ERROR("{} after takeoff: {}", port.name(), hypha::toString(status));
+            this->state_ = State::Idle;
+            return;
+        }
+        this->state_ = next;
+    }
 
     template <class Srv>
-    void abort(const std::string& what, const hypha::CallResult<Srv>& r) {
-        this->toggleOutput.call({.data = false});
-        this->arming.call({.data = false});
-        this->pending_->reply({.success = false, .message = what + " (" + hypha::describe(r) + ")"});
-        this->pending_.reset();
+    void disarm(const std::string& what, const hypha::CallResult<Srv>& r) {
+        this->send(this->toggleOutput, {.data = false});
+        this->send(this->arming, {.data = false});
+        this->finish(failure(what, r));
+    }
+
+    void finish(const std_srvs::Trigger::Response& response) {
+        this->pending_.reply(response);
         this->state_ = State::Idle;
     }
 
-    State                                            state_{State::Idle};
-    std::optional<hypha::Deferred<std_srvs::Trigger>> pending_;
-    hypha::Time                                      settleUntil_{};
+    // send(), succeeded(), failure(), trackerHas(), checkTakeoff() as above
+
+    State                              state_{State::Idle};
+    hypha::Deferred<std_srvs::Trigger> pending_;
+    hypha::Time                        settleUntil_{};
+    // names, height, counter as above
 };
 ```
 
@@ -465,19 +793,33 @@ class UavManager final : public hypha::CycleNode {
 service = "~/takeoff"
 [ports.clients.switch_controller]
 service = "/uav1/control_manager/switch_controller"
-timeout_ms = 1000
 [ports.clients.switch_tracker]
 service = "/uav1/control_manager/switch_tracker"
-timeout_ms = 1000
-# ...
+[ports.clients.tracker_takeoff]
+service = "/uav1/control_manager/landoff_tracker/takeoff"
+timeout_ms = 2000                 # overrides the policy's 1 s
+[ports.clients.toggle_output]
+service = "/uav1/control_manager/toggle_output"
+[ports.clients.arming]
+service = "/uav1/hw_api/arming"
+[ports.clients.eland]
+service = "/uav1/control_manager/eland"
 ```
 
-`hypha::describe(result)` gives `answered`, `refused`, `no server`, `server lost`,
-`deadline expired` or `invalid response`. Against the current port
-(`examples/mrs/managers/uav_manager.cpp:192-215`), `callStep`, `sent_` and the hand-made
-timeout disappear: `result()` is empty until the outcome arrives, and every failure is
-already an outcome. A `Calls` port holds one call at a time by default (`outstanding(1)`),
-as `mrs::Request` does.
+**Against the current port** (`examples/mrs/managers/uav_manager.cpp`, 392 lines), which
+already implements this full sequence by hand, the hand-written form above drops:
+
+- `callStep()` and the `sent_` flag: `result()` is empty until the outcome arrives;
+- the hand-made timeout: every failure is an outcome;
+- the ticket bookkeeping: `Deferred` replaces it.
+
+It keeps one state per call. The `Sequence` form keeps the order of the upstream callback.
+
+Two corrections to the current port, which the example follows upstream on:
+
+- A failed takeoff call calls `eland`. The current port turns the output off and disarms
+  instead, and declares no `eland` client.
+- The after-takeoff switches belong to the sequence after the answer, not to the service.
 
 ### 8.3 C++: a setter in an `ApplicationNode` (`arena_camera`, `set_exposure`)
 
@@ -493,15 +835,18 @@ bool ArenaCameraNode::setExposureCallback(camera_control_msgs::SetExposure::Requ
 }
 ```
 
-hypha: the worker thread owns the device (the port's `std::jthread worker_`). The handler
+hypha. The worker thread owns the device (the port's `std::jthread worker_`). The handler
 defers the request and hands it to the worker, which answers between two grabs. No lock
-guards the device, and the callback runs on the node's thread.
+guards the device.
 
 ```cpp
 void ArenaCameraNode::setup(hypha::Node& node) {
     this->setExposure_ = node.advertiseService<camera_control_msgs::SetExposure>(
         "set_exposure", [this](hypha::Request<camera_control_msgs::SetExposure>& request) {
-            this->commands_.push(ExposureCommand{request->target_exposure, request.defer()});
+            if (!this->commands_.tryPush(ExposureCommand{request->target_exposure, request.defer()})) {
+                // the deferred handle in the rejected command refuses when it is destroyed
+                HYPHA_LOG_WARN("set_exposure: command queue full");
+            }
         });
 }
 
@@ -518,47 +863,64 @@ while (auto command = this->commands_.tryPop()) {
 service = "~/set_exposure"
 ```
 
-`commands_` is the application's own bounded queue. A camera port that keeps upstream's
-shape can answer in the handler under a mutex instead: `request.reply({...})`.
+`[[nodiscard]]` on `advertiseService` keeps the handle from being dropped by mistake.
+`commands_` is the application's own bounded queue. A port that keeps upstream's shape can
+instead answer in the handler under a mutex: `request.reply({...})`.
 
 ### 8.4 `std_srvs`
 
-The SDK ships `std_srvs` (`Empty`, `Trigger`, `SetBool`) as it ships `std_msgs`. Today it
-ships no `.srv` type, and the MRS example declares its own `std_srvs`
-(`examples/mrs/msg/std_srvs/srv/`). Designated initializers make them short:
+The SDK ships `std_srvs` (`Empty`, `Trigger`, `SetBool`) as it ships `std_msgs`. Today
+it ships no `.srv` type, and the MRS example declares its own `std_srvs`
+(`examples/mrs/msg/std_srvs/srv/`). Designated initializers keep the calls short:
 
 ```cpp
 request.reply({.success = true, .message = "armed"});   // Trigger, SetBool
-arming.call({.data = true});                            // SetBool
-reset.call({});                                         // Empty, Trigger
+request.refuse("not armed");
+(void)arming.call({.data = true});                      // SetBool; the status says Sent, Busy or TooLarge
+(void)reset.call({});                                   // Empty, Trigger
 ```
+
+A porter who writes `client.call(srv)` with a ROS-style `Srv` object hits a deleted
+overload. Its `static_assert` names the guide row: `call(Srv&) does not exist: pass
+srv.request, and read the result in a later step (ros1-migration-guide.md, services)`.
 
 ### 8.5 A client in a plain node, and in a tool or a test
 
 ```cpp
-auto trigger = node.serviceClient<std_srvs::SetBool>(
-    hypha::Service{"/localization/ekf/trigger_node"}, hypha::timeout(hypha::Duration::fromSeconds(1)));
-trigger.call({.data = true}, [](const hypha::CallResult<std_srvs::SetBool>& r) {
-    if (!r.answered() || !r.response().success) {
-        HYPHA_LOG_WARN("trigger_node: {}", hypha::describe(r));
-    }
-});
+[[nodiscard]] auto trigger = node.serviceClient<std_srvs::SetBool>(hypha::Service{"/localization/ekf/trigger_node"});
+if (trigger.call({.data = true}, [](const hypha::CallResult<std_srvs::SetBool>& r) {
+        if (!r.ok() || !r.response().success) HYPHA_LOG_WARN("trigger_node: {}", hypha::describe(r));
+    }) != hypha::CallStatus::Sent) {
+    HYPHA_LOG_WARN("trigger_node: not sent");
+}
 
-// a gtest or a worker thread: no WaitSet runs on this thread
-const hypha::CallResult<std_srvs::Trigger> r = takeoffClient.callAndWait({});
+// a gtest, a tool or a worker thread: no WaitSet runs on this thread
+auto takeoff = node.serviceClient<std_srvs::Trigger>(hypha::Service{"/uav1/uav_manager/takeoff"}, hypha::blocking);
+if (!takeoff.waitForServer(hypha::Duration::fromSeconds(5))) { /* no server */ }
+const hypha::CallResult<std_srvs::Trigger> r = takeoff.callAndWait({});
 ```
 
 ### 8.6 Tables
 
 | Table | Keys | Meaning |
 |---|---|---|
-| `[ports.servers.<port>]` | `service` | The name. An `optionalService` port with `service = ""` is disabled, as `optionalTopic` disables a topic port |
-| | `per_step` | Requests a step takes, default 8, at most `clients x outstanding`. The rest wait for a later step |
-| `[ports.clients.<port>]` | `service`, `timeout_ms` | The name and the deadline. Both are required unless the code gives them |
+| `[ports.servers.<port>]` | `service` | The name. With `optionalService`, `service = ""` disables the port, as `optionalTopic` does for a topic port |
+| | `per_step` | Requests a step takes, default 8, at most `clients × outstanding`. The rest wait for a later step |
+| `[ports.clients.<port>]` | `service` | The name |
+| | `timeout_ms` | Overrides the policy's timeout |
 | | `outstanding` | Calls in flight, default 1 for a `Calls` port, at most the policy's |
 
-The tables also give a plain node's `advertiseService("set_exposure", ...)` its name. The
-migration guide's "a service name does not resolve from the ports tables" gap closes.
+A missing table for a port that requires one is refused with exit 78. The error prints
+the stanza to paste:
+
+```text
+hypha: server port 'switch_tracker' has no table; add to the parameter file:
+[ports.servers.switch_tracker]
+service = "~/switch_tracker"
+```
+
+The tables also give a plain node's `advertiseService("set_exposure", ...)` its name, which
+closes the migration guide's gap "a service name does not resolve from the ports tables".
 
 ### 8.7 C ABI (sketch; sizes, ownership and null rules beside each declaration)
 
@@ -566,88 +928,121 @@ migration guide's "a service name does not resolve from the ports tables" gap cl
 HyphaStatus hypha_service_server_create(HyphaNode*, const char* name, size_t name_len,
                                         const HyphaServiceSpec* spec, HyphaServer** out);
 HyphaStatus hypha_service_client_create(HyphaNode*, const char* name, size_t name_len,
-                                        const HyphaServiceSpec* spec, HyphaClient** out);
-/* spec: type name, srv MD5, request and response definition and MD5, policy, deadline. */
+                                        const HyphaServiceSpec* spec, uint8_t blocking,
+                                        HyphaClient** out);
+/* spec: type name, srv MD5, both halves' definitions and MD5s, policy (timeout included). */
 HyphaStatus hypha_client_ready(const HyphaClient*, uint8_t* out);
-HyphaStatus hypha_client_call(HyphaClient*, const uint8_t* request, size_t len, uint64_t* out_call);
-/* Busy, TooLarge, or Ok. Every Ok call id gets exactly one outcome. */
+HyphaStatus hypha_client_pending(const HyphaClient*, uint8_t* out);
+HyphaStatus hypha_client_call(HyphaClient*, const uint8_t* request, size_t len,
+                              HyphaCallStatus* status, uint64_t* out_call);
 HyphaStatus hypha_client_call_and_wait(HyphaClient*, const uint8_t* request, size_t len,
-                                       HyphaCallOutcome* outcome, uint8_t* response,
+                                       HyphaCallResult* result, uint8_t* response,
                                        size_t capacity, size_t* response_len);
-/* InvalidState on a thread inside a WaitSet dispatch. */
+HyphaStatus hypha_client_wait_for_server(HyphaClient*, int64_t timeout_nanos, uint8_t* out);
+/* Both: InvalidState on a client that is not blocking, or on a thread inside a dispatch. */
 HyphaStatus hypha_waitset_attach_client(HyphaWaitSet*, HyphaClient*, HyphaCallDone cb,
                                         void* context, void (*release)(void*));
 HyphaStatus hypha_waitset_attach_server(HyphaWaitSet*, HyphaServer*, HyphaServe cb,
                                         void* context, void (*release)(void*));
+/* HyphaServe receives a HyphaRequestRef: borrowed, valid during the callback only. */
 HyphaStatus hypha_cycle_bind_server(HyphaCycle*, HyphaServer*, uint32_t per_step, uint32_t* out_binding);
 HyphaStatus hypha_cycle_bind_client(HyphaCycle*, HyphaClient*, uint32_t* out_binding);
 HyphaStatus hypha_cycle_image_request(const HyphaCycleImage*, uint32_t binding, size_t index,
-                                      HyphaRequest** out);          /* owned by the image */
+                                      HyphaRequestRef* out);       /* borrowed, valid in the step */
 HyphaStatus hypha_cycle_image_call_result(const HyphaCycleImage*, uint32_t binding, size_t index,
                                           HyphaCallResult* out);
-HyphaStatus hypha_cycle_emission_call(HyphaCycleEmission*, uint32_t binding,
-                                      const uint8_t* request, size_t len, uint64_t* out_call);
-HyphaStatus hypha_request_defer(HyphaRequest*, HyphaRequest** out_owned);
-HyphaStatus hypha_request_reply(HyphaRequest*, const uint8_t* response, size_t len); /* consumes an owned one */
-HyphaStatus hypha_request_refuse(HyphaRequest*);                                   /* consumes an owned one */
+HyphaStatus hypha_cycle_emission_call(HyphaCycleEmission*, uint32_t binding, const uint8_t* request,
+                                      size_t len, HyphaCallStatus* status, uint64_t* out_call);
+HyphaStatus hypha_request_reply(HyphaRequestRef, const uint8_t* response, size_t len);
+HyphaStatus hypha_request_refuse(HyphaRequestRef, const char* reason, size_t reason_len);
+HyphaStatus hypha_request_defer(HyphaRequestRef, HyphaDeferred** out);   /* owned */
+HyphaStatus hypha_deferred_reply(HyphaDeferred*, const uint8_t* response, size_t len); /* any thread; consumes */
+HyphaStatus hypha_deferred_refuse(HyphaDeferred*, const char* reason, size_t reason_len); /* any thread; consumes */
+void        hypha_deferred_destroy(HyphaDeferred*);              /* refuses an unanswered one */
 ```
 
-`HyphaCallOutcome`: `Answered`, `Refused`, `NoServer`, `ServerLost`, `DeadlineExpired`,
-`InvalidResponse`. These are outcomes, not statuses, and `HyphaStatus` 19 stays retired
-(as the issue says). `abi.revision` goes up by one.
+- `HyphaCallStatus`: `Sent`, `Busy`, `TooLarge`.
+- `HyphaCallOutcome`: `Answered`, `Refused`, `NoServer`, `NotSent`, `ServerLost`, `Timeout`.
+  These are outcomes, not statuses, so `HyphaStatus` 19 stays retired (as the issue says).
+- A reply to a slot whose server or client is gone returns `Disconnected`.
+- `abi.revision` goes up by one.
 
 ### 8.8 Rust SDK
 
-The tools need only a client: `hypha_node::sdk::ServiceClient::call_and_wait(&self,
-request: &[u8], timeout) -> Result<CallResult, ServiceError>`, typed by the schema it
-reads from the store, as `hypha topic echo` reads a topic's. AGENTS.md allows the SDK to
-lag a new capability. A Rust server is not needed.
+The tools need a blocking client only:
+`hypha_node::sdk::ServiceClient::call_and_wait(&self, request: &[u8], timeout) ->
+Result<CallResult, ServiceError>`. It is typed by the schema it reads from the store, as
+`hypha topic echo` reads a topic's. AGENTS.md lets the SDK lag a new capability, and a
+Rust server is not needed.
 
 ## 9. Tools and test support
 
-- **`hypha service list`** prints one line per stream: the name, type, MD5, server node,
-  client count, and calls answered, refused and expired. `hypha service info <s>` adds the
-  definition and the policy. **`hypha service call <s> '{data: true}'`** reads the request
-  as YAML or JSON, encodes it from the definition in the schema store, calls with
-  `--timeout` (default 5 s), and prints the response as YAML, decoded as
-  `hypha topic echo` decodes a message. No tool encodes a message from text today, so the
-  encoder is new work in stage 1d. It exits non-zero and prints the outcome for any
-  outcome except `Answered`. The tool's node is a CLI node, so its clients use the
-  observer slots and never take a declared client's slot.
-- **Introspection.** `~/introspection` lists the servers and clients of a node with their
-  policies (FSR-41). `~/state` counts per endpoint: received, answered, refused,
-  unanswered, deferred now, and, per client, each outcome and `late_responses`.
-  `hypha top` shows a services panel from them.
-- **`StepHarness`.** `harness.request(port, request)` delivers a request to the next step
-  and returns a probe that holds the reply, the refusal or the deferral after the step.
-  `harness.calls(port)` lists what the step called, and `harness.answer(port, response)`
-  or `harness.outcome(port, hypha::CallOutcome::ServerLost)` gives the next step its
-  result. A client under test therefore needs no fake server process. The `uav_manager`
-  sequence becomes a step test of each failure branch.
-- **The ROS bridge.** For a service, the direction ports need is ROS 1 to hypha: a ROS
-  operator or tool (`rosservice call /uav1/uav_manager/takeoff`) calls a hypha server.
-  The bridge advertises the service on the ROS master and forwards each call. The reverse
-  direction, a hypha client and a ROS server, follows when a port asks for it. ROS 1
-  service calls are TCPROS connections per call or persistent. The bridge keeps one hypha
-  client per ROS service.
+**`hypha service` (stage 1b, because operators call the camera setters):**
+
+- `hypha service list` prints one line per stream: the name, type, MD5, server node,
+  client count, and the calls answered, refused and timed out.
+- `hypha service info <s>` adds the definition and the policy.
+- `hypha service call <s> '{data: true}'` reads the request as YAML or JSON and encodes it
+  from the definition in the schema store. It calls with `--timeout` (by default the
+  policy's) and prints the response as YAML, decoded as `hypha topic echo` decodes a
+  message. It exits non-zero and prints the outcome for anything but `Answered`.
+- `hypha service call <s>` with no body prints the request template.
+- When the server is on simulated time and the clock is paused, the tool says so:
+  `server '<n>' is on simulated time; /clock paused at <t>`.
+- No tool encodes a message from text today, so the encoder is new work.
+- The tool's node is a CLI node, so its client takes an observer slot, never a declared
+  client's slot.
+
+**Security.** No new mechanism: the domain and the `/dev/shm` permissions are the
+boundary. The server logs every call from a `_hyphacli_` node at INFO with its pid, and
+the call log records it.
+
+**Introspection.** `~/introspection` lists a node's servers and clients with their
+policies (FSR-41). `~/state` counts per endpoint:
+
+- per server: received, answered, refused, unanswered, `abandoned`, deferred now;
+- per client: each outcome, `results_unread` and `late_responses`.
+
+`hypha top` shows a services panel from these and from the call log.
+
+**`StepHarness`** (stage 1c):
+
+- `harness.request(port, request)` delivers a request to the next step. It returns a
+  probe that holds the reply, the refusal or the deferral after the step.
+- `harness.calls(port)` lists what the step called.
+- `harness.answer(port, response)` or `harness.outcome(port, hypha::CallOutcome::ServerLost)`
+  gives the next step its result.
+
+A client under test therefore needs no fake server process, and every failure branch of
+the `uav_manager` sequence becomes a step test.
+
+**`hypha::Sequence`** (stage 1c, with `Calls`): about 200 lines of C++23 coroutine in one
+SDK header, with no C ABI. Its rules are in section 8.2. In a plain node it is resumed
+from an `onResult` callback.
+
+**The ROS bridge** (stage 5). For services, the direction ports need first is ROS 1 to
+hypha: a ROS operator or tool (`rosservice call /uav1/uav_manager/takeoff`) calls a
+hypha server. The bridge advertises the service on the ROS master and forwards each call,
+keeping one hypha client per ROS service.
 
 ## 10. Migration guide rows (replace the stop-and-ask)
 
 | ROS 1 | hypha |
 |---|---|
-| `nh.advertiseService(name, &C::cb, this)` in a cycle node | a `hypha::Requests<Srv>` port; in the step, `for (auto& r : port.requests()) r.reply({...})`; `[ports.servers.<port>] service = ...` |
-| `nh.advertiseService` in a plain or application node | `node.advertiseService<Srv>("<port>", [](hypha::Request<Srv>& r) { r.reply({...}); })` |
-| callback `return false` | `r.refuse()` |
-| callback that does work over time, nested calls, sleeps | `r.defer()`, keep the `hypha::Deferred<Srv>`, answer it in the step that finishes. Each nested call is a `Calls` port (§8.2) |
-| `nh.serviceClient<Srv>(name)` | a `hypha::Calls<Srv>` port in a cycle, or `node.serviceClient<Srv>("<port>", hypha::timeout(d))` in a plain node; `timeout_ms` in `[ports.clients.<port>]` |
-| `client.call(srv)` in a callback | in a cycle: `port.call(request)` in one step, `port.result()` in a later one. In a plain node: `client.call(request, onResult)`. A blocking call on the run thread is refused (`InvalidState`) |
-| `client.call(srv)` in a worker thread, a test, a tool | `client.callAndWait(request)` |
-| `ros::service::waitForExistence(name, t)`, `client.waitForExistence()` | none. Start regardless (FSR-25). A call before the server exists ends `NoServer`. Retry in the logic, or gate on `client.ready()` in the step |
-| `client.exists()` | `client.ready()` |
-| `ros::service::call(name, srv)` | a client port, as above. Only tools and tests call without one |
-| `serviceClient(name, true)` (persistent) | the default. Every client stays connected |
-| a service called from inside a callback | a state over steps (§8.2), not a nested wait |
-| `std_srvs/*` | shipped by the SDK |
+| `nh.advertiseService(name, &C::cb, this)` in a cycle node | A `hypha::Requests<Srv>` port. In the step, `for (auto& r : port.requests()) r.reply({...});`. Name it in `[ports.servers.<port>] service = ...` |
+| `nh.advertiseService` in a plain or application node | `[[nodiscard]] auto s = node.advertiseService<Srv>("<port>", [](hypha::Request<Srv>& r) { r.reply({...}); });` |
+| callback `return false` | `r.refuse()` or `r.refuse("why")` |
+| a callback that works over time, makes nested calls or sleeps | `r.defer()`, then answer the `hypha::Deferred<Srv>` in the step that finishes. Each nested call is a `Calls` port. Use `hypha::Sequence` for a chain (§8.2) |
+| `nh.serviceClient<Srv>(name)` | A `hypha::Calls<Srv>` port in a cycle, or `node.serviceClient<Srv>("<port>")` in a plain node. The timeout comes from the policy (1 s), or `timeout_ms` in `[ports.clients.<port>]` |
+| `client.call(srv)` in a callback | In a cycle: `port.call(srv.request)` in one step, then `port.result()` in a later one. In a plain node: `client.call(request, onResult)`. A blocking call on the run thread is refused (`InvalidState`) |
+| `client.call(srv)` in a worker thread, a test or a tool | `node.serviceClient<Srv>(name, hypha::blocking)`, then `callAndWait(request)` |
+| `ros::service::waitForExistence(name, t)`, `client.waitForExistence(t)` | In a node: nothing. A call waits for its server until its timeout. In a test or a tool: `blockingClient.waitForServer(t)` |
+| `client.exists()` | `client.exists()` (`ready()`) |
+| `ros::service::call(name, srv)` | A client, as above. Only tools and tests call without one |
+| `serviceClient(name, true)` (persistent) | The default. Every client stays connected |
+| a service called from inside a callback | A state over steps, or `hypha::Sequence` (§8.2), not a nested wait |
+| a service whose response is a map, a path or a cloud | The data on a latched topic. The service carries a small request and its acknowledgement (§6, large messages) |
+| `std_srvs/*` | Shipped by the SDK |
 | `rosservice call` | `hypha service call` |
 
 The two rows that point at `cpp-api.md` §8 (request and reply topics with an identifier)
@@ -655,125 +1050,99 @@ go, and so does the stop-and-ask item "A service whose caller blocks on the repl
 
 ## 11. Staging
 
-Sizes are rough estimates of changed lines including tests, from the sizes of comparable
-changes (the cycle `Arrivals` path and the topic overloading PR). They are not measured.
+Sizes are rough estimates of changed lines including tests, made by comparison with the
+cycle `Arrivals` path and the topic overloading PR. They are not measured.
 
 | Stage | Content | Tests | Size |
 |---|---|---|---|
-| **1a Transport** | `hypha_iceoryx2`: server and client ports, the two events, sealing with the role codes, the policy stamp, the stream key, schema records for both halves, discovery rows | each row of the failure table at transport level, in two processes (the spike's tests become these); pool sizes measured against the policy | 1,500 |
-| **1b Runtime, plain nodes, C ABI, C++** | `hypha_node`: outstanding calls, deadlines in the `WaitSet`, outcomes, the liveness probe at the deadline, the dispatch-thread refusal; C ABI; `advertiseService`, `serviceClient`, `Request`, `Deferred`, `CallResult`, `callAndWait`; `std_srvs` in the SDK; tables; docs (`interface-specification.md`, `cpp-api.md` §8, `features.md`, `execution-model.md`, `communication-integrity.md`) | the failure table through C++; a deferred reply from another thread; a destroyed `Deferred` refuses; installed-SDK flow | 2,500 |
-| **1c Cycle ports and lockstep** | `Requests<Srv>`, `Calls<Srv>`; replies and calls sent after the step; refusal on a failed step; the admission rule under simulated time; the client's upstream edge; `StepHarness` support | a client and a server cycle in lockstep replay identically across two runs and never reach `--timeout`; a failed step refuses its requests; harness tests | 2,000 |
-| **1d Tools and the first users** | `hypha service list/info/call` (Rust SDK client); the MRS host and the rclcpp shim move onto it; `mrs_bridge/Call` and `ServiceCall` are deleted; the EKF trigger starts on bus traffic | the five MRS scenarios; the Autoware EKF trigger; a CLI test of `service call` | 1,500, of which about 600 deleted |
-| 2 Introspection | `~/state` and `~/introspection` rows, `hypha top` panel | | 600 |
+| **1a Transport** | `hypha_iceoryx2`: server and client ports with the settings of §6; the name lock, and the reclaim of a dead holder; the stream key; sealing with the role codes; answer kinds; the server's slot table with handles; `ServicePolicy` with its timeout; the 219-byte limit; the listing for the tools; the probe with its rate | the failure table in two processes, creation races, many clients, the measurements of §12 | 2,000 |
+| **1b Runtime, plain nodes, C ABI, C++, tools** | `hypha_node`: calls waiting for a server, timeouts in the `WaitSet`, outcomes and `CallStatus`, the dispatch-thread refusal, blocking clients; C ABI; `advertiseService`, `serviceClient`, `Request`, `Deferred`, `CallResult`; `std_srvs` in the SDK; tables; the call log; `hypha service list\|info\|call`; docs (`interface-specification.md`, `cpp-api.md` §8, `features.md`, `execution-model.md`, `communication-integrity.md`) | the failure table through C++; a `Deferred` answered from another thread, destroyed unanswered, and outliving its server; a call before its server; installed-SDK flow; a CLI test of `service call` | 3,000 |
+| **1c Cycle ports and lockstep** | First task, the lockstep tests: two identical runs; `--chunk 50` against `--chunk 200`; with and without `hypha topic echo`; `--loop`; a triggered client against a triggered server; a chain of deferred replies across three nodes; a client and its server in one `WaitSet`. Then `Requests<Srv>`, `Calls<Srv>`, answers and calls sent after the step, `NotSent`, requests a step never read staying queued, the strict cut and the two upstream edges, the §6.6 amendment, `StepHarness`, `hypha::Sequence` | the lockstep list; harness tests; `Sequence` tests | 2,500 |
+| **1d The first users** | the MRS host and the rclcpp shim move onto it; `mrs_bridge/Call` and `ServiceCall` are deleted; the EKF trigger starts on bus traffic | the five MRS scenarios; the Autoware EKF trigger | 1,500, of which about 600 deleted |
+| 2 Introspection | `~/state` and `~/introspection` rows, the `hypha top` panel | | 600 |
 | 3 Requests as a trigger | a `Requests` port can trigger a cycle, with no silence limit and no fallback | the trigger rules of execution-model.md §6.6 for a request | 500 |
-| 4 Recording and replay | the observer `calls` stream; `hypha play --serve`, `--call` | a recorded call served back to a client under test; a recorded call replayed into a server | 1,500 |
+| 4 Replay of the call log | `hypha play --serve`, `--call` | a recorded call served back to a client under test; recorded calls made into a server | 1,200 |
 | 5 ROS bridge | ROS 1 to hypha for services | a `rosservice call` reaches a hypha server in the bridge's container test | 1,000 |
-| 6 Large payloads | typed loans for requests and responses (after #261); a per-client wake event if measured to matter | | 500 |
+| 6 Large payloads | typed loans for requests and responses (after #261); a per-client wake event, if measured to matter | | 500 |
 
-**The smallest version that unblocks the flight and the camera** is 1a to 1c. The camera
-needs only 1a and 1b. Stage 1d is the first use, and it deletes the two hand-made wire
-formats (`features.md` rule 4: no second path). Each stage is a pull request of its own.
+The camera needs stages 1a and 1b. The flight needs 1a to 1c. Stage 1d is the first use,
+and it deletes the two hand-made wire formats (`features.md` rule 4: no second path). Each
+stage is a pull request of its own. Stage 1b follows a review of 1a.
 
 **Requirements.** New entries, for the owner:
 
-- **FSR-42** The software shall provide request and response between nodes, typed by a
-  ROS 1 `.srv` definition. Each service stream shall have at most one server, and a second
-  server shall be refused at creation. Each call shall end in exactly one outcome, which
-  distinguishes answered, refused, no server, server lost, deadline expired and invalid
-  response. No request shall be lost without an outcome.
-- **FSR-43** A call shall carry a deadline in framework time. A call that waits for its
+- **FSR-42** The software shall provide request and response between nodes, typed by a ROS 1
+  `.srv` definition. A service name shall have at most one server across its versions, and
+  a second server shall be refused at creation. Each call shall end in exactly one outcome,
+  and the outcomes shall distinguish answered, refused, no server, not sent, server lost
+  and timeout. No request shall be lost without an outcome.
+- **FSR-43** A call shall carry a timeout in framework time. A call that waits for its
   outcome shall be refused on a thread that runs a dispatch.
-- **FSR-44** A request made by a replay participant shall be served at a deterministic
-  step of its server, and a replay with services between participants shall repeat
-  exactly.
+- **FSR-44** A request made by a replay participant shall be served at a deterministic step
+  of its server. A replay with services between participants shall repeat exactly,
+  whatever `--chunk` is and whatever observers are attached.
 
-Existing ones that widen: FSR-09/10 (service frames, the role codes), FSR-13 (a request
-or a response wakes its reader), FSR-22/41 (services in the tools and the snapshot),
-FSR-24 (service traffic is not recorded until stage 4; say so), FSR-26 (server ports in
-the reclaim), NFR-05 (the service bounds). FSR-21 already covers `.srv`.
+Existing requirements that widen:
 
-## 12. The spike
+- **FSR-26** gains "... or a server of a service whose server slot it holds starts".
+- **FSR-09/10:** service frames and the role codes.
+- **FSR-13:** a request or a response wakes its reader.
+- **FSR-22/41:** services in the tools and in the snapshot.
+- **FSR-24:** the request-response services are not recorded; the call log is.
+- **NFR-05:** the service bounds.
 
-`crates/hypha_iceoryx2/tests/service_spike.rs` with a server process
-`tests/support/service_server_helper.rs`, iceoryx2 0.10.1, macOS (aarch64), run with
-`cargo nextest run -p hypha_iceoryx2 --test service_spike --no-capture` (a private
-`HYPHA_DOMAIN` per test process). Four tests pass, in three runs.
+FSR-21 already covers `.srv` generation.
 
-- The frame header is the user header of both directions (`std_srvs/SetBool`: a 1-byte
-  request, a 7-byte response). Every response verifies against its own request, and does
-  not verify against the next sequence or as a request.
-- The server process creates the one server and then sleeps in the request event (10 s
-  timeout as a lost-wake guard). It answered 2,000 sequential calls at the times below,
-  so it was woken by the event and not by its timeout.
-- A second server on the name is refused: `ExceedsMaxSupportedServers`.
-- A call with no server: 0 server connections at send, `is_connected()` false.
-- The server process is killed (SIGKILL) while it holds a request. iceoryx2 alone keeps
-  reporting the call connected (`is_connected()` true, no response), the dead server keeps
-  its slot (`number_of_servers() == 1`), and a new server under another node name is
-  refused. The service's node list reports the server's node dead 1.4, 3.7 and 2.6 ms
-  after the kill (the first probe each time). One probe of that list took 0.55 to 1.8 ms.
-  After the dead node is reclaimed, the call reports disconnected, the slot is free, and a
-  new server is created.
-- `ActiveRequest` and `PendingResponse` are `Send`, so a deferred reply can be answered
-  from a worker thread.
+## 12. Evidence: the spike, then stage 1a
 
-Round trip of a `SetBool` call between two processes, 2,000 calls, measured in the client
-(send, notify, wait on the response event, receive, verify):
+**The spike** (`crates/hypha_iceoryx2/tests/service_spike.rs`, to be replaced by the tests
+of stage 1a) established, on macOS (aarch64) with iceoryx2 0.10.1, the following:
 
-| Run | Load average (1, 5, 15 min) | Median | p90 | p99 | Max |
-|---|---|---|---|---|---|
-| 1 | 50.9 38.9 26.3 | 51 µs | 236 µs | 1.26 ms | 12.9 ms |
-| 2 | 52.9 39.7 26.8 | 107 µs | 285 µs | 4.82 ms | 36.3 ms |
-| 3 | 52.9 39.7 26.8 | 160 µs | 247 µs | 1.46 ms | 14.2 ms |
+- The frame header fits as the user header of both directions.
+- The server sleeps in its request event until a call comes.
+- A second server is refused.
+- A call with no server has 0 connections at send.
+- A server killed with SIGKILL while it holds a request stays connected and keeps its slot
+  until its dead node is reclaimed. The service's node list reports that node dead 1.4 to
+  3.7 ms after the kill.
+- `ActiveRequest` is `Send`.
+- A round trip of a `SetBool` call took a median of 51 to 160 µs and a p99 of 1.3 to
+  4.8 ms, at load average 51 to 53.
 
-The host was heavily loaded, so these are an upper picture, not a benchmark. The spike did
-not measure the topic pair on the same host for comparison.
+**Stage 1a measures** the pool memory under the default policy against the formula of §6,
+the descriptors per service, and the round trip with the load average.
 
 ## 13. Not in scope, and why
 
 - **Parameters as services** (`get_param`, `set_param`, `dynamic_reconfigure`).
-  Parameters are an immutable description read once (FSR-18). A runtime change through a
-  service would be a second configuration path. A node that needs a runtime setting
+  Parameters are an immutable description read once (FSR-18), and a runtime change through
+  a service would be a second configuration path. A node that needs a runtime setting
   serves a setter of its own, as the camera does.
-- **Actions.** An action is a goal, feedback, a result and a cancel. In hypha it would be
-  a goal service with a deferred reply (the result), a feedback topic, and a cancel
-  service, all on these primitives. It needs a goal id across them and a rule for a
-  preempted goal. That is a library above the core, worth doing once a port needs one
-  (the camera's two grab actions are dropped today).
-- **Response streams, several servers, fire-and-forget.** iceoryx2 offers them. None of
-  the ports needs them, and each would weaken "exactly one outcome from the one server".
-- **A blocking call inside a run, and `waitForExistence`.** Section 3.
-- **Service wildcards.** A call is addressed to one server, and a pattern has no meaning
-  there (already the rule in interface-specification.md: a wildcard never follows a
-  request-response service).
+- **Actions.** An action is a goal, feedback, a result and a cancel. In hypha it would be a
+  goal service with a deferred reply (the result), a feedback topic and a cancel service,
+  all built on these primitives. It needs a goal id across them and a rule for a preempted
+  goal. That is a library above the core, worth writing once a port needs one; the
+  camera's two grab actions are dropped today.
+- **Response streams, several servers, fire-and-forget.** iceoryx2 offers them. No port
+  needs them, and each would weaken "exactly one outcome from the one server".
+- **A blocking call inside a run.** Section 3.
+- **Service wildcards.** A call is addressed to one server, so a pattern has no meaning
+  there. This is already the rule in interface-specification.md: a wildcard never follows
+  a request-response service.
 - **Exactly-once execution.** Section 5.
 
 ## 14. Open risks
 
-- **The maturity of iceoryx2's request-response in 0.10.1.** The spike covers creation,
-  the one-server limit, a framed round trip, no server, and a crash. It does not cover
-  creation races of servers and clients in many processes, `hypha clean` of
-  request-response services, the open-file count of three services per call name, or
-  Linux. Stage 1a tests these first. A vendored iceoryx2 (open PR, for another reason)
-  would let a fix land without waiting for a release.
-- **Pool memory.** iceoryx2 derives the request and response pools from
-  `max_clients`, `max_active_requests_per_client` and the slice length. The design's
-  numbers in section 6 are an estimate until stage 1a measures them against `/dev/shm`.
-- **The liveness probe's cost.** 0.55 to 1.8 ms per probe at load 51, on the run thread.
-  It runs only when a deadline expires with a call still connected. A system with many
-  expiring calls (a missing server under load) pays it often. A bounded rate, or a move to
-  the housekeeping refresh of PR #266, is the fallback.
-- **A crashed server blocks its service until its node restarts.** This follows from
-  FSR-26. Under `hypha launch` with restarts it is a restart's time. Without a supervisor
-  the service stays down and the refusal says why. Stealing a dead node's slot was
-  rejected because it would break FSR-26 for one port kind.
-- **Lockstep admission.** The rule in section 4 rests on "data before progress" and on the
-  player's acknowledgement order. It has been reasoned through but not run. Stage 1c's
-  two-run identity test is the check. A client that is a triggered cycle triggered by a
-  response, and chains of deferred replies across three nodes, need their own tests.
-- **Shared response event.** The clients of one service wake each other. This is harmless
-  at 8 clients. A service with many clients should be measured before relying on it.
-- **Naming.** `Requests`, `Calls`, `Request`, `Deferred`, `advertiseService` and
+- **The maturity of iceoryx2's request-response in 0.10.1.** Stage 1a tests creation
+  races, crashes, many clients and bounds in two processes, on macOS and, where it ran, on
+  Linux (the PR says which). A vendored iceoryx2 (open PR, for another reason) would let a
+  fix land without waiting for a release.
+- **The liveness probe's cost.** 0.55 to 1.8 ms per probe at load 51, on the run thread,
+  at most once per service per second.
+- **Lockstep.** The strict cut is the rule every input already follows. The two upstream
+  edges and the §6.6 amendment are new code in stage 1c, and the first task of 1c tests
+  them.
+- **Shared response event.** The clients of one service wake each other. That is harmless
+  at 8 clients, and a service with many clients should be measured before relying on it.
+- **Naming.** `Requests`, `Calls`, `Request`, `Deferred`, `Sequence`, `advertiseService` and
   `serviceClient` are proposals. The ROS 1 names are kept where a porter types them.
-  `hypha/srv/<name>@<md5>` has not been checked against iceoryx2's service-name length
-  limit for long names.
