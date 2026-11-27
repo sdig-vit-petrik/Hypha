@@ -114,3 +114,16 @@ inline const char* definition(const M& m)
 }
 
 }  // namespace ros::message_traits
+
+namespace hypha::message_traits {
+
+/// @brief The field of @p M that `Publisher<M>::loan()` writes in place, in the slot:
+///        `member` points to it. The generator specialises it for a message whose last
+///        variable-length field holds numbers and is followed by fixed-size numbers only
+///        (`sensor_msgs/Image::data`, `sensor_msgs/PointCloud2::data`); others have none.
+template <typename M>
+struct LoanedField
+{
+};
+
+}  // namespace hypha::message_traits

@@ -612,3 +612,48 @@ fn a_hand_built_constant_out_of_range_does_not_compile() {
     let header = emit(&message, "00000000000000000000000000000000");
     assert!(header.contains("  static_assert(false, \"constant X has no valid byte value\");\n"));
 }
+
+/// The loaned field is the last variable-length field, if it holds numbers and only fixed-size
+/// numbers follow it: the `data` of `PointCloud2`, with `bool is_dense` after it.
+#[test]
+fn the_last_numeric_array_before_a_fixed_tail_is_loaned() {
+    let fields = vec![
+        field(FieldType::Text, Multiplicity::Unit, "frame_id"),
+        field(FieldType::Float32, Multiplicity::Variable, "ranges"),
+        field(FieldType::UInt8, Multiplicity::Variable, "data"),
+        field(FieldType::Bool, Multiplicity::Unit, "is_dense"),
+        field(FieldType::UInt16, Multiplicity::Fixed(2), "pad"),
+    ];
+    let result = emit(&spec(TypeName::new("demo_msgs", "Cloud"), Vec::new(), fields), "c0");
+    assert!(result.contains(
+        "struct LoanedField<::demo_msgs::Cloud> {\n  static constexpr auto member = &::demo_msgs::Cloud::data;\n};"
+    ));
+}
+
+/// A string, a nested message or an array after it, or an array of strings or messages, leaves
+/// the message without a loaned field.
+#[test]
+fn no_field_is_loaned_before_a_variable_tail_or_for_non_numbers() {
+    let tails = [
+        field(FieldType::Text, Multiplicity::Unit, "label"),
+        field(FieldType::Float64, Multiplicity::Variable, "more"),
+        field(FieldType::Message(TypeName::new("geometry_msgs", "Point")), Multiplicity::Unit, "p"),
+    ];
+    for tail in tails {
+        let fields = vec![field(FieldType::UInt8, Multiplicity::Variable, "data"), tail.clone()];
+        let more_is_last = tail.multiplicity == Multiplicity::Variable;
+        let result = emit_with(
+            &spec(TypeName::new("demo_msgs", "Tail"), Vec::new(), fields),
+            vec![stub("geometry_msgs", "Point")],
+            "c1",
+        );
+        // A numeric array that is itself last is loaned, the earlier one never.
+        assert_eq!(result.contains("LoanedField"), more_is_last, "tail {}", tail.name);
+        assert!(!result.contains("::demo_msgs::Tail::data;"));
+    }
+    for element in [FieldType::Text, FieldType::Bool, FieldType::Time] {
+        let fields = vec![field(element, Multiplicity::Variable, "items")];
+        let result = emit(&spec(TypeName::new("demo_msgs", "List"), Vec::new(), fields), "c2");
+        assert!(!result.contains("LoanedField"));
+    }
+}
