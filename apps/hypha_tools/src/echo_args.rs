@@ -1,5 +1,6 @@
 //! Command line of `hypha topic echo`.
 
+use crate::stream::StreamSelector;
 use clap::Args;
 
 /// What `hypha topic echo` was asked to do.
@@ -13,4 +14,7 @@ pub struct EchoArgs {
     /// Print one CSV row for each message.
     #[arg(short = 'p')]
     pub plot: bool,
+    /// Which streams of the topic to print.
+    #[command(flatten)]
+    pub selector: StreamSelector,
 }

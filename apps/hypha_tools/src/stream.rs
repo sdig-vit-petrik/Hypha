@@ -63,6 +63,20 @@ impl StreamSelector {
     }
 }
 
+impl std::fmt::Display for StreamSelector {
+    /// The flags as they were given: `--type <type> --md5 <prefix>`.
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let flags: Vec<String> = [
+            self.data_type.as_ref().map(|data_type| format!("--type {data_type}")),
+            self.md5.as_ref().map(|prefix| format!("--md5 {prefix}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        write!(out, "{}", flags.join(" "))
+    }
+}
+
 /// The first eight hex digits of an MD5: enough to tell two versions of one type apart.
 #[must_use]
 pub fn short_md5(md5: &str) -> &str {

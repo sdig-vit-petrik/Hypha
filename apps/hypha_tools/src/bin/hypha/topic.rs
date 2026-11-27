@@ -7,6 +7,7 @@ use hypha_node::sdk::{BusNode, RawSubscriber, ReceivedSample, ResolvedSchema};
 use hypha_tools::echo_args::EchoArgs;
 use hypha_tools::msg_plot::{plot_header, plot_row, plot_values};
 use hypha_tools::msg_reflect::{SchemaCache, decode_message, format_significant};
+use hypha_tools::stream::{StreamKey, StreamSelector, stream_label};
 use hypha_tools::{approx_f64, approx_f64_usize};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, VecDeque};
@@ -14,6 +15,10 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+mod follow;
+
+use follow::Followed;
 
 /// Bus introspection: list, echo, hz, and bw.
 #[derive(Debug, Parser)]
@@ -41,60 +46,23 @@ enum Verb {
         #[command(flatten)]
         echo: EchoArgs,
     },
-    /// Publish rate of one topic.
+    /// Publish rate of each stream of one topic.
     Hz {
         /// Topic to measure.
         topic: String,
         /// Messages in the averaging window.
         #[arg(long, value_name = "n", default_value_t = 100)]
         window: usize,
+        #[command(flatten)]
+        selector: StreamSelector,
     },
-    /// Bandwidth and mean message size of one topic.
+    /// Bandwidth and mean message size of each stream of one topic.
     Bw {
         /// Topic to measure.
         topic: String,
+        #[command(flatten)]
+        selector: StreamSelector,
     },
-}
-
-/// Subscribe to `topic` once a publisher or a typed subscriber has opened it, at the
-/// depth of its service policy. `None` when a stop (SIGINT or SIGTERM) came first.
-fn subscribe_when_open(
-    bus: &BusNode,
-    topic: &str,
-    command: &str,
-) -> Result<Option<RawSubscriber>, String> {
-    let mut announced = false;
-    while bus.ok() {
-        let listed = bus.list_topics()?;
-        let is_open = listed.iter().any(|entry| entry.name == topic);
-        if is_open {
-            return bus.subscribe_raw(topic, 0).map(Some);
-        }
-        if !announced {
-            eprintln!("hypha topic {command}: waiting for '{topic}' to be published");
-            announced = true;
-        }
-        thread::sleep(Duration::from_millis(200));
-    }
-    Ok(None)
-}
-
-/// `subscribe_when_open` for the subcommand `label`, printing its failure; `Err` carries
-/// the exit code: success after a stop, failure after an error.
-fn open_subscriber(
-    bus: &BusNode,
-    topic: &str,
-    command: &str,
-    label: &str,
-) -> Result<RawSubscriber, ExitCode> {
-    match subscribe_when_open(bus, topic, command) {
-        Ok(Some(sub)) => Ok(sub),
-        Ok(None) => Err(ExitCode::SUCCESS),
-        Err(error) => {
-            eprintln!("hypha topic {label}: {error}");
-            Err(ExitCode::FAILURE)
-        }
-    }
 }
 
 /// The next sample of `sub`; a receive error is printed for the subcommand `label` and
@@ -147,24 +115,32 @@ fn run_list(bus: &BusNode, timeout_sec: f64) -> ExitCode {
 
 fn run_echo(bus: &BusNode, echo: &EchoArgs) -> ExitCode {
     let max_count = echo.max_count;
-    let mut sub = match open_subscriber(bus, &echo.topic, "echo", "echo") {
-        Ok(sub) => sub,
+    let mut followed = match Followed::open(bus, &echo.topic, &echo.selector, "echo") {
+        Ok(followed) => followed,
         Err(code) => return code,
     };
 
     let mut cache = SchemaCache::new("hypha_topic");
     let identities = SchemaIdentityCache::new();
     let mut count = 0usize;
-    let mut header_printed = false;
+    // The stream whose header the last row of `-p` followed: a row has the columns of the
+    // header above it, so the header is printed again when the stream changes.
+    let mut header_of: Option<StreamKey> = None;
 
     while bus.ok() && (max_count == 0 || count < max_count) {
-        if let Some(received) = receive_or_report(&mut sub, "echo") {
+        followed.refresh();
+        if let Some(received) = followed.next() {
             let Some(sample) = received.to_raw_sample() else { continue };
             count = count.saturating_add(1);
+            let stream = StreamKey { topic: sample.topic.clone(), schema_hash: sample.schema_hash };
+            let resolved = resolve_identity(bus, &identities, &sample.topic, sample.schema_hash);
+            let label = followed
+                .is_shared(&stream)
+                .then(|| stream_label(resolved.as_deref(), sample.schema_hash));
             if !echo.plot {
                 println!("---");
+                print_label(label.as_deref());
             }
-            let resolved = resolve_identity(bus, &identities, &sample.topic, sample.schema_hash);
             let Some(identity) = resolved else {
                 let note = format!("<schema not yet resolved, {} bytes>", sample.bytes.len());
                 report_unprinted(echo.plot, &note);
@@ -191,9 +167,10 @@ fn run_echo(bus: &BusNode, echo: &EchoArgs) -> ExitCode {
                         continue;
                     }
                 };
-                if !header_printed {
+                if header_of.as_ref() != Some(&stream) {
+                    print_label(label.as_deref());
                     println!("{}", plot_header(&columns));
-                    header_printed = true;
+                    header_of = Some(stream);
                 }
                 println!("{}", plot_row(sample.framework_sent_nanos, &columns));
                 continue;
@@ -208,6 +185,14 @@ fn run_echo(bus: &BusNode, echo: &EchoArgs) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+/// The comment line that says which stream the lines after it are of, for a topic that has
+/// several; a topic of one stream prints none, so its output is what it always was.
+fn print_label(label: Option<&str>) {
+    if let Some(label) = label {
+        println!("# {label}");
+    }
 }
 
 /// A message that cannot print goes to stderr in `-p` mode, so stdout stays a clean table.
@@ -284,26 +269,30 @@ impl RateWindow {
     }
 }
 
-fn run_hz(bus: &BusNode, topic: &str, window: usize) -> ExitCode {
-    let mut sub = match open_subscriber(bus, topic, "hz/bw", "hz") {
-        Ok(sub) => sub,
+fn run_hz(bus: &BusNode, topic: &str, window: usize, selector: &StreamSelector) -> ExitCode {
+    let mut followed = match Followed::open(bus, topic, selector, "hz") {
+        Ok(followed) => followed,
         Err(code) => return code,
     };
 
-    let mut rate = RateWindow::new(window);
+    let mut rates: BTreeMap<StreamKey, RateWindow> = BTreeMap::new();
     let mut last_report = Instant::now();
 
     while bus.ok() {
-        while let Some(received) = receive_or_report(&mut sub, "hz") {
+        followed.refresh();
+        while let Some(received) = followed.next() {
             let Some(sample) = received.to_raw_sample() else { continue };
-            rate.on_arrival(sample.transport_sent_nanos);
+            let stream = StreamKey { topic: sample.topic, schema_hash: sample.schema_hash };
+            rates
+                .entry(stream)
+                .or_insert_with(|| RateWindow::new(window))
+                .on_arrival(sample.transport_sent_nanos);
         }
 
         if last_report.elapsed() >= Duration::from_secs(1) {
             last_report = Instant::now();
-            if rate.has_data() {
-                rate.print_report();
-            } else {
+            report_streams(&followed, &rates, RateWindow::has_data, RateWindow::print_report);
+            if !rates.values().any(RateWindow::has_data) {
                 println!("no messages received yet on '{topic}'");
             }
         }
@@ -311,6 +300,25 @@ fn run_hz(bus: &BusNode, topic: &str, window: usize) -> ExitCode {
     }
     ExitCode::SUCCESS
 }
+
+/// Prints the report of each stream that `has_data`, each under its title when the topic has
+/// several streams.
+fn report_streams<W>(
+    followed: &Followed<'_>,
+    windows: &BTreeMap<StreamKey, W>,
+    has_data: impl Fn(&W) -> bool,
+    print: impl Fn(&W),
+) {
+    for (stream, window) in windows.iter().filter(|(_, window)| has_data(window)) {
+        if followed.is_shared(stream) {
+            println!("{}:", followed.title(stream));
+        }
+        print(window);
+    }
+}
+
+/// What `bw` says before it has two messages of a stream, or before there is a stream.
+const NOT_ENOUGH_DATA: &str = "not enough data yet";
 
 struct BandwidthWindow {
     samples: VecDeque<(Instant, usize)>,
@@ -337,7 +345,7 @@ impl BandwidthWindow {
 
     fn print_report(&self) {
         if self.samples.len() < 2 {
-            println!("not enough data yet");
+            println!("{NOT_ENOUGH_DATA}");
             return;
         }
 
@@ -359,24 +367,32 @@ impl BandwidthWindow {
     }
 }
 
-fn run_bw(bus: &BusNode, topic: &str) -> ExitCode {
-    let mut sub = match open_subscriber(bus, topic, "hz/bw", "bw") {
-        Ok(sub) => sub,
+fn run_bw(bus: &BusNode, topic: &str, selector: &StreamSelector) -> ExitCode {
+    let mut followed = match Followed::open(bus, topic, selector, "bw") {
+        Ok(followed) => followed,
         Err(code) => return code,
     };
 
-    let mut bw = BandwidthWindow::new(5);
+    let mut windows: BTreeMap<StreamKey, BandwidthWindow> = BTreeMap::new();
     let mut last_report = Instant::now();
 
     while bus.ok() {
-        while let Some(received) = receive_or_report(&mut sub, "bw") {
+        followed.refresh();
+        while let Some(received) = followed.next() {
             let Some(sample) = received.to_raw_sample() else { continue };
-            bw.on_sample(sample.bytes.len());
+            let stream = StreamKey { topic: sample.topic, schema_hash: sample.schema_hash };
+            windows
+                .entry(stream)
+                .or_insert_with(|| BandwidthWindow::new(5))
+                .on_sample(sample.bytes.len());
         }
 
         if last_report.elapsed() >= Duration::from_secs(1) {
             last_report = Instant::now();
-            bw.print_report();
+            if windows.is_empty() {
+                println!("{NOT_ENOUGH_DATA}");
+            }
+            report_streams(&followed, &windows, |_| true, BandwidthWindow::print_report);
         }
         thread::sleep(Duration::from_millis(5));
     }
@@ -397,8 +413,8 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
     match cli.verb {
         Verb::List { timeout } => run_list(&bus, timeout),
         Verb::Echo { echo } => run_echo(&bus, &echo),
-        Verb::Hz { topic, window } => run_hz(&bus, &topic, window),
-        Verb::Bw { topic } => run_bw(&bus, &topic),
+        Verb::Hz { topic, window, selector } => run_hz(&bus, &topic, window, &selector),
+        Verb::Bw { topic, selector } => run_bw(&bus, &topic, &selector),
     }
 }
 
@@ -432,8 +448,5 @@ fn schema_label(
     topic: &str,
     schema_hash: u64,
 ) -> String {
-    resolve_identity(bus, identities, topic, schema_hash).map_or_else(
-        || format!("? ({schema_hash:016x})"),
-        |schema| format!("{} ({})", schema.data_type, schema.md5.get(..8).unwrap_or(&schema.md5)),
-    )
+    stream_label(resolve_identity(bus, identities, topic, schema_hash).as_deref(), schema_hash)
 }
