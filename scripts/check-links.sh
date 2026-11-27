@@ -3,7 +3,8 @@
 #
 # Every relative link in the tracked Markdown files (or in the files named) must name an
 # existing file, and every anchor (#...) must name a heading of its target. Vendored files
-# (an `upstream/` directory) keep their upstream links, into trees that are not copied. Slugs follow
+# (an `upstream/` directory, and the crates under `vendor/` but its own README.md) keep their
+# upstream links, into trees that are not copied. Slugs follow
 # GitHub and GitLab: lower case, punctuation other than `-` and `_` removed, spaces to `-`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -17,7 +18,8 @@ else:
     listed = subprocess.run(["git", "ls-files", "*.md"], capture_output=True, text=True, check=True)
     files = [pathlib.Path(name) for name in listed.stdout.split()
              if not pathlib.Path(name).name.startswith("hypha-")
-             and "upstream" not in pathlib.Path(name).parts]
+             and "upstream" not in pathlib.Path(name).parts
+             and not (name.startswith("vendor/") and name != "vendor/README.md")]
 
 link = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 fence = re.compile(r"^\s*```")
