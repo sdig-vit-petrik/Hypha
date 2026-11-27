@@ -236,9 +236,11 @@ fn record(
         // The graph event brings a stream that joins later, before any sample is read.
         match follower.refresh_if_changed(bus) {
             Ok(0) => {}
-            Ok(added) => {
-                println!("Following {added} more stream(s), {} in all", follower.followed());
-            }
+            // On standard error: a reader of standard output may have gone, as a pipe closes.
+            Ok(added) => eprintln!(
+                "hypha record: following {added} more stream(s), {} in all",
+                follower.followed()
+            ),
             Err(error) => eprintln!("hypha record: cannot list topics: {error}"),
         }
         if awaiting_topics {

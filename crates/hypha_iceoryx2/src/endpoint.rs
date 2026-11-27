@@ -549,6 +549,23 @@ pub(crate) fn steady_nanos() -> Result<u64, PortError> {
     u64::try_from(hypha_time::steady_now().nanos()).map_err(|_| PortError::Backend(3))
 }
 
+/// The streams `spec` may select, with their service names. The one stream of a literal topic
+/// that a subscription names by its hash is known without a listing, which reads every
+/// service of the domain; any other selection looks through the listing.
+fn candidate_streams(
+    spec: &hypha_core::port::TopicSpec,
+) -> Result<Vec<(String, Stream)>, PortError> {
+    match spec.schemas {
+        SchemaScope::Stream(schema_hash) if !spec.name.contains('*') => {
+            let stream = Stream { topic: spec.name.clone(), schema_hash };
+            Ok(vec![(stream.service_name(), stream)])
+        }
+        SchemaScope::Own | SchemaScope::Every | SchemaScope::Stream(_) => {
+            crate::discovery::topic_streams()
+        }
+    }
+}
+
 /// The subscribers of every stream that `spec` selects, and the streams in the same order.
 fn open_matching_streams(
     node: &crate::transport::SharedNode,
@@ -562,7 +579,7 @@ fn open_matching_streams(
     let mut subscribers = Vec::new();
     let mut streams = Vec::new();
     let port_name = crate::transport::node_port_name(node)?;
-    for (name, stream) in crate::discovery::topic_streams()? {
+    for (name, stream) in candidate_streams(spec)? {
         let selected = topic_matches_pattern(&spec.name, &stream.topic)
             && own_schema.is_none_or(|hash| hash == stream.schema_hash);
         if !selected {

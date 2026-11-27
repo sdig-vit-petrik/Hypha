@@ -58,6 +58,7 @@ fn a_version_that_joins_a_followed_topic_after_the_start_is_recorded_on_its_own_
         .spawn()
         .expect("hypha record");
     let mut stdout = BufReader::new(recorder.stdout.take().expect("stdout"));
+    let mut notices = BufReader::new(recorder.stderr.take().expect("stderr"));
     let mut recorder = common::Killed(recorder);
     let mut line = String::new();
     while !line.starts_with("Following 1 stream") {
@@ -67,9 +68,9 @@ fn a_version_that_joins_a_followed_topic_after_the_start_is_recorded_on_its_own_
 
     // The migration: v2 joins the name the recorder already follows.
     let mut v2 = bus.publish_raw(&topic, DATA_TYPE, &md5_of(VERSION_2), VERSION_2).expect("v2");
-    while !line.starts_with("Following 1 more stream") {
+    while !line.contains("following 1 more stream") {
         line.clear();
-        assert!(stdout.read_line(&mut line).expect("a line") > 0, "the recorder ended early");
+        assert!(notices.read_line(&mut line).expect("a line") > 0, "the recorder ended early");
     }
     for value in 0_u8..3 {
         assert!(v1.publish(&[value, 0, 0, 0]));
