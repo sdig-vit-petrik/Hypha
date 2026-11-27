@@ -30,6 +30,10 @@ criterion = { workspace = true }
 name = "dispatch"
 harness = false
 
+[[bench]]
+name = "large_frame"
+harness = false
+
 # The peer process that tests/peer_kill_isolation.rs kills.
 [[bin]]
 name = "hypha_node_kill_peer"
