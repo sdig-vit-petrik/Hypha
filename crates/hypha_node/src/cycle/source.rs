@@ -101,12 +101,17 @@ impl CycleInputSource {
         let Some(history) = self.history.as_ref() else {
             return Err(Error::InvalidState);
         };
-        // One history depth per call: everything queued when the drain starts fits.
-        let limit = subscriber.port.buffer_size().saturating_add(1);
+        let sim = hypha_time::is_sim_time();
+        // One call takes everything queued when it starts: on host time one history depth;
+        // under simulated time the queue of every publisher, so the progress reported
+        // after a drain covers every sample sent before it (replay-flow-control.md §4.2).
+        let queued =
+            if sim { subscriber.port.queue_capacity() } else { subscriber.port.buffer_size() };
+        let limit = queued.saturating_add(1);
         let only_latest_bindings =
             self.queued_bindings.load(std::sync::atomic::Ordering::Acquire) == 0;
         // A replay cut admits older samples, so simulated time keeps every one.
-        let keep_newest = only_latest_bindings && !hypha_time::is_sim_time();
+        let keep_newest = only_latest_bindings && !sim;
         if keep_newest {
             return self.drain_newest(subscriber, history, limit, &mut now);
         }
@@ -213,10 +218,10 @@ fn check_input_source<'set>(
         None => None,
         Some(endpoint) => {
             // The queue plus one slot, so a drain of a full queue keeps the newest sample of
-            // the drain before it. In replay the queue is drained only when a step runs,
-            // so it holds the samples from one step's clock to the next, up to a chunk and a
-            // period of the topic (replay-flow-control.md §6.7). A queued binding adds its
-            // `perStep` (`reserve_arrivals`).
+            // the drain before it. In replay every turn drains the queue, which then holds
+            // one chunk, and a `Latest` history keeps it and the newest sample before it
+            // (replay-flow-control.md §6.7). A queued binding adds its `perStep`
+            // (`reserve_arrivals`).
             let depth = endpoint.port.buffer_size().saturating_add(1);
             let history = hypha_cycle::CycleHistory::new(depth).ok_or(Error::InvalidArgument)?;
             Some(Arc::new(Mutex::new(history)))

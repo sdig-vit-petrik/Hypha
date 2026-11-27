@@ -418,6 +418,17 @@ impl Iox2Subscriber {
         }
     }
 
+    /// The most samples this subscriber can hold queued: iceoryx2 gives each publisher
+    /// its own queue of [`Self::buffer_size`], so one for each publisher every topic it
+    /// follows admits.
+    #[must_use]
+    pub fn queue_capacity(&self) -> usize {
+        self.port_factories()
+            .map(|factory| factory.static_config().max_publishers())
+            .fold(0, usize::saturating_add)
+            .saturating_mul(self.buffer_size())
+    }
+
     pub(crate) fn new(
         subscriber: Subscriber<Ipc, [u8], Iox2FrameHeader>,
         created_nanos: u64,

@@ -47,8 +47,9 @@ struct StepState<'a> {
     waitset: &'a crate::waitset::HyphaWaitSet,
 }
 
-/// Drain each physical source of `cycle` once into its history, before a step the
-/// dispatcher cuts itself. `InvalidState` inside a step.
+/// Drain each physical source of `cycle` once into its history, for the dispatcher: before
+/// a step it cuts itself, and on every turn under simulated time. `InvalidState` inside a
+/// step.
 pub(crate) fn drain_inputs(cycle: &Cycle) -> Result<(), Error> {
     drain_sources(&cycle.step_ref()?.inputs)
 }

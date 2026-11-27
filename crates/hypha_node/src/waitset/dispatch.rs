@@ -424,6 +424,12 @@ impl Dispatcher for CallbackDispatcher<'_> {
         if decision != Progression::Continue {
             return decision;
         }
+        if self.node.on_sim_time() {
+            let decision = self.drain_replay_inputs();
+            if decision != Progression::Continue {
+                return decision;
+            }
+        }
         self.publish_progress(snapshot, now);
         Progression::Continue
     }
