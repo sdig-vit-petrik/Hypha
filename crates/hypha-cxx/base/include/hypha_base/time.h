@@ -90,6 +90,51 @@ constexpr int64_t nanosFromSeconds(double seconds)
     return saturatingAdd(saturatingMul(whole, 1000000000), fraction);
 }
 
+// The 128-bit integer of gcc and clang, spelled so that -Wpedantic stays quiet.
+__extension__ typedef unsigned __int128 Wide;
+
+/// @brief `nanos / 1e9`, correctly rounded: the double nearest to the exact quotient (#253).
+///
+/// `double(nanos) / 1e9` rounds twice. Above 2^53 ns (104 days) the conversion of the
+/// nanoseconds to a double already drops low bits, to a multiple of 256 ns at a stamp since
+/// the epoch, and the division rounds again: one spacing off for about a quarter of those stamps.
+/// Up to 2^53 ns both operands are exact and the single division is the correct rounding.
+/// Above, the quotient is formed in 128 bits, 64 bits finer than the result needs, and
+/// rounded once to 53 bits, to nearest even, with the remainder of the division as the sticky
+/// bit. Scaling by a power of two is exact.
+constexpr double secondsFromNanos(int64_t nanos)
+{
+    constexpr int64_t kExactNanos = int64_t{1} << 53;
+    if (nanos >= -kExactNanos && nanos <= kExactNanos) {
+        return static_cast<double>(nanos) / 1e9;
+    }
+    const bool     negative = nanos < 0;
+    const uint64_t magnitude =
+        negative ? 0 - static_cast<uint64_t>(nanos) : static_cast<uint64_t>(nanos);
+    const Wide scaled = static_cast<Wide>(magnitude) << 64;
+    const Wide quotient = scaled / 1000000000u;
+    const bool inexact = scaled != quotient * 1000000000u;
+    // quotient has 87 to 98 bits; keep its top 53.
+    int length = 0;
+    for (Wide rest = quotient; rest != 0; rest >>= 1) {
+        ++length;
+    }
+    const int  drop = length - 53;
+    const Wide one = 1;
+    Wide       mantissa = quotient >> drop;
+    const Wide below = quotient & ((one << drop) - 1);
+    const Wide half = one << (drop - 1);
+    if (below > half || (below == half && (inexact || (mantissa & 1) != 0))) {
+        mantissa += 1;
+    }
+    // The value is mantissa * 2^(drop - 64). A mantissa of 2^53 is still exact.
+    double seconds = static_cast<double>(mantissa);
+    for (int halvings = drop; halvings < 64; ++halvings) {
+        seconds *= 0.5;
+    }
+    return negative ? -seconds : seconds;
+}
+
 }  // namespace detail
 
 /// @brief A signed time span with nanosecond resolution.
@@ -144,9 +189,10 @@ class Duration
         return this->nanoseconds;
     }
 
+    /// @brief The span in seconds: the double nearest to the exact value.
     constexpr double seconds() const
     {
-        return static_cast<double>(this->nanoseconds) / 1e9;
+        return detail::secondsFromNanos(this->nanoseconds);
     }
 
     constexpr std::chrono::nanoseconds chrono() const
@@ -244,9 +290,10 @@ class Time
         return this->nanoseconds;
     }
 
+    /// @brief The time in seconds since the epoch: the double nearest to the exact value.
     constexpr double seconds() const
     {
-        return static_cast<double>(this->nanoseconds) / 1e9;
+        return detail::secondsFromNanos(this->nanoseconds);
     }
 
     /// @brief Sentinel meaning "time is not yet known". A default-constructed Time is zero.
