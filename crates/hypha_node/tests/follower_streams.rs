@@ -43,12 +43,14 @@ fn hash(md5: &str) -> u64 {
     hypha_node::sdk::schema_hash_from_md5(md5).expect("md5")
 }
 
-/// Waits until the follower reads `streams` streams, by its own graph event, and says how long.
+/// Waits until the follower reads `streams` streams, on the graph event: `settle` lists only
+/// when an event came, so a lost wake-up or the backstop would not pass it. How long it takes
+/// is the listing's, which the domain and the machine decide.
 fn wait_for_streams(follower: &mut StreamFollower, bus: &BusNode, streams: usize) -> Duration {
     let started = Instant::now();
     while follower.followed() < streams {
-        assert!(started.elapsed() < Duration::from_secs(1), "the stream is followed on its event");
-        follower.refresh_if_changed(bus).expect("refresh");
+        assert!(started.elapsed() < Duration::from_secs(20), "the stream is not followed");
+        follower.settle(bus).expect("settle");
         std::thread::sleep(Duration::from_millis(1));
     }
     started.elapsed()
@@ -127,4 +129,23 @@ fn a_type_or_an_md5_flag_follows_only_the_streams_it_selects() {
     let mut none = StreamFollower::new(&bus, vec![topic], by_type, 8).expect("follower");
     none.refresh(&bus).expect("refresh");
     assert_eq!(none.followed(), 0, "no stream of that type");
+}
+
+/// The call the tools make on each pass, which lists at most once per spacing, follows a stream
+/// that joins too.
+#[test]
+fn a_spaced_refresh_follows_a_stream_that_joins_after_a_listing() {
+    let bus = BusNode::new(&unique_name("rv_spaced")).expect("bus node");
+    let peer = BusNode::new(&unique_name("rv_spaced_peer")).expect("peer");
+    let topic = format!("/{}/odom", unique_name("rv_spaced"));
+    let mut follower = StreamFollower::new(&bus, vec![topic.clone()], StreamSelector::default(), 8)
+        .expect("follower");
+    follower.refresh(&bus).expect("refresh");
+    let _v1 = publish_version(&peer, &topic, V1, DEFINITION_1);
+    let started = Instant::now();
+    while follower.followed() == 0 {
+        assert!(started.elapsed() < Duration::from_secs(20), "the stream is not followed");
+        follower.refresh_if_changed(&bus).expect("refresh");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
