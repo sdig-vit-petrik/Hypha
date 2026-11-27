@@ -36,7 +36,7 @@ pub struct HyphaSupervisionLimits {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct HyphaClockDriverOptions {
-    /// The first `/clock` value, in nanoseconds. Zero or more.
+    /// The first `/clock` value, in nanoseconds, sent with no step. Zero or more.
     pub start_nanos: i64,
     /// A required participant silent this long fails the run. Positive.
     pub timeout_nanos: u64,

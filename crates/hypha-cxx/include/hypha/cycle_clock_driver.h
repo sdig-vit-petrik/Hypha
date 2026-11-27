@@ -16,13 +16,13 @@ namespace hypha {
 /// @brief Settings of a cycle that drives `/clock` for a simulator (Cycle::setClockDriver).
 struct ClockDriverOptions
 {
-    /// The first `/clock` value.
+    /// The first `/clock` value, sent with no step: the first step runs one period later.
     Time start{};
     /// A participant that acknowledges nothing for this long fails the run with Timeout.
     Duration timeout = Duration::fromSeconds(5.0);
     /// Simulated seconds per host second. Empty: as fast as the participants allow.
     std::optional<double> realTimeFactor{};
-    /// Node names that must acknowledge the first value before the second step; at least
+    /// Node names that must acknowledge the start value before the first step; at least
     /// one. Any other node that reports on `/clock_progress` joins the participants.
     std::vector<std::string> participants{};
 };

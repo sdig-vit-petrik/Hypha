@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 7
+#define HYPHA_ABI_REVISION 8
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -378,7 +378,7 @@ typedef struct HyphaWaitSet HyphaWaitSet;
 
 // The settings of a cycle that drives `/clock` for a simulator.
 typedef struct HyphaClockDriverOptions {
-  // The first `/clock` value, in nanoseconds. Zero or more.
+  // The first `/clock` value, in nanoseconds, sent with no step. Zero or more.
   int64_t start_nanos;
   // A required participant silent this long fails the run. Positive.
   uint64_t timeout_nanos;
@@ -1027,8 +1027,9 @@ HyphaStatus hypha_config_resolve_key(const struct HyphaConfig *config,
                                      size_t *out_len);
 
 // Make an uncommitted rate cycle drive `/clock`; its period is the clock step. Commit
-// enables process-wide simulated time at `start_nanos`. `options` is read for the call
-// only. `InvalidArgument`: null pointer, a negative start, a zero timeout, a factor that
+// enables process-wide simulated time at `start_nanos`. The driver publishes
+// `/clock = start_nanos` with no step; its first step runs at `start_nanos` plus one
+// period. `options` is read for the call only. `InvalidArgument`: null pointer, a negative start, a zero timeout, a factor that
 // is negative or not finite, a cycle without a rate, or a triggered cycle.
 // `InvalidState`: committed cycle, or its `WaitSet` runs.
 //
@@ -1037,8 +1038,8 @@ HyphaStatus hypha_config_resolve_key(const struct HyphaConfig *config,
 HyphaStatus hypha_cycle_set_clock_driver(struct HyphaCycle *cycle,
                                          const struct HyphaClockDriverOptions *options);
 
-// Add the node `name` to the participants a driver cycle waits for before its second
-// step. `name` points to `name_len` UTF-8 bytes, read for the call only.
+// Add the node `name` to the participants that must acknowledge a driver cycle's start
+// value before its first step. `name` points to `name_len` UTF-8 bytes, read for the call only.
 // `InvalidArgument`: null cycle, empty or non-UTF-8 name, a cycle without
 // `hypha_cycle_set_clock_driver`. `InvalidState`: committed cycle, or its `WaitSet` runs.
 //

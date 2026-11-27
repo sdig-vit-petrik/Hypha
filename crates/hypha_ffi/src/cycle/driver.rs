@@ -9,8 +9,9 @@ use hypha_node::status::HyphaStatus;
 use std::os::raw::c_char;
 
 /// Make an uncommitted rate cycle drive `/clock`; its period is the clock step. Commit
-/// enables process-wide simulated time at `start_nanos`. `options` is read for the call
-/// only. `InvalidArgument`: null pointer, a negative start, a zero timeout, a factor that
+/// enables process-wide simulated time at `start_nanos`. The driver publishes
+/// `/clock = start_nanos` with no step; its first step runs at `start_nanos` plus one
+/// period. `options` is read for the call only. `InvalidArgument`: null pointer, a negative start, a zero timeout, a factor that
 /// is negative or not finite, a cycle without a rate, or a triggered cycle.
 /// `InvalidState`: committed cycle, or its `WaitSet` runs.
 ///
@@ -28,8 +29,8 @@ pub unsafe extern "C" fn hypha_cycle_set_clock_driver(
     })
 }
 
-/// Add the node `name` to the participants a driver cycle waits for before its second
-/// step. `name` points to `name_len` UTF-8 bytes, read for the call only.
+/// Add the node `name` to the participants that must acknowledge a driver cycle's start
+/// value before its first step. `name` points to `name_len` UTF-8 bytes, read for the call only.
 /// `InvalidArgument`: null cycle, empty or non-UTF-8 name, a cycle without
 /// `hypha_cycle_set_clock_driver`. `InvalidState`: committed cycle, or its `WaitSet` runs.
 ///

@@ -208,15 +208,25 @@ in `hypha_runtime::clock_barrier`; `hypha play` reaches them through `hypha::clo
   before the `/clock` sample went out) and its clock is at least V. Required participants
   are every node heard on `/clock_progress` plus every expected name. A driver expects at
   least one name, or it is refused at commit: with none it would step before any node
-  joins. A node that joins late is required from its first report.
-- **Step.** The driver's step at D' runs only when every required participant acknowledged
-  D. Simulated time is set to D', the step's inputs are cut strictly before D' as a replay
-  step's are, its outputs carry D' as their framework send stamp, and `/clock = D'` goes
-  out after the step's outputs. A participant therefore reads the driver's step-D' outputs
-  together with `/clock = D'`, and the driver reads at D' what the participants sent for D.
-- **Start.** The first value is the configured start. The driver resends it until every
-  expected name has acknowledged it; an expected name that never reports within 30 s fails
-  the run with `Timeout`.
+  joins. A node that joins late is required from its first report; it receives the
+  outputs of the steps that run after its subscribers exist, not those before.
+- **Step.** The driver's step at D' = D + period runs only when every required participant
+  acknowledged D, the start value included. Simulated time is set to D', the step's
+  inputs are cut strictly before D' as a replay step's are, its outputs carry D' as their
+  framework send stamp, and `/clock = D'` goes out after the step's outputs. A participant
+  therefore reads the driver's step-D' outputs together with `/clock = D'`, and the driver
+  reads at D' what the participants sent for D.
+- **Start.** The first value is the configured start, and it is the start barrier, as the
+  player's (4.3): the driver publishes `/clock = start` with no step and resends it until
+  every expected name has acknowledged it. The first step runs at start + period, so its
+  outputs reach every expected participant: a node reports only once it has committed a
+  cycle on simulated time, and that cycle's inputs exist by then. An expected name that
+  never reports within 30 s fails the run with `Timeout`, and no step has run. A simulator
+  therefore publishes its initial state in the step at start + period, stamped with that
+  time; nothing is stamped at the start value. A step at the start value after the
+  barrier would break ties at the start: the acknowledgements of the barrier would
+  release a downstream node's upstream hold (6.4) before the outputs stamped at the start
+  exist.
 - **Resend.** An unacknowledged value is sent again every 200 ms, with the first floor, so
   a participant that missed the sample still answers it.
 - **Silence.** A required participant that acknowledges nothing for the driver's timeout
@@ -224,7 +234,8 @@ in `hypha_runtime::clock_barrier`; `hypha play` reaches them through `hypha::clo
   never advances past it.
 - **Pace.** Without a real-time factor the driver steps as fast as the participants
   allow, at most one step per `WaitSet` turn (a 1 ms wake). With a factor f, step D' waits
-  until host time reaches the first step's host time plus (D' − start) / f.
+  until host time reaches the host time at which the start was acknowledged plus
+  (D' − start) / f.
 - **Ownership.** The driver owns the process's simulated time: commit refuses a process
   already on simulated time (a node started with `HYPHA_USE_SIM_TIME`, or `enableSimTime`), and a bus
   where another process already publishes `/clock`; it enables simulated time at the start
