@@ -834,7 +834,9 @@ timer never sees one: it is due on the monotonic clock.
 A simulator can drive `/clock` itself: a rate cycle marked with `Cycle::setClockDriver`
 publishes its start value with no step, then steps only after every participant
 acknowledged the previous value, as `hypha play` waits for its chunks. Its first step is
-one period after the start. `replay-flow-control.md` §4.5 gives its rules.
+one period after the start. The start is from zero up to, not including, 2^32 seconds, the
+range of a `/clock` message's seconds; `hypha_cycle_set_clock_driver` refuses another and
+names the range in `hypha_last_error`. `replay-flow-control.md` §4.5 gives its rules.
 
 A cycle on simulated time is a replay cycle. It runs every period in data
 time, so a result does not depend on how fast the clock is moved or on the

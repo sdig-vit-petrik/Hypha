@@ -4,6 +4,7 @@ use super::state::CycleId;
 use super::types::HyphaClockDriverOptions;
 use crate::status::Error;
 use crate::waitset::HyphaWaitSet;
+use hypha_runtime::clock_barrier::check_clock_start;
 
 /// The driver settings of an uncommitted cycle.
 #[derive(Debug, Clone)]
@@ -15,8 +16,10 @@ pub(crate) struct DriverSetup {
 /// Makes the uncommitted rate cycle `cycle` of `set` drive `/clock` with `options`.
 ///
 /// # Errors
-/// `InvalidArgument` for a cycle `set` does not hold, a negative start, a zero timeout, a negative or non-finite
-/// factor, a triggered cycle; `InvalidState` for a committed cycle or a running `WaitSet`.
+/// `InvalidArgument` for a cycle `set` does not hold, a start `/clock` cannot carry (negative,
+/// or 2^32 seconds or more: the reason is then the thread's `hypha_last_error`), a zero
+/// timeout, a negative or non-finite factor, a triggered cycle; `InvalidState` for a committed
+/// cycle or a running `WaitSet`.
 pub fn cycle_set_clock_driver(
     set: &HyphaWaitSet,
     cycle: CycleId,
@@ -25,8 +28,10 @@ pub fn cycle_set_clock_driver(
     let cycle = set.cycle(cycle)?;
     let mut registration = cycle.configurable(set)?;
     let factor = options.real_time_factor;
-    let refused = options.start_nanos < 0
-        || options.timeout_nanos == 0
+    if let Err(reason) = check_clock_start(options.start_nanos) {
+        return Err(crate::last_error::refuse(Error::InvalidArgument, &reason));
+    }
+    let refused = options.timeout_nanos == 0
         || !factor.is_finite()
         || factor < 0.0
         || cycle.period_nanos() == 0

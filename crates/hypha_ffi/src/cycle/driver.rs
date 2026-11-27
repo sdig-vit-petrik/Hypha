@@ -12,7 +12,8 @@ use std::os::raw::c_char;
 /// enables process-wide simulated time at `start_nanos`. The driver publishes
 /// `/clock = start_nanos` with no step; its first step runs at `start_nanos` plus one
 /// period. `options` is read for the call only. `InvalidArgument`: null pointer, a
-/// negative start, a zero timeout, a factor that is negative or not finite, a cycle
+/// start below zero or of 2^32 seconds or more (`/clock` carries seconds in 32 bits; the
+/// reason is then `hypha_last_error`), a zero timeout, a factor that is negative or not finite, a cycle
 /// without a rate, or a triggered cycle.
 /// `InvalidState`: committed cycle, or its `WaitSet` runs.
 ///

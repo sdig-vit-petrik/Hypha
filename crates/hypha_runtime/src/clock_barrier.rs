@@ -18,9 +18,26 @@ pub const PROGRESS_DEPTH: usize = 8;
 
 /// Bytes of a `rosgraph_msgs/Clock` payload: a ROS time, two `u32`.
 pub const CLOCK_PAYLOAD_BYTES: usize = 8;
+/// The first value, in seconds, that a `/clock` message cannot carry: it holds seconds in 32 bits.
+const CLOCK_SECONDS_LIMIT: i64 = 1 << 32;
 /// The largest `hypha_msgs/ReplayProgress` payload: name length prefix, the longest
 /// node name and two `u64`.
 pub const PROGRESS_MAX_PAYLOAD_BYTES: usize = 4 + hypha_core::port::MAX_NODE_NAME_LENGTH + 16;
+
+/// Whether `/clock` can carry `nanos`, as a start value.
+///
+/// # Errors
+/// A message naming the range when `nanos` is negative or 2^32 seconds or more.
+pub fn check_clock_start(nanos: i64) -> Result<(), String> {
+    const NANOS_PER_SECOND: i64 = 1_000_000_000;
+    if (0..CLOCK_SECONDS_LIMIT * NANOS_PER_SECOND).contains(&nanos) {
+        return Ok(());
+    }
+    Err(format!(
+        "the start clock value {nanos} ns is outside what /clock carries: 0 s up to, not \
+         including, {CLOCK_SECONDS_LIMIT} s"
+    ))
+}
 
 /// What the player has heard from one node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,12 +296,10 @@ impl DriverSchedule {
     /// A schedule that has sent nothing yet.
     ///
     /// # Errors
-    /// A message naming the setting when the period, timeout or factor is not positive,
-    /// or no non-empty participant name is expected.
+    /// A message naming the setting when the start is outside `/clock`, the period, timeout
+    /// or factor is not positive, or no non-empty participant name is expected.
     pub fn new(options: DriverOptions, now: Instant) -> Result<Self, String> {
-        if options.start_nanos < 0 {
-            return Err("the start clock value must not be negative".to_owned());
-        }
+        check_clock_start(options.start_nanos)?;
         if options.period_nanos <= 0 {
             return Err("the clock period must be positive".to_owned());
         }

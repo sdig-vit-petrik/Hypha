@@ -710,7 +710,9 @@ A clock driver is a rate cycle that drives `/clock` for a simulator:
 acknowledgement rules, shared with `hypha play`: `replay-flow-control.md` §4.5. The start
 value goes out with no step, and the first step runs at start + period, once every name in
 `participants` has acknowledged the start: a ported simulator publishes its initial state
-there, not at the start value as a ROS 1 simulator does with its first `/clock`.
+there, not at the start value as a ROS 1 simulator does with its first `/clock`. The start
+value lies from zero up to, not including, 2^32 seconds, the range of the seconds a `/clock`
+message carries: `start()` refuses any other, and its error names the range.
 
 #### Loss counters
 

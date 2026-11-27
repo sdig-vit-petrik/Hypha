@@ -384,7 +384,7 @@ typedef struct HyphaWaitSet HyphaWaitSet;
 
 // The settings of a cycle that drives `/clock` for a simulator.
 typedef struct HyphaClockDriverOptions {
-  // The first `/clock` value, in nanoseconds, sent with no step. Zero or more.
+  // The first `/clock` value, in nanoseconds, sent with no step. Zero or more, and below 2^32 seconds: `/clock` carries seconds in 32 bits.
   int64_t start_nanos;
   // A required participant silent this long fails the run. Positive.
   uint64_t timeout_nanos;
@@ -1046,7 +1046,8 @@ HyphaStatus hypha_config_resolve_key(const struct HyphaConfig *config,
 // enables process-wide simulated time at `start_nanos`. The driver publishes
 // `/clock = start_nanos` with no step; its first step runs at `start_nanos` plus one
 // period. `options` is read for the call only. `InvalidArgument`: null pointer, a
-// negative start, a zero timeout, a factor that is negative or not finite, a cycle
+// start below zero or of 2^32 seconds or more (`/clock` carries seconds in 32 bits; the
+// reason is then `hypha_last_error`), a zero timeout, a factor that is negative or not finite, a cycle
 // without a rate, or a triggered cycle.
 // `InvalidState`: committed cycle, or its `WaitSet` runs.
 //
@@ -1393,7 +1394,8 @@ HyphaStatus hypha_node_introspect(const struct HyphaNode *node,
 
 // Copy the reason of the last refusal on this thread to `out`, UTF-8 without a
 // terminator; empty when none was recorded since the last `hypha_cycle_create` or
-// `hypha_cycle_commit` on this thread. `*out_len` receives the length; `TooLarge`, with
+// `hypha_cycle_commit` on this thread. `hypha_cycle_set_clock_driver` records the reason
+// of a start value it refuses. `*out_len` receives the length; `TooLarge`, with
 // `out` untouched, when `capacity` is too small. `InvalidArgument` for a null `out_len`.
 //
 // # Safety
