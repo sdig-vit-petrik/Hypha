@@ -82,7 +82,7 @@ fn roundtrips_channels_schemas_md5_and_bytes() {
         let mut items = Vec::new();
         let delivered = player
             .for_each_item(&[], UtcRange::default(), |item| {
-                items.push((item.topic.to_owned(), item.bytes.to_vec(), item.delay_nanos));
+                items.push((item.stream.topic.clone(), item.bytes.to_vec(), item.delay_nanos));
                 true
             })
             .unwrap();
@@ -137,7 +137,7 @@ fn roundtrips_zstd_and_uncompressed() {
             let mut count = 0;
             player
                 .for_each_item(&[], UtcRange::default(), |item| {
-                    assert_eq!(item.topic, "/imu/data");
+                    assert_eq!(item.stream.topic, "/imu/data");
                     assert_eq!(item.bytes, &[1, 2, 3, 4, 5]);
                     count += 1;
                     true
@@ -199,7 +199,7 @@ fn topics_filter_excludes_unlisted_channels() {
         let mut items = Vec::new();
         let delivered = player
             .for_each_item(&["/kept".to_string()], UtcRange::default(), |item| {
-                items.push((item.topic.to_owned(), item.bytes.to_vec(), item.delay_nanos));
+                items.push((item.stream.topic.clone(), item.bytes.to_vec(), item.delay_nanos));
                 true
             })
             .unwrap();

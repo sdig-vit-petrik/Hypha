@@ -2,6 +2,7 @@
 
 use super::{CLOCK_TOPIC, Flow, Playback, Session};
 use crate::player::PlaybackItem;
+use crate::stream::StreamKey;
 use std::time::Instant;
 
 impl Session<'_> {
@@ -32,29 +33,40 @@ impl Session<'_> {
     /// chunks promise that every message went out; without `/clock` it is only reported.
     pub(super) fn publish_item(&mut self, item: &PlaybackItem<'_>) -> Result<(), String> {
         self.last_log_time = item.log_time_nanos;
-        if self.last_topic != item.topic {
-            self.last_topic.clear();
-            self.last_topic.push_str(item.topic);
+        if self.last_topic != item.stream.topic {
+            self.last_topic.clone_from(&item.stream.topic);
         }
-        let Some(publisher) = self.publishers.get_mut(item.topic) else {
+        let Some(publisher) = self.publishers.get_mut(item.stream) else {
             // Under `/clock` the recording's own clock is replaced by the replay's clock,
             // so it has no publisher on purpose.
-            let recorded_clock_is_replaced = self.config.publish_clock && item.topic == CLOCK_TOPIC;
+            let recorded_clock_is_replaced =
+                self.config.publish_clock && item.stream.topic == CLOCK_TOPIC;
             if recorded_clock_is_replaced {
                 return Ok(());
             }
-            return Err(format!("no publisher for '{}': the replay did not start it", item.topic));
+            return Err(format!(
+                "no publisher for {}: the replay did not start it",
+                self.title(item.stream)
+            ));
         };
         // The frame carries the message's log time as its framework stamp.
         if publisher.publish_at_framework_nanos(item.bytes, item.log_time_nanos) {
-            count_one(&mut self.counters, item.topic);
+            count_one(&mut self.counters, item.stream);
             Ok(())
         } else if self.clock.is_some() {
-            Err(format!("cannot publish '{}': a message of the replay would be lost", item.topic))
+            Err(format!(
+                "cannot publish {}: a message of the replay would be lost",
+                self.title(item.stream)
+            ))
         } else {
-            eprintln!("hypha play: failed to publish '{}'", item.topic);
+            eprintln!("hypha play: failed to publish {}", self.title(item.stream));
             Ok(())
         }
+    }
+
+    /// `stream` as a message of the session names it.
+    fn title(&self, stream: &StreamKey) -> String {
+        self.titles.get(stream).cloned().unwrap_or_else(|| format!("'{}'", stream.topic))
     }
 
     /// Closes every boundary before `log_time`. Each is taken in turn, so a long gap
@@ -92,13 +104,13 @@ impl Session<'_> {
         }
         self.publish_item(item)?;
         if self.clock.is_some() {
-            count_one_in_chunk(&mut self.in_chunk, item.topic);
+            count_one_in_chunk(&mut self.in_chunk, item.stream);
         }
         self.render_if_due();
         Ok(Flow::Go)
     }
 
-    /// Closes the chunk before `item` when its topic already fills the smallest subscriber
+    /// Closes the chunk before `item` when its stream already fills the smallest subscriber
     /// queue, so that no subscriber loses samples within one chunk. The chunk closes one
     /// nanosecond before the item, so it holds every message stamped at or before its close,
     /// as a grid chunk does. Without `/clock`, or without the lockstep that would wait for
@@ -107,18 +119,18 @@ impl Session<'_> {
         if !self.in_lockstep() {
             return Ok(Flow::Go);
         }
-        let sent = self.in_chunk.get(item.topic).copied().unwrap_or(0);
+        let sent = self.in_chunk.get(item.stream).copied().unwrap_or(0);
         if sent == 0 {
             return Ok(Flow::Go);
         }
-        let Some(publisher) = self.publishers.get(item.topic) else {
+        let Some(publisher) = self.publishers.get(item.stream) else {
             return Ok(Flow::Go);
         };
-        let limit = if let Some(limit) = self.limits.get(item.topic) {
+        let limit = if let Some(limit) = self.limits.get(item.stream) {
             *limit
         } else {
             let limit = publisher.min_subscriber_buffer()?;
-            self.limits.insert(item.topic.to_owned(), limit);
+            self.limits.insert(item.stream.clone(), limit);
             limit
         };
         let Some(limit) = limit else {
@@ -131,15 +143,15 @@ impl Session<'_> {
             self.plan.as_mut().and_then(|plan| plan.shorten_before(item.log_time_nanos))
         else {
             return Err(format!(
-                "{} messages of '{}' at one instant exceed the smallest subscriber queue {limit}",
+                "{} messages of {} at one instant exceed the smallest subscriber queue {limit}",
                 sent.saturating_add(1),
-                item.topic
+                self.title(item.stream)
             ));
         };
-        if !self.shortened.contains(item.topic) && self.shortened.insert(item.topic.to_owned()) {
+        if !self.shortened.contains(item.stream) && self.shortened.insert(item.stream.clone()) {
             println!(
-                "hypha play: chunks shortened on '{}': its smallest subscriber queue holds {limit} samples",
-                item.topic
+                "hypha play: chunks shortened on {}: its smallest subscriber queue holds {limit} samples",
+                self.title(item.stream)
             );
         }
         self.close_chunk(boundary)
@@ -210,26 +222,29 @@ impl Session<'_> {
     }
 
     pub(super) fn counters_in_order(&self) -> Vec<(String, u64)> {
-        self.topic_order
+        self.stream_order
             .iter()
-            .map(|topic| (topic.clone(), *self.counters.get(topic).unwrap_or(&0)))
+            .map(|stream| (self.title(stream), *self.counters.get(stream).unwrap_or(&0)))
             .collect()
     }
 }
-/// Adds one to `topic`'s count, allocating its key only the first time.
-fn count_one(counts: &mut std::collections::HashMap<String, u64>, topic: &str) {
-    if let Some(count) = counts.get_mut(topic) {
+/// Adds one to `stream`'s count, allocating its key only the first time.
+fn count_one(counts: &mut std::collections::HashMap<StreamKey, u64>, stream: &StreamKey) {
+    if let Some(count) = counts.get_mut(stream) {
         *count = count.saturating_add(1);
     } else {
-        counts.insert(topic.to_owned(), 1);
+        counts.insert(stream.clone(), 1);
     }
 }
 
 /// [`count_one`] for the per-chunk counts.
-fn count_one_in_chunk(counts: &mut std::collections::HashMap<String, usize>, topic: &str) {
-    if let Some(count) = counts.get_mut(topic) {
+fn count_one_in_chunk(
+    counts: &mut std::collections::HashMap<StreamKey, usize>,
+    stream: &StreamKey,
+) {
+    if let Some(count) = counts.get_mut(stream) {
         *count = count.saturating_add(1);
     } else {
-        counts.insert(topic.to_owned(), 1);
+        counts.insert(stream.clone(), 1);
     }
 }

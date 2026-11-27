@@ -20,6 +20,7 @@ use crate::replay_report::RateReport;
 use crate::replay_sync::{
     ChunkPlan, DEFAULT_CHUNK_NANOS, DEFAULT_SETTLE, DEFAULT_TIMEOUT, PROGRESS_TOPIC, Pace,
 };
+use crate::stream::{StreamKey, stream_title, type_label};
 use crate::terminal_ui::TerminalController;
 use crate::utc_time::UtcRange;
 use hypha_node::sdk::clock_barrier::{CLOCK_RESEND_INTERVAL, Participants};
@@ -104,7 +105,8 @@ impl Default for PlaySessionConfig {
 pub struct PlaySessionResult {
     /// Total messages published, across every pass.
     pub published: u64,
-    /// Per-topic publish counts, in declaration order.
+    /// Per-stream publish counts, in declaration order, each under the stream's topic in
+    /// quotes, and its type and MD5 start when the topic has more than one stream.
     pub counters: Vec<(String, u64)>,
     /// A replay timing, clock or participant failure, when the run was refused or stopped.
     pub error: Option<String>,
@@ -164,19 +166,38 @@ fn replayed_topics<'a>(player: &'a Player, config: &PlaySessionConfig) -> Vec<&'
     topics
 }
 
+/// Whether the replay publishes more than one stream on `topic`.
+fn has_several_streams(channels: &[&ChannelResolution], topic: &str) -> bool {
+    let mut streams = channels
+        .iter()
+        .filter(|channel| channel.topic == topic && !channel.md5.is_empty())
+        .map(|channel| &channel.stream);
+    streams.next().is_some_and(|first| streams.any(|other| other != first))
+}
+
+/// The publishers of the replayed streams and the order the recording declares them in.
+struct ChannelPublishers {
+    publishers: HashMap<StreamKey, RawPublisher>,
+    order: Vec<StreamKey>,
+    /// Each stream under its topic, and its type when the topic has several: how a message
+    /// of the session names it.
+    titles: HashMap<StreamKey, String>,
+}
+
+/// Publishes each stream the recording holds: one publisher for each topic and MD5, so a
+/// topic recorded with two versions is replayed as two streams.
 fn create_channel_publishers(
     bus: &BusNode,
     player: &Player,
     config: &PlaySessionConfig,
-) -> Result<(HashMap<String, RawPublisher>, Vec<String>), String> {
-    let mut publishers: HashMap<String, RawPublisher> = HashMap::new();
-    let mut topic_order: Vec<String> = Vec::new();
+) -> Result<ChannelPublishers, String> {
+    let mut created =
+        ChannelPublishers { publishers: HashMap::new(), order: Vec::new(), titles: HashMap::new() };
     let mut refusals: Vec<String> = Vec::new();
+    let channels: Vec<&ChannelResolution> =
+        player.channels().iter().filter(|ch| replays(config, &ch.topic)).collect();
 
-    for ch in player.channels() {
-        if !replays(config, &ch.topic) {
-            continue;
-        }
+    for ch in &channels {
         if ch.md5.is_empty() {
             let data_type = if ch.data_type.is_empty() { "unknown type" } else { &ch.data_type };
             refusals.push(format!(
@@ -185,20 +206,31 @@ fn create_channel_publishers(
             ));
             continue;
         }
+        // Two channels of one stream (one topic, one MD5) are published once.
+        if created.publishers.contains_key(&ch.stream) {
+            continue;
+        }
 
         let is_latched = ch.topic == LATCHED_TOPIC_BY_CONVENTION;
 
         match publish_channel(bus, ch, is_latched) {
             Ok(pub_handle) => {
-                publishers.insert(ch.topic.clone(), pub_handle);
-                topic_order.push(ch.topic.clone());
+                created.publishers.insert(ch.stream.clone(), pub_handle);
+                created.order.push(ch.stream.clone());
+                let shared = has_several_streams(&channels, &ch.topic);
+                let title = stream_title(
+                    &format!("'{}'", ch.topic),
+                    &type_label(&ch.data_type, &ch.md5),
+                    shared,
+                );
+                created.titles.insert(ch.stream.clone(), title);
             }
             Err(e) => refusals.push(format!("'{}' cannot be published: {e}", ch.topic)),
         }
     }
 
     if refusals.is_empty() {
-        return Ok((publishers, topic_order));
+        return Ok(created);
     }
     for line in &refusals {
         println!("hypha play: {line}");
@@ -256,9 +288,11 @@ struct Session<'bus> {
     config: PlaySessionConfig,
     stop_signal: Arc<AtomicBool>,
     term: TerminalController,
-    publishers: HashMap<String, RawPublisher>,
-    topic_order: Vec<String>,
-    counters: HashMap<String, u64>,
+    publishers: HashMap<StreamKey, RawPublisher>,
+    stream_order: Vec<StreamKey>,
+    /// How a message of the session names each stream.
+    titles: HashMap<StreamKey, String>,
+    counters: HashMap<StreamKey, u64>,
     /// The `/clock` publisher, when the replay publishes one.
     clock: Option<RawPublisher>,
     /// The reports of the participants, queued so that a report wakes a wait.
@@ -285,12 +319,12 @@ struct Session<'bus> {
     pass_start_log: u64,
     /// The log time of the message that a restart stopped before it went out.
     halted_at: Option<u64>,
-    /// Messages published per topic since the current `/clock` chunk opened.
-    in_chunk: HashMap<String, usize>,
-    /// The smallest subscriber queue per topic, looked up on first use in each chunk.
-    limits: HashMap<String, Option<usize>>,
-    /// Topics whose chunks have been shortened, reported once each.
-    shortened: HashSet<String>,
+    /// Messages published per stream since the current `/clock` chunk opened.
+    in_chunk: HashMap<StreamKey, usize>,
+    /// The smallest subscriber queue per stream, looked up on first use in each chunk.
+    limits: HashMap<StreamKey, Option<usize>>,
+    /// Streams whose chunks have been shortened, reported once each.
+    shortened: HashSet<StreamKey>,
     restart_requested: bool,
     playback: Playback,
     current_msg: u64,
@@ -307,8 +341,7 @@ impl<'bus> Session<'bus> {
     fn open(
         bus: &'bus BusNode,
         player: &'bus Player,
-        publishers: HashMap<String, RawPublisher>,
-        topic_order: Vec<String>,
+        created: ChannelPublishers,
         config: PlaySessionConfig,
         stop_signal: Arc<AtomicBool>,
     ) -> Result<Self, String> {
@@ -346,7 +379,8 @@ impl<'bus> Session<'bus> {
             None => None,
         };
         let now = Instant::now();
-        let counters = topic_order.iter().map(|topic| (topic.clone(), 0)).collect();
+        let ChannelPublishers { publishers, order: stream_order, titles } = created;
+        let counters = stream_order.iter().map(|stream| (stream.clone(), 0)).collect();
         Ok(Self {
             bus,
             player,
@@ -356,7 +390,8 @@ impl<'bus> Session<'bus> {
             config,
             stop_signal,
             publishers,
-            topic_order,
+            stream_order,
+            titles,
             counters,
             clock,
             progress,
@@ -421,7 +456,7 @@ pub fn run_play_session(
     if let Err(error) = replay_bus::warn_live_publishers(bus, &replayed) {
         return PlaySessionResult { error: Some(error), ..PlaySessionResult::default() };
     }
-    let (publishers, topic_order) = match create_channel_publishers(bus, player, &config) {
+    let created = match create_channel_publishers(bus, player, &config) {
         Ok(created) => created,
         Err(error) => {
             return PlaySessionResult { error: Some(error), ..PlaySessionResult::default() };
@@ -430,14 +465,7 @@ pub fn run_play_session(
     let topics = config.topics.clone();
     let range = config.utc_range;
     let loop_playback = config.loop_playback;
-    let mut session = match Session::open(
-        bus,
-        player,
-        publishers,
-        topic_order,
-        config,
-        Arc::clone(stop_signal),
-    ) {
+    let mut session = match Session::open(bus, player, created, config, Arc::clone(stop_signal)) {
         Ok(session) => session,
         Err(error) => {
             return PlaySessionResult { error: Some(error), ..PlaySessionResult::default() };

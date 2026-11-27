@@ -238,7 +238,7 @@ fn record(
         match follower.refresh_if_changed(bus) {
             Ok(0) => {}
             Ok(added) => {
-                println!("Following {added} more stream(s), {} in all", follower.followed())
+                println!("Following {added} more stream(s), {} in all", follower.followed());
             }
             Err(error) => eprintln!("hypha record: cannot list topics: {error}"),
         }

@@ -97,7 +97,7 @@ fn channels(path: &std::path::Path) -> Vec<(String, String, String, usize)> {
         let message = message.expect("valid message");
         let id = message.channel.id;
         if let Some((_, entry)) = found.iter_mut().find(|(known, _)| *known == id) {
-            entry.3 += 1;
+            entry.3 = entry.3.saturating_add(1);
             continue;
         }
         let schema = message.channel.schema.as_ref().expect("a schema");
@@ -133,8 +133,14 @@ fn two_streams_of_one_topic_are_two_channels_each_with_its_own_schema() {
     assert!(session.failure().is_none(), "{:?}", session.failure());
     let counts = session.recorder().counters();
     assert_eq!(counts.len(), 2, "one channel for each stream");
-    assert_eq!(counts[0].title(&counts), format!("{topic} [std_msgs/Bool (8b94c1b5)]"));
-    assert_eq!(counts[1].title(&counts), format!("{topic} [std_msgs/UInt8 (7c816422)]"));
+    let titles: Vec<String> = counts.iter().map(|channel| channel.title(&counts)).collect();
+    assert_eq!(
+        titles,
+        [
+            format!("{topic} [std_msgs/Bool (8b94c1b5)]"),
+            format!("{topic} [std_msgs/UInt8 (7c816422)]"),
+        ]
+    );
     drop(session.finish());
     assert_eq!(recorded_times(&output), vec![(100, 100), (200, 200), (300, 300)]);
     assert_eq!(
@@ -160,8 +166,8 @@ fn the_file_of_the_recorder_before_streams(samples: &[(&str, u64, &[u8])]) -> Ve
         let position = channels.iter().position(|(known, _, _)| known == topic);
         let (channel_id, sequence) = if let Some(index) = position {
             let entry = channels.get_mut(index).expect("known");
-            entry.2 += 1;
-            (entry.1, entry.2 - 1)
+            entry.2 = entry.2.saturating_add(1);
+            (entry.1, entry.2.saturating_sub(1))
         } else {
             let schema =
                 writer.add_schema("std_msgs/Bool", "ros1msg", b"bool data\n").expect("schema");

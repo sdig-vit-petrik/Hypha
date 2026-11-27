@@ -95,8 +95,11 @@ impl<'bus> ClockedSession<'bus> {
         let session = super::Session::open(
             bus,
             player,
-            std::collections::HashMap::new(),
-            Vec::new(),
+            super::ChannelPublishers {
+                publishers: std::collections::HashMap::new(),
+                order: Vec::new(),
+                titles: std::collections::HashMap::new(),
+            },
             config,
             stop,
         )
@@ -108,8 +111,10 @@ impl<'bus> ClockedSession<'bus> {
 
     /// Hands the session a message at `offset` from the start; true when it went on.
     fn item(&mut self, offset: u64) -> bool {
+        let clock =
+            crate::stream::StreamKey { topic: super::CLOCK_TOPIC.to_owned(), schema_hash: 0 };
         let item = crate::player::PlaybackItem {
-            topic: super::CLOCK_TOPIC,
+            stream: &clock,
             bytes: &[0; 8],
             delay_nanos: 0,
             log_time_nanos: START + offset,
