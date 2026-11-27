@@ -8,7 +8,8 @@ use hypha_node::sdk::BusNode;
 use hypha_tools::record_session::RecorderSession;
 use hypha_tools::record_sync::SyncParticipant;
 use hypha_tools::recorder::{McapCompression, Recorder};
-use hypha_tools::topic_follower::TopicFollower;
+use hypha_tools::stream::{StreamKey, StreamSelector};
+use hypha_tools::stream_follower::StreamFollower;
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::thread;
@@ -19,13 +20,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const SUBSCRIPTION_DEPTH: usize = 0;
 /// How often an observing recorder reads the lost-sample counts of the followed topics.
 const LOSS_REPORT_INTERVAL: Duration = Duration::from_secs(10);
-/// How often the recorder looks for topics that appeared after it started.
-const TOPIC_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 /// Samples written per pass, so one busy topic cannot hold the loop open and
 /// leave a stop request unnoticed.
 const DRAIN_BUDGET_PER_PASS: usize = 512;
-/// How often a `--sync` recorder looks for a whitelisted topic that has no publisher yet.
-const SYNC_RESOLVE_INTERVAL: Duration = Duration::from_millis(20);
 /// The idle wait of a `--sync` recorder, which must answer each chunk promptly.
 const SYNC_IDLE_WAIT: Duration = Duration::from_micros(200);
 /// The idle wait of a recorder that only observes the bus.
@@ -116,20 +113,32 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         None
     };
 
-    // A pattern subscription resolves its topics once, so the follower lists topics on
-    // its own cadence and subscribes to new ones by name.
-    let mut follower = TopicFollower::new(keys.clone(), SUBSCRIPTION_DEPTH, TOPIC_REFRESH_INTERVAL);
+    // A subscription that names no schema reads the streams that exist when it is made, so
+    // the follower subscribes to each stream as the graph event shows it, a second version
+    // of a followed name included.
+    let mut follower = match StreamFollower::new(
+        &bus,
+        keys.clone(),
+        StreamSelector::default(),
+        SUBSCRIPTION_DEPTH,
+    ) {
+        Ok(follower) => follower,
+        Err(error) => {
+            eprintln!("hypha record: cannot follow the bus: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     if let Err(error) = follower.refresh(&bus) {
         eprintln!("hypha record: cannot list topics: {error}");
         return ExitCode::FAILURE;
     }
-    println!("Following {} topic(s) matching {keys:?}", follower.followed());
+    println!("Following {} stream(s) matching {keys:?}", follower.followed());
 
     let mut losses = LossWatch::new();
     let mut failed =
         record(&bus, &mut session, &mut follower, sync.as_mut(), &sync_topics, &mut losses);
     // The last read covers a burst that started and ended between two periodic reads.
-    if let Err(error) = losses.finish(&follower) {
+    if let Err(error) = losses.finish(&bus, &follower) {
         eprintln!("hypha record: cannot read lost samples: {error}");
         failed = true;
     }
@@ -140,8 +149,9 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
     println!("\nFinalizing '{output}'...");
     let recorder = session.finish();
     println!("Recorded messages:");
-    for (topic, count) in recorder.counters() {
-        println!("  {topic:<32} {count} msgs");
+    let channels = recorder.counters();
+    for channel in &channels {
+        println!("  {:<32} {} msgs", channel.title(&channels), channel.messages);
     }
     losses.print_summary();
 
@@ -151,12 +161,13 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
     if recording_failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
-/// The lost-sample counts of the followed topics. A subscription's count is cumulative
+/// The lost-sample counts of the followed streams. A subscription's count is cumulative
 /// since it was made, so a read at the end covers every loss.
 struct LossWatch {
     last_check: Instant,
-    /// The cumulative count last reported for each topic that lost samples.
-    reported: BTreeMap<String, u64>,
+    /// The cumulative count last reported for each stream that lost samples, under the
+    /// stream's title.
+    reported: BTreeMap<StreamKey, (String, u64)>,
 }
 
 impl LossWatch {
@@ -165,28 +176,29 @@ impl LossWatch {
     }
 
     /// Reads the counts when the interval has passed since the last read.
-    fn poll(&mut self, follower: &TopicFollower) -> Result<(), String> {
+    fn poll(&mut self, bus: &BusNode, follower: &StreamFollower) -> Result<(), String> {
         let interval_passed = self.last_check.elapsed() >= LOSS_REPORT_INTERVAL;
         if !interval_passed {
             return Ok(());
         }
         self.last_check = Instant::now();
-        self.check(follower)
+        self.check(bus, follower)
     }
 
     /// The final read, at the end of the recording.
-    fn finish(&mut self, follower: &TopicFollower) -> Result<(), String> {
-        self.check(follower)
+    fn finish(&mut self, bus: &BusNode, follower: &StreamFollower) -> Result<(), String> {
+        self.check(bus, follower)
     }
 
-    /// Prints one warning per topic whose count grew since it was last reported.
-    fn check(&mut self, follower: &TopicFollower) -> Result<(), String> {
-        for (topic, count) in follower.lost()? {
-            let previous = self.reported.get(&topic).copied().unwrap_or(0);
+    /// Prints one warning per stream whose count grew since it was last reported.
+    fn check(&mut self, bus: &BusNode, follower: &StreamFollower) -> Result<(), String> {
+        for (stream, count) in follower.lost()? {
+            let previous = self.reported.get(&stream).map_or(0, |(_, reported)| *reported);
             let grew: bool = count > previous;
             if grew {
-                eprintln!("hypha record: {topic}: {count} samples lost");
-                self.reported.insert(topic, count);
+                let title = follower.title(bus, &stream);
+                eprintln!("hypha record: {title}: {count} samples lost");
+                self.reported.insert(stream, (title, count));
             }
         }
         Ok(())
@@ -196,10 +208,10 @@ impl LossWatch {
         !self.reported.is_empty()
     }
 
-    /// The topics that lost samples, with their final counts, under the recorded messages.
+    /// The streams that lost samples, with their final counts, under the recorded messages.
     fn print_summary(&self) {
-        for (topic, count) in &self.reported {
-            println!("  {topic} lost {count} samples");
+        for (title, count) in self.reported.values() {
+            println!("  {title} lost {count} samples");
         }
     }
 }
@@ -210,7 +222,7 @@ impl LossWatch {
 fn record(
     bus: &BusNode,
     session: &mut RecorderSession<'_>,
-    follower: &mut TopicFollower,
+    follower: &mut StreamFollower,
     mut sync: Option<&mut SyncParticipant>,
     sync_topics: &[String],
     losses: &mut LossWatch,
@@ -221,17 +233,17 @@ fn record(
     if awaiting_topics {
         println!("--sync: no chunk is answered before every --topics entry has a publisher");
     }
-    let mut last_resolve = Instant::now();
     while bus.ok() {
-        if awaiting_topics && last_resolve.elapsed() >= SYNC_RESOLVE_INTERVAL {
-            last_resolve = Instant::now();
-            if let Err(error) = follower.refresh(bus) {
-                eprintln!("hypha record: cannot list topics: {error}");
+        // The graph event brings a stream that joins later, before any sample is read.
+        match follower.refresh_if_changed(bus) {
+            Ok(0) => {}
+            Ok(added) => {
+                println!("Following {added} more stream(s), {} in all", follower.followed())
             }
-            awaiting_topics = !follower.missing(sync_topics).is_empty();
+            Err(error) => eprintln!("hypha record: cannot list topics: {error}"),
         }
-        if let Err(error) = follower.refresh_if_due(bus) {
-            eprintln!("hypha record: cannot list topics: {error}");
+        if awaiting_topics {
+            awaiting_topics = !follower.missing(sync_topics).is_empty();
         }
         let mut drained = 0_usize;
         while drained < DRAIN_BUDGET_PER_PASS {
@@ -259,7 +271,7 @@ fn record(
             return true;
         }
         if let Some(participant) = sync.as_deref_mut().filter(|_| !awaiting_topics) {
-            match answer_chunk(participant, follower, session) {
+            match answer_chunk(bus, participant, follower, session) {
                 Ok(Flow::Continue) => {}
                 Ok(Flow::Stop) => {
                     return true;
@@ -270,7 +282,7 @@ fn record(
                 }
             }
         }
-        if is_observer && let Err(error) = losses.poll(follower) {
+        if is_observer && let Err(error) = losses.poll(bus, follower) {
             eprintln!("hypha record: cannot read lost samples: {error}");
             return true;
         }
@@ -299,13 +311,16 @@ enum Flow {
 /// other participant has acknowledged it. Stops the recording when a followed topic
 /// lost samples: the chunk is then not what the player sent.
 fn answer_chunk(
+    bus: &BusNode,
     participant: &mut SyncParticipant,
-    follower: &mut TopicFollower,
+    follower: &mut StreamFollower,
     session: &mut RecorderSession<'_>,
 ) -> Result<Flow, String> {
     let Some(report) = participant.poll()? else {
         return Ok(Flow::Continue);
     };
+    // A stream that came before the chunk's data is followed before the chunk is answered.
+    follower.refresh_if_changed(bus)?;
     while let Some(sample) = follower.next_sample()? {
         record_one(session, &sample);
     }
@@ -317,9 +332,10 @@ fn answer_chunk(
         participant.send(&report)?;
         return Ok(Flow::Continue);
     }
-    for (topic, count) in &lost {
+    for (stream, count) in &lost {
+        let title = follower.title(bus, stream);
         eprintln!(
-            "hypha record: --sync: '{topic}' lost {count} sample(s) so far: its queue was full; lower hypha play --chunk so that a chunk holds fewer samples of that topic"
+            "hypha record: --sync: {title} lost {count} sample(s) so far: its queue was full; lower hypha play --chunk so that a chunk holds fewer samples of that stream"
         );
     }
     Ok(Flow::Stop)

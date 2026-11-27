@@ -4,6 +4,7 @@
 //! publish time.
 
 use crate::recorder::{RecordSample, Recorder};
+use crate::stream::{StreamKey, stream_label, stream_title};
 use hypha_node::sdk::SchemaIdentityCache;
 use hypha_node::sdk::{BusNode, ResolvedSchema, SampleIdentity};
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,10 +24,11 @@ pub struct RecorderSession<'bus> {
     strict: bool,
     /// The first drop of a strict session, which stops the recording.
     failure: Option<String>,
-    /// Topics already reported as dropping samples, so a lenient session warns once each.
-    dropping_topics: BTreeSet<String>,
-    /// The type identity the first recorded frame gave each topic: `(data_type, md5)`.
-    recorded_types: BTreeMap<String, (String, String)>,
+    /// Streams already reported as dropping samples, so a lenient session warns once each.
+    dropping: BTreeSet<StreamKey>,
+    /// The schema hashes seen on each topic: a name of several streams is told apart from a
+    /// name of one when a drop is reported.
+    streams: BTreeMap<String, BTreeSet<u64>>,
 }
 
 impl<'bus> RecorderSession<'bus> {
@@ -39,8 +41,8 @@ impl<'bus> RecorderSession<'bus> {
             identities: SchemaIdentityCache::new(),
             strict,
             failure: None,
-            dropping_topics: BTreeSet::new(),
-            recorded_types: BTreeMap::new(),
+            dropping: BTreeSet::new(),
+            streams: BTreeMap::new(),
         }
     }
 
@@ -65,8 +67,9 @@ impl<'bus> RecorderSession<'bus> {
         if self.strict && self.failure.is_some() {
             return;
         }
+        self.note_stream(sample);
         if let Err(cause) = self.record(sample, bytes) {
-            self.drop_sample(sample.topic, &cause);
+            self.drop_sample(sample, &cause);
         }
     }
 
@@ -82,17 +85,8 @@ impl<'bus> RecorderSession<'bus> {
         if stamp == 0 {
             return Err("the frame carries no framework send time".to_string());
         }
+        // A channel holds one stream: a frame of another schema is on a channel of its own.
         let identity = self.resolve_identity(sample)?;
-        // A channel holds one type: the first recorded frame fixes it for the topic.
-        if let Some((recorded_type, recorded_md5)) = self.recorded_types.get(sample.topic) {
-            let other_type = !recorded_md5.eq_ignore_ascii_case(&identity.md5);
-            if other_type {
-                return Err(format!(
-                    "its type {} differs from {recorded_type}, the type recorded for the topic",
-                    identity.data_type
-                ));
-            }
-        }
         let record_sample = RecordSample {
             topic: sample.topic,
             data_type: &identity.data_type,
@@ -103,9 +97,6 @@ impl<'bus> RecorderSession<'bus> {
             publish_time_nanos: stamp,
         };
         if self.recorder.record(&record_sample) {
-            self.recorded_types
-                .entry(sample.topic.to_owned())
-                .or_insert_with(|| (identity.data_type.clone(), identity.md5.clone()));
             Ok(())
         } else {
             Err("the output could not take the message: disk full, unwritable, or already finished"
@@ -113,18 +104,40 @@ impl<'bus> RecorderSession<'bus> {
         }
     }
 
+    /// Remembers that a frame of `sample`'s schema came on its topic.
+    fn note_stream(&mut self, sample: &SampleIdentity<'_>) {
+        match self.streams.get_mut(sample.topic) {
+            Some(hashes) => {
+                hashes.insert(sample.schema_hash);
+            }
+            None => {
+                self.streams.insert(sample.topic.to_owned(), BTreeSet::from([sample.schema_hash]));
+            }
+        }
+    }
+
+    /// The stream of `sample` as a drop names it: its topic, and its type when the topic
+    /// has several streams.
+    fn describe(&self, sample: &SampleIdentity<'_>) -> String {
+        let shared = self.streams.get(sample.topic).is_some_and(|hashes| hashes.len() > 1);
+        let identity = self.identities.cached(sample.topic, sample.schema_hash);
+        let label = stream_label(identity.as_deref(), sample.schema_hash);
+        stream_title(&format!("'{}'", sample.topic), &label, shared)
+    }
+
     /// Handles a sample that was not recorded. A strict session keeps its first drop as the
-    /// failure. A lenient session warns once per topic.
-    fn drop_sample(&mut self, topic: &str, cause: &str) {
+    /// failure. A lenient session warns once per stream.
+    fn drop_sample(&mut self, sample: &SampleIdentity<'_>, cause: &str) {
         if self.strict {
             if self.failure.is_none() {
-                self.failure = Some(format!("cannot record '{topic}': {cause}"));
+                self.failure = Some(format!("cannot record {}: {cause}", self.describe(sample)));
             }
             return;
         }
-        if self.dropping_topics.insert(topic.to_owned()) {
+        if self.dropping.insert(StreamKey::of(sample)) {
             eprintln!(
-                "hypha record: cannot record '{topic}': {cause}; its samples that cannot be recorded are dropped (reported once per topic)"
+                "hypha record: cannot record {}: {cause}; its samples that cannot be recorded are dropped (reported once per stream)",
+                self.describe(sample)
             );
         }
     }

@@ -67,8 +67,9 @@ fn roundtrips_channels_schemas_md5_and_bytes() {
 
         let counts = rec.counters();
         assert_eq!(counts.len(), 2);
-        assert_eq!(counts[0], ("/odom_speed".to_string(), 2));
-        assert_eq!(counts[1], ("/gripper_report".to_string(), 1));
+        assert_eq!((counts[0].topic.as_str(), counts[0].messages), ("/odom_speed", 2));
+        assert_eq!((counts[1].topic.as_str(), counts[1].messages), ("/gripper_report", 1));
+        assert_eq!(counts[0].label, "std_msgs/Float64 (fdb28210)");
 
         assert_eq!(rec.finish(), Ok(()));
     }
