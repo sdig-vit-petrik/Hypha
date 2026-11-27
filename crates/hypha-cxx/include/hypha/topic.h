@@ -75,6 +75,22 @@ struct TopicSource
         return "topic '" + this->literal + "'";
     }
 
+    /// @throws ConfigError for a port table, std::runtime_error for a literal topic, when no
+    ///         session exists: a handle that joins none (`hypha::Node()`) opens no endpoint
+    ///         before a named Node has been created.
+    void requireSession() const
+    {
+        if (backend::nodeHandle() != nullptr) {
+            return;
+        }
+        const std::string text = failureText(this->describe(), Status::InvalidState)
+                               + ": no session exists; create a named hypha::Node first";
+        if (this->fromParam()) {
+            throw ConfigError(text);
+        }
+        throw std::runtime_error(text);
+    }
+
     /// @return The topic; empty for a disabled port. InvalidArgument for an empty literal.
     std::expected<std::string, Status> resolve() const
     {
@@ -93,9 +109,11 @@ struct TopicSource
 
     /// @return The topic; empty for a disabled port.
     /// @throws ConfigError when a port table is missing or refused: a restart cannot fix it.
-    ///         std::runtime_error for a literal topic that is refused.
+    ///         std::runtime_error for a literal topic that is refused. Both when no session
+    ///         exists (requireSession()).
     std::string resolveOrThrow() const
     {
+        this->requireSession();
         const std::expected<std::string, Status> topic = this->resolve();
         if (topic) {
             return *topic;

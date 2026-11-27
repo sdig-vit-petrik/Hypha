@@ -209,8 +209,10 @@ effect for each message (a counter, an integrator, a queue) must use an
   `usable()` of a trigger that did not fire says whether its last sample is still
   valid. A trigger that may be idle for long, such as a joystick, is `advisory`, so that
   its silence does not degrade `~/state`.
-- A step at the send time T of its trigger sample sees every other input cut before T
-  on simulated time, and its outputs carry T. The other subscriptions become `Latest` or
+- On simulated time a step runs at the send time T of its trigger sample, sees every other
+  input cut before T, and its outputs carry T. On host time its time, and the stamp of its
+  outputs, is the wall time at the start of the step, later than the sample's own stamp
+  (execution-model.md §6.6 item 2). The other subscriptions become `Latest` or
   `Arrivals` ports as in the table above, and a TF listener a `hypha::Transforms` port.
 
 A node with several inputs whose callbacks each publish is one triggered cycle with
@@ -272,6 +274,12 @@ rotation_count = 3
 - A relative log path resolves against the directory of the TOML file.
 - `${NAME}` in any string, `[log]` and `include` included, expands from the
   environment. An unset or empty variable stops the node.
+- A value that belongs to one input, such as the priority of each input of a multiplexer
+  (`priority = 100` in `[ports.inputs.joystick]`), is a key of its table beside `topic` and
+  `silence_ms`. The node reads it with `hypha::config("ports.inputs.joystick")` in its
+  constructor or `setup()`, before the cycle starts; a key of an input table that nothing
+  has read by then fails `start()` as an unknown key, a typo of `silence_ms` included.
+  Do not repeat the input in a table of the node.
 - Port names are unique per direction. Each `[ports.inputs.<name>]` is one table, so two
   inputs cannot share a name, and the same holds for `[ports.outputs.<name>]`. When an
   upstream configuration uses one name for two inputs (a velocity input and a lock both
@@ -465,12 +473,46 @@ TEST(SpeedControllerStep, CommandsAfterAUsableSpeedArrived)
 
   The harness setters (`set`, `setStale`, `setNeverArrived`, `setStagnant`) give a
   port what a capture would give, for `Latest` and `Arrivals` ports alike; see
-  `docs/cpp-api.md`, "Test a step without a bus". The harness moves no clock: the
+  `docs/cpp-api.md`, "Test a step without a bus". An `optionalTopic` input or output is
+  enabled in the harness only when the test's TOML gives its table a non-empty `topic`
+  (below); with no table, no `topic` or `topic = ""` it is disabled, and `deliver()`,
+  `set()`, `setStale()` and `setStagnant()` on a disabled input throw. The harness moves
+  no clock: the
   step reads the `CycleTime` it is given, for its decisions and for the stamps it
   writes. Ported code that still calls `hypha::now()` gets the process clock in a
   harness step; until it is changed, the test sets simulated time to the step's time
   (`hypha::enableSimTime`, `hypha::setSimTime`). `steadyNow()` measures real elapsed
   time and is never set.
+
+  To test the branch behind an optional input, wire it in the TOML of the test. The wired
+  input needs a `silence_ms` as well, which `deliver()` reads:
+
+```toml
+[ports.inputs.mag]
+topic = "/test/mag"
+silence_ms = 100
+[ports.outputs.debug]
+topic = "/test/debug"
+```
+
+```cpp
+TEST(ImuFilterStep, ReadsTheMagnetometerWhenItIsUsable)
+{
+    hypha::ConfigContext        ctx{"test/with_mag.toml"};  // before the harness
+    ImuFilterNode               node;
+    hypha::testing::StepHarness harness{node};
+    harness.deliver(node.mag, sensor_msgs::MagneticField{}, hypha::Time::fromNanos(1'000'000'000));
+    hypha::CycleTime time;
+    time.now = hypha::Time::fromNanos(1'050'000'000);
+    harness.step(node, time);
+    EXPECT_EQ(node.mag.verdict(), hypha::InputVerdict::Usable);
+}
+```
+
+  The `ConfigContext` (or a `Node` that holds the file) exists before the harness is
+  built, because the harness reads the `topic` then. Only one exists at a time, so the
+  branch for a port that is left out (`topic = ""` or no table) is a second fixture with
+  its own file and its own `ConfigContext`.
 - **Recorded regression tests** (golden fixtures of a ROS bag and the outputs of
   the ROS node): convert each bag with `mcap convert`. Replay it through
   `StepHarness` and through the bus (`hypha play --clock` with `hypha record
@@ -583,7 +625,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | Private topic `~x` | `~/x` in a ports table |
 | `nh.subscribe` that stores the latest value | `hypha::Latest<T>` port |
 | `nh.subscribe` with work for each message | `hypha::Arrivals<T>` port |
-| `message_filters` synchroniser | `Arrivals` ports; match `header.stamp` in the step |
+| `message_filters` synchroniser | `Arrivals` ports; match `header.stamp` in the step. Trigger on the input that is published last: its step holds the partner samples sent before it, or with it by one step of one node ([execution-model.md](execution-model.md) §6.6). A partner sent after the trigger sample is not in that step |
 | `nh.advertise` + `publish` | `hypha::Output<T>` port: call `send(message)`. A step sends one message per Output. A step that sends two declares the Output with `hypha::perStep(2)`: `hypha::Output<T> name{*this, "name", hypha::perStep(2)};` |
 | `nh.createTimer` | The cycle rate, `rate_hz` under `[cycle]` |
 | `ros::TimerEvent` | `const hypha::CycleTime&`: `dt` (no value in the first step), `missed` |

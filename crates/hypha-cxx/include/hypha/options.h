@@ -96,7 +96,10 @@ struct Diagnostic
 
 /// @brief Arrivals: the samples one step examines (default HYPHA_DEFAULT_ARRIVALS_PER_STEP).
 ///        Output: the messages one step may send (default 1). Zero throws
-///        std::invalid_argument; an Arrivals perStep above the policy's `maxDepth` is refused.
+///        std::invalid_argument; an Arrivals perStep above the policy's `maxDepth` (32 for the
+///        default policy) is refused when the port is constructed, the same way, and runNode()
+///        exits 70. A count read from the parameter file is checked where it is read, with
+///        constraints::range(1, maxDepth), to be refused as a ParameterError (exit 78).
 struct PerStep
 {
     uint32_t count;

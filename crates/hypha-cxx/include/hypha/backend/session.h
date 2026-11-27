@@ -23,12 +23,40 @@
 
 namespace hypha::backend {
 
+/// @brief Why @p requested cannot join the parameter configuration that the process holds
+///        in @p held, or nullopt when it can.
+///
+/// A process has one parameter store, loaded once from one file (cpp-api.md section 9), and
+/// every Node and ConfigContext of it shares that store. A request that names no file
+/// shares it, whatever file it was loaded from; the file it was loaded from joins it; any
+/// other file is refused, because the store cannot hold two files. An empty @p held is a
+/// store that was loaded from no file.
+inline std::optional<std::string>
+parameterFileConflict(const std::string& requested, const std::string& held)
+{
+    if (requested.empty() || requested == held) {
+        return std::nullopt;
+    }
+    const std::string cannot = "'" + requested + "' is refused: a process reads one parameter file";
+    if (held.empty()) {
+        return "the process runs without a parameter file, so " + cannot
+             + "; name no file to share the process configuration";
+    }
+    return "the process already loaded '" + held + "', so " + cannot + "; name '" + held
+         + "' or no file to share it";
+}
+
 /// @brief Join the process's session: create its node, or share the node that exists.
 ///        Concurrent callers create one node. Each successful call counts one joined
 ///        Node, which leave() gives back.
 /// @param created Set to true only when this call created the node.
-inline Status
-init(const std::string& nodeName, const std::string& parameterFile, bool* created = nullptr)
+/// @param refusal Receives the reason of an InvalidState that a parameter file caused.
+inline Status init(
+    const std::string& nodeName,
+    const std::string& parameterFile,
+    bool*              created = nullptr,
+    std::string*       refusal = nullptr
+)
 {
     std::string abiDiagnostic;
     if (!verifyAbi(&abiDiagnostic)) {
@@ -40,17 +68,17 @@ init(const std::string& nodeName, const std::string& parameterFile, bool* create
     if (state.shuttingDown) {
         return Status::InvalidState;
     }
-    if (state.node != nullptr) {
-        const bool sameFile = parameterFile == state.parameterFile;
-        if (!sameFile) {
+    if (state.node != nullptr || state.config != nullptr) {
+        if (const auto conflict = parameterFileConflict(parameterFile, state.parameterFile)) {
+            if (refusal != nullptr) {
+                *refusal = *conflict;
+            }
             return Status::InvalidState;
         }
+    }
+    if (state.node != nullptr) {
         ++state.joined;
         return Status::Ok;
-    }
-    const bool conflictingConfig = state.config != nullptr && parameterFile != state.parameterFile;
-    if (conflictingConfig) {
-        return Status::InvalidState;
     }
     HyphaNode*          node = nullptr;
     const ::HyphaStatus status = hypha_node_create(
@@ -70,7 +98,9 @@ init(const std::string& nodeName, const std::string& parameterFile, bool* create
         return Status::Backend;
     }
     state.name = *name;
-    state.parameterFile = parameterFile;
+    if (state.config == nullptr) {
+        state.parameterFile = parameterFile;
+    }
     state.node = node;
     state.joined = 1;
     if (created != nullptr) {
@@ -79,7 +109,12 @@ init(const std::string& nodeName, const std::string& parameterFile, bool* create
     return Status::Ok;
 }
 
-inline Status initConfig(const std::string& parameterFile, bool* created = nullptr)
+/// @brief Create the standalone configuration of the process, or share the one it holds.
+/// @param created Set to true only when this call created the configuration.
+/// @param refusal Receives the reason of an InvalidState that a parameter file caused.
+inline Status initConfig(
+    const std::string& parameterFile, bool* created = nullptr, std::string* refusal = nullptr
+)
 {
     std::string abiDiagnostic;
     if (!verifyAbi(&abiDiagnostic)) {
@@ -93,8 +128,11 @@ inline Status initConfig(const std::string& parameterFile, bool* created = nullp
     }
     const bool alreadyConfigured = state.node != nullptr || state.config != nullptr;
     if (alreadyConfigured) {
-        const bool sameFile = parameterFile == state.parameterFile;
-        return sameFile ? Status::Ok : Status::InvalidState;
+        const auto conflict = parameterFileConflict(parameterFile, state.parameterFile);
+        if (conflict && refusal != nullptr) {
+            *refusal = *conflict;
+        }
+        return conflict ? Status::InvalidState : Status::Ok;
     }
     HyphaConfig*        config = nullptr;
     const ::HyphaStatus status =

@@ -733,3 +733,392 @@ TEST(StepHarness, NowInAStepIsTheStepTimeWhenTheTestSetsSimulatedTime)
     EXPECT_EQ(node.clock, second.now.nanos());
     ASSERT_TRUE(hypha::disableSimTime());
 }
+
+namespace {
+
+/// A magnetometer-like node: every port is optional, and each has its own state in the
+/// parameter file of OptionalPortsFixture.
+///   mag    wired, 100 ms limit        debug  wired
+///   aux    `topic = ""`               tf     no table
+///   absent no table
+class Optionals final : public hypha::CycleNode
+{
+  public:
+    Arrivals<Float64> mag{*this, "mag", optionalTopic};
+    Latest<Float64>   tilt{*this, "tilt", optionalTopic};
+    Arrivals<Float64> aux{*this, "aux", optionalTopic};
+    Latest<Float64>   absent{*this, "absent", optionalTopic};
+    Output<Float64>   debug{*this, "debug", optionalTopic};
+    Output<Float64>   tf{*this, "tf", optionalTopic};
+
+    /// Reads an input only behind its enabled(), as a step with an optional input does, and
+    /// sends on both outputs, which a disabled output accepts and drops.
+    void step(const hypha::CycleTime&) override
+    {
+        if (this->mag.enabled()) {
+            this->sawMag.assign(this->mag.samples().begin(), this->mag.samples().end());
+            this->sawMagVerdict = this->mag.verdict();
+        }
+        if (this->tilt.enabled()) {
+            this->sawTiltVerdict = this->tilt.verdict();
+        }
+        this->debug.send(Float64{1.0});
+        this->tf.send(Float64{2.0});
+    }
+
+    std::vector<bool> enabledPorts() const
+    {
+        return {
+            this->mag.enabled(),
+            this->tilt.enabled(),
+            this->aux.enabled(),
+            this->absent.enabled(),
+            this->debug.enabled(),
+            this->tf.enabled(),
+        };
+    }
+
+    /// What the step read; no verdict when it skipped the port because it is disabled.
+    std::vector<Float64>        sawMag;
+    std::optional<InputVerdict> sawMagVerdict;
+    std::optional<InputVerdict> sawTiltVerdict;
+};
+
+/// The tables of Optionals, with `topic` set for `mag`, `tilt` and `debug` only.
+std::string optionalPortsFile(const std::string& topicPrefix)
+{
+    std::string text;
+    for (const std::string input : {"mag", "tilt"}) {
+        text += "[ports.inputs." + input + "]\ntopic = '" + topicPrefix + "/" + input + "'\n";
+        text += "silence_ms = 100\n";
+    }
+    text += "[ports.inputs.aux]\ntopic = ''\n";
+    text += "[ports.outputs.debug]\ntopic = '" + topicPrefix + "/debug'\n";
+    return text;
+}
+
+/// A parameter file that is removed when the test ends, also when an assertion failed.
+class TempToml
+{
+  public:
+    TempToml(const std::string& name, const std::string& text)
+        : path_(std::filesystem::temp_directory_path() / name)
+    {
+        std::ofstream(this->path_) << text;
+    }
+
+    TempToml(const TempToml&) = delete;
+    TempToml& operator=(const TempToml&) = delete;
+
+    ~TempToml()
+    {
+        std::error_code ignored;
+        std::filesystem::remove(this->path_, ignored);
+    }
+
+    std::string path() const
+    {
+        return this->path_.string();
+    }
+
+  private:
+    std::filesystem::path path_;
+};
+
+class OptionalPortsFixture : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        this->path =
+            std::filesystem::temp_directory_path() / "hypha_step_harness_optional_ports.toml";
+        std::ofstream(this->path) << optionalPortsFile("/harness");
+        this->context = std::make_unique<hypha::ConfigContext>(this->path.string());
+    }
+
+    void TearDown() override
+    {
+        this->context.reset();
+        std::filesystem::remove(this->path);
+    }
+
+    std::unique_ptr<hypha::ConfigContext> context;
+    std::filesystem::path                 path;
+};
+
+}  // namespace
+
+TEST_F(OptionalPortsFixture, APortThatTheFileWiresIsEnabledAndOneItLeavesOutIsNot)
+{
+    Optionals                   node;
+    hypha::testing::StepHarness harness{node};
+    EXPECT_EQ(node.enabledPorts(), (std::vector<bool>{true, true, false, false, true, false}));
+}
+
+TEST_F(OptionalPortsFixture, AWiredOptionalArrivalsPortGivesEachOfTheThreeVerdicts)
+{
+    Optionals                   node;
+    hypha::testing::StepHarness harness{node};
+
+    harness.step(node, stepAt(kStartNanos));
+    EXPECT_EQ(node.sawMagVerdict, InputVerdict::NeverArrived);
+    EXPECT_TRUE(node.sawMag.empty());
+
+    harness.deliver(node.mag, {Float64{1.0}, Float64{2.0}}, Time::fromNanos(kStartNanos));
+    harness.step(node, stepAt(kStartNanos + kLimitNanos));
+    EXPECT_EQ(node.sawMagVerdict, InputVerdict::Usable);
+    ASSERT_EQ(node.sawMag.size(), 2U);
+    EXPECT_DOUBLE_EQ(node.sawMag[1].data, 2.0);
+
+    harness.step(node, stepAt(kStartNanos + kLimitNanos + 1));
+    EXPECT_EQ(node.sawMagVerdict, InputVerdict::Stale);
+    EXPECT_TRUE(node.sawMag.empty());
+    EXPECT_TRUE(node.mag.stale());
+}
+
+TEST_F(OptionalPortsFixture, AWiredOptionalLatestPortGivesEachOfTheThreeVerdicts)
+{
+    Optionals                   node;
+    hypha::testing::StepHarness harness{node};
+
+    harness.step(node, stepAt(kStartNanos));
+    EXPECT_EQ(node.sawTiltVerdict, InputVerdict::NeverArrived);
+
+    harness.deliver(node.tilt, Float64{0.5}, Time::fromNanos(kStartNanos));
+    harness.step(node, stepAt(kStartNanos + kLimitNanos));
+    EXPECT_EQ(node.sawTiltVerdict, InputVerdict::Usable);
+    EXPECT_DOUBLE_EQ(node.tilt->data, 0.5);
+
+    harness.step(node, stepAt(kStartNanos + kLimitNanos + 1));
+    EXPECT_EQ(node.sawTiltVerdict, InputVerdict::Stale);
+    EXPECT_DOUBLE_EQ(node.tilt.lastKnown().data, 0.5);
+}
+
+TEST_F(OptionalPortsFixture, ADeliverToADisabledPortIsRefusedWithTheReason)
+{
+    Optionals                   node;
+    hypha::testing::StepHarness harness{node};
+    const auto                  reasonOf = [](const auto& deliver) {
+        try {
+            deliver();
+        } catch (const std::logic_error& error) {
+            return std::string(error.what());
+        }
+        return std::string{};
+    };
+
+    const std::string noTable = reasonOf([&]() {
+        harness.deliver(node.absent, Float64{1.0}, Time::fromNanos(kStartNanos));
+    });
+    EXPECT_NE(noTable.find("deliver()"), std::string::npos) << noTable;
+    EXPECT_NE(noTable.find("ports.inputs.absent"), std::string::npos) << noTable;
+    EXPECT_NE(noTable.find("disabled"), std::string::npos) << noTable;
+    EXPECT_NE(noTable.find("`topic`"), std::string::npos) << noTable;
+
+    const std::string emptyTopic = reasonOf([&]() {
+        harness.deliver(node.aux, {Float64{1.0}}, Time::fromNanos(kStartNanos));
+    });
+    EXPECT_NE(emptyTopic.find("ports.inputs.aux"), std::string::npos) << emptyTopic;
+
+    harness.step(node, stepAt(kStartNanos + 1));
+    EXPECT_EQ(node.absent.verdict(), InputVerdict::NeverArrived);
+    EXPECT_FALSE(node.absent.has());
+    EXPECT_TRUE(node.aux.samples().empty());
+}
+
+TEST_F(OptionalPortsFixture, AnOutputTheFileWiresKeepsItsSendsAndOneItLeavesOutDropsThem)
+{
+    Optionals                   node;
+    hypha::testing::StepHarness harness{node};
+    harness.step(node, stepAt(kStartNanos));
+
+    ASSERT_EQ(harness.sent(node.debug).size(), 1U);
+    EXPECT_DOUBLE_EQ(harness.sent(node.debug)[0].data, 1.0);
+    EXPECT_TRUE(harness.sent(node.tf).empty()) << "a disabled output sends nothing";
+    EXPECT_TRUE(node.tf.sent()) << "yet the step did send, and the port counts it";
+    EXPECT_EQ(node.tf.sentCount(), 1U);
+}
+
+TEST(StepHarnessOptionalPorts, WithoutAParameterFileEveryOptionalPortIsDisabled)
+{
+    Optionals                   node;
+    hypha::testing::StepHarness harness{node};
+    EXPECT_EQ(node.enabledPorts(), std::vector<bool>(6, false));
+    EXPECT_THROW(
+        harness.deliver(node.mag, {Float64{1.0}}, Time::fromNanos(kStartNanos)), std::logic_error
+    );
+}
+
+TEST(StepHarnessOptionalPorts, APortThatRequiresItsTopicIsEnabledWithOrWithoutAFile)
+{
+    Relay                       relay;
+    hypha::testing::StepHarness harness{relay};
+    EXPECT_TRUE(relay.speed.enabled());
+    EXPECT_TRUE(relay.marks.enabled());
+    EXPECT_TRUE(relay.command.enabled());
+}
+
+TEST_F(OptionalPortsFixture, TheHarnessLeavesThePortsAsItFoundThemWhenItIsGone)
+{
+    Optionals node;
+    {
+        hypha::testing::StepHarness harness{node};
+        ASSERT_TRUE(node.mag.enabled());
+    }
+    EXPECT_EQ(node.enabledPorts(), std::vector<bool>(6, false));
+}
+
+TEST(StepHarnessOptionalPorts, ATopicNameAStartWouldRefuseIsRefusedAndTheCycleStaysFree)
+{
+    const TempToml file(
+        "hypha_step_harness_bad_topic.toml", "[ports.inputs.mag]\ntopic = 'no slash'\n"
+    );
+    const hypha::ConfigContext context(file.path());
+    Optionals                  node;
+    EXPECT_THROW(hypha::testing::StepHarness{node}, hypha::ConfigError);
+    EXPECT_THROW(hypha::testing::StepHarness{node}, hypha::ConfigError)
+        << "the refusal left no harness holding the cycle";
+}
+
+TEST(StepHarnessOptionalPorts, AnEntryThatIsAPlainStringIsRefusedAsAStartRefusesIt)
+{
+    const TempToml file(
+        "hypha_step_harness_plain_entry.toml", "[ports.inputs]\nmag = '/plain/mag'\n"
+    );
+    {
+        const hypha::ConfigContext context(file.path());
+        Optionals                  node;
+        try {
+            hypha::testing::StepHarness harness{node};
+            FAIL() << "a plain string entry must be refused";
+        } catch (const hypha::ConfigError& error) {
+            EXPECT_NE(std::string(error.what()).find("ports.inputs.mag"), std::string::npos)
+                << error.what();
+        }
+    }
+    hypha::Node node("harness_plain_entry", file.path());
+    Optionals   cycle;
+    cycle.setRate(hypha::Hz(100.0));
+    EXPECT_FALSE(cycle.start(node).has_value()) << "a start refuses it as well";
+}
+
+TEST_F(OptionalPortsFixture, ASetOrAStaleVerdictOnADisabledInputIsRefusedAndNeverArrivedIsNot)
+{
+    Optionals                   node;
+    hypha::testing::StepHarness harness{node};
+    EXPECT_THROW(harness.set(node.absent, Float64{1.0}), std::logic_error);
+    EXPECT_THROW(harness.setStale(node.absent), std::logic_error);
+    EXPECT_THROW(harness.setStagnant(node.absent, true), std::logic_error);
+    EXPECT_THROW(harness.set(node.aux, {Float64{1.0}}), std::logic_error);
+    EXPECT_THROW(harness.setStale(node.aux), std::logic_error);
+    try {
+        harness.set(node.absent, Float64{1.0});
+    } catch (const std::logic_error& error) {
+        EXPECT_NE(
+            std::string(error.what()).find("set() on input ports.inputs.absent"), std::string::npos
+        ) << error.what();
+    }
+
+    harness.setNeverArrived(node.absent);
+    harness.setNeverArrived(node.aux);
+    harness.step(node, stepAt(kStartNanos));
+    EXPECT_EQ(node.absent.verdict(), InputVerdict::NeverArrived);
+    EXPECT_FALSE(node.absent.has());
+
+    harness.set(node.tilt, Float64{1.0});
+    EXPECT_TRUE(node.tilt.usable()) << "a wired port takes a verdict";
+}
+
+TEST_F(OptionalPortsFixture, AnEnabledOutputReportsASubscriberAndADisabledOneDoesNot)
+{
+    Optionals node;
+    EXPECT_FALSE(node.debug.hasSubscribers());
+    hypha::testing::StepHarness harness{node};
+    EXPECT_TRUE(node.debug.hasSubscribers());
+    EXPECT_FALSE(node.tf.hasSubscribers());
+    EXPECT_FALSE(node.debug.subscriberCount().has_value()) << "no transport counts one";
+}
+
+TEST(StepHarnessOptionalPorts, TwoHarnessesOneAfterTheOtherEachReadTheirOwnFile)
+{
+    Optionals node;
+    {
+        const TempToml file(
+            "hypha_step_harness_first.toml",
+            "[ports.inputs.mag]\ntopic = '/first/mag'\nsilence_ms = 100\n"
+        );
+        const hypha::ConfigContext  context(file.path());
+        hypha::testing::StepHarness harness{node};
+        EXPECT_EQ(
+            node.enabledPorts(), (std::vector<bool>{true, false, false, false, false, false})
+        );
+    }
+    EXPECT_EQ(node.enabledPorts(), std::vector<bool>(6, false));
+    {
+        const TempToml file(
+            "hypha_step_harness_second.toml",
+            "[ports.inputs.tilt]\ntopic = '/second/tilt'\nsilence_ms = 100\n"
+        );
+        const hypha::ConfigContext  context(file.path());
+        hypha::testing::StepHarness harness{node};
+        EXPECT_EQ(
+            node.enabledPorts(), (std::vector<bool>{false, true, false, false, false, false})
+        );
+    }
+}
+
+TEST(StepHarnessOptionalPorts, ANodeStartedAfterAHarnessEnablesWhatItsOwnFileSays)
+{
+    Optionals node;
+    {
+        const TempToml file("hypha_step_harness_before_start.toml", optionalPortsFile("/before"));
+        const hypha::ConfigContext  context(file.path());
+        hypha::testing::StepHarness harness{node};
+        ASSERT_TRUE(node.mag.enabled());
+    }
+    const std::string topic = hypha_test::testTopic("/after_harness");
+    const TempToml    file(
+        "hypha_step_harness_after_harness.toml",
+        "[ports.inputs.tilt]\ntopic = '" + topic
+            + "/tilt'\nsilence_ms = 100\n"
+              "[ports.outputs.tf]\ntopic = '"
+            + topic + "/tf'\n"
+    );
+    hypha::Node node2("harness_after", file.path());
+    node.setRate(hypha::Hz(100.0));
+    const std::expected<void, std::string> started = node.start(node2);
+    ASSERT_TRUE(started.has_value()) << started.error();
+    EXPECT_EQ(node.enabledPorts(), (std::vector<bool>{false, true, false, false, false, true}));
+}
+
+TEST_F(DeliverFixture, APortThatRequiresItsTopicIsEnabledEvenWhenItsTableLacksOne)
+{
+    Judged                      judged;
+    hypha::testing::StepHarness harness{judged};
+    EXPECT_TRUE(judged.limited.enabled())
+        << "a start would refuse the table; the harness does not check it";
+    EXPECT_TRUE(judged.open.enabled());
+}
+
+/// What a start enables is what the harness enables, for the same parameter file.
+TEST(StepHarnessOptionalPorts, TheHarnessEnablesTheOptionalPortsThatAStartEnables)
+{
+    const TempToml file(
+        "hypha_step_harness_enabled_like_start.toml",
+        optionalPortsFile(hypha_test::testTopic("/harness_enabled"))
+    );
+    std::vector<bool> started;
+    {
+        hypha::Node node("harness_enabled", file.path());
+        Optionals   cycle;
+        cycle.setRate(hypha::Hz(100.0));
+        const std::expected<void, std::string> result = cycle.start(node);
+        ASSERT_TRUE(result.has_value()) << result.error();
+        started = cycle.enabledPorts();
+    }
+    const hypha::ConfigContext  context(file.path());
+    Optionals                   node;
+    hypha::testing::StepHarness harness{node};
+    EXPECT_EQ(node.enabledPorts(), started);
+    EXPECT_EQ(started, (std::vector<bool>{true, true, false, false, true, false}));
+}

@@ -364,12 +364,12 @@ class ConfigContext
     explicit ConfigContext(const std::string& parameterFile)
     {
         bool         created = false;
-        const Status status = backend::initConfig(parameterFile, &created);
+        std::string  refusal;
+        const Status status = backend::initConfig(parameterFile, &created, &refusal);
         this->ownsConfig_ = created;
         if (status != Status::Ok) {
-            throw std::runtime_error(
-                detail::failureText("configuration '" + parameterFile + "' loading", status)
-            );
+            const std::string context = "configuration '" + parameterFile + "' loading";
+            throw std::runtime_error(detail::failureText(context, status, refusal));
         }
     }
 

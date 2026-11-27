@@ -1,6 +1,7 @@
 // The shape of twist_mux as one triggered cycle: velocity inputs that each trigger the
 // step, in priority order, and locks that mask the velocities below their priority. The
-// step asks no clock and never which port fired. The priorities come from the test.
+// step asks no clock and never which port fired. The priority of each input is a key of its
+// port table, read before the cycle starts.
 
 #include "hypha/cycle_node.h"
 #include "hypha/hypha.h"
@@ -23,6 +24,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -33,30 +35,21 @@ using namespace hypha::literals;
 
 namespace {
 
-/// A port of the mux with its priority.
-struct Prioritized
-{
-    std::string name;
-    int64_t     priority;
-};
-
 class TwistMux final : public hypha::CycleNode
 {
   public:
     TwistMux(
-        const std::vector<Prioritized>& velocityInputs, const std::vector<Prioritized>& lockInputs
+        const std::vector<std::string>& velocityInputs, const std::vector<std::string>& lockInputs
     )
     {
-        for (const Prioritized& input : velocityInputs) {
+        for (const std::string& name : velocityInputs) {
             this->velocities_.push_back(
-                {input.name,
-                 input.priority,
-                 std::make_unique<Arrivals<Twist>>(*this, input.name, advisory)}
+                {name, priorityOf(name), std::make_unique<Arrivals<Twist>>(*this, name, advisory)}
             );
         }
-        for (const Prioritized& input : lockInputs) {
+        for (const std::string& name : lockInputs) {
             this->locks_.push_back(
-                {input.name, input.priority, std::make_unique<Latest<Bool>>(*this, input.name)}
+                {name, priorityOf(name), std::make_unique<Latest<Bool>>(*this, name)}
             );
         }
         std::ranges::stable_sort(this->velocities_, std::greater{}, &Velocity::priority);
@@ -110,6 +103,13 @@ class TwistMux final : public hypha::CycleNode
         std::unique_ptr<Latest<Bool>> port;
     };
 
+    /// The `priority` key of the port's table.
+    static int64_t priorityOf(const std::string& port)
+    {
+        return hypha::config("ports.inputs." + port)
+            .required<int64_t>("priority", hypha::constraints::range(0, 255));
+    }
+
     template <typename Entry>
     static Entry& find(std::vector<Entry>& entries, const std::string& name)
     {
@@ -143,21 +143,23 @@ std::string topicFor(const std::string& name)
     return hypha_test::testTopic("/mux_" + name);
 }
 
-/// The parameter file of the mux: 500 ms on each velocity, 1 s on the lock.
-std::string parameters()
+/// The parameter file of the mux: one table for each input, with its limit (500 ms on a
+/// velocity, 1 s on the lock) and its priority.
+std::string parameters(int64_t lockPriority = 255)
 {
     std::string text;
-    for (const auto& [port, silenceMs] : std::vector<std::pair<std::string, int>>{
-             {"joystick", 500}, {"navigation", 500}, {"e_stop", 1000}
+    for (const auto& [port, silenceMs, priority] :
+         std::vector<std::tuple<std::string, int, int64_t>>{
+             {"joystick", 500, 100}, {"navigation", 500, 10}, {"e_stop", 1000, lockPriority}
          }) {
-        text += "[ports.inputs." + port + "]\ntopic='" + topicFor(port)
-              + "'\nsilence_ms = " + std::to_string(silenceMs) + "\n";
+        text += "[ports.inputs." + port + "]\ntopic='" + topicFor(port) + "'\nsilence_ms = "
+              + std::to_string(silenceMs) + "\npriority = " + std::to_string(priority) + "\n";
     }
     return text + "[ports.outputs.cmd_vel_out]\ntopic='" + topicFor("out") + "'\n";
 }
 
-const std::vector<Prioritized> kVelocities{{"navigation", 10}, {"joystick", 100}};
-const std::vector<Prioritized> kStop{{"e_stop", 255}};
+const std::vector<std::string> kVelocities{"navigation", "joystick"};
+const std::vector<std::string> kStop{"e_stop"};
 
 Twist twist(double x)
 {
@@ -196,7 +198,14 @@ class TwistMuxHarness : public ::testing::Test
     void SetUp() override
     {
         this->path = std::filesystem::temp_directory_path() / "hypha_twist_mux_harness.toml";
-        std::ofstream(this->path) << parameters();
+        this->load(parameters());
+    }
+
+    /// Serve @p text as the parameter file of the mux.
+    void load(const std::string& text)
+    {
+        this->context.reset();
+        std::ofstream(this->path) << text;
         this->context = std::make_unique<hypha::ConfigContext>(this->path.string());
     }
 
@@ -282,10 +291,10 @@ TEST_F(TwistMuxHarness, ExpiredAndNeverArrivedLocksCountAsLocked)
 
 TEST_F(TwistMuxHarness, ALockMasksOnlyLowerPriorities)
 {
-    const std::vector<Prioritized> middle{{"e_stop", 50}};
-    TwistMux                       mux(kVelocities, middle);
-    hypha::testing::StepHarness    harness{mux};
-    Bool                           engaged;
+    this->load(parameters(50));
+    TwistMux                    mux(kVelocities, kStop);
+    hypha::testing::StepHarness harness{mux};
+    Bool                        engaged;
     engaged.data = true;
     harness.set(mux.lock("e_stop"), engaged);
     harness.deliver(mux.velocity("joystick"), {}, before(600));

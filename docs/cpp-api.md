@@ -97,6 +97,8 @@ int main() {
 `hypha::Topic{...}` names a topic that code fixes; a bare string names a port table of
 the parameter file (section 9). A default-constructed `hypha::Node` is a handle to the
 process session, for code without the `Node` at hand: `hypha::Node().advertise<T>(...)`.
+It needs a named `Node` created first; without one the call throws
+`... failed: InvalidState: no session exists; create a named hypha::Node first`.
 The object form holds the endpoints as members, and `hypha::bind` registers a member
 function as the callback:
 
@@ -247,7 +249,9 @@ subscriber or a triggered cycle; every publisher notifies. Latch it for late sta
 
 Every `Node` of a process joins one session, and the last one destroyed leaves the bus
 and destroys every cycle of the session, whatever order the `Node`s were made in (#97);
-a default-constructed `Node` joins nothing and does not count (`hypha/node.h`). A
+a default-constructed `Node` joins nothing and does not count (`hypha/node.h`). A second
+`Node` keeps the first name and shares the process's parameter file (section 9): it names
+no file or the same one, and another file throws, naming both (#208). A
 publisher of a session that has left sends nothing: `publish()` returns false with
 `lastPublishStatus()` `InvalidState`, as the C ABI's loan and send do once the node was
 destroyed.
@@ -327,6 +331,8 @@ status.header.stamp = hypha::toRosTime(hypha::now());  // in a callback
 
 Outside a cycle, `node.advertise<M>(port | hypha::Topic{...}, options...)` creates a
 `hypha::Publisher<M>` (`examples/sim_twin/src/sim_clock.cpp`; in a cycle an `Output`).
+`node` may be `hypha::Node()`, the handle that joins no session, once a named `Node`
+exists (section 1); before that `advertise` throws `... InvalidState: no session exists`.
 Reference: `hypha/node.h`, `hypha/publisher.h`, `hypha/topic.h`, `hypha/options.h`.
 
 - A fixed-size message is bounded to its encoded size. Any other is growable, unless
@@ -532,8 +538,21 @@ own limit keys and cursor, in any cycle (`hypha/cycle_input.h`). In
 
 #### Queued work, budget and overflow
 
-An `Arrivals` port examines at most `perStep()` samples per step (default 8); a
-sample the age rule refuses still uses a slot. Pending samples beyond a share are
+An `Arrivals` port examines at most `perStep()` samples per step (default 8) and queues
+that many, so `perStep()` is at most the `maxDepth` of the port's policy: 32 for the
+`default` policy, at most 1024 with a policy of your own (section 7). A larger one is
+refused when the port is constructed with a `std::invalid_argument` that names the policy,
+and `runNode` exits 70: a `perStep` fixed in code is a programming error. The framework
+cannot tell that a number came from the parameter file. To refuse such a value as a
+configuration fault (78), read it with the range of its limit:
+
+```cpp
+Arrivals<Imu> imu{
+    *this, "imu",
+    perStep(config("ports.inputs.imu").required<uint32_t>("queue_size", constraints::range(1, 32)))};
+```
+
+A sample the age rule refuses still uses a slot. Pending samples beyond a share are
 the oldest; they are dropped and counted (execution-model.md §6.5). A `CycleNode`
 caps all queued ports together with `arrival_budget` (a positive integer, read at
 commit) in its `[cycle]` table, beside `rate_hz`:
@@ -558,10 +577,18 @@ once per trigger port; a repeat adds nothing, and the order of the calls has no
 meaning. The samples of all triggers step in send-stamp order, a tie in the
 construction order of the ports. In a step the port that fired holds its one sample
 and every other trigger holds none, so the step tells the port that fired as the one
-whose `samples()` is not empty. Each trigger has its own `silence_ms`: `usable()` and
+whose `samples()` is not empty. `CycleTime::now`, and with it the framework send stamp of
+every output of the step, is the send time T of the trigger sample under simulated time
+(of a fallback, its time) and the wall time at the start of the step in host time. On host
+time an output's stamp is therefore its own send time, later than the trigger sample's,
+and the sample's stamp is not carried by it: a node that needs it copies the `header.stamp`
+of the sample, or reads `port.sentAt(0)`, its host-monotonic send time, which is not a
+wall time (execution-model.md §6.6 item 2). Each trigger has its own `silence_ms`: `usable()` and
 `stale()` of every trigger port judge its newest sample against it in every step. After
 the shortest `silence_ms` without a step a fallback step runs with every trigger empty
-and each trigger that is past its own limit `stale()`. The rules are in
+and each trigger that is past its own limit `stale()`. On host time an `Arrivals`
+port that is no trigger holds, in a trigger step, the samples sent up to the trigger
+sample; a later one is in a later step. The rules are in
 execution-model.md §6.6. `examples/mrs/managers/estimation_manager.cpp` and
 `control_manager.cpp` are triggered cycles. `start()` fails for a rate with a trigger
 ("a rate and a trigger exclude each other"), a `Latest` trigger ("the trigger must be
@@ -598,7 +625,7 @@ setpoint `optionalTopic, advisory` and falls back when the port is switched off.
 - A disabled port has no subscriber and never a value. The node introspection lists it
   with an empty topic, and the node state does not judge it.
 - A disabled port reports `NeverArrived`, as an enabled port that has received nothing
-  yet. Tell the two apart with `enabled()`, after `start()`.
+  yet. Tell the two apart with `enabled()`, after `start()` or in a `StepHarness`.
 - An output port follows the same rules; a disabled output has no publisher.
 - A failed `start()` reads `hypha: cycle 'control': input 'speed': NotAvailable`, or,
   when the library gave a reason, `hypha: cycle '<name>': <StatusName>: <reason>`.
@@ -631,12 +658,14 @@ Reference: `<hypha/cycle_latest.h>`, `<hypha/cycle_arrivals.h>`,
 #### Test a step without a bus
 
 `hypha::testing::StepHarness` (`<hypha/testing.h>`, not in `hypha/hypha.h`) runs the
-step of a cycle that was not started: no node and no shared memory; a parameter file only
-for `deliver()`, below.
+step of a cycle that was not started: no node and no shared memory; a parameter file for
+the optional ports and for `deliver()`, below.
 `crates/hypha-cxx/test/test_cycle_doc_examples.cpp` tests the controller of section 5.4
 with it; the header gives the setters and the rules. `send()` outside a step throws
 `std::logic_error("hypha: output '<port>': send() outside a step")`: a `setup()` that
 sends fails start-up, so send an initial message from the first step.
+
+A harness predicts which ports a start would enable, from the parameter file that a `Node` or a `ConfigContext` holds when the harness is built. An `optionalTopic` port is enabled when its table, `[ports.inputs.<name>]` or `[ports.outputs.<name>]`, sets a non-empty `topic`; a missing table, a missing `topic`, `topic = ""` and a harness without a file leave it disabled, so a step under test takes the branch for a port that is not wired. The constructor throws `ConfigError` for such an optional port whose `topic` is a name a start would refuse, or whose entry is a plain string (`mag = "/x"`) where a start needs a table, and `ParameterError` for a `topic` that is not text. A port that requires its topic, or sits on a `hypha::Topic{...}` literal, is enabled without a check of its table or name: a start refuses a missing, empty or invalid one, the harness does not. Wire an optional port in the test's file to test the branch behind it: `deliver()` to the input and the step reads its three verdicts (usable, stale, never arrived), and `sent()` keeps what the step sends on the output. An enabled output reports a subscriber (`hasSubscribers()` is true), since no transport counts one. On a disabled input `deliver()`, `set()`, `setStale()` and `setStagnant()` throw `std::logic_error` and name the table that lacks a `topic`: a started cycle gives it no sample and never judges it; `setNeverArrived()` stays allowed, because it is true of a disabled port. A disabled output counts the sends of the step and keeps none, as in a started cycle, so `sent()` of it is empty. The harness opens no subscriber and no publisher and checks no key of a table other than `topic` and `silence_ms`. `testing.h` lists what a harness step shares with a started cycle and what it leaves out.
 
 `harness.deliver(port, value, sentAt)` hands a `Latest` port a value sent at `sentAt`. Each later `step(time)` judges it as a capture does: usable while `time.now - sentAt <= silence_ms` of `[ports.inputs.<name>]` (read when `deliver()` is called, so a `Node` or `ConfigContext` must hold the file), stale after; a port without `silence_ms`, without a table, or tagged `unsupervised` never goes stale. `fresh()` is true in the first step that finds the value usable. `lastKnown()` keeps a value that was usable once. A value that is stale in its first judged step is never held, as in a capture. A `sentAt` after the step time is stale with age 0 until that time; a real cycle under simulated time does not admit such a sample at all. `set()`, `setStale()` and `setNeverArrived()` state a verdict directly; a later `set()` or `deliver()` on the same port replaces the earlier state.
 
@@ -687,7 +716,8 @@ The parameter file cannot switch supervision off, and code sets no limit value:
   fails `start()`; the library never clamps. The limit is inclusive: a value exactly
   `silence_ms` old is usable.
 - An unknown key fails `start()`, naming the port and the key (known: `topic`,
-  `ignored`, `silence_ms`, and `stagnation_ms` with `setAlive()`).
+  `ignored`, `silence_ms`, and `stagnation_ms` with `setAlive()`, and any other key the
+  application read before `start()`: section 9, port tables).
 - A sharing port has no `topic` key; a port without a table name that counts for health
   needs `unsupervised`, else `start()` fails with `a required input without a table needs the tag hypha::unsupervised`.
 - A port with no silence limit and no `setAlive()` is never stale. A disabled port needs
@@ -833,6 +863,14 @@ reads checked scalars, `examples/sensor_fusion/src/sensors_main.cpp` a `[[sensor
 list, and `examples/mrs/config/mrs_simulator_teleop.toml` includes another file. The
 file is read once, at start: there is no parameter server and no mutation API.
 
+A process has one parameter file, whatever its `Node`s and `ConfigContext`s are. The first
+one that names a file loads it; each later `Node` or `ConfigContext` names no file, to share
+the configuration, or the same file, to join it. A different file throws `std::runtime_error`
+that names both (`hypha: node 'beta' creation failed: InvalidState: the process already
+loaded '/etc/a.toml', so '/etc/b.toml' is refused: a process reads one parameter file; name
+'/etc/a.toml' or no file to share it`); so does a file after a first `Node` that named none
+(#208). A test's client `Node` therefore needs no file beside the node under test.
+
 ```cpp
 const auto settings = hypha::config();                       // config("controller") scopes reads
 const double rate = settings.required<double>("rate_hz", hypha::constraints::positive());
@@ -867,6 +905,16 @@ for (const auto sensor : settings.list("sensors")) {
 - **Port tables.** A bare string names `[ports.inputs.<name>]` or
   `[ports.outputs.<name>]`, which hold `topic` (section 5.3); an input and an output
   may share a name. A plain entry, `speed = "/odom_speed"`, is `InvalidArgument`.
+  A table may also hold a key of the application's own, such as the `priority` of
+  each input of a multiplexer: read it with `config("ports.inputs.<name>")`, so that
+  no second table names every input again. A cycle input accepts such a key only when
+  the application has read it before `start()`, in the constructor or in `setup()`; the
+  ports bind at `start()`, and `started()` comes after it. An unread key fails `start()`
+  as unknown (section 5.4), whatever its name. The framework's own keys are never
+  application keys: a typo such as `silence_mss`, or `stagnation_ms` on a port without
+  `setAlive()`, is refused even when the application reads it. The table of an output,
+  or of a subscriber of an `ApplicationNode`, has no check at `start()`: a key that the
+  application never reads there is an unread key, below.
 - **Reserved names.** `node`, `ports` and `log` belong to the framework: `node.name`
   (section 2), the port tables, and `[log]` (section 11), whose keys the parameter
   API does not return. The top-level keys `include` (below) and `unused` are not

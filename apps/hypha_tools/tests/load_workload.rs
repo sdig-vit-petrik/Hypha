@@ -2,6 +2,7 @@
 
 #![expect(clippy::expect_used, reason = "a test fails on the first refused step")]
 
+use std::cmp::Ordering;
 use std::path::Path;
 
 use hypha_tools::load::workload::{Rate, Workload, WorkloadError};
@@ -217,14 +218,15 @@ fn a_slow_reader_that_would_hold_the_heartbeat_is_refused_with_both_numbers() {
 }
 
 #[test]
-#[expect(clippy::float_cmp, reason = "whole numbers below 2^53 add and compare exactly")]
 fn the_rated_workload_has_the_totals_of_nfr_04_and_the_limits_of_nfr_03_and_nfr_04() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/load/rated.toml");
     let text = std::fs::read_to_string(&path).expect("examples/load/rated.toml");
     let workload = Workload::from_toml(&text).expect("the rated workload parses");
 
     assert_eq!(workload.topics.len(), 46);
-    // Every rate and size is a whole number well below 2^53, so the sums are exact.
+    // Every rate and size is a whole number well below 2^53, so the sums are exact. They
+    // are compared with `total_cmp`, which is `Equal` only for the same value and is not
+    // a comparison `float_cmp` flags (the lint differs between clippy versions).
     let rated: Vec<(f64, f64)> = workload
         .topics
         .iter()
@@ -239,8 +241,12 @@ fn the_rated_workload_has_the_totals_of_nfr_04_and_the_limits_of_nfr_03_and_nfr_
     assert_eq!(rated.len(), 46, "every topic has a rate");
     let messages: f64 = rated.iter().map(|(rate, _)| rate).sum();
     let bytes: f64 = rated.iter().map(|(_, bytes)| bytes).sum();
-    assert_eq!(messages, 9_960.0, "messages per second");
-    assert_eq!(bytes, 72_500_000.0, "bytes per second: 72.5 MB/s, MB = 10^6 bytes");
+    assert_eq!(messages.total_cmp(&9_960.0), Ordering::Equal, "messages per second: {messages}");
+    assert_eq!(
+        bytes.total_cmp(&72_500_000.0),
+        Ordering::Equal,
+        "bytes per second: 72.5 MB/s, MB = 10^6 bytes: {bytes}"
+    );
 
     let keeps_pace = workload
         .topics
@@ -255,7 +261,12 @@ fn the_rated_workload_has_the_totals_of_nfr_04_and_the_limits_of_nfr_03_and_nfr_
     assert_eq!(limits.loss_accounted, Some(true));
     assert_eq!(limits.max_refused_publishes, Some(0));
     assert_eq!(limits.max_missed_periods, Some(0), "the rated load was offered");
-    assert_eq!(workload.run.duration_s, 60.0);
+    assert_eq!(
+        workload.run.duration_s.total_cmp(&60.0),
+        Ordering::Equal,
+        "run.duration_s: {}",
+        workload.run.duration_s
+    );
 }
 
 fn example(name: &str) -> Workload {

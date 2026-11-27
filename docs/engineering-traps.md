@@ -110,7 +110,10 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   together and then retry together, so the wait between attempts is offset per
   endpoint. `crates/hypha_iceoryx2/src/service_open.rs` holds the one retry: no new
   attempt starts 500 ms after the first, and the node lock is held for one attempt
-  only. Every `open_or_create` site goes through it. Do not add an `open_or_create` that
+  only. A retry is logged at DEBUG (`hypha/transport`, "is in use by another endpoint,
+  attempt N"); a WARN for the normal start of a publisher and a subscriber reads as a
+  fault. An open that outlasts the window is logged once at ERROR by its caller, with the
+  cause. Every `open_or_create` site goes through it. Do not add an `open_or_create` that
   bypasses it, and do not widen the retry to a state that cannot change — an
   incompatible type or capacity must still fail at once.
 - **`ServiceInCorruptedState` on an event service is usually contention, not

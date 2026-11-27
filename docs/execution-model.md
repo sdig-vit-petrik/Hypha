@@ -444,7 +444,9 @@ of the step that captured it; there is no periodic summary, and the initial wait
 nothing. An input without a silence limit never logs `never arrived`. Two ports on one
 topic log under their own names. `<in>` is `cycle '<cycle>' input '<port>' (<topic>)`,
 or `cycle '<cycle>' input (<topic>)` without a table; an advisory input's line ends in
-` (advisory)`. Ages and limits are whole milliseconds.
+` (advisory)`, and an advisory input reports its faults at INFO where the table says WARN:
+the node is healthy without it. An `unsupervised` or an ignored input is not advisory: its
+lines have the levels of the table. Ages and limits are whole milliseconds.
 
 | Change | Level | Line |
 |---|---|---|
@@ -465,8 +467,10 @@ input takes none. Without a budget, no cycle-wide limit applies.
 
 A queued input has one overflow behaviour, and no option selects another: the
 pending samples beyond its share are the oldest, so it discards them, examines
-the newest, and counts each discard. Only the triggers of a triggered cycle keep
-their pending samples for later steps (section 6.6).
+the newest, and counts each discard. In a triggered cycle the triggers keep their
+pending samples for later steps, and on host time a queued input that is no trigger
+keeps the samples sent after the step's trigger sample: they are not pending for
+that step and no share discards them (section 6.6).
 
 Each cause of loss has its own counter:
 
@@ -503,17 +507,38 @@ the trigger that has no limit.
    counted transport loss of that port, as for any input. The arrivals limit, the
    cycle budget and the overflow discard do not apply to a trigger, which keeps each
    sample for its own step; they apply to the other `Arrivals` inputs.
-2. **What the step sees.** `CycleTime::now` is the framework send time T of the
-   trigger sample. The sample is delivered without a second age check: the schedule
+2. **What the step sees.** The step's time, `CycleTime::now`, is the framework send
+   stamp of every output the step sends, and it depends on the clock. Under simulated
+   time it is the framework send time T of the trigger sample (of a fallback, the
+   fallback's time), so the outputs carry T. In host time it is the wall time read when
+   the step starts, as for a rate step: later than the sample's own stamp by the wake-up
+   and the capture, so an output's stamp is its own send time, and a downstream
+   triggered cycle orders and ages it from the start of the step, not from the sample
+   that caused it. In host time the trigger sample's own stamp is therefore not carried
+   by the output; a node that needs it copies the `header.stamp` of the sample's
+   payload, or reads the sample's host-monotonic send time with `sentAt(index)` of the
+   trigger's `Arrivals` port. (`scheduled_nanos` of the C ABI is T under simulated
+   time; in host time it is the sample's send time on the monotonic clock, not a wall
+   stamp.) The sample is delivered without a second age check: the schedule
    judged it once (item 3), so a trigger step holds it even when the capture finds it
    past its limit, and is empty only when the sample does not decode. Every trigger
    port is judged at each step by its newest sample against its own limit: under
    simulated time the samples sent at or before T count, and the age is T − sent, so
    a sample exactly at its limit is usable; in host time every retained sample counts,
    as for a `Latest` input, one stamped after the step included. Under simulated time
-   every other input is cut strictly before T, as a grid step is cut at its deadline,
-   and the outputs carry T as their framework send stamp. In host time the other
-   inputs are captured as a host-time rate step captures them.
+   every other input is cut strictly before T, as a grid step is cut at its deadline.
+   In host time a queued
+   (`Arrivals`) input that is no trigger takes its pending samples, in arrival order,
+   up to the first one sent after the trigger sample, by the host send time of both. A
+   sample sent with the trigger sample, by one step of one upstream cycle, has the same
+   send time and is taken. A later one waits for a later trigger step or a fallback,
+   so the trigger samples drained in one turn each find their own arrivals; with two
+   publishers on the input, an earlier sample that arrives behind a later one waits
+   with it. The input's verdict counts every sample that has arrived, the waiting ones
+   included. A `Latest` input and the transform input are captured as a host-time rate
+   step captures them. Under simulated time a sample stamped exactly T, as the outputs
+   of the step that sent the trigger sample are, is cut and belongs to the next step:
+   the two clocks differ here.
 3. **Fallback.** When no step ran for the shortest silence limit (`silence_ms`) of
    the triggers, one step runs without a trigger sample. The limit counts from the
    last step, or from the cycle's first evaluation when that is later: a trigger
