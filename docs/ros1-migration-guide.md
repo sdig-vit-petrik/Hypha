@@ -25,10 +25,55 @@ of each input, and a test at each of three levels. The reference for an `Applica
 [examples/sensor_pipeline](../examples/sensor_pipeline/README.md) (section 10).
 
 A node is a `hypha::CycleNode` with its ports as members, started by
-`hypha::runNode<App>()` (see [cpp-api.md](cpp-api.md) §5.4). A node whose ports
-are built at run time uses `hypha::Cycle` ([cpp-api.md](cpp-api.md) §5.5). A node that
+`hypha::runNode<App>()` (see [cpp-api.md](cpp-api.md) §5.4). A node that
 owns worker threads, or a shim of a ROS client library, is a
 `hypha::ApplicationNode`, started by the same call ([section 10.1](#101-which-target)).
+
+**Which target, when two sentences seem to apply.** Decide in this order and stop at the
+first yes:
+
+1. The node owns a worker thread (a blocking device read, a vendor SDK that calls back
+   from its own thread) or is a shim of a ROS client library: an `ApplicationNode`.
+2. The node steps on a timer, or on the samples of its inputs, including a node that
+   publishes from the callbacks of several inputs: a `CycleNode` (a rate, or one trigger
+   for each input).
+3. The inputs are named by a list in the parameter file: still a `CycleNode`. A
+   `CycleNode` is a `hypha::Cycle`, so its constructor builds the ports from the list and
+   keeps them in a `std::list` (`ports/twist_mux/src/twist_mux.cpp` in the playground).
+   A free-standing `hypha::Cycle` ([cpp-api.md](cpp-api.md) §5.5) is for a node with two
+   cycles, or ports that are not members of a class.
+
+The sentence "use `hypha::Cycle` when ports are built at run time" of cpp-api.md §5.2 and
+§5.5 names the class that holds the ports, not a third target.
+
+## Contents
+
+- [1. When to use this guide](#1-when-to-use-this-guide)
+- [2. Rules](#2-rules)
+- [3. Procedure](#3-procedure): [Step 1: inventory](#step-1-make-the-inventory),
+  [Step 2: design the cycle](#step-2-design-the-cycle),
+  [Step 3: the TOML file](#step-3-write-the-toml-file),
+  [Step 4: build](#step-4-replace-the-build-glue),
+  [Step 5: node glue](#step-5-replace-the-node-glue),
+  [Step 6: tests](#step-6-port-the-tests),
+  [Step 7: run and verify](#step-7-run-and-verify-on-the-bus),
+  [Step 8: deploy](#step-8-deploy)
+- [4. ROS 1 to hypha map](#4-ros-1-to-hypha-map): one row for each ROS 1 call
+- [5. Message types and the minimal logic edits](#5-message-types-and-the-minimal-logic-edits):
+  time, third-party headers, logging
+- [6. Traps](#6-traps)
+- [7. Stop and ask](#7-stop-and-ask): what hypha has no answer for yet, with the issue
+- [8. Report hypha gaps and blockers](#8-report-hypha-gaps-and-blockers)
+- [9. Production-ready checklist](#9-production-ready-checklist)
+- [10. Porting an event-driven node: an `ApplicationNode`](#10-porting-an-event-driven-node-an-applicationnode):
+  [10.1 target](#101-which-target), [10.2 application](#102-the-application),
+  [10.3 topic names](#103-literal-topic-or-port-name), [10.4 time and logging](#104-time-status-and-logging),
+  [10.5 queue depth](#105-queue-depth), [10.6 threads](#106-threads), [10.7 TF](#107-tf-in-an-application),
+  [10.8 lists](#108-a-list-of-scalars-in-the-parameter-file), [10.9 example](#109-a-runnable-sensor-node-and-its-replay-check),
+  [10.10 tests](#1010-test-an-application), [10.11 N inputs from a list](#1011-n-subscriptions-named-by-a-list),
+  [10.12 plugins](#1012-a-manager-that-hosts-plugins)
+- [11. Porting a ROS 2 node](#11-porting-a-ros-2-node)
+- [12. Large messages](#12-large-messages)
 
 ---
 
@@ -107,7 +152,11 @@ Sort every line of the ROS node into one of three classes:
   `rate_hz` under the `[cycle]` table.
 - The node instance name is `[node].name`. Its own topics are `~/<name>`.
 - Logging is the `[log]` table. There is no other configuration file and no
-  environment variable for it.
+  environment variable for it. **Set `level = "info"` in a ported node.** The default
+  `level` of a hypha node is `debug`, and its console takes `trace` (`console_level`,
+  [cpp-api.md](cpp-api.md) §11), where ROS 1 shows INFO and above. A kept
+  `HYPHA_LOG_DEBUG` on the data path then writes one line for each message (10,428
+  lines in 30 s at 400 Hz for `twist_mux`).
 - `HYPHA_USE_SIM_TIME=1` in the node's environment replaces the ROS parameter
   `use_sim_time`. It holds `1`, `true`, `0` or `false`; any other value stops node
   creation. The parameter file has no such key: a `use_sim_time` key is an ordinary
@@ -124,7 +173,19 @@ Sort every line of the ROS node into one of three classes:
   `finite()`, `range(a, b)`). `hypha::runNode()` logs it. A `hypha::ParameterError` or
   `hypha::ConfigError` returns 78, the configuration code that a supervisor does not
   restart; any other exception returns 70.
-- A parameter key that nothing read stops the node at start.
+- A parameter key that nothing read stops the node at start. Two consequences:
+  - **A ROS parameter file cannot be reused as it is.** Every key the node does not read
+    (`odom0_nodelay`, `print_diagnostics`, `publish_tf`, a key of a branch the code does
+    not take) is refused with exit 78 and `unread parameter(s): ...`. Copy only the keys
+    the ported code reads. `hypha param validate` does not catch it: it checks that the
+    file loads, and the unread-key check runs only when the node starts
+    ([tools.md](tools.md), `hypha param`). Start the node with the file to test it.
+  - **A key that the file sets and the code chose not to read** (the unselected branch of
+    a vendor file: three source blocks of which the code reads one) is not removed. Name
+    it: `hypha::config().ignore("lidar_udp_type", "source_type does not select it")` in
+    code, or a top-level `unused = ["lidar_udp_type"]` in the file. The manifest then
+    lists the key as ignored with its reason, and a typo beside it is still refused
+    ([cpp-api.md](cpp-api.md) §9, "Keys set on purpose and not read").
 - More than one command-line argument stops the node.
 
 ### 2.4 Code style
@@ -222,6 +283,133 @@ decides with `usable()` of every trigger and forwards only the sample of the por
 fired; its output is then the same in either order
 (`crates/hypha-cxx/test/test_twist_mux_shape.cpp`).
 
+**Shapes the table above does not name.**
+
+*A timer that publishes, and measurements from queued subscriptions* (`robot_localization`:
+an EKF publishes at `frequency` and integrates the samples of N inputs in stamp order). A
+rate cycle with one `Arrivals` port for each measurement input. Each step receives the
+samples that arrived since the previous step, at most `perStep` for each port. The node's own
+queue ordered by `header.stamp` is logic: keep it. Hypha does not order samples across steps;
+`hypha::visitArrivalsInOrder(stampOf, visit, portA, portB, ...)`
+(`hypha/cycle_arrivals_merge.h`) visits the samples of one step, for a fixed list of ports,
+in the order of the stamp that `stampOf` returns. A sample whose `header.stamp` is older than
+the state the node already computed is the ROS node's own rule: hypha does not drop it
+(`silence_ms` judges the send time, not `header.stamp`), so the upstream rule stays as
+logic. `robot_localization` kept upstream's: a sample older than the previous one of the same
+input is dropped with a warning, one older than the state but from another input corrects
+the filter without moving the state back (`ports/robot_localization/src/ros_filter.cpp` in
+the playground). When the ROS node had no such rule, ask the user.
+
+*A second timer in the node, and a timeout that a callback starts.* A cycle has one rate or
+one set of triggers, and no second timer. Issue #267 proposes a helper owned by the cycle
+(`every(period)`, `after(duration)`); **it does not exist**, and a port does not write
+`hypha::every`. What the MRS ports did, and what a port does until #267 is decided:
+
+- A body that runs at a period longer than the step's (a 10 Hz timer in a 100 Hz step), or a
+  one-shot timeout, is a deadline kept in a member and compared with the step's own time
+  `time.now`, never with a wall clock, so that a replay behaves as the live run. The body runs
+  once for each period that passed, as the thread of a `ros::Timer` would have, so the
+  deadline counts periods and does not set a flag. The grid is anchored at the first call
+  and gives no tick then. `Ticker` of `ports/mrs_trackers/inc/mrs_uav_managers/ticker.h`
+  (with `test_ticker.cpp`), 25 lines:
+
+```cpp
+class Ticker
+{
+  public:
+    explicit Ticker(hypha::Duration period) : period_(period)
+    {
+        if (period.nanos() <= 0) {
+            throw std::invalid_argument("a ticker period must be positive");
+        }
+    }
+
+    // How many instants of the grid lie in (the previous poll, now]. The first poll
+    // anchors the grid at now and gives none.
+    uint32_t poll(hypha::Time now)
+    {
+        if (!this->due_.has_value()) {
+            this->due_ = now + this->period_;
+            return 0;
+        }
+        uint32_t ticks = 0;
+        while (now >= *this->due_) {
+            this->due_ = *this->due_ + this->period_;
+            ticks++;
+        }
+        return ticks;
+    }
+
+  private:
+    hypha::Duration            period_;
+    std::optional<hypha::Time> due_;
+};
+```
+
+  Poll it at the start of the step, before the code that reads its result: the order is the
+  difference between an equal result and a failure (`mrs_trackers` failed at step 70 with the
+  read before the tick). A timeout that a callback started (`concatenate_and_time_sync`
+  creates one per group) is a `std::optional<hypha::Time> deadline_` set to
+  `time.now + timeout` where the callback would have created the timer, and checked at the
+  top of every step.
+- In a **triggered** cycle a step runs only for a sample or for the fallback step (every
+  shortest `silence_ms`), so a deadline is seen at the next such step, up to that late. When
+  that is too coarse for the node, stop and report it as a gap (issue #267) with the period
+  and the lateness the node can take.
+- An `ApplicationNode` has `node.timer(period, callback)` for any number of timers, and a
+  callback may create one on host time ([cpp-api.md](cpp-api.md) §3). Under simulated time
+  it takes no part in the replay lockstep ([section 10.9](#109-a-runnable-sensor-node-and-its-replay-check)).
+
+*A manager that hosts plugins (`pluginlib`).* Hypha has no class loader and no plugin
+description file: no `PLUGINLIB_EXPORT_CLASS`, no `plugins.xml`. The shape decided for the
+MRS ports is one process with a manager cycle that calls **plain classes, linked statically
+and chosen by name from the TOML file**. The manager is a `CycleNode` (usually triggered, by
+the sample the plugins act on).
+
+- The plugin base class keeps its virtual methods. The manager builds each plugin from one
+  function with one `if` for each class; the host names every plugin it can hold, so a new
+  plugin is an edit of that function, a list a safety review can read. A name that no `if`
+  knows is a `hypha::ConfigError` (exit 78), and so is a name listed twice
+  (`makeTracker` and the constructor of `ports/mrs_trackers/src/tracker_host.cpp`):
+
+```cpp
+std::unique_ptr<Tracker> makeTracker(const std::string& name)
+{
+    if (name == "LineTracker") {
+        return std::make_unique<LineTracker>(
+            LineTrackerConfig::read(hypha::config("mrs_uav_trackers.line_tracker"))
+        );
+    }
+    throw hypha::ConfigError("trackers: no tracker is named '" + name + "'");
+}
+```
+
+```toml
+trackers = ["NullTracker", "LineTracker"]   # read with requiredArray<std::string>("trackers")
+[mrs_uav_trackers.line_tracker]
+```
+
+- **The plugin builds no topic and reads no parameter file.** A plugin that made its topic
+  names from its own parameters (`"/" + uav_name + "/hw_api/imu"`) loses that code: the
+  manager owns every port, with its topic in `[ports.inputs.<name>]` (the topic is a TOML
+  value, so the `uav_name` prefix is written in it), and hands the value to the plugin's
+  `update()` as an argument. The plugin's interface changes for that, and a plugin's
+  parameters arrive as a typed config struct that the manager reads
+  (`LineTrackerConfig::read(hypha::config("..."))`; a nested table is a dotted name, see
+  Step 3). A plugin's own publisher becomes an output of the manager that `update()`'s
+  result feeds; a plugin's own timer is a `Ticker` as above.
+- **`ros::Time::now()` inside a plugin is the step's time.** The manager gives the plugin
+  the `hypha::CycleTime` of the step (in a small aggregate that can grow without changing
+  every signature: `struct StepContext { hypha::CycleTime time; };` in
+  `ports/mrs_trackers/inc/mrs_uav_managers/step_context.h`) and the plugin reads
+  `context.time.now` for logic and `context.time.stamp` for a message it fills. It does
+  not call `hypha::now()`: in a started cycle that returns the step's time, but in a
+  `StepHarness` step it returns the process clock ([cpp-api.md](cpp-api.md), "Test a step
+  without a bus"), so a plugin that calls the global clock cannot be tested without
+  `enableSimTime`, and its `Ticker` would run on the process clock.
+- A plugin that serves a ROS service to its caller (`switch_tracker`, `takeoff`): no native
+  answer exists, see [section 7](#7-stop-and-ask), "Services" (issue #132).
+
 **Check:** each subscription has one input port, and each publication has one
 output port.
 
@@ -229,8 +417,12 @@ output port.
 
 Put the file beside the node, for example `config/<node>.toml`. Copy every
 scalar value from the ROS launch and YAML files. Use the TOML type of the value: a
-number is a number, not text. A YAML list maps to a TOML array, read with
-`hypha::config().list(name)` ([cpp-api.md section 9](cpp-api.md#9-parameters)).
+number is a number, not text. A YAML list of numbers, flags or text maps to a TOML array,
+read with `hypha::config().requiredArray<T>(name)` or `optionalArray<T>(name)`
+([section 10.8](#108-a-list-of-scalars-in-the-parameter-file)); a YAML list of maps maps to
+a list of tables, `[[name]]`, read with `hypha::config().list(name)`
+([cpp-api.md section 9](cpp-api.md#9-parameters)). `list(name)` on an array of scalars
+reads the elements with the key `""`; use the array readers for it.
 
 ```toml
 gain = 0.5
@@ -286,6 +478,70 @@ rotation_count = 3
   called `joystick`), rename one of them in its TOML table and in its port declaration,
   for example `joystick_lock`.
 
+- A nested group (`camera_matrix/rows`, `camera_matrix/data` in a YAML file) is a nested
+  TOML table, and `hypha::config("calibration.camera_matrix")` is a view of it, with the
+  prefix as a dotted name. The keys read through the view count as read:
+
+```toml
+[calibration.camera_matrix]
+rows = 3
+cols = 3
+data = [2300.0, 0.0, 1224.0, 0.0, 2300.0, 1024.0, 0.0, 0.0, 1.0]
+```
+
+```cpp
+const hypha::ConfigView table = hypha::config("calibration.camera_matrix");
+table.required<int64_t>("rows", hypha::constraints::range(3, 3));
+const std::array<double, 9> data = table.requiredArray<double, 9>("data");
+```
+
+  (`ports/arena_camera/src/camera_info.cpp`, `readMatrix`; tests `Calibration.*` in
+  `test_parameters.cpp`.) An array inside an entry of a table list, and a list of lists,
+  are refused ([cpp-api.md](cpp-api.md) §9).
+- **A ROS timeout that has no value.** The old timeout decides `silence_ms`
+  ([Step 2](#step-2-design-the-cycle)); when the ROS node had none:
+  - *The input has a documented rate or a launch parameter for its age*: that is the old
+    timeout; carry it.
+  - *No timeout and no documented rate*: ask the user for the longest gap in normal
+    operation, in milliseconds, and write the answer in the change description. A rate that
+    you measured on a recording or with `hypha topic hz` is evidence for the question, not
+    the answer, and a number copied from another node is not either. Do not write a guess
+    into the TOML file; mark the open key with one comment that names the question
+    (section 8).
+  - *`timeout: 0.0`, "not used", or a lock that never expires* (`twist_mux`): the input has
+    no age limit. Declare the port `hypha::unsupervised` and give its table **no**
+    `silence_ms` (0 is refused, and a limit is refused on an `unsupervised` port).
+    `unsupervised` does not mean "need not arrive": see the next item.
+- **`advisory` against `unsupervised`.** They answer different questions
+  ([cpp-api.md](cpp-api.md) §5.3). `unsupervised`: the input has no age limit, and it still
+  counts for health. An `unsupervised` input that has not yet delivered a sample has the
+  verdict `NeverArrived` (`usable()` is false), after its first sample it is usable for good,
+  and until then `~/state` stays `WAITING`: the node runs normally while the state says it
+  waits (`mrs_trackers` held `~/state` at 1 with the UAV state arriving at 100 Hz, because
+  two `unsupervised` command inputs had never received a message). **For an input that may
+  never arrive** (an operator's command, a joystick, a lock that nobody sets) declare
+  `hypha::advisory`: the node is then healthy without it, its silence does not degrade
+  `~/state`, and it may still have a `silence_ms`. The two tags exclude each other.
+- **A tag from a run-time value.** Every tag takes a flag: `hypha::unsupervised(!expires)`,
+  `hypha::advisory(!required)`, `hypha::optionalTopic(flag)` (`hypha/options.h`). A port
+  whose limit is known only when the file is read declares it with one constructor:
+
+```cpp
+LockInput(hypha::Cycle& cycle, const std::string& name)
+    : expires(hypha::config("ports.inputs." + name).optional<int64_t>("silence_ms").has_value())
+    , port(cycle, name, hypha::unsupervised(!this->expires))
+{
+}
+```
+
+  The application may read the `silence_ms` of its own table, as here
+  (`ports/twist_mux/src/twist_mux.cpp`); a misspelt framework key is still refused.
+- **A transport hint has no counterpart.** `ros::TransportHints().tcpNoDelay()`, `udp()`, and
+  the parameters that set them (`odom0_nodelay`) are dropped: between the nodes of one host
+  the transport is shared memory, with nothing to choose. Delete the call and the key, and list them in the change description.
+- **A queue size per input becomes a number of samples per step.** See the queue-sizing
+  paragraph of [section 4](#4-ros-1-to-hypha-map): `queue_size` is not `perStep`.
+
 **Check:** every parameter and topic row of the inventory has one TOML entry.
 
 ### Step 4: Replace the build glue
@@ -315,6 +571,18 @@ install(DIRECTORY config/ DESTINATION "${CMAKE_INSTALL_DATADIR}/speed_controller
 - Set `INSTALL_RPATH` to the directory of `hypha::ffi` as the `scan_cycle`
   example does, so the installed binary finds `libhypha_ffi.so`.
 - Do not link the library statically.
+- **`MSG_DIR` and `SRV_DIR` hold the definitions directly: a subdirectory is not read**
+  (`hyphaMessages.cmake`). A package that groups its `.msg` files in subdirectories
+  (`mrs_msgs` has 19 groups, and a script `link_msg_files.sh` that links them flat) needs one
+  flat directory first: copy the files it needs, unchanged, into one directory of the port
+  named for the package (`ports/mrs_trackers/msg/mrs_msgs`, 9 files), or run the upstream
+  script. Copy only the messages the port uses, and declare the package **once** for the
+  whole process: two ports that each copy a different subset and each call
+  `hypha_generate_messages(PACKAGE mrs_msgs ...)` make two packages of one name, and a
+  binary that links both gets two generated `mrs_msgs`. A family of ports that run in one
+  process shares one message directory.
+- The message names of a ROS 2 node (`sensor_msgs::msg::PointCloud2`) need one more CMake
+  call: [section 11](#11-porting-a-ros-2-node).
 
 **Check:** `cmake -S . -B build -DCMAKE_PREFIX_PATH=<hypha prefix>` configures.
 
@@ -512,7 +780,19 @@ TEST(ImuFilterStep, ReadsTheMagnetometerWhenItIsUsable)
   The `ConfigContext` (or a `Node` that holds the file) exists before the harness is
   built, because the harness reads the `topic` then. Only one exists at a time, so the
   branch for a port that is left out (`topic = ""` or no table) is a second fixture with
-  its own file and its own `ConfigContext`.
+  its own file and its own `ConfigContext`. "One parameter file for each process" holds while
+  a `ConfigContext` or a `Node` lives: a different file is refused then, and accepted once
+  the last one is destroyed, so two fixtures run in sequence in one test binary, one file each
+  (`NodeParameterFile.*` of `crates/hypha-cxx/test/test_node_session_ownership.cpp`; #208).
+- **A test that starts the cycle on a bus** (not a harness step) builds the `hypha::Node`
+  and then calls `node.setup(bus)` and `node.start(bus)`, in that order.
+  `CycleNode::start()` does not call `setup()`, where `runNode` does: a rate or a
+  `setTrigger(port)` set in `setup()` is missing otherwise, and the start fails with
+  `cycle 'x' is refused: it has neither a rate nor a trigger`
+  (`ports/robot_localization/test/test_ekf_bus.cpp`,
+  `ports/autoware_voxel_downsample/test/test_voxel_downsample_bus.cpp`). The same holds the
+  other way: `StepHarness` does not run `setup()`, so a node whose `setup()` forgot its
+  `setTrigger` passes every step test and fails at start. Keep one test that starts the cycle.
 - **Recorded regression tests** (golden fixtures of a ROS bag and the outputs of
   the ROS node): convert each bag with `mcap convert`. Replay it through
   `StepHarness` and through the bus (`hypha play --clock` with `hypha record
@@ -585,7 +865,13 @@ Reading the diff is not verification. Run the binary.
 8. Negative start checks: remove a required `[ports.inputs.<name>]` table, write a number as
    text, pass a second argument. Each one stops the node with a message and a
    non-zero exit status.
-9. `Ctrl-C` stops the node, and the process ends.
+9. `Ctrl-C` (SIGINT) or `kill <pid>` (SIGTERM) stops the node, and the process ends. A
+   node that a script, a CI step or a shell starts as a **background job** (`node &`)
+   inherits an ignored SIGINT, and hypha keeps a signal that the process ignores ignored
+   ([docs/README.md](README.md), "Node Creation Owns SIGINT and SIGTERM"): `kill -INT` then
+   does nothing. Stop such a node with SIGTERM, which `hypha launch` and `docker stop` send,
+   or start it in the foreground to test Ctrl-C. A node that blocks in `started()` does not
+   stop on either until `started()` returns ([section 10.6](#106-threads)).
 
 **Check:** each item above gave the expected result. Write the results in the
 change description.
@@ -630,15 +916,24 @@ included, uses the same `HYPHA_DOMAIN`.
 | `nh.createTimer` | The cycle rate, `rate_hz` under `[cycle]` |
 | `ros::TimerEvent` | `const hypha::CycleTime&`: `dt` (no value in the first step), `missed` |
 | `ros::ok()` in the loop of a worker thread | The stop flag of the application: a `std::atomic<bool>` that its destructor sets before it joins the thread ([section 10.6](#106-threads)). Every blocking read in that loop takes a timeout that returns to this check: a read with no timeout never returns to it, so the stop is never seen |
+| `ros::Rate r(hz); while (ros::ok()) { ...; r.sleep(); }`, `ros::Duration(s).sleep()`, in a **worker thread** | A wait that ends at the stop, and a period that is a grid of its own. `hypha::Rate` and the clock sleeps do not exist (`Node::timer` runs on the run thread, where a blocking read must not). Pattern and trap: [section 10.6](#106-threads), "A paced worker". In a node whose work is periodic and does not block, the loop is not a worker at all: it is a rate cycle (Step 2) or a `Node::timer` |
+| `ros::shutdown()` | `hypha::requestStop()`: a clean stop, from the run or another thread. For a failure (a device error), `failRun(reason)`: the run ends with exit 70, and `hypha launch` restarts the unit by its policy ([section 10.4](#104-time-status-and-logging)). `ros::shutdown()` followed by a normal exit of roslaunch is `requestStop()`; a device that is lost is `failRun()` |
+| `ros::Subscriber::shutdown()`, `ros::Publisher::shutdown()` | **None.** No call closes an endpoint while the node runs: an endpoint lives as long as the member that holds it, and `setup()` creates every one (§10.2). A node that opened a subscriber for each connection keeps one endpoint for all of them, and a registry of the connections in the application. Report the loss as a gap in the form of section 8 |
+| `ros::TransportHints().tcpNoDelay()`, `.udp()`, a `*_nodelay` parameter | None: dropped, with the parameter. The transport between the nodes of one host is shared memory (Step 3) |
 | `tf_prefix` (added to every frame id) | None. Read it with `hypha::config().required<std::string>("tf_prefix")` and write each frame id in full, prefix included |
 | Hand-written message age check (decides whether an input may be used) | The port's `silence_ms`, verdict `Stale`. A use of the source time as data stays logic |
 | `ros::Time::now()` for a stamp | In a cycle step `time.stamp`; elsewhere `hypha::toRosTime(hypha::now())`. See cpp-api.md §3 |
 | `header.seq` | The publisher writes it |
-| `ros::ServiceServer` | An `Arrivals<Srv::Request>` port on a request topic and an `Output<Srv::Response>` on a reply topic, matched by an identifier (cpp-api.md §8) |
-| `ros::ServiceClient::call` | An `Output` of requests and an `Arrivals` of replies; the step tracks the pending request and its own deadline (cpp-api.md §8) |
+| `ros::ServiceServer`, `ros::ServiceClient::call`, `actionlib` | **No native counterpart** (issue #132 for services; none for actions). What exists today, and what to do, is in [section 7](#71-services) and [section 7.2](#72-actions) |
+| `diagnostic_updater`, `diagnostic_msgs/DiagnosticArray` | The message types ship with the SDK; `diagnostic_updater` has no counterpart (issue #217): [section 7.3](#73-diagnostics) |
+| `image_transport::CameraPublisher`, `advertiseCamera`, `image_transport::Publisher` | Two plain outputs, `Output<sensor_msgs::Image>` and `Output<sensor_msgs::CameraInfo>`, and the stamp of the info is the stamp of the image (`this->info_.header.stamp = this->image_.header.stamp;` in `ports/arena_camera/src/arena_camera_node.cpp`). `image_transport`'s other transports (`compressed`, `theora`, `depth`) are plugins that hypha does not have: drop them, list them in the change description. A subscriber is a `Latest<sensor_msgs::Image>` port. Size the topic as a large message ([section 12](#12-large-messages)) |
+| `camera_info_manager::CameraInfoManager`, `camera_info_url`, `set_camera_info` | No counterpart in the SDK (cpp-api.md §1.1; #265 leaves the decision open). The port reads the calibration from a `[calibration]` table of its TOML file (the fields of the camera info YAML: `image_width`, `image_height`, `distortion_model`, and the matrices as `rows`, `cols`, `data`) with a function of its own that checks the sizes: `readCalibration` in `ports/arena_camera/src/camera_info.cpp` (nested tables: Step 3). The `file://` and `package://` URL forms and the `set_camera_info` service are dropped (a service: #132); a node without a calibration publishes a `CameraInfo` with the image size and zero matrices (REP 104) |
+| `nh.advertise(..., latch = true)` | `hypha::latched` on the `Output` (or on `node.advertise`). A late subscriber gets the last sample only |
 | `ROS_INFO("%f", x)` | `HYPHA_LOG_INFO("{}", x)`: a `std::format` string |
 | `ROS_WARN_THROTTLE(1, ...)` | `HYPHA_LOG_WARN_THROTTLE(1.0, ...)` |
-| `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(condition, false, ...)`: writes when the condition becomes true |
+| `ROS_WARN_ONCE(...)` | `HYPHA_LOG_WARN_WHEN(true, false, ...)`: the first call writes, no later one |
+| `ROS_WARN_COND(cond, ...)` | `if (cond) { HYPHA_LOG_WARN(...); }`: **not** `_WHEN`. `ROS_WARN_COND` writes every time `cond` is true. `HYPHA_LOG_WARN_WHEN(state, false, ...)` writes only when `state` changes from false to true at that call site, so a condition that stays true is silent after its first line. `_WHEN` is for an edge (`ROS_WARN_COND` in a loop that you want once per episode) |
+| `ROS_ASSERT(cond)`, `ROS_ASSERT_MSG(cond, ...)` | `if (!(cond)) { throw std::logic_error("..."); }`. hypha has no assertion macro. An exception that leaves a step or a callback ends the run with `Panic` and no output of that step is sent, as the abort of a failed ROS assertion ends the node: the process exits 70 and `hypha launch` applies the unit's restart policy ([execution-model.md](execution-model.md) §6.3, `crates/hypha-cxx/test/cycle_step_exception_is_logged.cpp`). List the throw as glue in the change description |
 | `tf2_ros::TransformBroadcaster` | Output on `/tf` of type `tf2_msgs::TFMessage` |
 | `tf2_ros::StaticTransformBroadcaster` | An `Output<tf2_msgs::TFMessage>` declared with `latched` and `topic = "/tf_static"` in its ports table |
 | `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment; for `ros2 bag play`'s behaviour, outside the replay lockstep, `HYPHA_REPLAY_LOCKSTEP=0` for the player and every node of the launch |
@@ -659,7 +954,33 @@ needs a policy with a deeper `maxDepth` (at most 1024), mapped to the message ty
 configure a queue size. Variable-size messages are growable unless the publisher names
 its largest message with `maxPayloadDynamic(bytes)` (on `advertise` or an `Output`) or
 its policy does (`Qos::maxPayloadDynamic`), which bounds the publisher's shared memory.
-A fixed-size message is bounded to its own size whatever is named.
+A fixed-size message is bounded to its own size whatever is named. Sizing a topic of large
+messages: [section 12](#12-large-messages).
+
+**`queue_size` is not `perStep`, in a rate cycle.** In a triggered cycle `perStep(n)` is the
+ROS queue size (above). In a **rate cycle** the queue of an `Arrivals` port holds the samples
+that arrive in **one period** of the cycle, so the number is the input rate over `rate_hz`,
+rounded up, with the peak of a burst counted in, not the ROS value. A 1 Hz aggregator that
+reads a 100 Hz topic needs 100 or more: with a queue of 32 (the deepest of the `default`
+policy) it dropped 1044 samples in 20 s (`ports/diagnostic_aggregator`). A sample over the port's share is dropped, counted
+(`lost()`, `work_limit_drops_total`) and logged. A `perStep` above 32 needs a policy with a
+deeper `maxDepth` ([section 10.5](#105-queue-depth)); without one the port is refused at
+construction with `std::invalid_argument` (exit 70, which a supervisor restarts). Read the
+number from the input's table with its limit, so that a value out of range is a configuration
+fault (exit 78, [cpp-api.md](cpp-api.md) §5.4, "Queued work, budget and overflow"):
+
+```cpp
+hypha::Arrivals<sensor_msgs::Imu> imu{
+    *this, "imu",
+    hypha::perStep(hypha::config("ports.inputs.imu")
+                       .required<uint32_t>("queue_size", hypha::constraints::range(1, 32)))};
+```
+
+The age of a queued sample is counted from when it was sent, not from the step that read it
+(`ports/diagnostic_aggregator` counted from the step): `port.sentAt(i)` is the host-monotonic
+send time of sample `i` of `samples()` ([cpp-api.md](cpp-api.md) §5.1), so on host time the
+age is `hypha::steadyNow() - port.sentAt(i)`. An age that decides whether the sample may be
+used is supervision (Step 2), and `silence_ms` already does it.
 
 **`Header` in a new message type:** a ported ROS type keeps its `Header`; removing it
 changes the definition and its MD5. A message type written for hypha carries a `Header`
@@ -690,8 +1011,9 @@ of ROS's own; it cannot include both. Make only these edits:
 | `boost::array<double, 9>` | `std::array<double, 9>` | Only where the logic names the type. A message field is a `std::array`. |
 | `header.stamp` is `ros::Time` | `header.stamp` is `hypha_msgs::RosTime{secs, nsecs}` | `stamp.sec` to `stamp.secs`, `stamp.nsec` to `stamp.nsecs`. A call such as `stamp.toSec()` becomes `hypha::fromRosTime(stamp)` (`hypha/message_stamp.h`), which returns `std::optional<hypha::Time>`, empty when `nsecs` is one second or more. Check the optional, then call `.seconds()` on the value. Write no helper. |
 | `ros::Time`, `ros::Duration` in logic | `hypha::Time`, `hypha::Duration` | Only when the logic itself measures time. |
-| `ros::Duration::toSec()`, `ros::Duration::toNSec()`, `ros::Time::toSec()`, and `ros::Time` / `ros::Duration` arithmetic | `hypha::Duration::seconds()` (`double`), `hypha::Duration::nanos()` (`int64_t`), `hypha::Time::seconds()`. The operators keep their meaning: `Time + Duration`, `Time - Duration`, and `Time - Time`, which is a `Duration` | Rename the call. `ros::Duration(s)` is `hypha::Duration::fromSeconds(s)`, which throws `std::invalid_argument` for NaN or infinite `s`. |
-| `ros::Time::now()` in logic | `hypha::now()` for framework time, `hypha::steadyNow()` for an interval. For a stamp, `hypha::toRosTime(hypha::now())` (`hypha/message_stamp.h`) | Keep the meaning of the original call. |
+| `ros::Duration::toSec()`, `ros::Duration::toNSec()`, `ros::Time::toSec()`, and `ros::Time` / `ros::Duration` arithmetic | `hypha::Duration::seconds()` (`double`), `hypha::Duration::nanos()` (`int64_t`), `hypha::Time::seconds()`. The operators keep their meaning: `Time + Duration`, `Time - Duration`, and `Time - Time`, which is a `Duration` | Rename the call. `ros::Duration(s)` is `hypha::Duration::fromSeconds(s)`, which throws `std::invalid_argument` for NaN or infinite `s`. **`seconds()` can differ from `toSec()` in the last bit.** `seconds()` is the double nearest to the exact span, and `ros::Duration::toSec()` is `sec + 1e-9 * nsec`, which for some values is the neighbour: for 22 of the whole milliseconds from 1 to 59 ms they differ, and a throttle of 0.002 s showed 8.7e-19 against upstream over 857,310 compared numbers (`ports/mrs_controllers`; 0 with the ROS formula). Harmless for control. A test that compares a number with a ROS recording therefore allows a tolerance of a few units in the last place, and does not expect equal bits |
+| `ros::Time().fromSec(t)`, `ros::Time(t)` from a `double` of seconds | `hypha::Time::fromSeconds(t)`: rounded to the nearest nanosecond with the whole seconds and the fraction converted apart, as ROS does, so `1700000001.25` is `250000000` ns (it was `249999872` before #250). Throws `std::invalid_argument` for NaN or infinity. For a header stamp: `hypha::toRosTime(hypha::Time::fromSeconds(t))`, which throws `std::out_of_range` for a time before 1970 or after 2106; on a thread that must not throw (a vendor SDK's), check the range first | Rename the call. |
+| `ros::Time::now()` in logic | `hypha::now()` for framework time, `hypha::steadyNow()` for an interval. For a stamp, `hypha::toRosTime(hypha::now())` (`hypha/message_stamp.h`) | Keep the meaning of the original call. **In logic that a step calls** (a plugin, a helper class of the cycle node) the call is the step's time, passed as an argument: `time.now` for decisions and `time.stamp` for a stamp. `hypha::now()` returns the step's time in a started cycle, but the process clock in a `StepHarness` step, so logic that calls it cannot be tested without `enableSimTime`, and a replay is only deterministic through the step's time (Step 2, plugins). |
 | `ros::Time::isSystemTime()` | `!hypha::isSimTime()` (`hypha_base/clock.h`, included by `hypha/hypha.h`) | Edit the call only. |
 | `ros::Time::waitForValid()` | No call. A cycle step does not run before the first `/clock` sample (execution-model.md section 11.1), so its `time.now` is valid. | Delete the call. |
 | `hypha::now()` before the first `/clock` sample, on a node with `HYPHA_USE_SIM_TIME=1` (`hypha_base/clock.h`) | The placeholder zero: `Time` 0 ns, not a clock value. `hypha::isSimTime()` is already true, and no C++ call says whether a value has arrived. | Inside a step, use `time.now`. Outside one, the value is trustworthy only after the first `/clock` sample, and no call reports that (execution-model.md section 11.1: "The zero that a node starts with is a placeholder, not a value"). |
@@ -700,6 +1022,9 @@ of ROS's own; it cannot include both. Make only these edits:
 | `#include <sensor_msgs/point_cloud2_iterator.h>`, `<sensor_msgs/point_field_conversion.h>` (`PointCloud2Modifier`, `PointCloud2Iterator`, `PointCloud2ConstIterator`, `readPointCloud2BufferValue`) | Works unchanged: the SDK installs ROS's own headers beside the messages (cpp-api.md §1.1) | None. Do not write a field table or byte copies by hand. For ROS 2 code, `<sensor_msgs/point_cloud2_iterator.hpp>`. |
 | `#include <sensor_msgs/image_encodings.h>`, `<sensor_msgs/distortion_models.h>` (`image_encodings::BGR8`, `bitDepth`, `numChannels`, `isColor`, `isMono`, `isBayer`, `distortion_models::PLUMB_BOB`) | Works unchanged: the SDK installs ROS's own headers beside the messages (cpp-api.md §1.1) | None. Do not copy the file into the node. For ROS 2 code, `.hpp`. |
 | A header-only library that ROS installs but that is not ROS API, such as `tf2/LinearMath` (`tf2::Quaternion`, `tf2::Matrix3x3`) | The same headers, copied into the node as third-party files with their licence. The SDK ships no math types. | Keep every use in the logic. In the copied headers edit only their ROS lines (`#include <ros/macros.h>` goes, `ROS_DEPRECATED` becomes `[[deprecated]]`), and list the copy and those edits in the change description. |
+| The rest of that family: `angles/angles.h` (`angles::normalize_angle`), `tf2::Transform` (`tf2/LinearMath/Transform.h`), `tf2::Stamped` (`tf2/transform_datatypes.h`), the pieces of `mrs_lib` a plugin uses | The `angles` package is one BSD header, not in the SDK: copy it from `github.com/ros/angles` (`robot_localization` took noetic-devel `d2f5e3c`) with its licence. `Transform.h` belongs to the `LinearMath` copy, with no edit. `transform_datatypes.h` holds a `ros::Time`: copy it, change that member to `hypha::Time` (3 lines in `robot_localization`) and list them. | Keep every use in the logic. `tf2::fromMsg` and `tf2::toMsg` of `tf2_geometry_msgs` are not in the copy: write each conversion the logic calls once, in namespace `tf2`, in a header of the node (`ports/robot_localization/inc/robot_localization/ros_filter_utilities.h`), so the logic lines stay. `tf2::convert` (above) is by hand. A copied `.cpp` with `ROS_ERROR` lines: `HYPHA_LOG_ERROR`, and its own `HYPHA_LOG_MODULE_INIT` (the paragraph on log macros in a header, below). |
+| A third-party **vocabulary type** that the logic names and that is not installed: `tl::expected<T, E>` and `tl::unexpected` (`tl_expected`) | The C++23 standard type of the same names, `std::expected` (the SDK already needs C++23). Token edits only: `tl::expected` becomes `std::expected` and `tl::unexpected` becomes `std::unexpected`; `has_value`, `value`, `error` are the same | Each edited line gets a comment such as `// hypha port: std::expected for tl::expected.`; the lines are logic edits outside this table, so count them in the change description. A library with no standard counterpart is not installed by the port: copy a header-only one as in the rows above, and stop at any other |
+| An include of a ROS or PCL package that **only supplies Eigen**: `<pcl_conversions/pcl_conversions.h>`, `<pcl/point_cloud.h>`, with no `pcl::` name in the file (`grep -c 'pcl::'` is 0) | `<Eigen/Core>` (or `<Eigen/Dense>`), and `Eigen3::Eigen` in `target_link_libraries`. The SDK ships no Eigen. If the file does call `pcl::`, the node needs PCL: stop and ask | Delete the PCL include lines and add the Eigen one: this is the only edit. Evidence: `ports/autoware_voxel_downsample`, whose unchanged core stopped at `pcl_conversions/pcl_conversions.h: file not found` |
 | `std::mutex` that only guards callbacks | No mutex. | Delete the mutex and its lock calls. Callbacks of one `WaitSet` never run at the same time (execution-model.md section 10.1), and a cycle step runs on that `WaitSet` (execution-model.md section 6.1). Keep a mutex only where a worker thread shares the data. |
 | `pub.publish(msg);` on a plain `Publisher` (`publish` is `[[nodiscard]]`, `hypha/publisher.h`) | `if (!pub.publish(msg)) { ... }`, with `pub.lastPublishStatus()` for the reason | Check the result and log the reason, as cpp-api.md section 1 does: `HYPHA_LOG_WARN_THROTTLE(1.0, "...: {}", pub.lastPublishStatus().name());`. A cycle `Output::send` returns nothing, so this row does not apply to it. |
 
@@ -715,6 +1040,21 @@ own build must provide the Boost headers that its logic includes.
 
 A message type that hypha does not ship becomes a `.msg` file of the node and
 a `hypha_generate_messages()` call. Copy the `.msg` file without changes.
+
+**Log macros in a header.** `HYPHA_LOG_MODULE_INIT("name")` selects the module of one
+**translation unit**: it defines a function in an anonymous namespace, so a `.cpp` file has
+one init, at file scope before its first log macro (a log macro written before it uses the
+module `default`, and a second init in the same unit does not compile). A header cannot log
+by itself: an inline function with a `HYPHA_LOG_*` line in a header has one body for each
+includer, each tied to its own unit's module, which breaks the one-definition rule without a
+diagnostic. Move the function bodies that log into a `.cpp` of the library with its own
+`HYPHA_LOG_MODULE_INIT`, and keep their declarations in the header
+(`mrs_lib/quadratic_throttle_model`: two inline functions with `ROS_ERROR_THROTTLE`, 63 lines,
+moved unchanged into `src/quadratic_throttle_model/quadratic_throttle_model.cpp` of
+`ports/mrs_controllers/third_party/mrs_lib`). A header-only third-party file with a log line
+is therefore never a plain copy. (`ports/diagnostic_aggregator` carries one init in the header
+that its other headers include, and builds and passes; it is the same hazard, so do not copy
+it.)
 
 A `bool` field decodes as ROS 1 decodes it: a zero byte is `false`, and every
 other byte is `true`. Some ROS 1 producers send a nonzero byte other than 1
@@ -778,19 +1118,23 @@ or 1.
 
 ## 7. Stop and ask
 
-hypha has no equivalent for these. Stop and ask the user before you continue:
+hypha has no equivalent for these. Stop and ask the user before you continue. The
+subsections below say, for each, what exists on `develop` today, what does not, the issue,
+and what a port does meanwhile, so that you neither invent an answer nor stall:
 
 - A transform lookup that waits: `waitForTransform`, `lookupTransform` with a timeout,
-  or `canTransform` in a loop. `hypha::TransformBuffer` lookups never wait (§10.7;
-  [cpp-api.md](cpp-api.md) section 10.2): the node holds its message until a later
-  callback finds the transform, or drops it.
-- `dynamic_reconfigure`, or a parameter changed at run time. Parameters are
-  read once at start.
-- `actionlib`.
-- `nodelet` and in-process zero-copy between nodes. hypha nodes are processes;
-  shared memory gives zero-copy between them.
-- A service whose caller blocks on the reply. hypha has no RPC: the call becomes a
-  request topic and a reply topic, and the caller a state over steps.
+  `canTransform` in a loop, `tf2_ros::MessageFilter` ([7.4](#74-a-transform-lookup-that-waits)).
+  `hypha::TransformBuffer` lookups never wait (§10.7; [cpp-api.md](cpp-api.md) section
+  10.2): the node holds its message until a later callback finds the transform, or drops it.
+- `dynamic_reconfigure`, or a parameter changed at run time ([7.5](#75-a-parameter-that-changes-at-run-time)).
+  Parameters are read once at start.
+- `actionlib` ([7.2](#72-actions)).
+- A service ([7.1](#71-services)), and a service whose caller blocks on the reply. hypha has
+  no RPC: the call becomes a request topic and a reply topic, and the caller a state over
+  steps.
+- `nodelet` and in-process zero-copy between nodes. hypha nodes are processes; shared
+  memory gives zero-copy between them (what exists for a large message: [section 12](#12-large-messages)).
+- `diagnostic_updater` ([7.3](#73-diagnostics)).
 - Missing or stale input with no rule in the ROS node. Ask which output is
   safe.
 - A per-message latency requirement that a triggered step does not meet on the
@@ -798,6 +1142,98 @@ hypha has no equivalent for these. Stop and ask the user before you continue:
 - A logic change that you think is necessary. Report it, do not make it.
 
 Every item in this list is also a gap report: see section 8.
+
+### 7.1 Services
+
+**There is no native service on `develop`.** No server or client type exists, and the SDK
+ships no `.srv` definition of a standard package (`nav_msgs/GetMap` and `LoadMap` are not
+there), and `hypha_generate_messages(PACKAGE nav_msgs ...)` is refused once `nav_msgs` is
+a standard package (`'nav_msgs' is both the generated package and a dependency`), so a
+port cannot add them under the ROS names (`ports/map_server`). Issue #132 asks for native
+services and is open; a design for it is not merged, so write no code that assumes a
+`serve` or a `call`. What exists is a convention, not an API
+([cpp-api.md](cpp-api.md) §8): a request and its answer are two ordinary topics, the
+request carries an identifier such as a sequence number, and the reply carries the same one.
+A `.srv` file generates a `Request` and a `Response` message type with an MD5 each; the
+example `examples/mrs/host/include/mrs_host/service.h` carries services that way, in the
+MRS example only (it is not installed). What a port does, in this order:
+
+1. **A setter service that changes a value the node reads from its TOML file** (the seven
+   `set_*` services of `arena_camera`): drop the service. The value is the TOML key. Mark
+   the place with one comment naming #132, list the service in the change description and
+   report it as a gap ([section 8](#8-report-hypha-gaps-and-blockers)).
+2. **A service whose callers stay in ROS** (a ROS client, `rosservice call`, the bridge) or
+   whose `.srv` must keep its ROS definition: stop and report it as a blocker. The identifier
+   has no place in an unchanged ROS definition; adding `uint32 request_id` to both messages
+   changes the type names and the MD5, and then no ROS client and no bridge can call
+   it (`ports/map_server`: `map_server_msgs/GetMapResponse` against `nav_msgs/GetMap`).
+3. **A service that only hypha nodes call, and the user approves the changed types**: the
+   topic pair of cpp-api.md §8. In a cycle node an `Arrivals<Srv::Request>` port on the
+   request topic and an `Output<Srv::Response>` on the reply topic; in a plain node a
+   `subscribe` and an `advertise`. The node's own package copies the `.srv` and adds the
+   identifier field to both messages, the server writes the identifier of the request into
+   its reply, and a client keeps its pending requests and its own deadline in its step. Both
+   topic names are TOML values (read a name with `hypha::config().required<std::string>(key)`,
+   a service name does not resolve from the ports tables). The reply is sent by the step that
+   decides it, and a caller that blocks on it is stop-and-ask (above).
+
+### 7.2 Actions
+
+`actionlib` has no counterpart and no issue. Stop and ask. A node whose action server is its
+function (a navigation or manipulation server) is a blocker; report it. A node where the
+action is a side feature (`arena_camera` has two) may drop it only with the user's approval:
+list it in the change description and report it as a gap.
+
+### 7.3 Diagnostics
+
+`diagnostic_updater` has no counterpart: issue #217 ("one answer for `diagnostic_updater`") is
+open. What exists: the message types `diagnostic_msgs/DiagnosticArray` and `DiagnosticStatus`
+ship with the SDK, `~/state` reports the health of the inputs of a node, and an application
+counter has no place in it (#121). A **node whose job is diagnostics** (`diagnostic_aggregator`)
+is ported as a node that reads `/diagnostics` with an `Arrivals<diagnostic_msgs::DiagnosticArray>`
+port and publishes its own arrays on an `Output`. A node that only reports **its own health**
+through `diagnostic_updater` (`twist_mux`, `velodyne_driver`) loses that code: delete the
+`Updater`, its tasks and the diagnostic parameters (`diagnostic_frequency_tolerance`), leave one
+comment `// diagnostics not ported: Hypha issue #217`, and list them in the change description
+and the report. Write no substitute publisher.
+
+### 7.4 A transform lookup that waits
+
+Lookups never wait, by design (#91, closed): the buffer fills while the node runs, on the
+thread that runs it, so a callback that waited would block every other callback and, under
+replay, the clock it waits for. ROS 2's `lookupTransform` with a timeout,
+`ManagedTransformBuffer` (a crop box that waits up to 1 s) and `canTransform` with a timeout
+have the same answer. What a port does, by the ROS timeout:
+
+- **The ROS node waits 0 s** (`robot_localization` with `tf_timeout = 0`): do the lookup in
+  the step; on a `TransformError` do what the ROS node did on failure (`robot_localization`
+  drops the sample) and log it. This keeps the ROS behaviour; no question is needed.
+- **The ROS node waits `t > 0`**: the sample is held in the node and the lookup is tried again
+  in a later step. Hypha gives no hold limit and no rule for a held sample that has become
+  older than the state the node already computed, and the port must not choose them: **ask
+  the user**, naming the ROS timeout. State your proposal in the question: hold a sample for
+  at most the ROS timeout, counted in the step's time `time.now`; drop it after that and log
+  it; drop a held sample that is older than the newest sample already integrated if the ROS
+  node does. The key that held the ROS timeout (`transform_timeout`) has no reader, and an
+  unread key stops the start: delete it from the TOML file.
+- **A node that looks up, at stamp T, the transform it broadcasts at T in the same step**
+  (`imu_filter_madgwick`) does not find it: the buffer of a step is filled before the step
+  (execution-model.md §6.7 item 1), and what the step sends goes out after it returns. The
+  lookup fails with `AfterBuffer`, and the message is sent in the next step. That is how the
+  buffer is defined, not a defect. The node either holds its message one step (what the port
+  did), or uses the transform it just built, which it holds in a variable, in place of
+  the lookup; the second is a logic edit and is asked first.
+
+A step test cannot feed a `Transforms` port yet (#248): test the lookup branches on the bus.
+
+### 7.5 A parameter that changes at run time
+
+`dynamic_reconfigure`, `rosparam set`, a ROS 2 `add_on_set_parameters_callback`: hypha reads
+the parameter file once, at start; there is no parameter server and no mutation API
+([cpp-api.md](cpp-api.md) §9). The values come from the TOML file and the callback is
+removed with its comments (section 2.1). A node that changes its gains from a client at run
+time (`Se3Controller` with `Drs`): ask; the owner decision for the MRS ports was to drop
+it and take the gains from the file.
 
 ---
 
@@ -989,7 +1425,7 @@ failed run with `node run failed`. It returns an exit code that a supervisor rea
 |---|---|---|---|
 | 0 | `kExitClean` | the run stopped as requested | the unit's restart policy |
 | 2 | `kExitUsage` | more than one argument | the unit's restart policy |
-| 78 | `kExitConfiguration` | the parameter file, a parameter or an endpoint policy is refused; an unread key | never restarts |
+| 78 | `kExitConfiguration` | the parameter file, a parameter or an endpoint policy is refused; an unread key; a `hypha::ConfigError` or `ParameterError` thrown by the constructor, `setup()` or `started()` | never restarts |
 | 75 | `kExitRewind` | simulated time went back (`Status::ClockRewound`) | always restarts |
 | 70 | `kExitRuntime` | anything else, and `failRun()` | the unit's restart policy |
 
@@ -998,7 +1434,32 @@ failed run with `node run failed`. It returns an exit code that a supervisor rea
   `ConfigError` for a port whose table is missing or refused, so a missing
   `[ports.inputs.<name>]` exits 78.
 - `started(hypha::Node&)` runs after every check, just before the run. Start worker
-  threads and send latched messages there. Throw to refuse the run (70).
+  threads and send latched messages there. **It must return.** The run, with the node's
+  `~/state` and its stop, begins only when `started()` returns, and a stop requested during
+  it is kept until then (`application_node.h`): a `started()` that blocks (a vendor
+  `Start()` that waits for the first packet of the device) leaves a node with no state, no
+  traffic and no reaction to SIGTERM. Anything that waits for a device runs on the worker
+  thread ([section 10.6](#106-threads)).
+- **Throw to refuse the run; the exit code follows the type of the exception.** A
+  `hypha::ConfigError` or `hypha::ParameterError` thrown in the constructor, `setup()` or
+  `started()` exits 78, which a supervisor does not restart: the right code for a setting
+  that no restart can mend (a host address that is not the machine's). Any other exception
+  exits 70, and so does `failRun()` from any thread (`exitCodeFor`,
+  `crates/hypha-cxx/include/hypha/application_node.h`; the test `startup_nohost` of
+  `ports/livox_hap`). A fault that is found only after `started()` has returned, such as the
+  size of the first frame of a device, can end the run only as 70 (#264).
+- **At least one of several optional outputs is the node's own check.** A deployment may
+  switch each of them off, and all off is a valid node that publishes nothing, so the framework
+  does not refuse it. Check it in `setup()` after the `advertise` calls and throw
+  `ConfigError` (`ports/livox_hap/src/livox_hap_node.cpp`):
+
+```cpp
+this->cloud_ = node.advertise<sensor_msgs::PointCloud2>("cloud", hypha::optionalTopic);
+this->imu_ = node.advertise<sensor_msgs::Imu>("imu", hypha::optionalTopic);
+if (!this->cloud_.enabled() && !this->imu_.enabled()) {
+    throw hypha::ConfigError("hypha: no output: set a topic in [ports.outputs.cloud] or [ports.outputs.imu]");
+}
+```
 - `failRun("reason")` ends the run as failed from any thread (70).
 - The destructor runs on every way out: its body first, then the members (the endpoints),
   then the node. Stop and join every thread of the class in the body.
@@ -1066,7 +1527,8 @@ if (!this->odom_.enabled()) {
 | `ros::shutdown()` from another thread | `hypha::requestStop()` | The one call that another thread may make on a running node. For a failure, `failRun(reason)` in the application. |
 | `pub.publish(msg)` (no result) | `publish(msg)` returns `bool` (`[[nodiscard]]`); `lastPublishStatus()` returns the `Status` of the last attempt | The status names the reason: a disabled publisher, a message that is too large, an exhausted pool, a transport failure. |
 | `ROS_WARN_THROTTLE(1, ...)` | `HYPHA_LOG_WARN_THROTTLE(1.0, "{}", x)` | The first call writes, later calls at most once per period. Host monotonic time. |
-| `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(state, false, ...)` | Writes when `state` changes from false to true at that call site. |
+| `ROS_WARN_ONCE` | `HYPHA_LOG_WARN_WHEN(true, false, ...)` | The first call writes. |
+| `ROS_WARN_COND(cond, ...)` | `if (cond) { HYPHA_LOG_WARN(...); }` | Writes each time `cond` is true. `HYPHA_LOG_WARN_WHEN(state, false, ...)` is not it: it writes only when `state` changes from false to true at that call site. |
 | `pub.getNumSubscribers()` | `pub.subscriberCount()` | `std::optional<size_t>`. Empty: the count is unavailable (the publisher is disabled, or the transport cannot count). `0`: counted, no subscriber now. |
 
 Do not gate optional work on an empty count. Skip it only for a counted zero:
@@ -1190,6 +1652,81 @@ class LidarNode final : public hypha::ApplicationNode
 A bounded hand-over from a callback to a worker is in
 [examples/sensor_pipeline](../examples/sensor_pipeline/README.md) (`CloudHandover`).
 
+**A paced worker: `ros::Rate` and `ros::Duration::sleep()` in a thread.** hypha has no
+`Rate`, and no sleep that ends at the node's stop; `Node::timer` runs on the run thread,
+where a blocking device read must not. A worker that paces itself carries the stop through
+every wait: a `std::jthread` whose `std::stop_token` the destructor requests, and a sleep
+that returns early at the stop. Every other blocking call of the loop takes a timeout that
+returns to the same check (`ArenaDevice` slices a 5 s `GetImage` wait in 100 ms steps). The
+loop of `ports/arena_camera` (`src/arena_camera_node.cpp`, `inc/arena_camera/stop_sleep.h`):
+
+```cpp
+// Sleeps for duration, or until stop is requested. False when it was requested.
+inline bool sleepFor(std::stop_token stop, std::chrono::nanoseconds duration)
+{
+    std::mutex                  mutex;
+    std::condition_variable_any wake;
+    std::unique_lock            lock(mutex);
+    wake.wait_for(lock, stop, duration, [] { return false; });
+    return !stop.stop_requested();
+}
+
+void started(hypha::Node& /*node*/) override
+{
+    this->worker_ = std::jthread([this](std::stop_token stop) { this->run(std::move(stop)); });
+}
+
+void run(std::stop_token stop)
+{
+    const std::chrono::nanoseconds period = std::chrono::milliseconds(100);
+    auto                           next = std::chrono::steady_clock::now();
+    while (!stop.stop_requested()) {
+        this->grab(stop);  // every blocking call inside takes a timeout and the token
+        next += period;
+        const auto now = std::chrono::steady_clock::now();
+        if (now > next + period) {
+            next = now;  // a turn that took longer than a period does not make up the time
+        } else if (!sleepFor(stop, next - now)) {
+            break;
+        }
+    }
+}
+```
+
+The destructor calls `this->worker_.request_stop()` and joins in its body, as in the example
+above, so the worker ends before the members it uses (the endpoints) are destroyed. The pacing
+runs on the host clock: under `HYPHA_USE_SIM_TIME` the worker paces in real time while
+`hypha::now()`, which stamps the frames, is simulated. A framework call that does this
+(a stop token tied to the node, `sleepFor`, a `Rate`) is requested in #263; it does not exist.
+A loop with nothing that blocks is not a worker: it is a rate cycle ([Step 2](#step-2-design-the-cycle)).
+
+**A connect-and-retry loop of a driver** (`while (ros::ok()) { try to open; sleep 1 s; }`).
+The loop must not sit in a callback, which must not block (§10.2). Choose by whether one
+attempt can block:
+
+- *An attempt returns at once* (a non-blocking `open`, a `connect` with a short timeout): **one
+  attempt for each tick of a `Node::timer`** on the run thread; a failed attempt waits for the
+  next tick. `ports/nmea_comms/src/serial_node.cpp` (a 1 s timer).
+- *An attempt can block, or the device waits to answer*: the loop runs on the worker, with
+  `sleepFor(stop, retry_period)` between attempts, and an INFO or WARN line at a bounded
+  rate while it waits (`ArenaCameraNode::waitForCamera`, which logs every 15 s).
+
+**A push from a thread the node does not own** (a vendor SDK's callback thread). hypha
+offers no hand-over type and no call that runs a function on the run thread: issue #233 is
+open. The foreign thread touches no endpoint. It pushes the message into a bounded, counted,
+drop-oldest queue that the application owns (a mutex and a deque), and a worker that the
+application started pops with a timeout and publishes, as every worker above does. The
+examples: `CloudHandover` of `examples/sensor_pipeline/src/cloud_processor.cpp` (pushed
+from the run thread), and `ports/hesai_lidar/inc/hesai_lidar/handover.h` (111 lines, pushed
+from the SDK's thread; its test `MessagesPushedFromAnotherThreadArriveInOrder`). The
+destructor stops the queue, then joins the worker, then stops the vendor SDK. Whether the run
+thread's housekeeping of a **latched** publisher may run while a worker publishes on the same
+`Publisher` is not stated and was not exercised: send latched messages in `started()` (above),
+and when a worker must publish a latched output, put the question in the report (#233).
+
+`started()` does not block ([section 10.2](#102-the-application)): a driver whose start waits
+for a device (`sdk.Start()`) calls it on the worker.
+
 A timer counts the periods it did not fire in, because a callback or the run loop
 ran longer than one period:
 
@@ -1250,6 +1787,9 @@ if (stamp.has_value()) {
 }
 ```
 
+- A lookup at the stamp of a transform that the same node sends in the same step misses it,
+  and a node that holds a message until a transform arrives has the rules of
+  [section 7.4](#74-a-transform-lookup-that-waits).
 - The application creates the buffer in `setup()` and destroys it with itself, as the
   header requires, and joins a worker thread before that. Nothing is ingested unless the
   node runs. The buffer keeps 10 s of dynamic transforms per frame unless the constructor
@@ -1299,14 +1839,19 @@ run to run; a node that needs a deterministic replay is built from cycles.
 
 ### 10.10 Test an application
 
-`StepHarness` runs cycle steps, and an `ApplicationNode` has none. Test it at three levels,
-as [examples/sensor_pipeline](../examples/sensor_pipeline/README.md) does for the bus:
+`StepHarness` runs cycle steps, and an `ApplicationNode` has none. Test it at four levels,
+as [examples/sensor_pipeline](../examples/sensor_pipeline/README.md) does for the first three:
 
 1. **Logic.** Keep the ROS node's logic in classes that need no `Node`, and test them
    as in Step 6. A callback of the application then only calls them.
-2. **Start-up.** Run the binary with a missing parameter file, a malformed one and one
-   without its `[ports.*]` tables, and expect exit 78: `startup_exit_code.cmake`,
-   registered for each case in the example's `CMakeLists.txt` with `hypha_add_test`.
+2. **Start-up.** Run the binary with a missing parameter file and a malformed one, and
+   expect exit 78; and, **for a node with a required port**, one without its `[ports.*]`
+   tables: `startup_exit_code.cmake`, registered for each case in the example's
+   `CMakeLists.txt` with `hypha_add_test`. The case "a file without its `[ports.*]` tables
+   exits 78" holds only when a port is required. A node whose outputs are all `optionalTopic`
+   (a driver whose outputs are each off unless a topic is set) runs with every output off and
+   exits 0, so the case does not apply there: test that node's own rule instead (for "at least
+   one output", a file with every topic empty exits 78, §10.2).
    `startup_exit_code.cmake` is not installed with the SDK, but `hypha_add_test` is
    (`hyphaTesting.cmake`). A port against the installed SDK copies
    `examples/sensor_pipeline/startup_exit_code.cmake` from the hypha source tree into its
@@ -1316,3 +1861,88 @@ as [examples/sensor_pipeline](../examples/sensor_pipeline/README.md) does for th
 3. **The bus.** Replay a recorded input into the running node and compare its output
    by stamp: `replay_check.sh`, registered as `sensor_pipeline_replay_check`. The
    recipe, and the comparison with a ROS golden, are in the example's README.
+4. **The application in the process of the test, against a fake device.** The node of a
+   driver (`ports/arena_camera/test/test_node.cpp`) is driven by hand: a `hypha::Node` of
+   the test that loads the test's parameter file, the application built **after** it (its
+   constructor reads `hypha::config()`), a fake device that the test controls, and a
+   subscriber of the test on the same node. `setup()` and `started()` are what `runNode`
+   calls:
+
+```cpp
+hypha::Node bus("arena_camera_test", "test/camera.toml");  // the file has [node] name = "arena_camera_node"
+ArenaCameraNode app;
+app.setup(bus);
+app.started(bus);  // starts the worker, which reads the fake device
+auto frames = bus.subscribe<sensor_msgs::Image>(
+    hypha::Topic{"/arena_camera_node/image_raw"}, hypha::bind<&Received::onImage>(received)
+);
+const hypha::RunResult result = bus.runFor(hypha::Duration::fromSeconds(1.0));  // delivers to the subscriber
+EXPECT_TRUE(result.ok());
+```
+
+   One process reads one parameter file ([cpp-api.md](cpp-api.md) §9), so a case with
+   another configuration is another process: the port registers nine entries of one test
+   executable, each with its own `--gtest_filter`.
+
+### 10.11 N subscriptions named by a list
+
+A node whose inputs are named by a parameter (a multiplexer with a list of velocity
+topics) needs no code for each name. A name in `subscribe` is the name of a port table,
+and a list of names is a TOML array of text. The array holds the names and each name its
+own table `[ports.inputs.<name>]` with the topic: the framework cannot list the tables of
+`ports.inputs` for you (#234), so the application keeps the list. A functor that holds the
+index tells the callbacks apart; the subscribers go in a `std::vector`:
+
+```toml
+velocity_inputs = ["navigation", "joystick"]
+
+[ports.inputs.navigation]
+topic = "/nav_vel"
+[ports.inputs.joystick]
+topic = "/joy_vel"
+```
+
+```cpp
+class Mux final : public hypha::ApplicationNode
+{
+  public:
+    // The parameters are read here, before the bus.
+    Mux() : names_(hypha::config().requiredArray<std::string>("velocity_inputs"))
+    {
+    }
+
+    void setup(hypha::Node& node) override
+    {
+        this->out_ = node.advertise<geometry_msgs::Twist>("cmd_vel_out");
+        for (std::size_t index = 0; index < this->names_.size(); ++index) {
+            this->inputs_.push_back(
+                node.subscribe<geometry_msgs::Twist>(this->names_[index], OnInput{this, index})
+            );
+        }
+    }
+
+  private:
+    struct OnInput
+    {
+        Mux*        mux;
+        std::size_t index;
+
+        void operator()(const hypha::MessagePtr<geometry_msgs::Twist>& message) const
+        {
+            this->mux->onTwist(this->index, *message);
+        }
+    };
+
+    void onTwist(std::size_t index, const geometry_msgs::Twist& twist);  // the node's logic
+
+    std::vector<std::string>                             names_;
+    hypha::Publisher<geometry_msgs::Twist>               out_;
+    std::vector<hypha::Subscriber<geometry_msgs::Twist>> inputs_;
+};
+```
+
+A node of this shape that wants a verdict for each input (the age, `~/state`) is not this
+target: it is a triggered `CycleNode` whose constructor builds one `Arrivals` port for each
+name and keeps them in a `std::list` (the order of the sentences in the introduction,
+`ports/twist_mux`). A name in the array whose table has no `topic` fails the start with a
+refused port table, and exits 78 ([section 10.3](#103-literal-topic-or-port-name)).
