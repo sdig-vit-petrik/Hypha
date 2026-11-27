@@ -602,7 +602,10 @@ judged as in the cycle.
 A clock driver is a rate cycle that drives `/clock` for a simulator:
 `setClockDriver(options)` with `setRate()`, before `start()` (`hypha/cycle_runtime.h`,
 `hypha/cycle_clock_driver.h`; `examples/mrs/simulator/mrs_simulator.cpp`). Its
-acknowledgement rules, shared with `hypha play`: `replay-flow-control.md` §4.5.
+acknowledgement rules, shared with `hypha play`: `replay-flow-control.md` §4.5. The start
+value goes out with no step, and the first step runs at start + period, once every name in
+`participants` has acknowledged the start: a ported simulator publishes its initial state
+there, not at the start value as a ROS 1 simulator does with its first `/clock`.
 
 #### Loss counters
 
