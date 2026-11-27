@@ -585,7 +585,7 @@ counts no queue evictions: a transport drop shows only as a gap in `overrun_tota
 | Counter                                                                   | Reads         | Counts                                                                                              |
 | ------------------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------- |
 | `lost()`                                                                | `Arrivals`  | Samples the history overwrote before this port read them.                                           |
-| `bindingHealth().overrun_total`                                         | every input   | History losses and, for a queued input, transport sequence gaps. A `Latest` input counts neither. |
+| `bindingHealth().overrun_total`                                         | every input   | History losses and, for a queued input, transport sequence gaps. A `Latest` input counts neither in host time; under replay it counts transport gaps and the evictions of execution-model.md §11.1. |
 | `bindingHealth().age_rejections_total`                                  | every input   | Samples the age rule refused. They were received, not lost.                                         |
 | `bindingHealth().work_limit_drops_total`, `.capture.work_limit_drops` | queued inputs | Samples over the step's share, dropped on purpose; `capture.` counts the latest step only.        |
 

@@ -397,12 +397,14 @@ Unchanged. The `replay time base mismatch` check stays, because it diagnoses exa
 An input (queued or latest) that loses samples in replay fails the step. A loss is a transport sequence
 gap or a history eviction that the input cursor had not read. The WaitSet run then fails with `SequenceGap`,
 and the node logs `replay not faithful: N samples lost on <topic>` at error level, rate-limited per topic.
-In replay, a latest input counts every transport gap, as a queued input does, but an eviction only when the
-step selects no retained sample: a selected one is newer than every evicted sample and stamped before the
-deadline, so it supersedes them in data time for this step and every later one. When a latest input's
-history evicted the sample stamped before the deadline that the step was due, and every retained one is at
-or after it, the input history is shorter than the replay chunk, and the node logs `all N retained samples on <topic> are stamped at or after deadline D: the input
-history is shorter than one replay chunk`. An input whose first samples come after the deadline logs nothing.
+In replay, a latest input counts every transport gap, as a queued input does, but an evicted sample only at
+a step that finds no retained sample before the deadline that no reader rejected. Until then a newer sample
+that no reader rejected, retained or held by the input, supersedes the evicted one in data time; a rejection
+of it, by the step or by another reader of the history, ends that (execution-model.md §11.1). When a latest
+input's history evicted the sample stamped before the deadline that the step was due, and every retained one
+is at or after it, the input history is shorter than the replay chunk, and the node logs
+`all N retained samples on <topic> are stamped at or after deadline D: the input history is shorter than one
+replay chunk`. An input whose first samples come after the deadline logs nothing.
 
 ### 6.7 Limits
 

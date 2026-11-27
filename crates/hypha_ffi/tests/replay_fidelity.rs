@@ -342,6 +342,9 @@ pub(crate) fn a_latest_queue_of_one_chunk_drops_a_sample_off_the_deadline_grid()
     // 109 ms (4.3). The `/clock` at 110 runs no step, so nothing drains 110 before the
     // step at 200, and the queue of 10 cannot hold 110..210. The capture loses nothing,
     // and the step at 200 still takes 190, but the transport gap counts all the same.
+    // This pins the known limitation that issue #222 leaves open: a gap of a sample that
+    // the step's selection supersedes is no loss either, and the fix of that half flips
+    // the run at 210 to Ok and `overrun_total` to 0.
     let chunks = [
         (every_10_ms(10, 100), 109),
         (vec![110], 110),
@@ -384,6 +387,172 @@ pub(crate) fn a_latest_input_that_lost_the_sample_a_step_is_due_fails_the_step()
     assert_eq!(health.capture.lost_total, 1, "{health:?}");
     assert_eq!(health.overrun_total, 1, "no transport gap: {health:?}");
     assert_eq!(deadlines_and_values(&steps), [(100, None), (200, None)]);
+}
+
+/// The step's context: it records each step and, at 200 ms, rejects the newest sample
+/// of binding `reject` as undecodable.
+struct RejectAt200 {
+    recorder: Recorder,
+    reject: u32,
+}
+
+extern "C" fn record_and_reject_at_200(
+    image: *const HyphaCycleImage,
+    time: *const HyphaCycleTime,
+    emission: *mut HyphaCycleEmission,
+    context: *mut c_void,
+) -> HyphaCallbackResult {
+    let rejecting = unsafe { &*context.cast::<RejectAt200>() };
+    let recorded = (&raw const rejecting.recorder).cast_mut().cast();
+    let result = record_step(image, time, emission, recorded);
+    if unsafe { (*time).scheduled_nanos } != 200 * MILLISECOND {
+        return result;
+    }
+    let mut binding = HyphaCycleBindingView::default();
+    assert_eq!(
+        unsafe { hypha_cycle_image_binding(image, rejecting.reject, &raw mut binding) },
+        HyphaStatus::Ok
+    );
+    let count = binding.health.capture.sample_count;
+    assert!(count > 0, "the step at 200 holds a sample to reject");
+    let mut view = HyphaCycleSampleView {
+        payload: ptr::null(),
+        payload_len: 0,
+        transport_sent_nanos: 0,
+        sequence: 0,
+        publisher_id: 0,
+        publisher_sequence: 0,
+    };
+    assert_eq!(
+        unsafe { hypha_cycle_image_sample(image, rejecting.reject, count - 1, &raw mut view) },
+        HyphaStatus::Ok
+    );
+    let mut after = HyphaCycleBindingView::default();
+    assert_eq!(
+        unsafe {
+            hypha_cycle_image_reject_sample(image, rejecting.reject, view.sequence, &raw mut after)
+        },
+        HyphaStatus::Ok
+    );
+    result
+}
+
+/// A `Latest` input with a queue of `queue` on a 100 ms cycle, whose step at 200 ms
+/// rejects the sample stamped 190 it took. With `co_reader` the step rejects it as the
+/// sample of a queued binding on the same source instead. The step at 100 takes 90 of
+/// 80 and 90, the one at 200 takes 190 and passes 180, and 300 and 305, stamped at or
+/// after 300, then arrive. Returns the status of each run, the latest binding's view
+/// and the steps.
+fn replay_a_rejection_at_200(
+    queue: usize,
+    co_reader: bool,
+) -> (Vec<i32>, HyphaCycleBindingView, Vec<Step>) {
+    let _clock = SimulatedClock::start(10 * MILLISECOND);
+    let node = create_node(&unique("replay_reject_latest"));
+    let waitset = unsafe { create_waitset(node) };
+    let topic = format!("/{}", unique("replay_reject_latest"));
+    let (publisher, subscriber) = unsafe { create_pubsub(node, &topic, queue) };
+    let mut source = ptr::null_mut();
+    assert_eq!(
+        unsafe { hypha_input_source_create(waitset, subscriber, &raw mut source) },
+        HyphaStatus::Ok
+    );
+    let context = Box::new(RejectAt200 {
+        recorder: Recorder::new(Duration::ZERO),
+        reject: u32::from(co_reader),
+    });
+    let name = c_text(&unique("reject_cycle_latest"));
+    let mut cycle = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            hypha_cycle_create(
+                waitset,
+                name.as_ptr(),
+                name.as_bytes().len(),
+                100_000_000,
+                Some(record_and_reject_at_200),
+                (&raw const *context).cast_mut().cast(),
+                None,
+                &raw mut cycle,
+            )
+        },
+        HyphaStatus::Ok
+    );
+    let latest = LATEST;
+    let mut index = 0_u32;
+    assert_eq!(
+        unsafe { hypha_cycle_bind_input(cycle, source, &raw const latest, &raw mut index) },
+        HyphaStatus::Ok
+    );
+    if co_reader {
+        let queued = HyphaCycleBindingOptions {
+            mode: HyphaCycleInputMode::Queued as u32,
+            max_samples_per_iteration: 1,
+            optional: 0,
+        };
+        assert_eq!(
+            unsafe { hypha_cycle_bind_input(cycle, source, &raw const queued, &raw mut index) },
+            HyphaStatus::Ok
+        );
+    }
+    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
+
+    let chunks = [(vec![80, 90], 109), (vec![180, 190], 210), (vec![300, 305], 310)];
+    let mut statuses = Vec::new();
+    for (stamps, close) in chunks {
+        for stamp in stamps {
+            let value = u8::try_from(stamp / 10).expect("a small value");
+            unsafe { send_stamped(publisher, value, stamp * MILLISECOND) };
+        }
+        set_clock(close * MILLISECOND);
+        statuses.push(run_status(waitset, 5_000_000));
+    }
+
+    let mut binding = HyphaCycleBindingView::default();
+    assert_eq!(unsafe { hypha_cycle_binding(cycle, 0, &raw mut binding) }, HyphaStatus::Ok);
+    let steps = context.recorder.steps();
+    assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
+    assert_eq!(unsafe { hypha_input_source_destroy(source) }, HyphaStatus::Ok);
+    unsafe {
+        hypha_publisher_destroy(publisher);
+        hypha_node_destroy(node);
+    }
+    (statuses, binding, steps)
+}
+
+/// The faithful replay of [`replay_a_rejection_at_200`]: the history keeps 180, which
+/// the step at 300 takes.
+fn assert_a_faithful_rejection_at_200(co_reader: bool) {
+    let ok = HyphaStatus::Ok as i32;
+    let (statuses, binding, steps) = replay_a_rejection_at_200(8, co_reader);
+    assert_eq!(statuses, [ok, ok, ok], "{binding:?}");
+    assert_eq!(binding.health.overrun_total, 0, "{binding:?}");
+    assert_eq!(deadlines_and_values(&steps), [(100, Some(9)), (200, Some(19)), (300, Some(18))]);
+}
+
+#[test]
+pub(crate) fn a_step_that_rejects_its_sample_holds_the_one_before_through_its_eviction() {
+    assert_a_faithful_rejection_at_200(false);
+    // A history of 3 evicts 180 after the step at 200. The rejection fell back to 180,
+    // which the binding holds: the step at 300 has it as its value, as the faithful one.
+    let (statuses, binding, steps) = replay_a_rejection_at_200(2, false);
+    assert!(statuses.iter().all(|status| *status == HyphaStatus::Ok as i32), "{binding:?}");
+    assert_eq!(binding.health.overrun_total, 0, "{binding:?}");
+    assert_eq!(deadlines_and_values(&steps), [(100, Some(9)), (200, Some(19)), (300, None)]);
+    assert_eq!((binding.held.has_held, binding.held.held_sequence), (1, 2), "180 is held");
+}
+
+#[test]
+pub(crate) fn a_queued_co_reader_that_rejects_the_sample_loses_the_one_before_for_latest() {
+    assert_a_faithful_rejection_at_200(true);
+    // The queued binding's rejection leaves the latest binding holding 190, and a history
+    // of 3 evicts 180 after the step at 200: the step at 300 has lost it.
+    let (statuses, binding, steps) = replay_a_rejection_at_200(2, true);
+    let ok = HyphaStatus::Ok as i32;
+    assert_eq!(statuses, [ok, ok, HyphaStatus::SequenceGap as i32], "{binding:?}");
+    assert_eq!(binding.health.capture.lost_total, 1, "180 is lost: {binding:?}");
+    assert_eq!(binding.health.overrun_total, 1, "no transport gap: {binding:?}");
+    assert_eq!(deadlines_and_values(&steps), [(100, Some(9)), (200, Some(19)), (300, None)]);
 }
 
 #[test]

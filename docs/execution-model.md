@@ -888,11 +888,16 @@ error level, at most once per topic per second, and a repeated loss is summed
 into the next line. The binding's losses also count in its `overrun_total`.
 A latest binding in host time counts neither its transport gaps nor its history losses,
 because a value it did not read was superseded in host time. Under replay it counts every
-transport gap, and an eviction it had not read only when the step selects no retained sample:
-a selected one is newer than every evicted sample and stamped before the deadline, so this
-step and every later one take it or a newer one, and the evicted samples were superseded in
-data time. With nothing selected, the evicted samples may hold the value this step or a later
-one is due, and the step, which knows no later deadline, counts them all. When samples have
+transport gap. A sample it passed over or had not read when the history evicted it counts
+only at a step that finds no retained sample before the deadline that no reader rejected.
+Until then a newer sample that no reader rejected, retained or held by the binding,
+supersedes it in data time: every later deadline admits that sample, so every later step
+takes it or a newer one. A rejection of that sample, by the step or by another reader of the
+history, ends the supersession. A step that selects nothing counts every evicted sample that
+no sample the binding holds for good supersedes, because one of them may be the value this
+step or a later one is due, and the step knows no later deadline. The count errs only towards
+a loss: when more samples than the history holds are stamped from the deadline through the
+newest, or when an evicted sample was itself rejected. When samples have
 been accepted but none are admitted because all retained samples are stamped at or after the
 deadline, the input history is shorter than one replay chunk; the binding's verdict at the C ABI is `EMPTY` (not
 `NEVER_ARRIVED`), or `STALE` for a queued binding past its silence limit. An Arrivals port shows
