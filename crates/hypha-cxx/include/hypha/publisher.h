@@ -44,6 +44,55 @@ class Publisher
         return this->lastStatus_ == HYPHA_STATUS_OK;
     }
 
+    /// @brief Reserve the slot of one message whose large field is written in place: its
+    ///        single top-level array of numbers (`Image::data`, `PointCloud2::data`).
+    ///
+    /// @p head holds the small fields, its loaned field empty; the lengths of its strings
+    /// and arrays are final. The Loan's data() is @p capacityBytes of the slot: fill it with
+    /// std::memcpy or Loan::put(), then publish(). Nothing waits, and a refusal is no lost
+    /// frame, so the caller may ask again: PoolExhausted for a full pool, LoanLimit while
+    /// the caller holds all of this publisher's loans (two), TooLarge past the payload
+    /// limit. A Loan dropped unsent returns its slot and takes no `header.seq`.
+    /// @return The loan, or the refusal; lastPublishStatus() says the same.
+    [[nodiscard]] std::expected<Loan<M>, Status> loan(M head, size_t capacityBytes)
+    {
+        if (!this->handle) {
+            this->lastStatus_ = HYPHA_STATUS_INVALID_STATE;
+            return std::unexpected(this->lastStatus_);
+        }
+        std::expected<Loan<M>, Status> loaned = this->handle->loan(std::move(head), capacityBytes);
+        this->lastStatus_ = loaned.has_value() ? Status(HYPHA_STATUS_OK) : loaned.error();
+        return loaned;
+    }
+
+    /// @brief Send @p loan with all capacity() bytes of its loaned field. The constraint
+    ///        keeps this overload out of publish(const M&) for every other type.
+    [[nodiscard]] bool publish(Loan<M>&& loan)
+        requires LoanableMessage<M>
+    {
+        const size_t capacity = loan.capacity();
+        return this->publish(std::move(loan), capacity);
+    }
+
+    /// @brief Send @p loan with the first @p usedBytes of its loaned field, at most
+    ///        capacity(): a cloud whose point count is known only at the end. The bytes on
+    ///        the wire are those publish(const M&) sends for the same message, with the next
+    ///        `header.seq`. InvalidArgument, nothing sent and no `header.seq` taken, for a
+    ///        loan of another publisher, a moved-from loan, a size that is not whole elements
+    ///        or is past capacity(), a filled loaned field, or a head whose strings or
+    ///        arrays changed length.
+    /// @return True if it was sent. The loan is consumed either way.
+    [[nodiscard]] bool publish(Loan<M>&& loan, size_t usedBytes)
+    {
+        if (!this->handle) {
+            this->lastStatus_ = HYPHA_STATUS_INVALID_STATE;
+            return false;
+        }
+        Loan<M> consumed = std::move(loan);
+        this->lastStatus_ = this->handle->publish(std::move(consumed), usedBytes);
+        return this->lastStatus_ == HYPHA_STATUS_OK;
+    }
+
     /// @return The status of the most recent publish attempt.
     Status lastPublishStatus() const
     {
