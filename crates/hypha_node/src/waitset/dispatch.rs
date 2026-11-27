@@ -448,8 +448,9 @@ impl Dispatcher for CallbackDispatcher<'_> {
                 subscriber.check_no_publisher_warning(now_nanos);
             }
         }
+        let replay = self.node.on_sim_time();
         for cycle in self.cycles {
-            crate::cycle::check_input_publishers(cycle, now_nanos);
+            crate::cycle::check_input_publishers(cycle, now_nanos, replay);
         }
         // The node's housekeeping, after the turn and outside every step.
         self.node.topic_streams.housekeep(&self.node.transport, now_nanos);
