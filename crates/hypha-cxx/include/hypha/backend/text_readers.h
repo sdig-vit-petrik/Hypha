@@ -92,6 +92,13 @@ readUnreadKeys(const HyphaConfig* config, std::string_view prefix)
     return readSizedText(::hypha_config_unread_keys, config, prefix.data(), prefix.size());
 }
 
+/// The newline-separated names of the tables directly under @p prefix of @p config.
+inline std::expected<std::string, hypha::Status>
+readTableNames(const HyphaConfig* config, std::string_view prefix)
+{
+    return readSizedText(::hypha_config_table_names, config, prefix.data(), prefix.size());
+}
+
 inline std::expected<std::string, hypha::Status>
 readParamTopic(const HyphaNode* node, uint32_t direction, std::string_view name, uint32_t rule)
 {

@@ -1028,13 +1028,19 @@ for (const auto sensor : settings.list("sensors")) {
   application's to check.
 - **Types.** A value keeps its TOML type: `"5"` is no number, `5` no text, `1` no
   `bool`. A whole number reads as a floating-point type. `${NAME}` always gives text.
-- **Lists.** An array is a list of scalars or of tables (`[[name]]`), never mixed,
-  never nested; an empty array has length zero. `list(name)` throws for a missing or
-  scalar name, `at(index)` past the end. A scalar element reads with the key `""`, a
-  table element by field, a nested table by a dotted name (`limits.max`). Elements
-  read as `bool`, `int64_t`, `double` or `std::string`. A list name may not equal a
-  scalar name or be a dotted prefix of one (`InvalidArgument`). Errors name the
-  entry: `sensors[2].topic`.
+- **Lists.** An array is a list of scalars or of tables (`[[name]]`), never mixed, and
+  never a list of lists (a matrix is a flat list, below); an empty array has length zero.
+  `list(name)` throws for a missing or scalar name, `at(index)` past the end. A scalar
+  element reads with the key `""`, a table element by field, a nested table by a dotted
+  name (`limits.max`). Elements read as `bool`, `int64_t`, `double` or `std::string`. A
+  list name may not equal a scalar name or be a dotted prefix of one (`InvalidArgument`).
+  Errors name the entry: `sensors[2].topic`. An entry of a table list may hold lists of
+  its own, arrays of scalars or `[[sensors.points]]` tables, read through the entry:
+  `for (const auto sensor : cfg.list("sensors")) { auto w = sensor.requiredArray<double>("weights");
+  for (const auto point : sensor.list("points")) ... }`; the errors name them
+  (`sensors[1].weights[2]`), and `unreadKeys()` lists them as `sensors[1].weights`. The
+  C ABI reads such a list by the name of its entry: `hypha_config_list_len(config,
+  "sensors[1].weights")`, and `hypha_config_value` a scalar of an entry the same way.
 - **Environment.** Any string value, list elements, `[log]` and `include` too, may
   hold `${NAME}`, expanded when its file is read. An unset or empty variable fails
   node creation: ``could not load TOML configuration `<file>` at `<key>`: environment variable `<NAME>` is unset`` (or `is empty`). `$NAME` stays literal. An empty
@@ -1077,7 +1083,38 @@ for (const auto sensor : settings.list("sensors")) {
 
   The check is in the C ABI layer (`hypha_config_ignore`, and `hypha_config_unread_keys`
   leaves ignored keys out), so every SDK gets it.
-- **Arrays of scalars.** `cfg.requiredArray<T>(key)` returns `std::vector<T>`; `cfg.requiredArray<T, N>(key)` returns `std::array<T, N>` and refuses any other length. `optionalArray<T>` and `optionalArray<T, N>` return a `std::optional` of the same, empty only when the key is absent. T is any type `required<T>` reads (bool, an integer, float, double, std::string), and each element gets the same conversion and range check. A key that is not an array, an element of the wrong type, an array of tables and a wrong length throw `ParameterError` for the `required*` and the `optional*` form alike, and the message names the key and, for an element, its index (`hypha: parameter 'voxel_weights[2]': expected a number, found "x"`; `hypha: parameter 'extrinsic_t': expected 3 elements, found 4`). An empty array is an empty vector, and a length error for N > 0. Reading an array marks the key as read, so `unreadKeys()` does not list it. An array inside an entry of a table list is refused like a nested list.
+- **Arrays of scalars.** `cfg.requiredArray<T>(key)` returns `std::vector<T>`; `cfg.requiredArray<T, N>(key)` returns `std::array<T, N>` and refuses any other length. `optionalArray<T>` and `optionalArray<T, N>` return a `std::optional` of the same, empty only when the key is absent. T is any type `required<T>` reads (bool, an integer, float, double, std::string), and each element gets the same conversion and range check. A key that is not an array, an element of the wrong type, an array of tables and a wrong length throw `ParameterError` for the `required*` and the `optional*` form alike, and the message names the key and, for an element, its index (`hypha: parameter 'voxel_weights[2]': expected a number, found "x"`; `hypha: parameter 'extrinsic_t': expected 3 elements, found 4`). An empty array is an empty vector, and a length error for N > 0. Reading an array marks the key as read, so `unreadKeys()` does not list it. An array inside an entry of a table list is read through the entry (Lists, above).
+- **One value or a list.** `cfg.requiredScalarOrArray<T>(key)` returns a `std::vector<T>`
+  for a key given as one value or as an array (`topic = "/a"` or `topic = ["/a", "/b"]`),
+  the ROS parameter that takes one or many; `optionalScalarOrArray<T>` is empty only when
+  the key is absent. An array reads as `requiredArray<T>()` does, a value of another type
+  throws `ParameterError` naming the key. A key given as one value is recorded as that
+  value, an array as the array.
+- **A matrix.** `cfg.requiredMatrix<double>("mixer", rows, cols)` reads the flat,
+  row-major list that a ROS matrix parameter is (`mixer = [1, 0, 0, 1, 0.5, 0.5]`) into a
+  `hypha::Matrix<T>` (`rows`, `cols`, `values`, `at(row, col)`; `<hypha/config_matrix.h>`,
+  which `config.h` includes). A 0 for `rows` or `cols` takes that size from the length:
+  `requiredMatrix<double>("mixer", 0, 6)` is any number of rows of 6 columns. A length that
+  does not fit throws `ParameterError`: `hypha: parameter 'mixer': expected 4 x 2 = 8
+  elements, found 6`. A TOML list of lists (`[[1, 0], [0, 1]]`) is not read: write the flat
+  list, as ROS does. With Eigen,
+  `Eigen::Map<const Eigen::Matrix<double, -1, -1, Eigen::RowMajor>>(m.values.data(), m.rows, m.cols)`
+  views it with no copy.
+- **One of a list.** `constraints::oneOf({4800, 9600, 19200})` accepts the listed values
+  (`required<uint32_t>("baud_rate", constraints::oneOf({4800, 9600, 19200}))`, or
+  `oneOf({"fast", "slow"})` for text), numbers compared exactly whatever the integer
+  width. It refuses with the list: `hypha: parameter 'baud_rate' must be one of 4800, 9600,
+  19200`. `optional<T>(key, fallback, oneOf(...))` checks the fallback too.
+- **The tables under a scope.** `cfg.tables()` is a `std::vector<ConfigView>`, one scope
+  for each table directly under the scope, sorted by name; `key()` is the name of one. Where
+  ROS reads a parameter namespace, a node reads the tables of its configuration:
+  `for (const auto& input : hypha::config("ports.inputs").tables()) { priority[input.key()] =
+  input.required<int>("priority"); }`, so that the tables are the list and a test file with
+  other inputs works as well, with no second list of names. A key that holds a value or a
+  list is no table, and a table with no key is not there. It reads nothing: a key of a
+  table that the node does not read stays an unread key. It works inside a list entry
+  too (`sensor.tables()`). The C ABI call is `hypha_config_table_names(config, prefix, ...)`,
+  names joined by `'\n'` (`abi.revision` 12).
 - **Porting.** A ROS 1 list parameter, with the fixed-size form:
   [ros1-migration-guide.md](ros1-migration-guide.md#108-a-list-of-scalars-in-the-parameter-file).
 - **Without a bus.** A `hypha::ConfigContext` serves `hypha::config()` in a test
@@ -1097,7 +1134,7 @@ included), an include cycle, a chain deeper than 16, or more than 256 included f
 read in one load (a file included twice counts twice). One file may appear in two
 branches with disjoint keys.
 
-Reference: `hypha/config.h`.
+Reference: `hypha/config.h`, `hypha/config_list.h` and `hypha/config_matrix.h`, which it includes.
 
 ### 9.1 Node introspection
 
@@ -1323,7 +1360,7 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hyph
 | `hypha/cycle_transforms.h`, `hypha/transform_buffer.h`, `hypha/transform_types.h`, `hypha/testing.h` | `Transforms`; `TransformBuffer`, `StaticTransformBroadcaster`; `TransformError`, `TransformTopics`; `testing::StepHarness` |
 | `hypha/raw_api.h`, `hypha/raw.h`                                     | Raw endpoints, `lookupDefinition`, `listNodes`; `RawSample`, `NodeInfo`, `Metric`, `SubscriberMetrics`                                                                                                          |
 | `hypha/status.h`                                                       | `Status`, `ConfigError`, `require`                                                                                                                                                             |
-| `hypha/config.h`                                                       | `config()`, `ConfigView`, `ConfigList`, `ConfigContext`, `ParameterError`; it includes `constraints.h` (`constraints`)                                                                                                 |
+| `hypha/config.h`                                                       | `config()`, `ConfigView`, `ConfigContext`, `ParameterError`; it includes `config_list.h` (`ConfigList`), `config_matrix.h` (`Matrix`) and `constraints.h` (`constraints`)                                                                                                 |
 | `hypha/introspection.h`, `hypha/metrics.h`                           | `introspect`, `nodeState`, `recordConfig`; `metrics`, `metric`                                                                                                                             |
 | `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h` | `Duration`, `Time`, literals; `now`, `steadyNow`, simulated time; `toRosTime`, `fromRosTime`                                                                                             |
 | `hypha_base/short_namespace.h`                                     | the alias `hy` of `hypha`; `HYPHA_NO_SHORT_NAMESPACE` leaves it out                                                                                                                      |

@@ -625,6 +625,11 @@ included, uses the same `HYPHA_DOMAIN`.
 | `ros::init`, `ros::NodeHandle` | `hypha::runNode<App>(argc, argv, name)`, with the TOML file as `argv[1]` |
 | `ros::spin()` | `hypha::runNode` runs `node.run()` |
 | `pnh.param("x", v, d)`, rosparam YAML | Top-level TOML key, `hypha::config().required<T>("x")` |
+| `pnh.getParam("list", std::vector<T>&)`, a YAML list | TOML array, `hypha::config().requiredArray<T>("list")`; a parameter that is one value or a list: `requiredScalarOrArray<T>("list")` ([section 10.8](#108-a-list-of-scalars-in-the-parameter-file)) |
+| `XmlRpc::XmlRpcValue` of a struct or array, `getParam("sensors", xmlrpc_value)` | `hypha::config().list("sensors")`, one table for each entry, and in an entry arrays and lists of its own (`entry.requiredArray<double>("weights")`, `entry.list("points")`) |
+| A namespace of parameters (`~inputs/a/..`, `~inputs/b/..`) whose names the node finds with `getParamNames` or `XmlRpc` | `hypha::config("ports.inputs").tables()`: each table, `key()` its name |
+| A matrix parameter, a flat list read with `mrs_lib::ParamLoader::loadMatrixDynamic` | `hypha::config().requiredMatrix<double>("mixer", rows, cols)`; 0 for one size takes it from the length |
+| A value from a short list (a baud rate, a mode), checked by hand after `getParam` | `hypha::config().required<T>("baud_rate", hypha::constraints::oneOf({4800, 9600, 19200}))` |
 | `<remap>`, `ns=` | `[ports.inputs.<name>]` or `[ports.outputs.<name>]` table with the full `topic` |
 | Private topic `~x` | `~/x` in a ports table |
 | A topic under `/hypha/` | A topic of another namespace: `/hypha` and the names under it are the framework's, and a port on one is refused with `InvalidTopic` |
@@ -1281,7 +1286,11 @@ const std::optional<std::vector<double>> offsets = hypha::config().optionalArray
 `std::optional` only when the key is absent. Each element gets the conversion and the
 range check of `required<T>`, and an error names the element, for example
 `lidar_extrinsic[2]`. Check the range of the values in the application. `ConfigList`
-remains for a list of tables (`[[sensors]]`).
+remains for a list of tables (`[[sensors]]`), whose entries may hold arrays and lists
+themselves. A parameter that ROS accepts as one value or as a list is read with
+`requiredScalarOrArray<T>(key)`; a flat list that is a matrix, with
+`requiredMatrix<T>(key, rows, cols)`; a list of lists (`[[1, 0], [0, 1]]`) is not read,
+write the flat list.
 
 ### 10.9 A runnable sensor node and its replay check
 

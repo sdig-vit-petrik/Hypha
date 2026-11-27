@@ -8,7 +8,7 @@ mod common;
 use hypha_core::parameters::{ListElement, ParamValue, ParameterLoadError, Parameters};
 
 const TOPIC_VARIABLE: &str = "HYPHA_TEST_LIST_TOPIC";
-const NESTED_REASON: &str = "lists inside list elements are not supported";
+const NESTED_REASON: &str = "a list cannot hold a list; put it in a field of a table element";
 const MIXED_REASON: &str = "a list cannot mix scalars and tables";
 const CONFLICT_REASON: &str = "conflicts with scalar";
 
@@ -173,10 +173,78 @@ fn an_array_inside_a_scalar_element_is_refused() {
 }
 
 #[test]
-fn an_array_inside_a_table_element_is_refused() {
-    let err = refused("[[sensors]]\ninner = [1]\n");
-    assert_eq!(err.key, "sensors[0].inner");
+fn an_array_inside_a_table_element_is_read_by_the_name_of_its_element() {
+    let params = load(
+        "[[sensors]]\nname = \"a\"\ngains = [1.5, 2.5]\n[[sensors]]\nname = \"b\"\ngains = [3.0]\n",
+    );
+    assert!(params.has_list("sensors[0].gains"));
+    assert_eq!(params.list_len("sensors[0].gains"), Some(2));
+    assert_eq!(params.list_len("sensors[1].gains"), Some(1));
+    assert_eq!(params.list_len("sensors[2].gains"), None);
+    assert_eq!(params.list_len("sensors[0].absent"), None);
+    let second = params.list_element("sensors[0].gains", 1).and_then(ListElement::scalar);
+    assert_eq!(second, Some(&ParamValue::Float(2.5)));
+    assert!(params.list_element("sensors[0].gains", 2).is_none());
+}
+
+#[test]
+fn a_scalar_of_a_table_element_is_read_by_the_name_of_its_element() {
+    let params = load("[[sensors]]\ntopic = \"/imu\"\n[sensors.limits]\nmax = 5\n");
+    assert!(params.has("sensors[0].topic"));
+    assert!(!params.has("sensors[0].absent"));
+    assert!(!params.has("sensors[1].topic"));
+    assert_eq!(params.value("sensors[0].limits.max"), Some(&ParamValue::Int(5)));
+    assert_eq!(params.value("sensors[0].topic"), Some(&text("/imu")));
+    assert!(params.value("sensors[1].topic").is_none());
+    assert!(params.unread_keys().is_empty(), "the reads marked the keys of the element");
+}
+
+#[test]
+fn a_list_of_tables_inside_a_table_element_is_read_the_same_way() {
+    let params = load(
+        "[[goals]]\nname = \"pick\"\n[[goals.waypoints]]\nx = 1.0\n[[goals.waypoints]]\nx = 2.0\n",
+    );
+    assert_eq!(params.list_len("goals[0].waypoints"), Some(2));
+    let second = table_element(&params, "goals[0].waypoints", 1);
+    assert_eq!(second.value("x"), Some(&ParamValue::Float(2.0)));
+}
+
+#[test]
+fn unread_keys_name_an_array_inside_a_table_element() {
+    let params = load("[[sensors]]\nname = \"a\"\ngains = [1.5, 2.5]\nunused = [7]\n");
+    assert_eq!(params.list_len("sensors[0].gains"), Some(2));
+    assert!(params.list_element("sensors[0].gains", 0).is_some());
+    assert_eq!(
+        params.unread_keys(),
+        vec!["sensors[0].gains[1]", "sensors[0].name", "sensors[0].unused"]
+    );
+}
+
+#[test]
+fn an_array_inside_an_array_inside_a_table_element_is_refused_with_the_full_key() {
+    let err = refused("[[sensors]]\ninner = [[1]]\n");
+    assert_eq!(err.key, "sensors[0].inner[0]");
     assert_eq!(err.reason, NESTED_REASON);
+    let err = refused("[[sensors]]\ninner = [1, { x = 1 }]\n");
+    assert_eq!(err.key, "sensors[0].inner");
+    assert_eq!(err.reason, MIXED_REASON);
+}
+
+#[test]
+fn table_names_lists_the_tables_under_a_prefix_and_reads_nothing() {
+    let params = load(
+        "rate = 1\n[ports.inputs.b]\ntopic = \"/b\"\n[ports.inputs.a]\ntopic = \"/a\"\n\
+         [ports.inputs.c]\nlist = [1]\n[ports.outputs.o]\ntopic = \"/o\"\n[ports.flat]\nx = 1\n\
+         [[sensors]]\nid = 1\n[sensors.limits]\nmax = 2\n",
+    );
+    assert_eq!(params.table_names("ports.inputs"), ["a", "b", "c"]);
+    assert_eq!(params.table_names("ports"), ["flat", "inputs", "outputs"]);
+    assert_eq!(params.table_names(""), ["ports"]);
+    assert_eq!(params.table_names("ports.inputs.a"), Vec::<String>::new(), "a key is no table");
+    assert_eq!(params.table_names("never_set"), Vec::<String>::new());
+    assert_eq!(params.table_names("sensors[0]"), ["limits"]);
+    assert_eq!(params.table_names("sensors[1]"), Vec::<String>::new());
+    assert_eq!(params.unread_keys().len(), 8, "listing the tables reads no key");
 }
 
 #[test]
