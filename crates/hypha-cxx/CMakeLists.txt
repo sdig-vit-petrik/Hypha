@@ -202,6 +202,7 @@ if(HYPHA_BUILD_TESTS)
     base/test/test_clock.cpp
     base/test/test_duration_saturation.cpp
     base/test/test_time_saturation.cpp
+    base/test/test_seconds_precision.cpp
   )
   target_link_libraries(test_hypha_base PRIVATE hypha GTest::gtest)
   # Simulated time joins the bus, and base/test/test_main.cpp sets no domain.

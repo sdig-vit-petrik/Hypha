@@ -59,6 +59,56 @@ constexpr int64_t clampedNanos(double value)
     return static_cast<int64_t>(value);
 }
 
+/// @brief Whole nanoseconds of finite `seconds`, rounded to nearest (ties away from
+///        zero), clamped to the int64 range. Callers refuse NaN and infinities first.
+///
+/// Whole seconds and the fraction convert apart, as ros::Time::fromSec does. Multiplying
+/// the whole value by 1e9 first rounds a second time: a double near 1.7e9 s holds 2^-22 s,
+/// but its product with 1e9 sits near 1.7e18, where a double holds only multiples of 256 ns,
+/// so the product is up to 128 ns away from what the double holds (#243). The split is
+/// exact: seconds - trunc(seconds) is exact in a double, and a fraction below one second
+/// times 1e9 is below 1e9, where a double holds well under a nanosecond.
+constexpr int64_t nanosFromSeconds(double seconds)
+{
+    // The int64 range ends at 9223372036.854775807 s; one second past it is out for certain.
+    constexpr double kOutOfRange = 9223372037.0;
+    if (seconds >= kOutOfRange) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    if (seconds <= -kOutOfRange) {
+        return std::numeric_limits<int64_t>::min();
+    }
+    const auto   whole = static_cast<int64_t>(seconds);
+    const double scaled = (seconds - static_cast<double>(whole)) * 1e9;
+    auto         fraction = static_cast<int64_t>(scaled);
+    const double remainder = scaled - static_cast<double>(fraction);
+    if (remainder >= 0.5) {
+        fraction += 1;
+    } else if (remainder <= -0.5) {
+        fraction -= 1;
+    }
+    return saturatingAdd(saturatingMul(whole, 1000000000), fraction);
+}
+
+/// @brief `nanos / 1e9` as a double: the nearest one up to 2^53 ns, and above that nearly.
+///
+/// `double(nanos) / 1e9` rounds twice above 2^53 ns (104 days): the conversion of the
+/// nanoseconds already drops low bits, to a multiple of 256 ns at a stamp since the epoch (#253).
+/// Up to 2^53 ns both operands are exact and the single division is the nearest double. Above,
+/// the whole seconds and the remainder (`/` and `%` truncate toward zero, so negatives mirror)
+/// are each exact in a double, the division of the remainder rounds far below the spacing of
+/// the result, and the sum rounds once. The result is the nearest double except where the exact
+/// value lies within about 1e-16 s of a midpoint between two doubles, where it may be the
+/// other neighbour.
+constexpr double secondsFromNanos(int64_t nanos)
+{
+    constexpr int64_t kExactNanos = int64_t{1} << 53;
+    if (nanos >= -kExactNanos && nanos <= kExactNanos) {
+        return static_cast<double>(nanos) / 1e9;
+    }
+    return static_cast<double>(nanos / 1000000000) + static_cast<double>(nanos % 1000000000) / 1e9;
+}
+
 }  // namespace detail
 
 /// @brief A signed time span with nanosecond resolution.
@@ -84,8 +134,8 @@ class Duration
         return Duration(detail::saturatingMul(millis, 1000000));
     }
 
-    /// @brief Construct from seconds; the fractional part is truncated toward zero.
-    ///        Out-of-range input clamps.
+    /// @brief Construct from seconds, rounded to the nearest nanosecond (ties away from
+    ///        zero) without losing what the double holds. Out-of-range input clamps.
     /// @throws std::invalid_argument for NaN or infinite seconds; in a constant
     ///         expression that is a compile error. tryFromSeconds() does not throw.
     static constexpr Duration fromSeconds(double seconds)
@@ -94,7 +144,7 @@ class Duration
         if (!secondsAreFinite) {
             throw std::invalid_argument("hypha::Duration::fromSeconds: seconds are not finite");
         }
-        return Duration(detail::clampedNanos(seconds * 1e9));
+        return Duration(detail::nanosFromSeconds(seconds));
     }
 
     /// @brief fromSeconds() for a path that does not throw: empty for NaN or infinite
@@ -105,7 +155,7 @@ class Duration
         if (!secondsAreFinite) {
             return std::nullopt;
         }
-        return Duration(detail::clampedNanos(seconds * 1e9));
+        return Duration(detail::nanosFromSeconds(seconds));
     }
 
     constexpr int64_t nanos() const
@@ -113,9 +163,10 @@ class Duration
         return this->nanoseconds;
     }
 
+    /// @brief The span in seconds: the double nearest to the exact value.
     constexpr double seconds() const
     {
-        return static_cast<double>(this->nanoseconds) / 1e9;
+        return detail::secondsFromNanos(this->nanoseconds);
     }
 
     constexpr std::chrono::nanoseconds chrono() const
@@ -195,8 +246,8 @@ class Time
         return Time(nanos);
     }
 
-    /// @brief Construct from seconds; the fractional part is truncated toward zero.
-    ///        Out-of-range seconds clamp.
+    /// @brief Construct from seconds, rounded to the nearest nanosecond (ties away from
+    ///        zero) without losing what the double holds. Out-of-range seconds clamp.
     /// @throws std::invalid_argument for NaN or infinite seconds; in a constant
     ///         expression that is a compile error.
     static constexpr Time fromSeconds(double seconds)
@@ -205,7 +256,7 @@ class Time
         if (!secondsAreFinite) {
             throw std::invalid_argument("hypha::Time::fromSeconds: seconds are not finite");
         }
-        return Time(detail::clampedNanos(seconds * 1e9));
+        return Time(detail::nanosFromSeconds(seconds));
     }
 
     constexpr int64_t nanos() const
@@ -213,9 +264,10 @@ class Time
         return this->nanoseconds;
     }
 
+    /// @brief The time in seconds since the epoch: the double nearest to the exact value.
     constexpr double seconds() const
     {
-        return static_cast<double>(this->nanoseconds) / 1e9;
+        return detail::secondsFromNanos(this->nanoseconds);
     }
 
     /// @brief Sentinel meaning "time is not yet known". A default-constructed Time is zero.
