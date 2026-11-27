@@ -261,7 +261,7 @@ fn tick_one_input_one_output(c: &mut Criterion) {
     });
 }
 
-/// The idle inputs of [`sim_turn_idle_inputs`].
+/// The idle inputs of [`sim_turn_idle_inputs`] unless `BENCH_IDLE_INPUTS` says otherwise.
 const IDLE_INPUTS: usize = 32;
 
 extern "C" fn idle_step(
@@ -274,8 +274,10 @@ extern "C" fn idle_step(
 }
 
 /// One `WaitSet` turn under simulated time that runs no step: a 1 s replay cycle with
-/// [`IDLE_INPUTS`] `Latest` inputs, none of which holds a sample, and a clock that never
-/// reaches its first deadline. The turn drains every input once.
+/// [`IDLE_INPUTS`] `Latest` inputs by default, none of which holds a sample, and a clock that never
+/// reaches its first deadline. The turn drains every input once. Most of a run call is
+/// its setup (on macOS iceoryx2 formats a debug string at each attach), so the cost of
+/// the drain is the difference to a run with `BENCH_IDLE_INPUTS=0`, per input.
 fn sim_turn_idle_inputs(c: &mut Criterion) {
     assert_eq!(hypha_clock_enable_sim_time(1_000), HyphaStatus::Ok as i32, "simulated time");
     let name = c_text(&unique_name("bench_sim_turn"));
@@ -317,8 +319,14 @@ fn sim_turn_idle_inputs(c: &mut Criterion) {
         max_samples_per_iteration: 1,
         optional: 0,
     };
-    let mut endpoints = Vec::with_capacity(IDLE_INPUTS);
-    for _ in 0..IDLE_INPUTS {
+    // `BENCH_IDLE_INPUTS=0` measures the turn without inputs: the cost of the run call
+    // itself, which the per-input cost is the difference to.
+    let inputs = std::env::var("BENCH_IDLE_INPUTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(IDLE_INPUTS);
+    let mut endpoints = Vec::with_capacity(inputs);
+    for _ in 0..inputs {
         let (publisher, subscriber) = pubsub(node, "bench_sim_in");
         let mut source = ptr::null_mut();
         // SAFETY: `waitset` and `subscriber` are live; success takes the subscriber.
@@ -335,7 +343,7 @@ fn sim_turn_idle_inputs(c: &mut Criterion) {
     assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok, "commit");
     let mut report =
         HyphaWaitSetRunReport { reason: 0, status: 0, attachment: 0, slow_callbacks: 0 };
-    c.bench_function("cycle/sim_turn_32_idle_inputs", |b| {
+    c.bench_function("cycle/sim_turn_idle_inputs", |b| {
         b.iter(|| {
             // SAFETY: `waitset` is live and `report` is a local; a 1 ns run is one turn.
             let ran = unsafe { hypha_waitset_run(waitset, 1, &raw mut report) };

@@ -71,6 +71,9 @@ pub(crate) struct CycleInputSource {
     pub(crate) undecodable: std::sync::atomic::AtomicU64,
     /// When the undecodable line was last written: at most once per 10 s.
     pub(crate) undecodable_logged: Mutex<Option<std::time::Instant>>,
+    /// The receives of one simulated-time drain: every publisher queue of the input, plus
+    /// one. Fixed at creation: a wildcard resolves its topics once.
+    sim_drain_limit: usize,
 }
 
 /// The newest frame a keep-newest drain has seen, and how many it replaced.
@@ -94,10 +97,10 @@ impl CycleInputSource {
         std::ptr::eq(self.waitset.as_ptr(), Arc::as_ptr(&set.shared))
     }
 
-    /// Keep room in the history for a full subscriber queue plus `arrivals` samples
+    /// Keep room in the history for full subscriber queues plus `arrivals` samples
     /// that one step takes, so a queued binding never loses a sample to the history.
     pub(crate) fn reserve_arrivals(&self, arrivals: usize) {
-        let queue = self.subscriber.as_deref().map_or(0, |s| s.port.buffer_size());
+        let queue = self.subscriber.as_deref().map_or(0, |s| s.port.topics_buffer_size());
         if let Some(history) = self.history.as_ref() {
             crate::locked(history).ensure_capacity(queue.saturating_add(arrivals));
         }
@@ -109,7 +112,9 @@ impl CycleInputSource {
             return if self.history.is_none() { Ok(()) } else { Err(Error::InvalidState) };
         };
         subscriber.check_no_publisher_warning();
-        let mut now = crate::subscriber::host_now_nanos();
+        // Zero: the receive reads the clock only once a frame arrives, so an idle input
+        // reads no clock.
+        let mut now = 0;
 
         let Some(history) = self.history.as_ref() else {
             return Err(Error::InvalidState);
@@ -118,9 +123,11 @@ impl CycleInputSource {
         // One call takes everything queued when it starts: on host time one history depth;
         // under simulated time the queue of every publisher, so the progress reported
         // after a drain covers every sample sent before it (replay-flow-control.md §4.2).
-        let queued =
-            if sim { subscriber.port.queue_capacity() } else { subscriber.port.buffer_size() };
-        let limit = queued.saturating_add(1);
+        let limit = if sim {
+            self.sim_drain_limit
+        } else {
+            subscriber.port.buffer_size().saturating_add(1)
+        };
         let only_latest_bindings =
             self.queued_bindings.load(std::sync::atomic::Ordering::Acquire) == 0;
         // A replay cut admits older samples: a source that a replay cycle reads keeps
@@ -233,11 +240,12 @@ fn check_input_source<'set>(
         None => None,
         Some(endpoint) => {
             // The queue plus one slot, so a drain of a full queue keeps the newest sample of
-            // the drain before it. In replay every turn drains the queue, which then holds
-            // one chunk, and a `Latest` history keeps it and the newest sample before it
+            // the drain before it; a wildcard has one queue per topic. In replay every turn
+            // drains the queues, which then hold one chunk of each topic, and a `Latest`
+            // history keeps it and the newest sample before it
             // (replay-flow-control.md §6.7). A queued binding adds its `perStep`
             // (`reserve_arrivals`).
-            let depth = endpoint.port.buffer_size().saturating_add(1);
+            let depth = endpoint.port.topics_buffer_size().saturating_add(1);
             let history = hypha_cycle::CycleHistory::new(depth).ok_or(Error::InvalidArgument)?;
             Some(Arc::new(Mutex::new(history)))
         }
@@ -271,6 +279,8 @@ fn add_input_source(
     checked: CheckedSource<'_>,
 ) -> HyphaInputSource {
     let CheckedSource { history, topic, mut input_sources } = checked;
+    let sim_drain_limit =
+        subscriber.as_deref().map_or(0, |s| s.port.queue_capacity().saturating_add(1));
     let inner = Arc::new(CycleInputSource {
         waitset: Arc::downgrade(&set.shared),
         node: set.node_address(),
@@ -283,6 +293,7 @@ fn add_input_source(
         newest: Mutex::new(NewestFrame::default()),
         undecodable: std::sync::atomic::AtomicU64::new(0),
         undecodable_logged: Mutex::new(None),
+        sim_drain_limit,
     });
     input_sources.push(Arc::downgrade(&inner));
     HyphaInputSource { inner }

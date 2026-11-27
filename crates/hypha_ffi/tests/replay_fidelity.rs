@@ -943,6 +943,7 @@ pub(crate) fn a_bounded_run_ends_after_one_slice_of_a_long_jump() {
 fn two_publishers_around_a_turn(
     bind: HyphaCycleBindingOptions,
     turn_between: bool,
+    in_stamp_order: bool,
 ) -> Vec<(i64, usize, Option<u8>)> {
     let _clock = SimulatedClock::start(10 * MILLISECOND);
     let node = create_node(&unique("two_publishers_turn"));
@@ -968,13 +969,19 @@ fn two_publishers_around_a_turn(
     unsafe { send_stamped(first, 9, 90 * MILLISECOND) };
     set_clock(110 * MILLISECOND);
     assert_eq!(run_status(waitset, 5_000_000), HyphaStatus::Ok as i32);
-    unsafe { send_stamped(second, 15, 150 * MILLISECOND) };
+    // Out of stamp order: `second` sends 150, then `first` sends 140; else the reverse.
+    let sends = if in_stamp_order {
+        [(first, 14, 140 * MILLISECOND), (second, 15, 150 * MILLISECOND)]
+    } else {
+        [(second, 15, 150 * MILLISECOND), (first, 14, 140 * MILLISECOND)]
+    };
+    unsafe { send_stamped(sends[0].0, sends[0].1, sends[0].2) };
     if turn_between {
         set_clock(160 * MILLISECOND);
         assert_eq!(run_status(waitset, 5_000_000), HyphaStatus::Ok as i32);
-        unsafe { send_stamped(first, 14, 140 * MILLISECOND) };
+        unsafe { send_stamped(sends[1].0, sends[1].1, sends[1].2) };
     } else {
-        unsafe { send_stamped(first, 14, 140 * MILLISECOND) };
+        unsafe { send_stamped(sends[1].0, sends[1].1, sends[1].2) };
         set_clock(160 * MILLISECOND);
         assert_eq!(run_status(waitset, 5_000_000), HyphaStatus::Ok as i32);
     }
@@ -998,17 +1005,28 @@ fn two_publishers_around_a_turn(
 #[test]
 pub(crate) fn two_publishers_on_one_input_order_by_when_the_node_drained_them() {
     // A limit (replay-flow-control.md §6.7): the history keeps samples in the order the
-    // node's turns drained them, and a drain reads the publishers in a fixed order, so
-    // with two publishers what a step takes depends on when the node had a turn.
-    let latest = [LATEST, queued(8)].map(|bind| {
-        (two_publishers_around_a_turn(bind, true), two_publishers_around_a_turn(bind, false))
-    });
-    // A `Latest` input takes the newest arrival before the cut: 140 or 150.
-    assert_eq!(latest[0].0, [(100, 1, Some(9)), (200, 1, Some(14))]);
-    assert_eq!(latest[0].1, [(100, 1, Some(9)), (200, 1, Some(15))]);
-    // A queued input delivers both, in arrival order.
-    assert_eq!(latest[1].0, [(100, 1, Some(9)), (200, 2, Some(14))]);
-    assert_eq!(latest[1].1, [(100, 1, Some(9)), (200, 2, Some(15))]);
+    // node's turns drained them, so with two publishers what a step takes depends on when
+    // the node had a turn. With a turn between the two sends the arrival order is the send
+    // order, whatever the transport; with both queued before one turn it is the order in
+    // which iceoryx2 reads a subscriber's publisher queues, which this test does not pin.
+    for bind in [LATEST, queued(8)] {
+        let count = if bind.mode == LATEST.mode { 1 } else { 2 };
+        // A turn between: the later send arrives last.
+        let out_of_order = two_publishers_around_a_turn(bind, true, false);
+        let in_order = two_publishers_around_a_turn(bind, true, true);
+        assert_eq!(out_of_order, [(100, 1, Some(9)), (200, count, Some(14))]);
+        assert_eq!(in_order, [(100, 1, Some(9)), (200, count, Some(15))]);
+        // One turn after both: either publisher's sample may arrive last.
+        for in_stamp_order in [false, true] {
+            let one_drain = two_publishers_around_a_turn(bind, false, in_stamp_order);
+            let (head, last) = one_drain.split_at(1);
+            assert_eq!(head, [(100, 1, Some(9))]);
+            assert!(
+                matches!(last, [(200, n, Some(14 | 15))] if *n == count),
+                "{one_drain:?}"
+            );
+        }
+    }
 }
 
 /// The player's chunks of a 100 Hz topic from 90 ms into a queue of 10: the first chunk,

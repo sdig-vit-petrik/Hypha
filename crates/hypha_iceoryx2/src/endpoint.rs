@@ -418,6 +418,19 @@ impl Iox2Subscriber {
         }
     }
 
+    /// The samples one publisher on each topic this subscriber follows can queue: its
+    /// [`Self::buffer_size`] for a single topic, the sum of each topic's for a wildcard.
+    #[must_use]
+    pub fn topics_buffer_size(&self) -> usize {
+        match &self.inner {
+            SubscriberKind::Single(single) => single.subscriber.buffer_size(),
+            SubscriberKind::Wildcard { subscribers, .. } => subscribers
+                .iter()
+                .map(|(subscriber, _, _)| subscriber.buffer_size())
+                .fold(0, usize::saturating_add),
+        }
+    }
+
     /// The most samples this subscriber can hold queued: iceoryx2 gives each publisher
     /// its own queue, so one queue of each topic's depth for each publisher the topic
     /// admits.
