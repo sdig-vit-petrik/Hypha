@@ -557,7 +557,8 @@ impl BindingCapture {
         if clock.is_replay()
             && let Some(oldest) = history.samples().front().map(|sample| sample.sequence)
         {
-            self.account_evictions(history, oldest, selected.map(|sample| sample.sequence));
+            let selected = selected.map(|sample| sample.sequence);
+            self.account_evictions(history, oldest, selected, clock);
         }
         // The verdict judged the newest admitted sample, or the held value when none.
         let usable = self.verdict == InputVerdict::Usable;
@@ -613,7 +614,13 @@ impl BindingCapture {
     ///   value this step or a later one is due, and the capture knows no later deadline.
     ///
     /// A sample that may have been rejected before its eviction counts as rejected.
-    fn account_evictions(&mut self, history: &CycleHistory, oldest: u64, selected: Option<u64>) {
+    fn account_evictions(
+        &mut self,
+        history: &CycleHistory,
+        oldest: u64,
+        selected: Option<u64>,
+        clock: CaptureClock,
+    ) {
         let newest_selected = self.cursor.wrapping_sub(1);
         let superseded_for_good =
             before(newest_selected, oldest) && !may_have_been_rejected(history, newest_selected);
@@ -626,19 +633,28 @@ impl BindingCapture {
             }
         } else {
             let passed = self.passed_from.take().unwrap_or(self.cursor);
-            let after_held = self.held_for_good(history, oldest).map(|held| held.wrapping_add(1));
+            let after_held =
+                self.held_for_good(history, oldest, clock).map(|held| held.wrapping_add(1));
             let from = after_held.filter(|after| before(passed, *after)).unwrap_or(passed);
             self.count_evicted_from(from, oldest);
         }
     }
 
     /// The newest sample this binding holds, or held before, that was evicted with no
-    /// rejection, with `oldest` the oldest retained sequence: every later cut admits it,
-    /// so no step takes a sample older than it again.
-    fn held_for_good(&self, history: &CycleHistory, oldest: u64) -> Option<u64> {
+    /// rejection and that the replay cut of this capture, `clock`, admits, with `oldest`
+    /// the oldest retained sequence: every later cut admits it too, so no step takes a
+    /// sample older than it again. A host-clock capture may have held a sample stamped
+    /// ahead of every cut so far, which is no such value.
+    fn held_for_good(
+        &self,
+        history: &CycleHistory,
+        oldest: u64,
+        clock: CaptureClock,
+    ) -> Option<u64> {
         [self.held.as_ref(), self.previous_held.as_ref()]
             .into_iter()
             .flatten()
+            .filter(|sample| clock.admits(sample))
             .map(|sample| sample.sequence)
             .find(|sequence| {
                 before(*sequence, oldest) && !may_have_been_rejected(history, *sequence)

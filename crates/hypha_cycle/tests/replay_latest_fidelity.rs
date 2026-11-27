@@ -417,3 +417,165 @@ fn a_fallback_before_the_first_passed_sample_keeps_the_passed_one_counted() {
     assert_eq!(step(&mut binding, &history, 300), None);
     assert_eq!(binding.lost_since_capture, 1, "250 is lost; the binding holds 110 for good");
 }
+
+/// A history of `depth` that assigns `first_sequence` first, and a Latest binding on it.
+fn latest_from(depth: usize, first_sequence: u64) -> (CycleHistory, BindingCapture) {
+    let history = CycleHistory::with_initial_sequence(depth, first_sequence).unwrap();
+    let binding = BindingCapture::new(&history, CaptureMode::Latest, 1).unwrap();
+    (history, binding)
+}
+
+/// A capture on the host clock, which admits every retained sample.
+fn host_capture(binding: &mut BindingCapture, history: &CycleHistory) -> Option<u64> {
+    binding.capture_on(history, LATEST, CaptureClock::Host { steady_nanos: 1_000_000 * MS });
+    binding.samples.last().map(|sample| sample.framework_sent_nanos / MS)
+}
+
+#[test]
+fn a_host_capture_between_replay_steps_keeps_a_due_loss_counted() {
+    // A host capture holds 500, which no cut has admitted: that is no value for good.
+    let (mut history, mut binding) = latest_from(3, 0);
+    push_ms(&mut history, [10]);
+    assert_eq!(step(&mut binding, &history, 100), Some(10));
+    push_ms(&mut history, [50, 500]);
+    assert_eq!(host_capture(&mut binding, &history), Some(500));
+    push_ms(&mut history, [510, 520, 530]);
+    assert_eq!(step(&mut binding, &history, 200), None);
+    // 50 was due at 200; 500, not due yet, counts with it (a capture that selects
+    // nothing counts evicted samples stamped after its cut).
+    assert_eq!(binding.lost_since_capture, 2);
+    // Without the host capture the count is the same.
+    let (mut history, mut binding) = latest_from(3, 0);
+    push_ms(&mut history, [10]);
+    assert_eq!(step(&mut binding, &history, 100), Some(10));
+    push_ms(&mut history, [50, 500, 510, 520, 530]);
+    assert_eq!(step(&mut binding, &history, 200), None);
+    assert_eq!(binding.lost_since_capture, 2);
+}
+
+#[test]
+fn the_rules_hold_across_a_sequence_wrap() {
+    for first in [u64::MAX - 1, u64::MAX, 0] {
+        // Evicting the due sample is a loss.
+        let (mut history, mut binding) = latest_from(3, first);
+        push_ms(&mut history, (10..=90).step_by(10));
+        assert_eq!(step(&mut binding, &history, 100), Some(90));
+        push_ms(&mut history, (100..=220).step_by(10));
+        assert_eq!(step(&mut binding, &history, 200), None, "first {first}");
+        assert_eq!(binding.lost_since_capture, 10, "first {first}");
+        // A retained superseding sample excuses its evictions.
+        let (mut history, mut binding) = latest_from(3, first);
+        push_ms(&mut history, [90]);
+        assert_eq!(step(&mut binding, &history, 100), Some(90));
+        push_ms(&mut history, (100..=190).step_by(10));
+        assert_eq!(step(&mut binding, &history, 200), Some(190), "first {first}");
+        assert_eq!(binding.lost_since_capture, 0, "first {first}");
+        // A passed sample counts once the selection that passed it is rejected.
+        let (mut history, mut binding) = latest_from(4, first);
+        push_ms(&mut history, [90]);
+        assert_eq!(step(&mut binding, &history, 100), Some(90));
+        push_ms(&mut history, [250, 150]);
+        assert_eq!(step(&mut binding, &history, 200), Some(150));
+        assert!(history.reject(binding.samples[0].sequence));
+        push_ms(&mut history, [305, 315, 325, 335]);
+        assert_eq!(step(&mut binding, &history, 300), None, "first {first}");
+        assert_eq!(binding.lost_since_capture, 2, "first {first}");
+    }
+}
+
+#[test]
+fn the_first_capture_counts_nothing_from_before_the_binding() {
+    let mut history = CycleHistory::with_initial_sequence(3, u64::MAX - 5).unwrap();
+    push_ms(&mut history, (10..=90).step_by(10));
+    let mut binding = BindingCapture::new(&history, CaptureMode::Latest, 1).unwrap();
+    assert_eq!(step(&mut binding, &history, 100), Some(90));
+    assert_eq!(binding.lost_since_capture, 0);
+    // On an empty history at sequence 0, the cursor's predecessor is u64::MAX.
+    let (mut history, mut binding) = latest_from(2, 0);
+    push_ms(&mut history, [210, 220, 230]);
+    assert_eq!(step(&mut binding, &history, 200), None);
+    assert_eq!(binding.lost_since_capture, 1, "210, stamped after the cut, counts");
+}
+
+#[test]
+fn selecting_the_same_sample_again_keeps_the_passed_run() {
+    let (mut history, mut binding) = latest_from(3, 0);
+    push_ms(&mut history, [90]);
+    assert_eq!(step(&mut binding, &history, 100), Some(90));
+    push_ms(&mut history, [110, 120, 300]);
+    for cut in [200, 210, 220] {
+        assert_eq!(step(&mut binding, &history, cut), Some(120), "cut {cut}");
+    }
+    // 120 is evicted unrejected: 110 is superseded for good.
+    push_ms(&mut history, [310, 320]);
+    assert_eq!(step(&mut binding, &history, 290), None);
+    assert_eq!(binding.counters.overrun_total, 0);
+}
+
+#[test]
+fn two_publishers_out_of_stamp_order_count_the_due_sample_in_every_rejection_order() {
+    // Arrival 90, 250 (stamped ahead), 150, 160: the step at 200 takes 160 and passes
+    // 250 and 150. Then 160 and 150 are rejected, by the step or by another reader, with
+    // a step at 210 between or not, and everything is evicted. Due at 300: 250.
+    for first_own in [false, true] {
+        for second_own in [false, true] {
+            for step_between in [false, true] {
+                let case = format!("{first_own} {second_own} {step_between}");
+                let (mut history, mut binding) = latest_from(4, 0);
+                push_ms(&mut history, [90]);
+                assert_eq!(step(&mut binding, &history, 100), Some(90));
+                push_ms(&mut history, [250, 150, 160]);
+                assert_eq!(step(&mut binding, &history, 200), Some(160));
+                let s160 = binding.samples[0].sequence;
+                let s150 = s160 - 1;
+                assert!(history.reject(s160));
+                if first_own {
+                    binding.reject(&history, s160);
+                }
+                if step_between {
+                    assert_eq!(step(&mut binding, &history, 210), Some(150), "{case}");
+                }
+                assert!(history.reject(s150));
+                // A step's own rejection reaches only a sample it holds.
+                let holds_150 = binding.held().is_some_and(|held| held.sequence == s150);
+                if second_own && holds_150 {
+                    binding.reject(&history, s150);
+                }
+                push_ms(&mut history, [305, 315, 325, 335]);
+                assert_eq!(step(&mut binding, &history, 300), None, "{case}");
+                assert!(binding.lost_since_capture >= 1, "{case}: 250 is gone");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_queued_co_reader_rejecting_the_latest_selection_keeps_the_loss_counted() {
+    let queued_options =
+        BindingOptions { mode: CaptureMode::Queued, max_samples_per_iteration: 8, ..LATEST };
+    let (mut history, mut latest) = latest_from(3, 0);
+    let mut queued = BindingCapture::new(&history, CaptureMode::Queued, 8).unwrap();
+    push_ms(&mut history, [90]);
+    assert_eq!(step(&mut latest, &history, 100), Some(90));
+    push_ms(&mut history, [180, 190]);
+    queued.capture_on(&history, queued_options, CaptureClock::Replay { cut_nanos: 200 * MS });
+    assert_eq!(step(&mut latest, &history, 200), Some(190));
+    assert!(history.reject(latest.samples[0].sequence));
+    push_ms(&mut history, [305, 315]);
+    assert_eq!(step(&mut latest, &history, 300), None);
+    // 180 was due at 300 and is gone; the rejected 190 is still retained.
+    assert_eq!(latest.lost_since_capture, 1);
+}
+
+#[test]
+fn a_sample_stamped_after_the_cut_that_is_evicted_counts_at_a_step_that_selects_nothing() {
+    // An over-count, towards failure: 205 is evicted before any cut admits it, the step
+    // at 200 selects nothing and counts it, though 235 supersedes it at 300.
+    let (mut history, mut binding) = latest_from(3, 0);
+    push_ms(&mut history, [90]);
+    assert_eq!(step(&mut binding, &history, 100), Some(90));
+    push_ms(&mut history, [205, 215, 225, 235]);
+    assert_eq!(step(&mut binding, &history, 200), None);
+    assert_eq!(binding.lost_since_capture, 1);
+    assert_eq!(step(&mut binding, &history, 300), Some(235));
+}
