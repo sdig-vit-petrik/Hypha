@@ -32,6 +32,18 @@ topic before they subscribe. It sends data only for `hypha publisher + ROS
 subscriber` and removes the ROS advertisement when the hypha publisher
 disappears.
 
+A hypha topic name may carry several streams (two versions of a message during a migration),
+while a ROS 1 topic carries one type: in automatic mode the bridge follows every stream and
+bridges the first one that delivers a sample on a name. It drops the samples of the others
+and says so once for each stream, naming both types: `<topic> carries more than one stream
+and a ROS 1 topic carries one type: bridging <type> (<md5>), the first; not bridging <type>
+(<md5>)`. The choice ends when no publisher of the bridged stream is left, and the next
+stream to deliver takes its place (the ROS publisher is advertised again with its type). A
+name counts as published or subscribed when any of its streams is. This was tested on a bus
+without a ROS master: the choice, the once-only report and the take-over; the ROS side of
+it (advertising again, the ROS 1 to hypha route of a topic with several versions) was read,
+not run.
+
 Automatic ROS 1 to hypha routes carry the ROS publisher's real type, md5 and
 expanded definition. A typed hypha subscriber accepts a frame only when its
 schema hash matches the md5 of its generated type, so the bridge does not use

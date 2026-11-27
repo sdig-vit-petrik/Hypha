@@ -348,7 +348,7 @@ own subscriber queues and publisher slots, and wakes only its own subscribers.
 |---|---|
 | Publisher | the stream of its MD5 |
 | Subscriber that names an MD5 (every typed C++ endpoint, `subscribeRawOfType`, `subscribe_raw_with_schema`) | the stream of its MD5: a frame of another schema of the topic never reaches it. Like any subscriber it creates the stream only when it declares a policy or reads a framework topic |
-| Subscriber that names no MD5 (`subscribeRaw`, `subscribe_raw`, the tools) | every stream of the topic that exists when it is created, woken by a listener on each; it creates none, follows no stream created later, and is `NotAvailable` when the topic has none |
+| Subscriber that names no MD5 (`subscribeRaw`, `subscribe_raw`, the tools) | every stream of the topic that exists when it is created, woken by a listener on each; it creates none, follows no stream created later, and is `NotAvailable` when the topic has none. A reader that must follow a name through a migration, as the tools do (`docs/tools.md`, "Following streams"), watches the graph event (`BusNode::graph_watch`) and subscribes to each stream by its schema hash (`BusNode::subscribe_raw_stream`), which needs no MD5 and lists nothing; `hypha_node::sdk::StreamFollower` does both |
 | Wildcard subscriber | of each matching topic, the stream of its MD5, or every stream when it names none; read every 1 ms |
 
 A topic name is at most 238 bytes after its `/` (`hypha_core::port::MAX_TOPIC_NAME_BYTES`):

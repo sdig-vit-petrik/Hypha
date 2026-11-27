@@ -642,7 +642,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | `tf2_ros::TransformBroadcaster` | Output on `/tf` of type `tf2_msgs::TFMessage` |
 | `tf2_ros::StaticTransformBroadcaster` | An `Output<tf2_msgs::TFMessage>` declared with `latched` and `topic = "/tf_static"` in its ports table |
 | `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment; for `ros2 bag play`'s behaviour, outside the replay lockstep, `HYPHA_REPLAY_LOCKSTEP=0` for the player and every node of the launch |
-| rosbag record / play | `hypha record` / `hypha play` (`apps/`) |
+| rosbag record / play | `hypha record` / `hypha play` (`apps/`); a topic recorded with two versions of a message is two channels, replayed as two streams |
 | roslaunch | `hypha launch` |
 | roscore | None. Nodes find each other through shared memory |
 | A second message type or MD5 on a topic: roscore refuses the connection (`md5sum mismatch`) | Each type and each version (MD5) is its own stream of the topic: both are delivered, each to its own subscribers, and two versions of a message can run side by side during a migration. A subscriber whose version nobody publishes gets nothing; its counters (`otherSchemas`) and its `~/state` row (`other_schemas`) name the version that is published, and after 5 s without a publisher of its own it logs `topic '<t>' has publishers, none of type <T> (<md5>): published are <T> (<other md5>)`. Its input is `NeverArrived` if it never had a publisher, else `Stale` after its `silence_ms`, or `Usable` on the last value when it has no limit (cpp-api.md §5) |

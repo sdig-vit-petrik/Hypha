@@ -44,9 +44,12 @@ truecolor terminal and no special font. State is shown in form as well as colour
 
 ```text
 hypha topic list [--timeout <seconds>]    topics seen publishing, one line per type (default: 1.0s)
-hypha topic echo <topic> [-p] [--count <n>]    print each message, decoded
-hypha topic hz <topic> [--window <n>]     publish rate
-hypha topic bw <topic>                    bandwidth and mean message size
+hypha topic echo <topic> [-p] [--count <n>] [--type <type>] [--md5 <prefix>]
+                                          print each message, decoded
+hypha topic hz <topic> [--window <n>] [--type <type>] [--md5 <prefix>]
+                                          publish rate of each stream
+hypha topic bw <topic> [--type <type>] [--md5 <prefix>]
+                                          bandwidth and mean message size of each stream
 ```
 
 `list` reports only topics that publish while it is watching, and `hz`/`bw`
@@ -54,11 +57,29 @@ cannot measure a topic that is not currently publishing: there is no separate
 topic registry on this bus, only observed traffic. A topic that has never
 published will not appear. Each line names the type and the first eight hex digits of
 its MD5, `/odom  [nav_msgs/Odometry (cd5e73d1)]`: a topic that carries two types, or two
-versions of one type, is two lines (topic name overloading, cpp-api.md §5). `echo`,
-`hz`, `bw` and `hypha record` read the streams of a topic that exist when they first see
-its name, together: a version that joins the topic later is not echoed, measured or
-recorded, and a recording keeps one type per channel, so a second type that it does see
-is dropped with an error line. Following each stream on its own is part two of #209.
+versions of one type, is two lines (topic name overloading, cpp-api.md §5).
+
+**A topic of several streams.** A topic name carries one stream for each schema, and
+`echo`, `hz` and `bw` read all of them: each stream is followed on its own, and one that
+joins the name after the tool started, a second version in a migration, is followed from
+its first sample (the tool hears the graph event of a publisher or subscriber that comes
+or goes, and lists the streams again once, at most every 100 ms; see "The cost of following
+streams" below). A tool started before any publisher waits, says so once, and follows
+whichever stream appears first. While a name has one stream the output is what it always
+was; once it has more, each stream says which it is:
+
+- `echo` prints a `# <type> (<md5 start>)` comment line after the `---` of each message, and
+  `echo -p` prints that line before the header of a stream. A row has the columns of the
+  header above it, so when the stream of the next row is another, its header is printed
+  again: no row is ever misaligned.
+- `hz` and `bw` keep one window for each stream and print a title line,
+  `<topic> [<type> (<md5 start>)]:`, before each stream's figures.
+
+`--type <type>` follows only the streams of that message type, and `--md5 <prefix>` only
+the streams whose MD5 starts with those hex digits (not case sensitive); together, the
+streams that satisfy both. A flag needs the stream's schema: a stream whose publisher gave
+no definition matches none, and is followed once a publisher that gave one joins it. One
+stream selected is printed as a topic of one stream. The flags are the same on all three.
 
 `echo -p` prints one CSV row for each message, as `rostopic echo -p` does. The
 first line is the header: `%time` and the column names. `%time` is the frame's
@@ -123,7 +144,15 @@ recording made before `hypha_msgs/NodeState` gained its cycle and counter fields
 the old hash, so a replay of it shows its nodes without a state. The node details show
 one line per cycle (steps, missed periods, last and max step in ms, overruns, output
 drops), the log counters, and per input the words `STAGNANT` and `IGNORED` and the
-`DROP/REJ/UNDEC` counts. Keys: `1` to `5`
+`DROP/REJ/UNDEC` counts. A topic of several streams is one row for each, each with its type
+and the start of its MD5 (`nav_msgs/Odometry (cd5e73d1)`), and one that joins later is
+followed by the graph event, not by listing the names again. An input binding shows its
+type and MD5, is judged by its own stream, and shows in `OTHER SCHEMAS` what its node found
+of the topic's other versions: `not checked` before the node's first check (and for a node
+whose default `WaitSet` does not run), `none`, or each version with a live publisher by type
+and MD5 start. A version that is published while the input has no publisher of its own is
+red, so a mismatch shows at a glance; the node list's `INPUTS` column adds `1 OTHER VERSION`
+to a waiting or stale count. Keys: `1` to `5`
 select a view, `j`/`k` or the arrows move, `PgUp`/`PgDn` move a page and `Home`/`End`
 jump to the ends, `Enter` opens the inspector, `/` searches, `s` changes the sort
 (by name first, then bandwidth, rate, messages), `Space` pauses, `q` quits. It exits 0
@@ -223,10 +252,40 @@ several nodes.
 
 Reads the transport's own node registry within `HYPHA_DOMAIN`. `info` shows
 the domain and the `/<node>/state` topic for C++ cycle input health; observe it
-with `hypha topic echo`. Rust app nodes do not publish that state.
+with `hypha topic echo`. Rust app nodes do not publish that state. `info` lists no
+inputs, so it shows no stream or version: `hypha top` does.
 
 Where the backend cannot supply a
 detail, the tool prints that it is unavailable rather than inventing a value.
+
+### Following streams
+
+`hypha topic echo`, `hz`, `bw`, `hypha record`, `hypha top`, `hypha foxglove` and the ROS 1
+bridge's automatic mode read topics they were not told the schema of, so each reads the
+streams that exist when its subscription is made. To follow a topic name through a
+migration they all use one follower (`hypha_node::sdk::StreamFollower`): it opens one
+subscription for each stream (a topic name and a schema hash) that matches its patterns
+and the `--type`/`--md5` flags, and one for each stream that joins later.
+
+It learns of a new stream from the graph event, the one a node's own housekeeping hears:
+every publisher and subscriber that is created or dropped notifies it. The follower opens
+a listener of the event before its first listing, so no stream falls between the two, and
+asks it on the tool's own thread, one non-blocking read per pass of the tool's loop. It
+lists the streams again only when the event fired, at most once per 100 ms and at most one
+fifth of its time (the next listing waits four times as long as the last took), and after
+2 s with no event, in case a notification was lost (the sender logs a failed one). A stream
+is subscribed by its schema hash without a listing of its own, so a stream whose
+publisher gave no definition is read too; its type is looked up only for a `--type` or
+`--md5` flag, and for a label.
+
+The cost on the tool's thread, measured in a release build on a loaded development
+machine (load average 15): a pass with nothing to learn takes 1 µs (4 to 13 µs in a debug
+build); a listing takes 70 ms with one stream and 120 ms with 100 (it reads the state of
+every service of the domain), and the first listing that follows 100 streams, with their
+subscriptions, 170 ms. The listing blocks the loop, and a fast topic can overrun its queue
+meanwhile: the recorder counts and reports that as a loss, as it does any. Each followed
+stream takes one observer slot of its service for each tool (`RESERVED_OBSERVER_SUBSCRIBERS`,
+3): a fourth tool on one stream is refused, and says so.
 
 ---
 
@@ -285,11 +344,24 @@ looping replay holds each pass with the same times again, in the order they were
 received; replay it from one pass with `--start-utc`/`--end-utc`. Payload sensor
 timestamps remain unchanged.
 
-A topic keeps the type of its first recorded frame: a later frame of another type is
-dropped and reported (`its type <type> differs from <type>, the type recorded for
-the topic`), and `--sync` fails on it. A topic whose schema cannot be resolved is
-reported. The recorder does not
-silently write that topic without a definition.
+**One channel for each stream.** The recorder follows streams, not names: a topic with two
+types, or two versions of one type, is two MCAP channels of one topic, each with its own
+schema (the definition of its stream) and its `md5sum` metadata, and a stream that joins a
+followed name after the recording began, a second version in a migration, is recorded from
+its first sample. It says `hypha record: following <n> more stream(s), <m> in all` on
+standard error when one joins. A recording of one type on a topic is the file the recorder
+always wrote, byte for byte (MCAP library 0.25; with more than one channel the library
+writes the records of its summary in hash-map order, so two runs differ in the order of
+records, not in content). The counts under `Recorded messages:` and a loss line are per
+stream: a topic of several streams is shown as `<topic> [<type> (<md5 start>)]`, one of one
+as `<topic>`. Under `--sync` a second stream is no failure, since each stream is a channel of
+its own: the recorder follows a stream that came before a chunk's data before it answers
+the chunk, and a stream that appears during a chunk is recorded from the chunk after the
+one in which it was seen. What stays by name: `--topics <name>` and `--sync`'s wait for
+"every `--topics` entry has a publisher" are satisfied by a stream of any schema. A sample
+that cannot be recorded (its schema unresolved, no framework stamp) is dropped and reported
+once for its stream, and fails a `--sync` recording; the recorder does not silently write a
+stream without a definition.
 
 ### `hypha play` — replay a recording
 
@@ -310,6 +382,18 @@ processing budget.
 A topic whose service a publisher opened keeps that service's queue, which is
 8 by default. A subscriber cannot create the service: it waits for the topic to be
 published. The player then publishes it with 8 and says so.
+
+A recording that holds two channels of one topic, two types or two versions, is replayed
+on two streams: the player makes one publisher for each topic and MD5 (two channels of
+the same MD5 share one), so a typed subscriber receives exactly the frames of its version,
+in order. Under `--clock` the chunk and queue rules count each stream on its own: a chunk
+is split before the message that would overflow the smallest subscriber queue of *its*
+stream (`hypha play: chunks shortened on '<topic>' [<type> (<md5 start>)]`), and the count of
+published messages is per stream, each stream under its topic and its type and MD5 start
+when the topic has several. What stays by name, on the cautious side: `--topics` selects a
+name, so every stream of it; the recording's own `/clock` is skipped under `--clock`
+whatever its schema; `/clock` already published by any process, and a replayed name that
+another process already publishes in any schema, are refused or reported as before.
 
 A replayed topic that cannot be published refuses the start: a topic whose type has no
 resolvable MD5, or whose publisher is refused. The player lists each one on standard
