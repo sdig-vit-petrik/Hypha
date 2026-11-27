@@ -553,6 +553,14 @@ fn store_health(
         });
     }
     drop(counts);
+    let mut others = crate::locked(&cycle.snapshots.other_schemas);
+    if others.len() != inputs.len() {
+        others.clear();
+        others.extend(inputs.iter().map(|input| {
+            input.subscriber.as_deref().map(|subscriber| Arc::clone(&subscriber.other_schemas))
+        }));
+    }
+    drop(others);
     let mut bindings = crate::locked(&cycle.snapshots.bindings);
     for (index, item) in bindings.iter_mut().enumerate() {
         let Some(capture) = runtime.binding_capture(index) else {

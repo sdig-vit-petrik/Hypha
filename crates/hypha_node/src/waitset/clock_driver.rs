@@ -57,12 +57,11 @@ pub(crate) fn attach_driver_cycle(
         }
     };
     let node = set.node();
-    // One clock per bus: another process that publishes `/clock` would fight this one.
-    let probe =
-        crate::subscriber::create_sim_clock_subscriber(&node.transport, &node.introspection)?;
-    let publishers = probe.port.publisher_count().map_err(Error::from)?;
-    drop(probe);
-    if publishers > 0 {
+    // One clock per bus: another process that publishes `/clock` would fight this one,
+    // whatever schema it sends it with, as `hypha play` judges it.
+    let listed = node.transport.list_service_ports().map_err(Error::from)?;
+    let taken = listed.iter().any(|stream| stream.name == "/clock" && stream.publishers > 0);
+    if taken {
         log::error!(target: "hypha", "hypha: clock driver '{}' is refused: another process already publishes /clock in this domain", registration.name());
         return Err(Error::InvalidState);
     }

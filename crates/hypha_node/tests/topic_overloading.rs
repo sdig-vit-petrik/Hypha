@@ -32,14 +32,14 @@ const SECOND: Kind = Kind {
     definition: "int32 value\nstring label\n",
 };
 
-/// Version 1 of a message under migration: the same type name as [`VERSION_2`].
+/// Version 1 of a message under migration: the same type name as [`VERSION_2`], one field.
 const VERSION_1: Kind = Kind {
     data_type: "overload_test/Reading",
-    md5: "581e4b1bda6a172aa19e1038a38e01eb",
-    definition: "int32 value\nstring label\n",
+    md5: "b3087778e93fcd34cc8d65bc54e850d1",
+    definition: "int32 value\n",
 };
 
-/// Version 2: one field more, so another MD5.
+/// Version 2: two fields more, so another MD5 and a longer payload.
 const VERSION_2: Kind = Kind {
     data_type: "overload_test/Reading",
     md5: "f79835def461350458ead76f07016dd7",
@@ -192,8 +192,8 @@ fn a_frame_of_another_schema_than_its_stream_is_still_a_schema_mismatch() {
     let mut v1_in = typed_subscriber(&bus, &topic, &VERSION_1);
 
     let now = u64::try_from(hypha_time::steady_now().nanos()).expect("a steady time");
-    let mut loan = wrong.loan(8).expect("loan");
-    loan.as_mut_bytes().copy_from_slice(&payload_of(&VERSION_2, 1));
+    let mut loan = wrong.loan(4).expect("loan");
+    loan.as_mut_bytes().copy_from_slice(&payload_of(&VERSION_1, 1));
     let metadata = hypha_wire::frame::FrameMetadata {
         schema_hash: schema_hash(&VERSION_2),
         publisher_id: 1,
@@ -310,9 +310,19 @@ fn overload_peer_publishes_one_type() {
     }
 }
 
-/// A payload of `kind` tagged `tag`: four bytes for the first type, eight for the others.
+/// A payload of `kind` tagged `tag`, of a length of its own: four bytes for the first
+/// type and version 1, sixteen for version 2, eight for the second type.
 fn payload_of(kind: &Kind, tag: u8) -> Vec<u8> {
-    if kind.md5 == FIRST.md5 { vec![tag, 0, 0, 0] } else { vec![tag, 0, 0, 0, 0, 0, 0, 0] }
+    let length = match kind.md5 {
+        md5 if md5 == FIRST.md5 || md5 == VERSION_1.md5 => 4,
+        md5 if md5 == VERSION_2.md5 => 16,
+        _ => 8,
+    };
+    let mut payload = vec![0; length];
+    if let Some(first) = payload.first_mut() {
+        *first = tag;
+    }
+    payload
 }
 
 /// A typed subscriber of `kind` on `topic`, once a publisher opened the stream of `kind`:
@@ -384,42 +394,43 @@ fn two_processes_publishing_two_types_on_one_name_are_read_by_type() {
     assert_eq!((first_seen.refusals, second_seen.refusals), (0, 0), "no frame of the other type");
 }
 
-/// A migration: version 1 runs, version 2 joins from another process on the same topic,
-/// each pair talks and nothing is counted as a fault; then version 1's publisher leaves and
-/// its subscriber, which keeps running, has no publisher while version 2 still flows.
+/// A migration, each publisher in a process of its own: version 1 runs, version 2 joins
+/// on the same topic, each reader gets its own version alone and nothing is counted as a
+/// fault; then version 1's publisher goes away and its reader, which keeps running, has
+/// no publisher while version 2 still flows.
 #[test]
 fn two_versions_of_one_type_share_a_topic_through_a_migration() {
     let bus = BusNode::new(&unique_name("overload_migration")).expect("node");
     let topic = format!("/overload/{}", unique_name("migration"));
-    let mut v1_out = publisher(&bus, &topic, &VERSION_1);
-    let mut v1_in = typed_subscriber(&bus, &topic, &VERSION_1);
-    for tag in 0_u8..3 {
-        assert!(v1_out.publish(&payload_of(&VERSION_1, tag)));
-    }
-    assert_eq!(drain_until(&mut v1_in, 3).refusals, 0);
-
-    let mut peer = start_peer(&topic, "version_2", 400);
-    let mut v2_in = subscribe_once_published(&bus, &topic, &VERSION_2);
-    for tag in 3_u8..6 {
-        assert!(v1_out.publish(&payload_of(&VERSION_1, tag)));
-    }
+    let mut v1_peer = start_peer(&topic, "version_1", 400);
+    let mut v1_in = subscribe_once_published(&bus, &topic, &VERSION_1);
     let v1_seen = drain_until(&mut v1_in, 3);
+
+    let mut v2_peer = start_peer(&topic, "version_2", 400);
+    let mut v2_in = subscribe_once_published(&bus, &topic, &VERSION_2);
     let v2_seen = drain_until(&mut v2_in, 3);
-    assert_eq!(
-        v1_seen.payloads,
-        (3_u8..6).map(|tag| payload_of(&VERSION_1, tag)).collect::<Vec<_>>()
-    );
-    assert!(v2_seen.payloads.iter().all(|payload| payload.len() == 8), "{v2_seen:?}");
+    let v1_beside = drain_until(&mut v1_in, 3);
+    for (seen, length) in [(&v1_seen, 4), (&v1_beside, 4), (&v2_seen, 16)] {
+        assert!(seen.payloads.iter().all(|payload| payload.len() == length), "{seen:?}");
+    }
 
-    drop(v1_out);
+    let _ = v1_peer.kill();
+    let _ = v1_peer.wait();
+    let deadline = deadline_in(20);
+    while v1_in.publisher_count().expect("count") > 0 {
+        assert!(Instant::now() < deadline, "version 1's publisher never went away");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drain(&mut v1_in);
     let v2_later = drain_until(&mut v2_in, 3);
+    std::thread::sleep(Duration::from_millis(100));
     let v1_later = drain(&mut v1_in);
-    let _ = peer.kill();
-    let _ = peer.wait();
+    let _ = v2_peer.kill();
+    let _ = v2_peer.wait();
 
-    assert_eq!(v1_in.publisher_count().expect("count"), 0, "version 1 has no publisher left");
     assert!(v1_later.payloads.is_empty(), "{v1_later:?}");
-    for (subscriber, seen) in [(&v1_in, &v1_seen), (&v2_in, &v2_later)] {
+    assert!(v2_later.payloads.iter().all(|payload| payload.len() == 16), "{v2_later:?}");
+    for (subscriber, seen) in [(&v1_in, &v1_beside), (&v2_in, &v2_later)] {
         assert_eq!(seen.refusals, 0);
         assert_eq!(metric(subscriber, "integrity.schema_mismatch"), 0);
     }

@@ -73,6 +73,7 @@ fn create_framework_subscriber(
         attached: AtomicBool::new(false),
         validator: FrameValidator::new(Some(schema_hash)),
         no_publisher_watch: NoPublisherWatch::new(Duration::ZERO, std::time::Instant::now()),
+        other_schemas: Arc::default(),
         rejection_report: super::RejectionReport::default(),
         introspection: crate::introspection::IntrospectionRow::new(
             introspection,

@@ -154,7 +154,7 @@ struct Metric
 };
 
 /// @brief The counters of one subscriber, read one by one, not at one instant. Each but
-///        `loanBudget` and `loanHeld` only grows, and wraps.
+///        `loanBudget`, `loanHeld` and `otherSchemas` only grows, and wraps.
 struct SubscriberMetrics
 {
     /// Frames refused because their sequence was not newer than the last accepted one of
@@ -175,6 +175,10 @@ struct SubscriberMetrics
     uint64_t loanHeld{0};
     /// Owning receives refused because the budget was full.
     uint64_t loanRefused{0};
+    /// The other schemas (MD5s) of the topic that a publisher sends now, as the run last
+    /// checked, once a second: a fact about the topic, not a fault. Nonzero while the own
+    /// version is published too means a publisher of another version is on the topic.
+    uint64_t otherSchemas{0};
 
     bool operator==(const SubscriberMetrics&) const = default;
 };

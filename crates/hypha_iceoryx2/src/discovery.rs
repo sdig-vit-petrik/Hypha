@@ -20,16 +20,19 @@ fn is_topic(pattern: &StaticPattern) -> bool {
     }
 }
 
-/// Every stream of the domain, with the name of its data service. A data service whose
-/// name is no stream's, made by another hypha build, is left out.
+/// Every stream of the domain, with the name of its data service. A data service with the
+/// hypha frame header whose name is no stream's was made by a hypha build before the
+/// streams: it is left out, and the first listing of the process that meets one warns.
 pub(crate) fn topic_streams() -> Result<Vec<(String, Stream)>, PortError> {
     let config = crate::domain::config()?;
     let mut streams = Vec::new();
+    let mut foreign = 0_usize;
     Ipc::list(config, |details| {
         if is_topic(details.static_details.messaging_pattern()) {
             let name = details.static_details.name().to_string();
-            if let Some(stream) = Stream::of_service(&name) {
-                streams.push((name, stream));
+            match Stream::of_service(&name) {
+                Some(stream) => streams.push((name, stream)),
+                None => foreign = foreign.saturating_add(1),
             }
         }
         CallbackProgression::Continue
@@ -38,7 +41,19 @@ pub(crate) fn topic_streams() -> Result<Vec<(String, Stream)>, PortError> {
         log::error!(target: "hypha/transport", "hypha_iceoryx2: cannot list the services of the domain: {cause:?}");
         PortError::Backend(5)
     })?;
+    warn_of_another_build(foreign);
     Ok(streams)
+}
+
+/// Warns once per process that `foreign` topics of another hypha build are in the domain.
+fn warn_of_another_build(foreign: usize) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if foreign == 0 || WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    log::warn!(target: "hypha/transport",
+        "hypha: {foreign} topics of another hypha build are in this domain: they are not visible \
+         to this build; run one hypha build per domain");
 }
 
 /// Discovered node metadata from iceoryx2 registry.

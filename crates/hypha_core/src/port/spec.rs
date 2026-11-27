@@ -9,6 +9,12 @@ use crate::port::error::PortError;
 /// The transport sets it on every publisher it creates.
 pub const PUBLISHER_LOANED_SAMPLES: usize = 2;
 
+/// The longest topic name, in bytes without its leading `/`. The schema store names the
+/// directory of a topic by the whole name in hex, two characters a byte, and a file name
+/// holds 255 bytes: 2 × (1 + 126) = 254. A stream's service name, the topic with `@` and
+/// 16 hex digits of the schema hash in iceoryx2's 255 bytes, would allow 238.
+pub const MAX_TOPIC_NAME_BYTES: usize = 126;
+
 /// The largest publisher count a declared policy may name.
 pub const MAX_POLICY_PUBLISHERS: usize = 256;
 
@@ -233,6 +239,7 @@ impl TopicSpec {
         // Only the bare product name is reserved; applications publish below it.
         let is_reserved = self.name == "/hypha";
         let has_invalid_content = bare.is_empty()
+            || bare.len() > MAX_TOPIC_NAME_BYTES
             || is_reserved
             || bare.contains('*')
             || bare.chars().any(char::is_whitespace)

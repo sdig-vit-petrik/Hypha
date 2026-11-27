@@ -134,6 +134,7 @@ impl Iox2Transport {
     /// [`PortError::InvalidTopic`] when the name is empty or refused, and the
     /// other [`PortError`] values that refuse a policy or a service.
     pub fn publish(&self, spec: &TopicSpec) -> Result<Iox2Publisher, PortError> {
+        crate::stream::refuse_overlong(&spec.name)?;
         if !spec.has_valid_public_name() {
             return Err(PortError::InvalidTopic);
         }
@@ -174,6 +175,7 @@ impl Iox2Transport {
             }
         };
         let service = Arc::new(opened.service);
+        crate::schema::write_stream_marker(&stream, &spec.data_type, &spec.md5)?;
         if spec.has_schema_identity() {
             crate::schema::write_schema_file(spec)?;
         }
@@ -477,6 +479,7 @@ impl Iox2Transport {
         if !spec.is_valid() {
             return Err(PortError::InvalidTopic);
         }
+        crate::stream::refuse_overlong(&spec.name)?;
         let is_pattern = spec.name.contains('*');
         if is_pattern || spec.schemas == SchemaScope::Every {
             let is_valid_name = if is_pattern {
@@ -514,6 +517,7 @@ impl Iox2Transport {
             QosRequest::Undeclared => qos::observer_slots(&spec.name),
         };
         let service = opened.service;
+        crate::schema::write_stream_marker(&stream, &spec.data_type, &spec.md5)?;
         // A typed subscriber lets the domain resolve its schema even for a relayed publisher.
         if spec.has_schema_identity() {
             crate::schema::write_schema_file(spec)?;

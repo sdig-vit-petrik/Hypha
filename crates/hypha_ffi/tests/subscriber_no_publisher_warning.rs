@@ -229,6 +229,8 @@ fn the_warning_is_said_again_when_the_published_schemas_change() {
         "float64 target\n",
     );
     run_for(fixture.waitset, 1_500_000_000);
+    assert_eq!(lines_with(&fixture, OTHERS_MARKER).len(), 1, "at most one line in ten seconds");
+    run_for(fixture.waitset, 9_500_000_000);
     let lines = lines_with(&fixture, OTHERS_MARKER);
     assert_eq!(lines.len(), 2, "{lines:?}");
     assert!(
@@ -241,7 +243,7 @@ fn the_warning_is_said_again_when_the_published_schemas_change() {
         hypha_publisher_destroy(version_2);
         hypha_publisher_destroy(other);
     }
-    run_for(fixture.waitset, 1_500_000_000);
+    run_for(fixture.waitset, 11_000_000_000);
     assert_eq!(warning_lines(&fixture).len(), 1, "no other schema is left: the plain warning");
     unsafe {
         hypha_node_destroy(fixture.node);

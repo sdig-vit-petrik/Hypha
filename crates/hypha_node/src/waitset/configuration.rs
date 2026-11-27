@@ -154,7 +154,7 @@ fn attach_housekeeping(waitset: &HyphaWaitSet) -> Result<(), Error> {
     // with no listener to hear it. One replay now covers those joins.
     let transport = &waitset.node().transport;
     let graph = transport.graph_listener().map_err(Error::from)?;
-    attach_framework(waitset, Some(graph), Trigger::Event, Target::LatchReplay)?;
+    attach_framework(waitset, vec![graph], Trigger::Event, Target::LatchReplay)?;
     transport.replay_latched();
 
     attach_sim_clock(waitset)?;
@@ -182,22 +182,23 @@ fn attach_input_listener(
 ) -> Result<(), Error> {
     let subscriber_guard = crate::locked(subscriber_mutex);
     let subscriber = subscriber_guard.as_deref().ok_or(Error::InvalidState)?;
-    let Some(listener) = subscriber.port.open_listener().map_err(Error::from)? else {
+    let listeners = subscriber.port.open_listeners().map_err(Error::from)?;
+    if listeners.is_empty() {
         return Err(Error::InvalidState);
-    };
-    attach_framework(waitset, Some(listener), Trigger::Event, Target::SimClock)
+    }
+    attach_framework(waitset, listeners, Trigger::Event, Target::SimClock)
 }
 
 /// Attach one framework registration with no caller context.
 fn attach_framework(
     waitset: &HyphaWaitSet,
-    listener: Option<hypha_iceoryx2::Iox2Listener>,
+    listeners: Vec<hypha_iceoryx2::Iox2Listener>,
     trigger: Trigger,
     target: Target,
 ) -> Result<(), Error> {
     let mut registrations =
         waitset.registrations.try_borrow_mut().map_err(|_| Error::InvalidState)?;
-    let id = waitset.native_attach(listener, trigger)?;
+    let id = waitset.native_attach(listeners, trigger)?;
     registrations.push(Registration::new(id, target));
     Ok(())
 }

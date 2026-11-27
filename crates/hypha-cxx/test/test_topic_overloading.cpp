@@ -663,6 +663,9 @@ TEST_F(OverloadingFixture, TwoVersionsOfOneTypeShareATopicAndAReaderOfTheMissing
     EXPECT_EQ(secondVersion, std::vector<int>{20});
     EXPECT_EQ(cycle.reading.received(), 1U) << "version 1 reads version 1 alone";
     EXPECT_TRUE(refusedNothing(v2Reader.metrics()));
+    ASSERT_TRUE(runUntil(*this->node, [&v2Reader] {
+        return v2Reader.metrics().otherSchemas == 1U;
+    })) << "the reader of version 2 shows version 1 published beside it";
 
     ::testing::internal::CaptureStderr();
     v1.reset();
@@ -688,6 +691,9 @@ TEST_F(OverloadingFixture, TwoVersionsOfOneTypeShareATopicAndAReaderOfTheMissing
     EXPECT_EQ(state->inputs[0].md5, "581e4b1bda6a172aa19e1038a38e01eb");
     EXPECT_EQ(state->inputs[0].verdict, hypha_msgs::RequiredInput::STALE);
     EXPECT_EQ(state->inputs[0].rejected, 0U);
+    ASSERT_EQ(state->inputs[0].other_schemas.size(), 1U) << "the row names the other version";
+    EXPECT_EQ(state->inputs[0].other_schemas[0].data_type, "hypha_test/Reading");
+    EXPECT_EQ(state->inputs[0].other_schemas[0].md5, "f79835def461350458ead76f07016dd7");
 
     auto back = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
     ASSERT_TRUE(runUntil(*this->node, [&] {
@@ -695,4 +701,75 @@ TEST_F(OverloadingFixture, TwoVersionsOfOneTypeShareATopicAndAReaderOfTheMissing
         return cycle.lastValue == 11;
     }));
     EXPECT_EQ(cycle.verdict, hypha::InputVerdict::Usable);
+}
+
+/// A cycle whose Latest of version 1 has no time limit.
+class UnlimitedCycle final : public hypha_test::StepCycle
+{
+  public:
+    explicit UnlimitedCycle(const std::string& topic)
+        : hypha_test::StepCycle("unlimited_cycle")
+        , reading(*this, "reading", hypha::Topic{topic}, hypha::unsupervised)
+    {
+    }
+
+    hypha::Latest<Reading> reading;
+    hypha::InputVerdict    verdict{hypha::InputVerdict::NeverArrived};
+    std::optional<int>     lastValue;
+
+    void step(const hypha::CycleTime&) override
+    {
+        this->verdict = this->reading.verdict();
+        if (this->reading.usable()) {
+            this->lastValue = (*this->reading).value;
+        }
+    }
+};
+
+// A migration gone wrong: the peer of a node is replaced by one built from version 2. An
+// input with no time limit stays usable on the last value of version 1, so its verdict
+// tells nothing; the ~/state row and the subscriber counters show that another version is
+// what is published now.
+TEST_F(OverloadingFixture, APublisherReplacedByAnotherVersionIsShownBesideAnUnlimitedInput)
+{
+    const std::string unlimitedTopic = testTopic("/unlimited");
+    std::vector<int>  plain;
+    auto v1 = std::optional(hypha::Node().advertise<Reading>(hypha::Topic{unlimitedTopic}));
+    auto plainReader = hypha::Node().subscribe<Reading>(
+        hypha::Topic{unlimitedTopic}, [&plain](const hypha::MessagePtr<Reading>& message) {
+            plain.push_back(message->value);
+        }
+    );
+    UnlimitedCycle cycle(unlimitedTopic);
+    cycle.setRate(hypha::Hz(100.0));
+    ASSERT_TRUE(cycle.start(*this->node).has_value());
+
+    ASSERT_TRUE(v1->publish(reading(7)));
+    ASSERT_TRUE(runUntil(*this->node, [&] {
+        return cycle.lastValue == 7 && !plain.empty();
+    }));
+    v1.reset();
+    auto      v2 = hypha::Node().advertise<ReadingV2>(hypha::Topic{unlimitedTopic});
+    ReadingV2 heavier;
+    heavier.value = 8;
+    const auto shown = [&plainReader] {
+        const std::expected<hypha_msgs::NodeState, hypha::Status> state = hypha::nodeState();
+        return state.has_value() && state->inputs.size() == 1U
+            && state->inputs[0].other_schemas.size() == 1U
+            && plainReader.metrics().otherSchemas == 1U;
+    };
+    ASSERT_TRUE(runUntil(*this->node, [&] {
+        static_cast<void>(v2.publish(heavier));
+        return shown();
+    }));
+
+    EXPECT_EQ(cycle.verdict, hypha::InputVerdict::Usable) << "no limit: the old value stays usable";
+    EXPECT_EQ(cycle.lastValue, 7);
+    EXPECT_EQ(plain, std::vector<int>{7});
+    const std::expected<hypha_msgs::NodeState, hypha::Status> state = hypha::nodeState();
+    ASSERT_TRUE(state.has_value());
+    EXPECT_EQ(state->inputs[0].verdict, hypha_msgs::RequiredInput::USABLE);
+    EXPECT_EQ(state->inputs[0].md5, "581e4b1bda6a172aa19e1038a38e01eb");
+    EXPECT_EQ(state->inputs[0].other_schemas[0].md5, "f79835def461350458ead76f07016dd7");
+    EXPECT_TRUE(refusedNothing(plainReader.metrics()));
 }

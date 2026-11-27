@@ -78,7 +78,8 @@ fn a_reader_of_every_schema_reads_each_stream_that_exists() {
     let mut bytes = received(&reader);
     bytes.sort_unstable();
     assert_eq!(bytes, [1, 2]);
-    assert!(reader.open_listener().expect("listener").is_none(), "a set is polled");
+    let listeners = reader.open_listeners().expect("listeners");
+    assert_eq!(listeners.len(), 2, "a reader of every schema listens to each stream");
 }
 
 #[test]
@@ -149,13 +150,14 @@ fn a_subscriber_learns_which_other_schemas_of_its_topic_are_published() {
     let topic = format!("/{}", unique_name("overload_beside"));
     let reader = transport.subscribe(&first(&topic).with_qos(declared())).expect("reader");
     assert!(!reader.has_publisher_ports());
-    assert_eq!(reader.published_schemas_beside().expect("schemas"), []);
+    assert_eq!(reader.other_published_schemas().expect("schemas"), []);
 
     let second_out = transport.publish(&second(&topic)).expect("second publisher");
     assert!(!reader.has_publisher_ports(), "the other stream's publisher is not its own");
     assert_eq!(
-        reader.published_schemas_beside().expect("schemas"),
+        reader.other_published_schemas().expect("schemas"),
         [PublishedSchema {
+            schema_hash: hypha_wire::schema_hash_from_md5(SECOND_MD5).expect("hash"),
             data_type: "overload_test/Kind".to_owned(),
             md5: SECOND_MD5.to_owned()
         }]
@@ -164,7 +166,7 @@ fn a_subscriber_learns_which_other_schemas_of_its_topic_are_published() {
     let first_out = transport.publish(&first(&topic).with_qos(declared())).expect("first");
     assert!(reader.has_publisher_ports());
     drop(second_out);
-    assert_eq!(reader.published_schemas_beside().expect("schemas"), []);
+    assert_eq!(reader.other_published_schemas().expect("schemas"), []);
     drop(first_out);
 }
 

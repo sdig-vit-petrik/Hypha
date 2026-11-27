@@ -16,3 +16,7 @@ bool ignored
 uint64 dropped
 uint64 rejected
 uint64 undecodable
+# The other schemas of the topic that a publisher sends now: a publisher of one of
+# them sends nothing this input reads. Empty when every publisher of the topic
+# sends this input's schema. Not a fault by itself: a migration has two.
+hypha_msgs/TopicSchema[] other_schemas

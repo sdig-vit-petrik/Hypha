@@ -125,7 +125,7 @@ struct Control {
 pub struct Iox2WaitSet {
     /// Index-aligned with `registrations`. A guard borrows an entry here for
     /// the whole run, so nothing in this collection may be mutated during one.
-    listeners: Vec<Option<Listener<Ipc>>>,
+    listeners: Vec<Vec<Listener<Ipc>>>,
     registrations: Vec<Registration>,
     control: Control,
     stop: Arc<AtomicBool>,
@@ -173,8 +173,8 @@ impl Iox2WaitSet {
         Ok(id)
     }
 
-    /// Attach a listener under `trigger`.
-    /// A trigger that needs a listener refuses a missing one rather than poll.
+    /// Attach `listeners` under `trigger`: an event on any of them makes the registration
+    /// ready. A trigger that needs a listener refuses none rather than poll.
     ///
     /// # Errors
     /// Returns [`PortError::ResourceLimit`] when the registration limit is
@@ -182,17 +182,17 @@ impl Iox2WaitSet {
     /// listener that was not supplied.
     pub fn attach(
         &mut self,
-        listener: Option<Listener<Ipc>>,
+        listeners: Vec<Listener<Ipc>>,
         trigger: Trigger,
     ) -> Result<AttachmentId, PortError> {
         if self.registrations.len() >= MAX_REGISTRATIONS {
             return Err(PortError::ResourceLimit);
         }
-        if trigger == Trigger::Event && listener.is_none() {
+        if trigger == Trigger::Event && listeners.is_empty() {
             return Err(PortError::InvalidTopic);
         }
         let id = self.claim_id()?;
-        self.listeners.push(listener);
+        self.listeners.push(listeners);
         self.registrations.push(Registration { id, trigger });
         Ok(id)
     }

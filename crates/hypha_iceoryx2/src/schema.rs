@@ -1,10 +1,11 @@
 //! Content-addressed file store and synchronous resolution for schemas, at
 //! `<config.global.root_path()>/<config.global.prefix>_hypha_schemas/<hex(topic)>/<schema_hash:016x>`.
 //!
-//! A schema lives as long as its stream: the endpoint that drops the last port of a
-//! stream removes its file, and the topic's directory once it is empty
-//! ([`SchemaRelease`]). The files of a topic are also the list of its schemas
-//! ([`topic_schemas`]). One lock file
+//! Every stream also has a marker, `<schema_hash:016x>.stream`, that names its type and
+//! MD5, written by each endpoint of the stream whether or not it has a definition: the
+//! markers of a topic are the list of its streams ([`topic_streams`]). A record and a
+//! marker live as long as their stream: the endpoint that drops the last port of a stream
+//! removes both, and the topic's directory once it is empty ([`SchemaRelease`]). One lock file
 //! per domain orders that removal against writes, and every wait for it is bounded
 //! by [`SCHEMA_LOCK_TIMEOUT`] so a frozen holder blocks no node.
 
@@ -196,12 +197,15 @@ fn release_schema(stream: &Stream) -> Result<(), String> {
     if stream_in_use(stream)? {
         return Ok(());
     }
-    let file = schema_file_path(&stream.topic, stream.schema_hash)
+    let record = schema_file_path(&stream.topic, stream.schema_hash)
         .map_err(|cause| format!("{cause:?}"))?;
-    match std::fs::remove_file(&file) {
-        Ok(()) => {}
-        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {}
-        Err(cause) => return Err(format!("cannot remove {}: {cause}", file.display())),
+    let marker = marker_path(stream).map_err(|cause| format!("{cause:?}"))?;
+    for file in [record, marker] {
+        match std::fs::remove_file(&file) {
+            Ok(()) => {}
+            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {}
+            Err(cause) => return Err(format!("cannot remove {}: {cause}", file.display())),
+        }
     }
     remove_empty_dir(&topic_dir(&stream.topic).map_err(|cause| format!("{cause:?}"))?)?;
     remove_empty_dir(&schema_dir().map_err(|cause| format!("{cause:?}"))?)
@@ -223,46 +227,98 @@ fn remove_empty_dir(dir: &Path) -> Result<(), String> {
     }
 }
 
-/// One schema a topic carries, from its record.
+/// The marker of `stream`: `<hex(topic)>/<schema_hash:016x>.stream`.
+fn marker_path(stream: &Stream) -> Result<PathBuf, PortError> {
+    Ok(topic_dir(&stream.topic)?.join(format!("{:016x}{MARKER_SUFFIX}", stream.schema_hash)))
+}
+
+/// The file name ending of a stream marker.
+const MARKER_SUFFIX: &str = ".stream";
+
+/// Writes the marker of `stream`, which names `data_type` and `md5`, unless it exists.
+///
+/// The caller has opened the stream's data service first, so a [`SchemaRelease`] that
+/// runs meanwhile keeps the file.
+pub(crate) fn write_stream_marker(
+    stream: &Stream,
+    data_type: &str,
+    md5: &str,
+) -> Result<(), PortError> {
+    let path = marker_path(stream)?;
+    let failed = |cause: String| {
+        log::error!(target: "hypha/schema",
+            "the stream marker of topic '{}' was not written to {}: {cause}",
+            stream.topic, path.display());
+        PortError::Backend(3)
+    };
+    let _lock = lock_schemas(LockMode::Shared).map_err(failed)?;
+    if path.exists() {
+        return Ok(());
+    }
+    atomic_write_file(&path, format!("{data_type}\n{md5}\n").as_bytes())
+        .map_err(|cause| failed(cause.to_string()))
+}
+
+/// One stream of a topic, as its marker names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TopicSchema {
-    /// The schema hash of its stream.
+pub(crate) struct MarkedStream {
+    /// The schema hash of the stream.
     pub(crate) schema_hash: u64,
-    /// The message type.
+    /// The message type its endpoints named; empty for none.
     pub(crate) data_type: String,
-    /// The message MD5.
+    /// The MD5 its endpoints named; empty for the stream of no schema.
     pub(crate) md5: String,
 }
 
-/// The schemas recorded for `topic`: one for each of its streams that an endpoint with a
-/// definition opened. A record that does not parse is counted as an invalid record and
-/// left out.
+/// The time the stream list of `topic` last changed: the modification time of its
+/// directory, which adding or removing a marker sets. `None` when the topic has none.
 ///
 /// # Errors
 /// [`PortError`] when the domain configuration fails.
-pub(crate) fn topic_schemas(topic: &str) -> Result<Vec<TopicSchema>, PortError> {
+pub(crate) fn topic_streams_changed(
+    topic: &str,
+) -> Result<Option<std::time::SystemTime>, PortError> {
+    Ok(std::fs::metadata(topic_dir(topic)?).and_then(|metadata| metadata.modified()).ok())
+}
+
+/// The schema hashes of the markers of `topic`: one read of its directory.
+///
+/// # Errors
+/// [`PortError`] when the domain configuration fails.
+pub(crate) fn topic_stream_hashes(topic: &str) -> Result<Vec<u64>, PortError> {
     let Ok(entries) = std::fs::read_dir(topic_dir(topic)?) else {
         return Ok(Vec::new());
     };
-    let mut schemas = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(schema_hash) = name.to_str().and_then(|text| u64::from_str_radix(text, 16).ok())
-        else {
-            continue;
-        };
-        let Ok(bytes) = std::fs::read(entry.path()) else { continue };
-        let Ok(record) = parse_schema_record(&bytes) else {
-            INVALID_RECORDS.fetch_add(1, Ordering::Relaxed);
-            continue;
-        };
-        schemas.push(TopicSchema {
-            schema_hash,
-            data_type: record.data_type().to_owned(),
-            md5: record.md5().to_owned(),
-        });
-    }
-    Ok(schemas)
+    let hashes = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let digits = name.to_str()?.strip_suffix(MARKER_SUFFIX)?;
+            u64::from_str_radix(digits, 16).ok()
+        })
+        .collect();
+    Ok(hashes)
+}
+
+/// The stream of `schema_hash` of `topic`, as its marker names it; `None` when the marker
+/// is gone or does not hold a type and an MD5 line.
+///
+/// # Errors
+/// [`PortError`] when the domain configuration fails.
+pub(crate) fn read_stream_marker(
+    topic: &str,
+    schema_hash: u64,
+) -> Result<Option<MarkedStream>, PortError> {
+    let stream = Stream { topic: topic.to_owned(), schema_hash };
+    let Ok(text) = std::fs::read_to_string(marker_path(&stream)?) else {
+        return Ok(None);
+    };
+    let mut lines = text.lines();
+    let (Some(data_type), Some(md5)) = (lines.next(), lines.next()) else {
+        INVALID_RECORDS.fetch_add(1, Ordering::Relaxed);
+        return Ok(None);
+    };
+    Ok(Some(MarkedStream { schema_hash, data_type: data_type.to_owned(), md5: md5.to_owned() }))
 }
 
 /// Builds the fixed schema record frame for `spec`.

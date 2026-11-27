@@ -6,10 +6,25 @@
 //! read from the right, so every topic name, one with an `@` too, has one service name,
 //! and a service name gives its topic and hash back.
 
-use hypha_core::port::{PortError, TopicSpec};
+use hypha_core::port::{MAX_TOPIC_NAME_BYTES, PortError, TopicSpec};
 
 /// The digits of the schema hash in a stream's service name.
 const HASH_DIGITS: usize = 16;
+
+/// Refuses, and logs, a topic name too long for a stream's service name.
+///
+/// # Errors
+/// [`PortError::InvalidTopic`] for a name longer than [`MAX_TOPIC_NAME_BYTES`] after its `/`.
+pub(crate) fn refuse_overlong(topic: &str) -> Result<(), PortError> {
+    let bare = topic.strip_prefix('/').unwrap_or(topic);
+    if bare.len() <= MAX_TOPIC_NAME_BYTES {
+        return Ok(());
+    }
+    log::error!(target: "hypha/transport",
+        "hypha_iceoryx2: topic '{topic}' is refused: {} bytes after its '/', more than the {MAX_TOPIC_NAME_BYTES} \
+         a topic's schema directory and its streams' service names leave", bare.len());
+    Err(PortError::InvalidTopic)
+}
 
 /// One stream: a topic name and the schema hash of the frames it carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +49,8 @@ impl Stream {
     /// stream of this hypha build.
     pub(crate) fn of_service(service_name: &str) -> Option<Self> {
         let (bare, digits) = service_name.rsplit_once('@')?;
-        let is_hash = digits.len() == HASH_DIGITS && digits.bytes().all(|b| b.is_ascii_hexdigit());
+        let is_hash = digits.len() == HASH_DIGITS
+            && digits.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
         if bare.is_empty() || !is_hash {
             return None;
         }
@@ -82,7 +98,14 @@ mod tests {
 
     #[test]
     fn a_service_without_a_hash_suffix_is_no_stream() {
-        for name in ["odom", "odom@", "odom@123", "@0123456789abcdef", "odom@+123456789abcdef"] {
+        for name in [
+            "odom",
+            "odom@",
+            "odom@123",
+            "@0123456789abcdef",
+            "odom@+123456789abcdef",
+            "odom@0123456789ABCDEF",
+        ] {
             assert_eq!(Stream::of_service(name), None, "{name}");
         }
     }

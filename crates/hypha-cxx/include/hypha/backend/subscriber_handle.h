@@ -93,6 +93,7 @@ class SubscriberHandle
         metrics.loanBudget = raw.loan_budget;
         metrics.loanHeld = raw.loan_held;
         metrics.loanRefused = raw.loan_refused;
+        metrics.otherSchemas = raw.other_schemas;
         return metrics;
     }
 

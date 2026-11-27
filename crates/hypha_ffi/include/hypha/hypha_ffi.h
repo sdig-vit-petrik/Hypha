@@ -779,9 +779,9 @@ typedef struct HyphaSubscriberOptions {
   struct HyphaQos qos;
 } HyphaSubscriberOptions;
 
-// The counters of one subscriber, as `hypha_subscriber_counters` writes them: eight
-// `uint64_t`, 64 bytes, owned by the caller, with nothing to destroy. Every counter but
-// `loan_budget` and `loan_held` only grows, and wraps.
+// The counters of one subscriber, as `hypha_subscriber_counters` writes them: nine
+// `uint64_t`, 72 bytes, owned by the caller, with nothing to destroy. Every counter but
+// `loan_budget`, `loan_held` and `other_schemas` only grows, and wraps.
 typedef struct HyphaSubscriberCounters {
   // `integrity.sequence_gap`: frames refused because their sequence was not newer
   // than the last accepted one of their publisher. A lost frame is not one.
@@ -801,6 +801,10 @@ typedef struct HyphaSubscriberCounters {
   uint64_t loan_held;
   // `loan.refused`: owning receives refused because the budget was full.
   uint64_t loan_refused;
+  // `topic.other_schemas`: the other schemas (MD5s) of the subscriber's topic that a
+  // publisher sends now, as the last check of the run that drives the subscriber found
+  // them. A fact about the topic, not a fault count: a migration has two versions on it.
+  uint64_t other_schemas;
 } HyphaSubscriberCounters;
 
 // A transform a sender checks before it sends it: where the child sits in the parent,

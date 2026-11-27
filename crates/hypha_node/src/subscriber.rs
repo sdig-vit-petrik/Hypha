@@ -41,12 +41,41 @@ pub(crate) const MODE_SOURCE: u8 = 3;
 /// The node drains this framework input (`/clock`, `/clock_progress`) itself.
 pub(crate) const MODE_FRAMEWORK: u8 = 4;
 
+/// The other schemas of a subscriber's topic that a publisher sends, as its last check
+/// found them: a fact about the topic, not a fault. Its cycle's `~/state` row reads it
+/// too, so it is shared.
+#[derive(Debug, Default)]
+pub(crate) struct OtherSchemas {
+    published: std::sync::Mutex<Vec<hypha_iceoryx2::PublishedSchema>>,
+    /// `published.len()`, for the metric.
+    count: AtomicU64,
+}
+
+impl OtherSchemas {
+    fn set(&self, published: Vec<hypha_iceoryx2::PublishedSchema>) {
+        self.count.store(u64::try_from(published.len()).unwrap_or(u64::MAX), Ordering::Relaxed);
+        *crate::locked(&self.published) = published;
+    }
+
+    /// The other schemas published at the last check.
+    pub(crate) fn published(&self) -> Vec<hypha_iceoryx2::PublishedSchema> {
+        crate::locked(&self.published).clone()
+    }
+
+    /// How many other schemas were published at the last check.
+    pub(crate) fn count(&self) -> u64 {
+        self.count.load(Ordering::Relaxed)
+    }
+}
+
 /// The no-publisher warning of a subscriber. Once its stream has had no publisher for
 /// `after`, it warns, naming the other schemas of its topic that are published; it warns
-/// again when those change while its stream still has none. A publisher of its own stream
-/// re-arms it: a later absence warns again after `after`.
+/// again when those change while its stream still has none, at most once per
+/// [`NoPublisherWatch::QUIET`]. A publisher of its own stream re-arms it: a later absence
+/// warns again after `after`.
 #[derive(Debug)]
 struct NoPublisherWatch {
+    /// Zero: no warning. The stream and the other schemas are checked all the same.
     after: Duration,
     /// Host time of the last check; zero before the first.
     checked_nanos: AtomicU64,
@@ -61,6 +90,8 @@ struct WatchState {
     /// The other schemas the last warning named; `None` when it has not warned since the
     /// stream last had a publisher.
     reported: Option<Vec<hypha_iceoryx2::PublishedSchema>>,
+    /// Before this instant no further warning is written.
+    quiet_until: Option<std::time::Instant>,
 }
 
 /// What a check of a [`NoPublisherWatch`] decided.
@@ -68,32 +99,37 @@ struct WatchState {
 enum WatchDecision {
     /// Nothing to say now.
     Quiet,
-    /// The stream had no publisher for the delay: read the other schemas of the topic.
+    /// The stream had no publisher for the delay.
     Absent,
 }
 
 impl NoPublisherWatch {
-    /// A watch that warns after `after`, counted from `since`. Zero disables it.
+    /// The shortest time between two warnings of one subscriber.
+    const QUIET: Duration = Duration::from_secs(10);
+
+    /// A watch that warns after `after`, counted from `since`. Zero warns never.
     fn new(after: Duration, since: std::time::Instant) -> Self {
         Self {
             after,
             checked_nanos: AtomicU64::new(0),
-            state: std::sync::Mutex::new(WatchState { absent_since: Some(since), reported: None }),
+            state: std::sync::Mutex::new(WatchState {
+                absent_since: Some(since),
+                reported: None,
+                quiet_until: None,
+            }),
         }
     }
 
     /// How often the stream is checked: once a second, or once per `after` when that is
     /// shorter.
     fn check_nanos(&self) -> u64 {
-        u64::try_from(self.after.as_nanos()).unwrap_or(u64::MAX).clamp(1, 1_000_000_000)
+        let after = u64::try_from(self.after.as_nanos()).unwrap_or(u64::MAX);
+        if after == 0 { 1_000_000_000 } else { after.clamp(1, 1_000_000_000) }
     }
 
     /// True when a check is due at host time `now_nanos`. At most one caller gets `true`
-    /// per interval; a disabled watch never does.
+    /// per interval.
     fn due(&self, now_nanos: u64) -> bool {
-        if self.after.is_zero() {
-            return false;
-        }
         let last = self.checked_nanos.load(Ordering::Acquire);
         if last != 0 && now_nanos.saturating_sub(last) < self.check_nanos() {
             return false;
@@ -108,11 +144,12 @@ impl NoPublisherWatch {
     fn observe(&self, publisher: bool, now: std::time::Instant) -> WatchDecision {
         let mut state = crate::locked(&self.state);
         if publisher {
-            *state = WatchState { absent_since: None, reported: None };
+            state.absent_since = None;
+            state.reported = None;
             return WatchDecision::Quiet;
         }
         let since = *state.absent_since.get_or_insert(now);
-        if now.duration_since(since) < self.after {
+        if self.after.is_zero() || now.duration_since(since) < self.after {
             return WatchDecision::Quiet;
         }
         WatchDecision::Absent
@@ -123,14 +160,22 @@ impl NoPublisherWatch {
         crate::locked(&self.state).absent_since.is_none()
     }
 
-    /// True when `published`, the other schemas of the topic, differ from the last
-    /// warning's; it then becomes the last warning's.
-    fn changed(&self, published: Vec<hypha_iceoryx2::PublishedSchema>) -> bool {
+    /// True when a warning naming `published`, the other schemas of the topic, is due at
+    /// `now`: they differ from the last warning's and no warning was written in the last
+    /// [`Self::QUIET`]. They then become the last warning's.
+    fn report(
+        &self,
+        published: &[hypha_iceoryx2::PublishedSchema],
+        now: std::time::Instant,
+    ) -> bool {
         let mut state = crate::locked(&self.state);
-        if state.reported.as_ref() == Some(&published) {
+        let unchanged = state.reported.as_deref() == Some(published);
+        let quiet = state.quiet_until.is_some_and(|until| now < until);
+        if unchanged || quiet {
             return false;
         }
-        state.reported = Some(published);
+        state.reported = Some(published.to_vec());
+        state.quiet_until = now.checked_add(Self::QUIET);
         true
     }
 }
@@ -232,6 +277,8 @@ pub struct HyphaSubscriber {
     validator: FrameValidator,
     /// The warning when this subscriber's stream has no publisher.
     no_publisher_watch: NoPublisherWatch,
+    /// The other schemas of its topic that are published.
+    pub(crate) other_schemas: Arc<OtherSchemas>,
     /// Rate limit of the refused-frame warning.
     rejection_report: RejectionReport,
     /// The subscriber row of the node introspection, removed with this subscriber.
@@ -239,37 +286,34 @@ pub struct HyphaSubscriber {
 }
 
 impl HyphaSubscriber {
-    /// Warn when the stream has had no publisher for the warning delay, and again when
-    /// the other schemas published on the topic change while it still has none. Checks at
-    /// most once per second; while the stream has a publisher a check is one atomic read.
-    /// `now_nanos` is the host time the caller read.
+    /// Check the stream once per second at most: record the other schemas of the topic
+    /// that are published, and warn when the stream has had no publisher for the warning
+    /// delay, again when the published schemas change while it still has none. While the
+    /// stream has a publisher and the topic's stream list is unchanged, a check is a few
+    /// atomic reads and one read of the list's modification time. `now_nanos` is the host
+    /// time the caller read.
     pub(crate) fn check_no_publisher_warning(&self, now_nanos: u64) {
         let watch = &self.no_publisher_watch;
         if !watch.due(now_nanos) {
             return;
         }
-        let present = match self.has_publisher(watch.is_present()) {
-            Ok(present) => present,
+        let checked = self
+            .has_publisher(watch.is_present())
+            .and_then(|present| Ok((present, self.port.other_published_schemas()?)));
+        let (present, published) = match checked {
+            Ok(checked) => checked,
             Err(cause) => {
-                // Read again at the next due check; the warning is not decided on a failed read.
-                log::warn!(target: "hypha/subscriber", "hypha: cannot count the publishers of topic '{}': {cause:?}", self.topic);
+                // Read again at the next due check; nothing is decided on a failed read.
+                log::warn!(target: "hypha/subscriber", "hypha: cannot check the streams of topic '{}': {cause:?}", self.topic);
                 return;
             }
         };
-        if watch.observe(present, std::time::Instant::now()) == WatchDecision::Quiet {
-            return;
+        let now = std::time::Instant::now();
+        let absent = watch.observe(present, now) == WatchDecision::Absent;
+        if absent && watch.report(&published, now) {
+            log::warn!(target: "hypha/subscriber", "{}", self.no_publisher_line(&published, watch.after));
         }
-        let published = match self.port.published_schemas_beside() {
-            Ok(published) => published,
-            Err(cause) => {
-                log::warn!(target: "hypha/subscriber", "hypha: cannot list the schemas of topic '{}': {cause:?}", self.topic);
-                return;
-            }
-        };
-        let line = self.no_publisher_line(&published, watch.after);
-        if watch.changed(published) {
-            log::warn!(target: "hypha/subscriber", "{line}");
-        }
+        self.other_schemas.set(published);
     }
 
     /// True when the stream has a publisher. A port is one while the stream `was_present`;
@@ -520,6 +564,7 @@ pub fn subscribe_typed(
             no_publisher_delay(name, settings.no_publisher_warning_after_nanos),
             std::time::Instant::now(),
         ),
+        other_schemas: Arc::default(),
         rejection_report: RejectionReport::default(),
         introspection: crate::introspection::IntrospectionRow::new(
             &node.introspection,
@@ -555,9 +600,9 @@ impl HyphaSubscriber {
     }
 }
 
-/// The counters of one subscriber, as `hypha_subscriber_counters` writes them: eight
-/// `uint64_t`, 64 bytes, owned by the caller, with nothing to destroy. Every counter but
-/// `loan_budget` and `loan_held` only grows, and wraps.
+/// The counters of one subscriber, as `hypha_subscriber_counters` writes them: nine
+/// `uint64_t`, 72 bytes, owned by the caller, with nothing to destroy. Every counter but
+/// `loan_budget`, `loan_held` and `other_schemas` only grows, and wraps.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HyphaSubscriberCounters {
@@ -579,9 +624,13 @@ pub struct HyphaSubscriberCounters {
     pub loan_held: u64,
     /// `loan.refused`: owning receives refused because the budget was full.
     pub loan_refused: u64,
+    /// `topic.other_schemas`: the other schemas (MD5s) of the subscriber's topic that a
+    /// publisher sends now, as the last check of the run that drives the subscriber found
+    /// them. A fact about the topic, not a fault count: a migration has two versions on it.
+    pub other_schemas: u64,
 }
 
-/// The counters of `endpoint`. Each counter is read atomically, the eight not at one instant.
+/// The counters of `endpoint`. Each counter is read atomically, the nine not at one instant.
 #[must_use]
 pub fn subscriber_counters(endpoint: &HyphaSubscriber) -> HyphaSubscriberCounters {
     let validation = endpoint.validator.stats();
@@ -595,6 +644,7 @@ pub fn subscriber_counters(endpoint: &HyphaSubscriber) -> HyphaSubscriberCounter
         loan_budget: u64::try_from(endpoint.budget.budget).unwrap_or(0),
         loan_held: u64::try_from(endpoint.budget.held.load(Ordering::Acquire)).unwrap_or(0),
         loan_refused: endpoint.budget.refused.load(Ordering::Acquire),
+        other_schemas: endpoint.other_schemas.count(),
     }
 }
 
@@ -609,6 +659,7 @@ pub(crate) fn emit_subscriber_metrics(endpoint: &HyphaSubscriber, emit: &mut dyn
     emit("loan.budget", counters.loan_budget);
     emit("loan.held", counters.loan_held);
     emit("loan.refused", counters.loan_refused);
+    emit("topic.other_schemas", counters.other_schemas);
 }
 
 pub(crate) fn host_now_nanos() -> u64 {
@@ -656,44 +707,46 @@ mod no_publisher_watch_tests {
     use std::time::{Duration, Instant};
 
     fn schema(data_type: &str, md5: &str) -> PublishedSchema {
-        PublishedSchema { data_type: data_type.to_owned(), md5: md5.to_owned() }
+        PublishedSchema { schema_hash: 1, data_type: data_type.to_owned(), md5: md5.to_owned() }
     }
 
     #[test]
-    fn an_absence_is_reported_after_the_delay_then_only_when_the_others_change() {
+    fn an_absence_is_reported_after_the_delay_then_on_a_change_at_most_every_ten_seconds() {
         let start = Instant::now();
         let watch = NoPublisherWatch::new(Duration::from_secs(5), start);
         let at = |seconds| start + Duration::from_secs(seconds);
+        let other = [schema("pkg/T", "581e4b1b")];
         assert_eq!(watch.observe(false, at(4)), WatchDecision::Quiet);
         assert_eq!(
             watch.observe(false, start + Duration::from_nanos(4_999_999_999)),
             WatchDecision::Quiet
         );
         assert_eq!(watch.observe(false, at(5)), WatchDecision::Absent);
-        assert!(watch.changed(Vec::new()), "the first report");
-        assert_eq!(watch.observe(false, at(20)), WatchDecision::Absent);
-        assert!(!watch.changed(Vec::new()), "the same absence is said once");
-        assert!(watch.changed(vec![schema("pkg/T", "581e4b1b")]), "another schema appeared");
-        assert!(!watch.changed(vec![schema("pkg/T", "581e4b1b")]));
-        assert!(watch.changed(Vec::new()), "the other schema left");
+        assert!(watch.report(&[], at(5)), "the first report");
+        assert!(!watch.report(&[], at(20)), "the same absence is said once");
+        assert!(watch.report(&other, at(21)), "another schema appeared");
+        assert!(!watch.report(&[], at(22)), "a change within ten seconds waits");
+        assert!(!watch.report(&other, at(30)), "and is not said when it went back");
+        assert!(watch.report(&[], at(32)), "a change that lasts is said after the quiet time");
     }
 
     #[test]
-    fn a_publisher_rearms_the_watch_and_zero_disables_it() {
+    fn a_publisher_rearms_the_watch_and_zero_never_warns() {
         let start = Instant::now();
         let watch = NoPublisherWatch::new(Duration::from_secs(5), start);
         let at = |seconds| start + Duration::from_secs(seconds);
         assert_eq!(watch.observe(false, at(6)), WatchDecision::Absent);
-        assert!(watch.changed(Vec::new()));
+        assert!(watch.report(&[], at(6)));
         assert_eq!(watch.observe(true, at(7)), WatchDecision::Quiet);
         assert!(watch.is_present());
         assert_eq!(watch.observe(false, at(8)), WatchDecision::Quiet, "the delay starts again");
         assert!(!watch.is_present());
-        assert_eq!(watch.observe(false, at(13)), WatchDecision::Absent);
-        assert!(watch.changed(Vec::new()), "a new absence is reported again");
+        assert_eq!(watch.observe(false, at(16)), WatchDecision::Absent);
+        assert!(watch.report(&[], at(16)), "a new absence is reported again");
 
-        let disabled = NoPublisherWatch::new(Duration::ZERO, start);
-        assert!(!disabled.due(1));
+        let silent = NoPublisherWatch::new(Duration::ZERO, start);
+        assert_eq!(silent.observe(false, at(100)), WatchDecision::Quiet);
+        assert!(silent.due(1), "the stream is still checked");
     }
 
     #[test]
