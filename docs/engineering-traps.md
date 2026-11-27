@@ -471,6 +471,13 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   that. Its signs are the `replay not faithful: N samples lost on <topic>` log line and
   `overrun_total`. In host time, a latest input neither fails nor counts a loss, because
   a value it did not read was superseded.
+- **A replay report follows a drain of every replay input.** Under simulated time a
+  `WaitSet` turn drains the inputs of each of its replay cycles after its steps and
+  before it offers progress, on a turn that ran no step too, and a drain takes the
+  queues of all publishers. Drain only at a due step, or only one queue's depth, and
+  the player's next chunk pushes unread samples out of a queue: a transport gap that a
+  selection supersedes fails the step (#222), and a loss before a publisher's first
+  accepted frame is not counted at all (#247). Host time keeps its drain at the step.
 - **Benchmarks: a green test run misses a slowdown.** A hot-path change (dispatch,
   publish, receive, cycle tick, wire codec) reports its benchmark numbers before and
   after, in the commit message. `cargo bench -p hypha_wire --bench codec` measures the

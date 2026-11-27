@@ -823,8 +823,10 @@ struct hypha::QosOf<my_msgs::Image>
   `default`, and a typed endpoint with another policy is then refused. Start the
   application nodes first, or map the type to `default`.
 - Under simulated time a sample a queue drops fails the run (`SequenceGap`, "replay
-  not faithful"): a `Latest` queue (`maxDepth`) must hold what the topic sends between
-  two steps, an `Arrivals` queue (`perStep()`) one step; else use a deeper policy.
+  not faithful"). A node drains its inputs on every `/clock`, so under `hypha play` a
+  queue holds one chunk, which the player splits to fit it; an `Arrivals` port needs a
+  `perStep()` of what the topic sends in one period of its cycle
+  (`replay-flow-control.md` §6.7).
 - Ports that share a topic read one subscriber with the deepest `perStep` among them; a
   port with a smaller `perStep` drops the older samples of a step as work-limit drops.
 - A latched sample reaches only the subscriber that joined, so a join adds no

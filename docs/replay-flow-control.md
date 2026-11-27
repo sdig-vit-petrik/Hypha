@@ -96,6 +96,12 @@ runtime publishes one `ReplayProgress` for the newest `/clock` sample it has rea
   has never reported does not count yet. A `WaitSet` stops holding when its run ends for any
   reason but a `run_for` deadline, when it runs again without such a cycle, or when it is
   destroyed. The offers left are then reported once they answer one sample.
+- **The inputs are drained before the report.** Each turn of such a `WaitSet` drains the inputs of
+  every replay cycle it holds, after its steps and whether or not one of them ran, and a triggered
+  cycle drains its inputs on each of its turns. A drain takes as many samples as the queues of all
+  publishers of the input hold. So a report answers a `/clock` sample only once the samples sent
+  before it are in the input histories, and the next chunk cannot push an unread one out of a queue
+  (6.7).
 - **A failure to publish** is logged once as an error. The node keeps running, and the player times
   out on the missing acknowledgement.
 - **The data of a step is published before its progress report.** On one host, iceoryx2 places a
@@ -143,7 +149,7 @@ read again at each chunk close, so a subscriber that connects later counts from 
 player prints `chunks shortened on '<topic>'` once per topic; for a topic on the chunk grid, a queue of
 exactly chunk x rate samples shortens the first chunk of every pass, which is expected. Only messages that share one instant and
 exceed the queue fail the run (`N messages of '<topic>' at one instant exceed the smallest subscriber
-queue B`). A node's own input must still hold what its cycle has not read yet (6.7).
+queue B`). A node's input history must still hold what its cycle has not read yet (6.7).
 
 ### 4.4 Restart, loop, backward seek and pause
 
@@ -417,19 +423,32 @@ wait out.
   the launch in the open loop (4.6).
 - **A loop of triggered cycles has no delay element.** It holds until `--timeout`, and the player
   names its nodes as a loop (6.1); a rate cycle or a clock driver in the loop is the delay element.
-- **Inputs are drained at step time.** A chunk is split so that a topic's samples fit the smallest
-  subscriber queue (4.3), but a `/clock` that runs no step of a node drains none of its inputs, so a
-  queue holds every sample from the `/clock` of one step to that of the next, which spans up to a
-  chunk plus a period. A queued input's history must also keep every sample its cycle has not read;
-  a `Latest` one needs only the newest sample before each deadline, which an eviction of a sample
-  that a retained one supersedes does not lose (6.6). Size each replayed input for the topic's rate
-  r, the chunk c and the cycle's period p:
-  - a `Latest` input: a queue of (c + p) x r samples;
-  - a queued input (`Arrivals`): a queue of (c + p) x r samples and a `perStep` of at least p x r.
+- **Inputs are drained on every turn.** A node's queues hold only what was sent since the `/clock`
+  sample it last answered (4.2): one chunk of the player, split to fit the smallest subscriber queue
+  (4.3), or the outputs of one step of a clock driver (4.5). What a drain takes waits in the input's
+  history, where a loss is an eviction that fails the step (6.6). For an input of a participant that
+  the player or the driver waits for, on a topic that it alone publishes, with the topic's rate r, the
+  chunk c and the cycle's period p:
+  - the queue of a topic of the player needs no size beyond the messages of one instant. A queue of
+    c x r samples, one more on the chunk grid, keeps the player from shortening chunks, which costs
+    only throughput. The queue of a topic of a clock driver holds the outputs of one driver step;
+  - a `Latest` input's history, its queue plus one sample, always holds the newest sample before each
+    deadline: every retained sample stamped at or after the deadline came with the `/clock` that ran
+    the step, and those fit the queue;
+  - a queued input (`Arrivals`) needs a `perStep` of at least p x r. Its history, its queue plus
+    `perStep`, then holds what its cycle has not read when a step runs: the samples stamped since the
+    previous deadline, at most p x r, and those that came with the `/clock` that ran the step. A
+    smaller `perStep` drops the oldest samples of a step on purpose, counted in
+    `work_limit_drops_total` and no failure; a history that evicts a sample its cycle has not read
+    fails the step.
 
-  A `Latest` history holds its queue plus one sample, a queued one its queue plus `perStep`. An input
-  sized below this fails with `replay not faithful` (6.6) when the chunk grid and the deadline grid
-  are out of phase, even if it passes when they line up.
+  A topic with several publishers gives each one its queue, and a drain empties all of them, so the
+  player's queue still holds one chunk. What the other publishers send, cycle nodes upstream
+  included, is not split into chunks: size the queue and the history for what they send between two
+  turns of the node, or the step fails with `replay not faithful`; a queue that overflows before a
+  publisher's first frame that the node accepted loses it uncounted
+  (`communication-integrity.md` §3). A `WaitSet` that has not reported yet does not hold its node's
+  report (4.2), so its queues are guarded only from its first report.
 - **A forward jump of `/clock` costs one step per period.** It runs one step per period it covers (4.4),
   in slices of at most 1024 steps or 50 ms, so a jump across a long gap is slow, but a turn stays short.
 - **Simulated time is process-global.** With two sim-time nodes in one process, a backward seek can be
@@ -437,7 +456,8 @@ wait out.
 - **An old parameter file is not checked.** A `sim.max_catch_up_periods` key that is still set is
   silently ignored.
 - **The first chunk without `--nodes`** may be acknowledged before a node that has not reported is
-  heard. Name every node that must take part.
+  heard, so the drain rule of 4.2 does not guard that node's queues for it: a chunk past a queue
+  pushes its first frames out uncounted. Name every node that must take part.
 - **The upstream hold is tested with two nodes**, including a feedback loop. Chains of three or more
   nodes are not tested.
 - **The recorder misses losses it cannot see.** A loss is counted when the next frame of that
