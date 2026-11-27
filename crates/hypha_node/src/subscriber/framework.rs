@@ -78,6 +78,7 @@ fn create_framework_subscriber(
             introspection,
             crate::introspection::Row::Subscriber(hypha_core::introspection::EndpointRow {
                 queue_depth: depth,
+                md5: md5.to_owned(),
                 ..hypha_core::introspection::EndpointRow::new(topic, data_type)
             }),
         ),

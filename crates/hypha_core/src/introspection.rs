@@ -87,6 +87,9 @@ pub struct EndpointRow {
     pub topic: String,
     /// The message type, such as `std_msgs/Empty`.
     pub data_type: String,
+    /// The MD5 of the message definition, which with the topic names the endpoint's
+    /// stream; empty for an endpoint that names none.
+    pub md5: String,
     /// The receive queue depth of a subscriber; 0 otherwise.
     pub queue_depth: usize,
     /// A publisher that latches its last message.
@@ -103,6 +106,7 @@ impl EndpointRow {
             id: 0,
             topic: topic.into(),
             data_type: data_type.into(),
+            md5: String::new(),
             queue_depth: 0,
             latched: false,
             output: None,

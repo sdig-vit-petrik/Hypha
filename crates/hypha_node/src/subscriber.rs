@@ -525,6 +525,7 @@ pub fn subscribe_typed(
             &node.introspection,
             crate::introspection::Row::Subscriber(hypha_core::introspection::EndpointRow {
                 queue_depth: depth,
+                md5: expected_md5.unwrap_or_default().to_owned(),
                 ..hypha_core::introspection::EndpointRow::new(name, data_type)
             }),
         ),

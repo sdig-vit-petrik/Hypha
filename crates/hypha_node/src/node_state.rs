@@ -2,10 +2,11 @@
 //!
 //! A required input that is wired to a topic counts. The node is `WAITING` while a
 //! counted binding that never arrived is not ok, else `DEGRADED` while any counted
-//! binding is not ok, else `INPUTS_USABLE`. Bindings of one topic give one input with the
-//! worst verdict. Reading the state has no side effect.
+//! binding is not ok, else `INPUTS_USABLE`. Bindings of one stream (one topic, type and
+//! MD5) give one input with the worst verdict; two schemas of one topic are two inputs.
+//! Reading the state has no side effect.
 
-use hypha_core::introspection::{InputBindingRow, InputRole};
+use hypha_core::introspection::{EndpointRow, InputBindingRow, InputRole};
 use hypha_msgs::hypha_msgs::{CycleState, NodeState, RequiredInput};
 
 use crate::cycle::InputCounts;
@@ -37,6 +38,10 @@ fn severity(verdict: u8) -> u8 {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Judged {
     topic: String,
+    /// The message type of the binding's subscriber.
+    data_type: String,
+    /// The MD5 of the binding's subscriber.
+    md5: String,
     /// The `RequiredInput` verdict.
     verdict: u8,
     ok: bool,
@@ -52,7 +57,7 @@ struct Judged {
     undecodable: u64,
 }
 
-/// The state that the judged bindings imply for `node`. A topic's row takes the verdict
+/// The state that the judged bindings imply for `node`. A stream's row takes the verdict
 /// and age of its worst binding.
 fn state_of(node: &str, judged: &[Judged]) -> NodeState {
     let mut inputs: Vec<RequiredInput> = Vec::new();
@@ -63,7 +68,12 @@ fn state_of(node: &str, judged: &[Judged]) -> NodeState {
             degraded = true;
             waiting |= binding.verdict == RequiredInput::NEVER_ARRIVED;
         }
-        match inputs.iter_mut().find(|input| input.topic == binding.topic) {
+        let row_of_stream = |input: &&mut RequiredInput| {
+            input.topic == binding.topic
+                && input.data_type == binding.data_type
+                && input.md5 == binding.md5
+        };
+        match inputs.iter_mut().find(row_of_stream) {
             Some(known) => {
                 if severity(binding.verdict) > severity(known.verdict) {
                     known.verdict = binding.verdict;
@@ -78,6 +88,8 @@ fn state_of(node: &str, judged: &[Judged]) -> NodeState {
             None => {
                 inputs.push(RequiredInput {
                     topic: binding.topic.clone(),
+                    data_type: binding.data_type.clone(),
+                    md5: binding.md5.clone(),
                     verdict: binding.verdict,
                     age_nanos: binding.age_nanos,
                     stagnant: binding.stagnant,
@@ -99,11 +111,18 @@ fn state_of(node: &str, judged: &[Judged]) -> NodeState {
     NodeState { node: node.to_owned(), state, inputs, ..NodeState::default() }
 }
 
-fn judged_from(topic: &str, view: &HyphaCycleBindingView, counts: InputCounts) -> Judged {
+fn judged_from(
+    row: &InputBindingRow,
+    subscriber: &EndpointRow,
+    view: &HyphaCycleBindingView,
+    counts: InputCounts,
+) -> Judged {
     let faults = view.supervision.faults;
     let health = &view.health;
     Judged {
-        topic: topic.to_owned(),
+        topic: row.topic.clone(),
+        data_type: subscriber.data_type.clone(),
+        md5: subscriber.md5.clone(),
         verdict: verdict_code(health.capture.verdict),
         ok: view.ok != 0,
         age_nanos: view.age_nanos,
@@ -117,7 +136,11 @@ fn judged_from(topic: &str, view: &HyphaCycleBindingView, counts: InputCounts) -
 
 /// The judgement of every required, wired binding at its cycle's last capture, and one
 /// row per committed cycle. A binding whose cycle cannot be read counts as never arrived.
-fn judge(node: &HyphaNode, bindings: &[InputBindingRow]) -> (Vec<Judged>, Vec<CycleState>) {
+fn judge(
+    node: &HyphaNode,
+    bindings: &[InputBindingRow],
+    subscribers: &[EndpointRow],
+) -> (Vec<Judged>, Vec<CycleState>) {
     let waitset = crate::locked(&node.default_waitset);
     let cycles = waitset.held().and_then(|set| set.cycles().ok());
     let mut rows = Vec::new();
@@ -136,23 +159,27 @@ fn judge(node: &HyphaNode, bindings: &[InputBindingRow]) -> (Vec<Judged>, Vec<Cy
             output_drops: health.output_pool_drops,
         });
     }
-    let view_of = |row: &InputBindingRow| -> Option<Judged> {
+    let view_of = |row: &InputBindingRow, subscriber: &EndpointRow| -> Option<Judged> {
         let cycle = cycles.as_ref()?.iter().find(|cycle| cycle.name() == row.cycle)?;
         let index = usize::try_from(row.index).ok()?;
         let views = crate::locked(&cycle.snapshots.bindings);
         let view = views.get(index)?;
         let counts = crate::locked(&cycle.snapshots.input_counts);
         let source = counts.get(index).copied().unwrap_or_default();
-        Some(judged_from(&row.topic, view, source))
+        Some(judged_from(row, subscriber, view, source))
     };
     let mut judged = Vec::new();
     for row in bindings {
-        let counted = row.role == InputRole::Required && row.subscriber.is_some();
-        if !counted {
+        if row.role != InputRole::Required {
             continue;
         }
-        let binding = view_of(row).unwrap_or_else(|| Judged {
+        let Some(id) = row.subscriber else { continue };
+        let unknown = EndpointRow::new(row.topic.clone(), "");
+        let subscriber = subscribers.iter().find(|endpoint| endpoint.id == id).unwrap_or(&unknown);
+        let binding = view_of(row, subscriber).unwrap_or_else(|| Judged {
             topic: row.topic.clone(),
+            data_type: subscriber.data_type.clone(),
+            md5: subscriber.md5.clone(),
             verdict: RequiredInput::NEVER_ARRIVED,
             ..Judged::default()
         });
@@ -166,7 +193,7 @@ fn judge(node: &HyphaNode, bindings: &[InputBindingRow]) -> (Vec<Judged>, Vec<Cy
 #[must_use]
 pub fn node_state(node: &HyphaNode) -> NodeState {
     let snapshot = node.introspection.snapshot();
-    let (judged, cycles) = judge(node, &snapshot.input_bindings);
+    let (judged, cycles) = judge(node, &snapshot.input_bindings, &snapshot.subscribers);
     let mut state = state_of(&snapshot.identity.node, &judged);
     let (invoked, failures, slow) = node.health.callback_counts();
     state.callbacks_invoked = invoked;
@@ -219,6 +246,34 @@ mod tests {
     }
 
     #[test]
+    fn two_schemas_of_one_topic_are_two_rows() {
+        let version = |md5: &str, verdict, ok| Judged {
+            topic: "/a".to_owned(),
+            data_type: "pkg/T".to_owned(),
+            md5: md5.to_owned(),
+            verdict,
+            ok,
+            ..Judged::default()
+        };
+        let state = state_of(
+            "n",
+            &[
+                version("d9d213e8c146065ec958333c617eb1a6", RequiredInput::USABLE, true),
+                version("581e4b1bda6a172aa19e1038a38e01eb", RequiredInput::NEVER_ARRIVED, false),
+            ],
+        );
+        let rows: Vec<(&str, u8)> =
+            state.inputs.iter().map(|input| (input.md5.as_str(), input.verdict)).collect();
+        assert_eq!(
+            rows,
+            [
+                ("d9d213e8c146065ec958333c617eb1a6", RequiredInput::USABLE),
+                ("581e4b1bda6a172aa19e1038a38e01eb", RequiredInput::NEVER_ARRIVED),
+            ]
+        );
+    }
+
+    #[test]
     fn a_stale_input_degrades_the_node() {
         let state = state_of(
             "n",
@@ -250,6 +305,8 @@ mod tests {
     fn a_topic_row_takes_its_worst_binding_and_sums_what_was_dropped() {
         let usable = Judged {
             topic: "/a".to_owned(),
+            data_type: "pkg/T".to_owned(),
+            md5: "d9d213e8c146065ec958333c617eb1a6".to_owned(),
             verdict: RequiredInput::USABLE,
             ok: true,
             age_nanos: 5,
