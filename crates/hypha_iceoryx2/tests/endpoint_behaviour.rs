@@ -77,6 +77,30 @@ fn a_published_message_arrives_in_shared_storage() {
 
 #[test]
 #[allow(clippy::expect_used)]
+fn a_shrunk_loan_arrives_with_its_first_bytes_and_a_longer_size_is_refused() {
+    let transport = Iox2Transport::with_name(&unique_name("loan_shrink")).expect("transport");
+    let topic = format!("/{}", unique_name("shrink"));
+    let spec = TopicSpec::new(&topic).with_type("std_msgs/String").keeping(2);
+    let publisher = transport.publish(&spec).expect("publisher");
+    let subscriber = transport.subscribe(&spec).expect("subscriber");
+
+    let mut loan = publisher.loan(8).expect("loan");
+    loan.as_mut_bytes().copy_from_slice(b"payload!");
+    assert!(matches!(loan.shrink(9), Err(PortError::TooLarge { requested: 9, limit: 8 })));
+    assert_eq!(loan.len(), 8);
+    loan.shrink(4).expect("shrink");
+    assert_eq!(loan.as_bytes(), b"payl");
+    loan.shrink(6).expect_err("a shrunk loan does not grow back");
+    loan.send_frame(sealed_send::metadata(), 0).expect("send");
+
+    let sample = subscriber.try_receive().expect("receive").expect("sample");
+    assert_eq!(sample.payload(), b"payl");
+    hypha_wire::frame::verify(sample.topic_code(), &sample.header(), sample.payload())
+        .expect("the seal covers the shrunk payload");
+}
+
+#[test]
+#[allow(clippy::expect_used)]
 fn a_wildcard_subscriber_discovers_matching_topics() {
     let transport = Iox2Transport::with_name(&unique_name("coverage_wildcard")).expect("transport");
     let prefix = format!("/{}", unique_name("wildcard"));
@@ -120,4 +144,29 @@ fn a_latched_message_is_replayed_to_a_late_subscriber() {
     transport.replay_latched();
     let sample = late_subscriber.try_receive().expect("receive").expect("latched sample");
     assert_eq!(sample.payload(), b"data");
+}
+
+/// review/255: a loan shrunk to nothing arrives empty and verifies, and a slot shrunk at
+/// every send goes back to the pool whole: a full-size loan is granted on every round.
+#[test]
+#[allow(clippy::expect_used)]
+fn a_loan_shrunk_to_nothing_arrives_empty_and_every_slot_returns_whole() {
+    let transport = Iox2Transport::with_name(&unique_name("loan_shrink_pool")).expect("transport");
+    let topic = format!("/{}", unique_name("shrink_pool"));
+    let spec = TopicSpec::new(&topic).with_type("std_msgs/String").keeping(2);
+    let publisher = transport.publish(&spec).expect("publisher");
+    let subscriber = transport.subscribe(&spec).expect("subscriber");
+    for round in 0..64_usize {
+        let mut loan = publisher.loan(4096).expect("a full-size loan on every round");
+        assert!(loan.as_bytes().iter().all(|byte| *byte == 0), "round {round}: zero-filled");
+        loan.as_mut_bytes().fill(0xAB);
+        let kept = round % 3;
+        loan.shrink(kept).expect("shrink");
+        loan.shrink(kept).expect("a second shrink to the same size");
+        loan.send_frame(sealed_send::metadata(), 0).expect("send");
+        let sample = subscriber.try_receive().expect("receive").expect("sample");
+        assert_eq!(sample.payload().len(), kept);
+        hypha_wire::frame::verify(sample.topic_code(), &sample.header(), sample.payload())
+            .expect("the seal covers the shrunk payload");
+    }
 }
