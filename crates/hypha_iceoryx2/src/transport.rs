@@ -518,7 +518,8 @@ impl Iox2Transport {
     ///
     ///
     /// A subscriber reads the stream of its own schema. A name with `*`, or a spec that
-    /// reads every schema, follows every matching stream that exists now, not later ones.
+    /// reads every schema, follows every matching stream that exists now, not later ones. A
+    /// spec that reads one stream by its hash opens that service without listing the domain.
     ///
     /// # Errors
     /// [`PortError::InvalidTopic`] when the name is empty or refused. The other
