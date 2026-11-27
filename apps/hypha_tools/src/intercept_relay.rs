@@ -105,6 +105,20 @@ impl Relay {
         }
     }
 
+    /// The schema hashes of the input's streams that have a publisher. Each schema of a
+    /// topic is its own stream, so a producer that restarts on another definition leaves
+    /// the relay's stream: when it has no publisher and another stream has, the input's
+    /// schema changed.
+    pub fn input_published(&mut self, published: &[u64]) {
+        let Some((live_hash, _, _)) = self.live.as_ref() else { return };
+        if self.counters.state != RelayState::Live || published.contains(live_hash) {
+            return;
+        }
+        let Some(other) = published.first() else { return };
+        self.counters.state = RelayState::SchemaChanged;
+        self.counters.last_error = format!("schema changed: {live_hash:016x} -> {other:016x}");
+    }
+
     /// The relay cannot run: it forwards nothing until it is rebuilt.
     pub fn fail(&mut self, reason: String) {
         self.counters.state = RelayState::Error;

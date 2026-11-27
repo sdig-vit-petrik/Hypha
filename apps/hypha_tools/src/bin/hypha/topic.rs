@@ -8,6 +8,7 @@ use hypha_tools::echo_args::EchoArgs;
 use hypha_tools::msg_plot::{plot_header, plot_row, plot_values};
 use hypha_tools::msg_reflect::{SchemaCache, decode_message, format_significant};
 use hypha_tools::{approx_f64, approx_f64_usize};
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, VecDeque};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -29,7 +30,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Verb {
-    /// Topics seen publishing while the tool listens.
+    /// Topics seen publishing while the tool listens: one line for each type of a topic.
     List {
         /// How long to listen, in seconds.
         #[arg(long, value_name = "seconds", default_value_t = 1.0)]
@@ -123,8 +124,11 @@ fn run_list(bus: &BusNode, timeout_sec: f64) -> ExitCode {
     while bus.ok() && Instant::now() < deadline {
         while let Some(received) = receive_or_report(&mut sub, "list") {
             let Some(sample) = received.to_raw_sample() else { continue };
-            let data_type = resolve_data_type(bus, &identities, &sample.topic, sample.schema_hash);
-            topic_types.insert(sample.topic, data_type);
+            if let Entry::Vacant(stream) = topic_types.entry((sample.topic, sample.schema_hash)) {
+                let (topic, schema_hash) = stream.key();
+                let label = schema_label(bus, &identities, topic, *schema_hash);
+                stream.insert(label);
+            }
         }
         thread::sleep(Duration::from_millis(5));
     }
@@ -133,8 +137,8 @@ fn run_list(bus: &BusNode, timeout_sec: f64) -> ExitCode {
         let timeout_text = format_significant(timeout_sec);
         println!("(no traffic seen in {timeout_text}s)");
     } else {
-        for (topic, data_type) in &topic_types {
-            println!("{topic}  [{data_type}]");
+        for ((topic, _), label) in &topic_types {
+            println!("{topic}  [{label}]");
         }
     }
 
@@ -419,13 +423,17 @@ fn resolve_identity(
     }
 }
 
-/// Resolves only the type name behind a frame's schema hash.
-fn resolve_data_type(
+/// The schema behind a frame's schema hash as `hypha topic list` shows it: its type and
+/// the first eight hex digits of its MD5, so two versions of one type are two lines. An
+/// unresolved schema shows its hash.
+fn schema_label(
     bus: &BusNode,
     identities: &SchemaIdentityCache,
     topic: &str,
     schema_hash: u64,
 ) -> String {
-    resolve_identity(bus, identities, topic, schema_hash)
-        .map_or_else(String::new, |schema| schema.data_type.clone())
+    resolve_identity(bus, identities, topic, schema_hash).map_or_else(
+        || format!("? ({schema_hash:016x})"),
+        |schema| format!("{} ({})", schema.data_type, schema.md5.get(..8).unwrap_or(&schema.md5)),
+    )
 }

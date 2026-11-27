@@ -80,8 +80,8 @@ impl<'bus> ClockedSession<'bus> {
         let clocks = bus
             .subscribe_raw_with_schema(
                 super::CLOCK_TOPIC,
-                "rosgraph_msgs/Clock",
-                "",
+                hypha_node::sdk::msgs::rosgraph_msgs::Clock::TYPE_NAME,
+                hypha_node::sdk::msgs::rosgraph_msgs::Clock::SCHEMA_HASH,
                 hypha_node::sdk::SubscriberOptions::default().keeping(16),
             )
             .expect("a clock reader");
