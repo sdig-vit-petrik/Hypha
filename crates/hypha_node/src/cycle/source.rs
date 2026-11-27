@@ -95,8 +95,8 @@ impl CycleInputSource {
         let Some(subscriber) = self.subscriber.as_deref() else {
             return if self.history.is_none() { Ok(()) } else { Err(Error::InvalidState) };
         };
-        subscriber.check_no_publisher_warning();
         let mut now = crate::subscriber::host_now_nanos();
+        subscriber.check_no_publisher_warning(now);
 
         let Some(history) = self.history.as_ref() else {
             return Err(Error::InvalidState);

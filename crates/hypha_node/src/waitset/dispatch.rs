@@ -429,12 +429,13 @@ impl Dispatcher for CallbackDispatcher<'_> {
     }
 
     fn on_tick(&mut self) -> Progression {
+        let now_nanos = crate::subscriber::host_now_nanos();
         for registration in &*self.registrations {
             if is_detached_in(self.detached, registration.id) {
                 continue;
             }
             if let Target::Subscription { ref subscriber, .. } = registration.target {
-                subscriber.check_no_publisher_warning();
+                subscriber.check_no_publisher_warning(now_nanos);
             }
         }
         // Every dispatch sweep ends here, so an unbounded run is observed too.

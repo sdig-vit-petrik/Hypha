@@ -90,11 +90,10 @@ impl NoPublisherWatch {
 
     /// True when a check is due at host time `now_nanos`. At most one caller gets `true`
     /// per interval; a disabled watch never does.
-    fn due(&self, now_nanos: impl FnOnce() -> u64) -> bool {
+    fn due(&self, now_nanos: u64) -> bool {
         if self.after.is_zero() {
             return false;
         }
-        let now_nanos = now_nanos();
         let last = self.checked_nanos.load(Ordering::Acquire);
         if last != 0 && now_nanos.saturating_sub(last) < self.check_nanos() {
             return false;
@@ -243,9 +242,10 @@ impl HyphaSubscriber {
     /// Warn when the stream has had no publisher for the warning delay, and again when
     /// the other schemas published on the topic change while it still has none. Checks at
     /// most once per second; while the stream has a publisher a check is one atomic read.
-    pub(crate) fn check_no_publisher_warning(&self) {
+    /// `now_nanos` is the host time the caller read.
+    pub(crate) fn check_no_publisher_warning(&self, now_nanos: u64) {
         let watch = &self.no_publisher_watch;
-        if !watch.due(host_now_nanos) {
+        if !watch.due(now_nanos) {
             return;
         }
         let present = match self.has_publisher(watch.is_present()) {
@@ -693,21 +693,21 @@ mod no_publisher_watch_tests {
         assert!(watch.changed(Vec::new()), "a new absence is reported again");
 
         let disabled = NoPublisherWatch::new(Duration::ZERO, start);
-        assert!(!disabled.due(|| 1));
+        assert!(!disabled.due(1));
     }
 
     #[test]
     fn the_stream_is_checked_once_per_second_or_once_per_shorter_delay() {
         let second = 1_000_000_000;
         let watch = NoPublisherWatch::new(Duration::from_secs(5), Instant::now());
-        assert!(watch.due(|| 7));
-        assert!(!watch.due(|| 7 + second - 1));
-        assert!(watch.due(|| 7 + second));
+        assert!(watch.due(7));
+        assert!(!watch.due(7 + second - 1));
+        assert!(watch.due(7 + second));
 
         let short = NoPublisherWatch::new(Duration::from_millis(100), Instant::now());
-        assert!(short.due(|| 7));
-        assert!(!short.due(|| 7 + 99_000_000));
-        assert!(short.due(|| 7 + 100_000_000));
+        assert!(short.due(7));
+        assert!(!short.due(7 + 99_000_000));
+        assert!(short.due(7 + 100_000_000));
     }
 
     #[test]
