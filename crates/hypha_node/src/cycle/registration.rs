@@ -113,6 +113,8 @@ pub(crate) fn bind_input(
     if options.mode == hypha_cycle::CaptureMode::Queued {
         input.inner.queued_bindings.fetch_add(1, Ordering::AcqRel);
         input.inner.reserve_arrivals(selected.max_samples_per_iteration);
+    } else {
+        input.inner.latest_bindings.fetch_add(1, Ordering::AcqRel);
     }
     let binding = match input.inner.history.as_ref() {
         Some(history) => registration.runtime.add_binding(Arc::clone(history), options),

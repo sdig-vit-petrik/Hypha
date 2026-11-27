@@ -99,6 +99,8 @@ pub(crate) struct CycleStep {
     pub(crate) transforms: Vec<super::transforms::TfInput>,
     /// Per-tick emission staging, retained between timer firings. `None` is a dropped message.
     pub(crate) emissions: Vec<StagedMessage<Option<HyphaLoan>>>,
+    /// The loans of the step's outputs, by token, retained between steps and empty there.
+    pub(crate) lent: Vec<Option<super::image::LentMessage>>,
     /// Callback supervision scratch, allocated once at commit.
     pub(super) supervision: Vec<RefCell<super::image::SupervisionCopy>>,
     pub(crate) class_based: bool,

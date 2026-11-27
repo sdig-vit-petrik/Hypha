@@ -69,6 +69,9 @@ pub struct HyphaDelivery {
     /// Nanoseconds between the send and this delivery, on the host monotonic
     /// clock. Zero when `payload` is null.
     pub transport_age_nanos: u64,
+    /// The sample, which `hypha_delivery_retain` keeps after the call. Valid only for the
+    /// call; null when the delivery cannot be kept.
+    pub holder: *const crate::sample::HyphaDeliveryHolder,
 }
 
 /// The `WaitSet` of one node, which owns it. Opaque to the caller.

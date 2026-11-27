@@ -383,7 +383,15 @@ impl HyphaSubscriber {
         if self.attached.swap(true, Ordering::AcqRel) {
             return Err(Error::InvalidState);
         }
+        // A delivery borrows one sample while its callback runs, so a callback may keep
+        // the others.
+        self.budget.budget.store(MAX_BORROWED_SAMPLES.saturating_sub(1), Ordering::Release);
         Ok(previous)
+    }
+
+    /// The budget of the samples this subscriber's readers hold.
+    pub(crate) fn loan_budget(&self) -> &Arc<LoanBudget> {
+        &self.budget
     }
 
     /// Undo [`HyphaSubscriber::attach_for_dispatch`] for an attach that failed.
@@ -567,7 +575,7 @@ fn open(
     let port = node.transport.subscribe(&spec).map_err(Error::from)?;
     let depth = port.buffer_size();
     let budget = Arc::new(LoanBudget {
-        budget: depth.min(MAX_BORROWED_SAMPLES),
+        budget: AtomicUsize::new(depth.min(MAX_BORROWED_SAMPLES)),
         held: AtomicUsize::new(0),
         refused: AtomicU64::new(0),
     });
@@ -667,7 +675,7 @@ pub fn subscriber_counters(endpoint: &HyphaSubscriber) -> HyphaSubscriberCounter
         schema_mismatch: validation.schema_mismatch,
         invalid_timestamp: validation.invalid_timestamp,
         // `usize` is at most 64 bits on every supported target.
-        loan_budget: u64::try_from(endpoint.budget.budget).unwrap_or(0),
+        loan_budget: u64::try_from(endpoint.budget.budget.load(Ordering::Acquire)).unwrap_or(0),
         loan_held: u64::try_from(endpoint.budget.held.load(Ordering::Acquire)).unwrap_or(0),
         loan_refused: endpoint.budget.refused.load(Ordering::Acquire),
         other_schemas: endpoint

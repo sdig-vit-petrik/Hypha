@@ -47,7 +47,7 @@ fn policy_drops_and_history_eviction_remain_distinct_across_sequence_wrap() {
                 let capture = &captures[0];
                 assert_eq!(capture.samples.len(), 1);
                 assert_eq!(capture.samples[0].sequence, 0);
-                assert_eq!(capture.samples[0].payload.as_ref(), &[3]);
+                assert_eq!(capture.samples[0].payload.to_vec(), &[3]);
                 assert_eq!(capture.lost_since_capture, 1);
                 assert_eq!(capture.counters.overrun_total, 1);
                 assert_eq!(capture.work_limit_drops, 1);
@@ -67,7 +67,7 @@ fn policy_drops_and_history_eviction_remain_distinct_across_sequence_wrap() {
             |captures, _| {
                 let capture = &captures[0];
                 assert_eq!(capture.samples.len(), 1);
-                assert_eq!(capture.samples[0].payload.as_ref(), &[4]);
+                assert_eq!(capture.samples[0].payload.to_vec(), &[4]);
                 assert_eq!(capture.lost_since_capture, 0);
                 assert_eq!(capture.counters.overrun_total, 1);
                 assert_eq!(capture.work_limit_drops, 0);

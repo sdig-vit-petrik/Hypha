@@ -25,7 +25,10 @@ T hypha_cycle_commit
 T hypha_cycle_create
 T hypha_cycle_destroy
 T hypha_cycle_emission_commit
+T hypha_cycle_emission_lend
 T hypha_cycle_emission_reserve
+T hypha_cycle_emission_return
+T hypha_cycle_emission_send
 T hypha_cycle_expect_participant
 T hypha_cycle_health
 T hypha_cycle_image_alive
@@ -39,6 +42,7 @@ T hypha_cycle_set_class_based
 T hypha_cycle_set_clock_driver
 T hypha_cycle_set_host_clock
 T hypha_cycle_set_trigger
+T hypha_delivery_retain
 T hypha_input_source_create
 T hypha_input_source_destroy
 T hypha_last_error
@@ -70,6 +74,7 @@ T hypha_publisher_loan_frame
 T hypha_publisher_min_subscriber_buffer
 T hypha_publisher_reserve_frame
 T hypha_publisher_subscriber_count
+T hypha_received_sample_release
 T hypha_schema_lookup
 T hypha_subscribe_typed
 T hypha_subscriber_counters

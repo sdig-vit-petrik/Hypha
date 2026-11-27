@@ -199,6 +199,15 @@ impl<'a> EmissionBudget<'a> {
         *count = count.checked_add(1).ok_or(STATUS_RESOURCE_LIMIT)?;
         Ok(())
     }
+
+    /// Give back the count of one message of `output` that [`EmissionBudget::admit`]
+    /// admitted and the step will not send.
+    pub fn refund(&mut self, output: u32) {
+        let count = usize::try_from(output).ok().and_then(|index| self.counts.get_mut(index));
+        if let Some(count) = count {
+            *count = count.saturating_sub(1);
+        }
+    }
 }
 
 impl CycleRuntime {

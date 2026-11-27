@@ -369,7 +369,14 @@ impl Dispatcher for CallbackDispatcher<'_> {
                     Ok(Some(sample)) => {
                         let (result, was_slow) =
                             timed(warnings, id, warn_nanos, warn_interval, || {
-                                invoke_data(health, callback, &sample, received_nanos, set)
+                                invoke_data(
+                                    health,
+                                    callback,
+                                    sample,
+                                    received_nanos,
+                                    set,
+                                    subscriber.loan_budget(),
+                                )
                             });
                         if was_slow {
                             slow = slow.saturating_add(1);

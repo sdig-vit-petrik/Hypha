@@ -716,7 +716,14 @@ impl BindingCapture {
             let Some(drop_through) = drop_through else {
                 return;
             };
-            self.cursor = drop_through.sequence.wrapping_add(1);
+            let dropped_end = drop_through.sequence.wrapping_add(1);
+            for skipped in history.samples().range(start..) {
+                if !before(skipped.sequence, dropped_end) {
+                    break;
+                }
+                skipped.payload.mark_taken();
+            }
+            self.cursor = dropped_end;
         }
 
         let mut examined = 0usize;
@@ -737,6 +744,8 @@ impl BindingCapture {
             }
             examined = examined.saturating_add(1);
             self.cursor = sample.sequence.wrapping_add(1);
+            // This binding reads the sample no more: bytes read in place may go back.
+            sample.payload.mark_taken();
             // A sample a reader rejected is neither delivered nor an age rejection.
             if history.is_rejected(sample.sequence) {
                 continue;

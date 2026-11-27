@@ -11,9 +11,11 @@ use hypha_node::status::HyphaStatus;
 mod counters;
 mod missing;
 mod read;
+mod retain;
 pub use counters::hypha_subscriber_counters;
 pub use missing::hypha_subscriber_missing_sequences;
 pub use read::{hypha_subscriber_destroy, hypha_subscriber_topic};
+pub use retain::{hypha_delivery_retain, hypha_received_sample_release};
 
 use crate::boundary::{borrow_str, handle_ref, read_in, require_non_null, write_out};
 use std::os::raw::c_char;
