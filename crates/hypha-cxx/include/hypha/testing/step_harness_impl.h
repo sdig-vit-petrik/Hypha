@@ -4,6 +4,7 @@
 /// The member functions of testing::StepHarness. Included by hypha/testing.h.
 
 #include "hypha/testing.h"
+#include "hypha/testing/step_harness_judging.h"
 
 namespace hypha::testing {
 
@@ -58,164 +59,68 @@ inline void* StepHarness::storeFor(const Port& port, void* (*make)(), void (*des
     return this->stores_.back().sent;
 }
 
-/// A disabled input never receives a sample in a started cycle, and no step judges it, so a
-/// test that gives it a value or a verdict tests a state that cannot occur: refuse it, and
-/// say what enables the port.
-template <typename M>
-void StepHarness::requireEnabled(const Input<M>& port, const char* call)
+/// The buffer of @p port, made empty on first use: a step that looks up a transform nobody
+/// delivered gets the answer of a started cycle's empty TF input. The library refuses a
+/// cache that a start refuses.
+inline const HyphaTransformBuffer* StepHarness::transformsFor(const Port& port, int64_t cacheNanos)
 {
-    if (port.enabled()) {
-        return;
+    for (const FedTransforms& held : this->transforms_) {
+        if (held.port == &port) {
+            return held.buffer.get();
+        }
     }
-    const std::string table = port.slot_->topic.describe();
-    throw std::logic_error(
-        "hypha: " + std::string(call) + " on input " + table
-        + ", which is disabled: the parameter file gives [" + table
-        + "] no non-empty `topic`, so a started cycle would give it no sample; set `topic` "
-          "there, in the file that a Node or a ConfigContext holds before the harness is built"
-    );
-}
-
-/// @brief The silence limit of @p port in nanoseconds; zero when it has none.
-template <typename M>
-int64_t StepHarness::silenceOf(const Input<M>& port)
-{
-    const std::string& table = port.supervision_.name();
-    const bool         noTable = table.empty() || port.settings_.unsupervised;
-    if (noTable) {
-        return 0;
-    }
-    const bool noConfiguration = backend::configHandle() == nullptr;
-    if (noConfiguration) {
-        throw std::logic_error(
-            "hypha: deliver() on input '" + table
-            + "' reads its silence_ms and needs a loaded configuration: a Node or a "
-              "ConfigContext"
+    HyphaTransformBuffer* created = nullptr;
+    const uint64_t        cache = cacheNanos > 0 ? static_cast<uint64_t>(cacheNanos) : 0U;
+    const ::HyphaStatus   status = backend::createFedTransformBuffer(cache, &created);
+    if (status != HYPHA_STATUS_OK) {
+        throw std::invalid_argument(
+            "hypha: a Transforms port needs a positive cache: " + std::string(Status(status).name())
         );
     }
-    const ConfigView             ports("ports.inputs." + table);
-    const std::optional<int64_t> millis = ports.optional<int64_t>("silence_ms");
-    if (!millis.has_value()) {
-        return 0;
-    }
-    constexpr int64_t nanosPerMilli = 1'000'000;
-    const int64_t     millisMax = port.settings_.limitMax.nanos() / nanosPerMilli;
-    const bool        outOfRange = *millis < 1 || *millis > millisMax;
-    if (outOfRange) {
-        throw ParameterError(
-            "hypha: parameter '" + ports.name("silence_ms") + "' is outside its range [1, "
-            + std::to_string(millisMax) + "] ms"
+    this->transforms_.push_back(FedTransforms{&port, backend::UniqueTransformBuffer(created)});
+    return created;
+}
+
+inline void
+StepHarness::deliver(Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms)
+{
+    this->feed(port, std::move(transforms), false);
+}
+
+inline void StepHarness::deliverStatic(
+    Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms
+)
+{
+    this->feed(port, std::move(transforms), true);
+}
+
+inline void StepHarness::feed(
+    Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms, bool isStatic
+)
+{
+    tf2_msgs::TFMessage message;
+    message.transforms = std::move(transforms);
+    std::vector<uint8_t> payload;
+    codec::encode(message, payload);
+    const HyphaTransformBuffer* buffer = this->transformsFor(port, port.cache_.nanos());
+    const ::HyphaStatus         status = backend::transformBufferFeed(buffer, payload, isStatic);
+    if (status != HYPHA_STATUS_OK) {
+        throw std::runtime_error(
+            "hypha: deliver() on a Transforms port refused: " + std::string(Status(status).name())
         );
     }
-    return *millis * nanosPerMilli;
-}
-
-/// The rule of `value_usable_within` in crates/hypha_cycle/src/capture/clock.rs. Keep it
-/// equal to that function.
-inline bool StepHarness::withinSilence(int64_t silenceNanos, int64_t sentNanos, int64_t nowNanos)
-{
-    const bool sentInTheFuture = sentNanos > nowNanos;
-    if (sentInTheFuture) {
-        return false;
-    }
-    const bool hasLimit = silenceNanos != 0;
-    if (!hasLimit) {
-        return true;
-    }
-    const uint64_t age = StepHarness::ageOf(sentNanos, nowNanos);
-    return age <= static_cast<uint64_t>(silenceNanos);
-}
-
-inline uint64_t StepHarness::ageOf(int64_t sentNanos, int64_t nowNanos)
-{
-    const bool sentInTheFuture = sentNanos > nowNanos;
-    if (sentInTheFuture) {
-        return 0;
-    }
-    return static_cast<uint64_t>(nowNanos) - static_cast<uint64_t>(sentNanos);
-}
-
-/// Judges the value of a delivery at @p now as the capture of a Latest port does.
-template <typename M>
-void StepHarness::judgeDelivery(Delivery& delivery, Time now, std::vector<Pending>& running)
-{
-    Latest<M>&    port = *static_cast<Latest<M>*>(delivery.port);
-    const int64_t sent = delivery.sentAt.nanos();
-    const bool    usable = StepHarness::withinSilence(delivery.silenceNanos, sent, now.nanos());
-    const bool    takesTheValue = usable && delivery.unseen;
-    if (takesTheValue) {
-        std::swap(port.held_, port.candidate_);
-        port.heldStamp_ = detail::SampleStamp{static_cast<uint64_t>(sent), 0, 0};
-        port.hasHeld_ = true;
-        port.fresh_ = true;
-        delivery.unseen = false;
-        running.push_back(Pending{&port, &StepHarness::keepFresh<M>, &StepHarness::endFresh<M>});
-    }
-    port.verdict_ = usable ? InputVerdict::Usable : InputVerdict::Stale;
-    port.ageNanos_ = StepHarness::ageOf(sent, now.nanos());
-    StepHarness::judge(
-        port, usable ? HYPHA_CYCLE_VERDICT_USABLE : HYPHA_CYCLE_VERDICT_STALE, !usable
-    );
-}
-
-template <typename M>
-void StepHarness::judgeArrivals(Delivery& delivery, Time now, std::vector<Pending>&)
-{
-    Arrivals<M>&  port = *static_cast<Arrivals<M>*>(delivery.port);
-    const int64_t sent = delivery.sentAt.nanos();
-    const bool    usable = StepHarness::withinSilence(delivery.silenceNanos, sent, now.nanos());
-    const bool    refusesTheSamples = delivery.unseen && !usable;
-    if (refusesTheSamples) {
-        port.sampleCount_ = 0;
-    }
-    delivery.unseen = false;
-    port.verdict_ = usable ? InputVerdict::Usable : InputVerdict::Stale;
-    StepHarness::judge(
-        port, usable ? HYPHA_CYCLE_VERDICT_USABLE : HYPHA_CYCLE_VERDICT_STALE, !usable
-    );
-}
-
-template <typename M>
-void StepHarness::judge(Input<M>& port, uint32_t verdict, bool stale)
-{
-    port.facts_.health.capture.verdict = verdict;
-    HyphaSupervisionReport& report = port.facts_.supervision;
-    const uint8_t           others = report.faults & ~HYPHA_FAULT_STALE;
-    report.faults = static_cast<uint8_t>(others | (stale ? HYPHA_FAULT_STALE : 0U));
-    StepHarness::rejudge(port);
-}
-
-/// The ok bit, by the library's rule.
-template <typename M>
-void StepHarness::rejudge(Input<M>& port)
-{
-    const HyphaCycleBindingView& facts = port.facts_;
-    const bool usable = facts.health.capture.verdict == HYPHA_CYCLE_VERDICT_USABLE;
-    const bool stagnant = (facts.supervision.faults & HYPHA_FAULT_STAGNANT) != 0;
-    const bool ok = !port.settings_.countsForHealth || (usable && !stagnant);
-    port.facts_.ok = ok ? 1 : 0;
-}
-
-template <typename M>
-void StepHarness::makeFresh(Port* port)
-{
-    static_cast<Latest<M>*>(port)->fresh_ = true;
-}
-
-template <typename M>
-void StepHarness::keepFresh(Port*)
-{
-}
-
-template <typename M>
-void StepHarness::endFresh(Port* port)
-{
-    static_cast<Latest<M>*>(port)->fresh_ = false;
 }
 
 template <typename M>
 void StepHarness::keepSamples(Port*)
 {
+}
+
+template <typename M>
+void StepHarness::countSamples(Port* port)
+{
+    Arrivals<M>& arrivals = *static_cast<Arrivals<M>*>(port);
+    arrivals.heldReport_.delivered_total += arrivals.sampleCount_;
 }
 
 template <typename M>
@@ -263,6 +168,46 @@ void StepHarness::deliverOnce(Arrivals<M>& port)
     );
 }
 
+template <typename M>
+void StepHarness::setOnce(Arrivals<M>& port)
+{
+    this->pending_.push_back(
+        Pending{&port, &StepHarness::countSamples<M>, &StepHarness::dropSamples<M>}
+    );
+}
+
+/// The source of @p port accepts @p count samples; the next step's capture counts them in
+/// received(), as a capture counts what the source accepted until then.
+template <typename M>
+void StepHarness::accept(Input<M>& port, uint64_t count)
+{
+    for (Intake& intake : this->intakes_) {
+        if (intake.report == &port.heldReport_) {
+            intake.accepted += count;
+            return;
+        }
+    }
+    this->intakes_.push_back(Intake{&port.heldReport_, count});
+}
+
+/// A port that never had a sample has accepted none: both counters read zero again.
+template <typename M>
+void StepHarness::startCountersOver(Input<M>& port)
+{
+    std::erase_if(this->intakes_, [&port](const Intake& intake) {
+        return intake.report == &port.heldReport_;
+    });
+    port.heldReport_ = HyphaCycleHeldReport{};
+}
+
+inline void StepHarness::takeIntakes()
+{
+    for (Intake& intake : this->intakes_) {
+        intake.report->received_total += intake.accepted;
+        intake.accepted = 0;
+    }
+}
+
 /// Clears the last step's messages and routes every send() of the cycle's ports here.
 inline void StepHarness::beginStep(Time now)
 {
@@ -275,6 +220,7 @@ inline void StepHarness::beginStep(Time now)
     for (Pending& item : this->running_) {
         item.begin(item.port);
     }
+    this->takeIntakes();
     for (Delivery& delivery : this->deliveries_) {
         delivery.judge(delivery, now, this->running_);
     }
@@ -309,6 +255,28 @@ inline void StepHarness::endStep() noexcept
         item.finish(item.port);
     }
     this->running_.clear();
+}
+
+template <typename M>
+void StepHarness::setStagnant(Input<M>& port, bool stagnant)
+{
+    StepHarness::requireEnabled(port, "setStagnant()");
+    HyphaSupervisionReport& report = port.facts_.supervision;
+    const uint8_t           others = report.faults & ~HYPHA_FAULT_STAGNANT;
+    report.faults = static_cast<uint8_t>(others | (stagnant ? HYPHA_FAULT_STAGNANT : 0U));
+    StepHarness::rejudge(port);
+}
+
+template <typename M>
+const std::vector<M>& StepHarness::sent(const Output<M>& port) const
+{
+    for (const Store& store : this->stores_) {
+        if (store.port == &port) {
+            return *static_cast<const std::vector<M>*>(store.sent);
+        }
+    }
+    static const std::vector<M> none;
+    return none;
 }
 
 }  // namespace hypha::testing

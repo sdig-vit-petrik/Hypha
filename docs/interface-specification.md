@@ -185,6 +185,14 @@ semantics and its `HYPHA_TF_*` results are those of a cycle's TF input
   `hypha_cycle_image_lookup_transform` after the handle. Any thread may call it at any
   time, concurrently with the run and with other lookups: one lock guards the buffer
   for one message's ingestion or one lookup, and no lookup waits on the transport.
+- **A buffer with no node (#248).** `hypha_transform_buffer_create_fed(cache_nanos,
+  out)` makes a buffer that subscribes nothing; `hypha_transform_buffer_feed(buffer,
+  payload, payload_len, is_static)` ingests one encoded `tf2_msgs/TFMessage` into it as a
+  cycle's TF input ingests a captured sample: a refused transform is counted and logged,
+  a payload that does not decode is `InvalidFrame` and inserts nothing. A subscribed
+  buffer refuses a feed with `InvalidState`. Lookup and destroy are those of any buffer;
+  the destroy only frees the handle. `testing::StepHarness` feeds a `Transforms` port
+  through it.
 - **Destroy.** `hypha_transform_buffer_destroy` detaches both registrations, which
   releases both subscribers; null does nothing. Create and destroy follow the attach
   rules: on the configuring thread, not during a run from another thread

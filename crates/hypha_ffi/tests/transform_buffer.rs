@@ -688,3 +688,15 @@ fn the_sender_check_refuses_what_a_buffer_refuses_and_names_the_frames() {
     assert_eq!(check("base", &no_time, 1), HyphaStatus::Ok, "a static stamp is not read");
     assert_eq!(check("", &good, 0), HyphaStatus::InvalidArgument);
 }
+
+#[test]
+fn a_subscribed_buffer_refuses_a_feed() {
+    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    let rig = Rig::new("tfb_feed");
+    let payload = tf_message("world", "base", SECOND, [1.0, 0.0, 0.0]);
+    // SAFETY: the buffer is live; the payload comes with its length.
+    let status =
+        unsafe { hypha_transform_buffer_feed(rig.buffer, payload.as_ptr(), payload.len(), 0) };
+    assert_eq!(status, HyphaStatus::InvalidState, "its subscriptions alone feed it");
+    assert_eq!(result_of(rig.buffer, "world", "base", None), HYPHA_TF_UNKNOWN_FRAME);
+}

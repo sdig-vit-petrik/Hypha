@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 10
+#define HYPHA_ABI_REVISION 11
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -361,10 +361,9 @@ typedef struct HyphaPublisher HyphaPublisher;
 // returns `InvalidOperation` and consumes no sample. A notification is a wake hint, never data.
 typedef struct HyphaSubscriber HyphaSubscriber;
 
-// The transform buffer of a plain node. Opaque to the caller.
+// The transform buffer of a plain node, or one its caller feeds. Opaque to the caller.
 //
-// It names its node weakly, so it never keeps a destroyed node alive. Any thread may
-// look up through a shared reference.
+// Any thread may look up through a shared reference.
 typedef struct HyphaTransformBuffer HyphaTransformBuffer;
 
 // The `WaitSet` of one node, which owns it. Opaque to the caller.
@@ -1838,6 +1837,38 @@ HyphaStatus hypha_transform_buffer_create(struct HyphaNode *node,
                                           uint64_t cache_nanos,
                                           struct HyphaTransformBuffer **out);
 
+// Create a transform buffer with no node and no subscriber, which
+// `hypha_transform_buffer_feed` fills: the TF input of a step test. `cache_nanos` > 0
+// is the dynamic history kept per frame. Look it up and destroy it as any buffer.
+//
+// `*out` (null on a refusal) is owned by the caller, released with
+// `hypha_transform_buffer_destroy`. `InvalidArgument`: null `out`, zero `cache_nanos`.
+//
+// # Safety
+// `out` is null or one writable pointer.
+HyphaStatus hypha_transform_buffer_create_fed(uint64_t cache_nanos,
+                                              struct HyphaTransformBuffer **out);
+
+// Insert into `buffer`, made by `hypha_transform_buffer_create_fed`, every transform of
+// the `tf2_msgs/TFMessage` in `payload` (ROS 1 wire bytes, `payload_len` of them,
+// borrowed for the call), as static transforms when `is_static` is nonzero, as a
+// cycle's TF input ingests a sample it captured. A transform that input refuses (an
+// empty frame name, a stamp that is no time, a value that is not finite, a rotation
+// that is not a unit quaternion, a second parent) is logged at a bounded rate and left
+// out, the others are kept, and a lookup on its frame answers `HYPHA_TF_REFUSED`.
+//
+// `InvalidArgument`: null `buffer` or `payload`. `InvalidState`: a buffer that
+// `hypha_transform_buffer_create` subscribed. `InvalidFrame`: `payload` does not
+// decode; nothing is inserted. Any thread may call it while the handle is live.
+//
+// # Safety
+// `buffer` is null or a live handle that no thread destroys during the call. `payload`
+// is null or holds `payload_len` bytes.
+HyphaStatus hypha_transform_buffer_feed(const struct HyphaTransformBuffer *buffer,
+                                        const uint8_t *payload,
+                                        size_t payload_len,
+                                        uint32_t is_static);
+
 // Look up, in `buffer`, `source` in `target` at `at_nanos`, or with `latest` nonzero at
 // the latest time common to the chain (`at_nanos` must then be 0). Names are UTF-8 of
 // the given length, borrowed for the call. On `Ok`, `*out_result` is a `HYPHA_TF_*`
@@ -1864,14 +1895,15 @@ HyphaStatus hypha_transform_buffer_lookup(const struct HyphaTransformBuffer *buf
 
 // Destroy `buffer`: detach both subscribers from the node's default `WaitSet` and free
 // the handle. Null does nothing. From a callback of the running `WaitSet` the detach is
-// deferred to the end of the run. After `hypha_node_destroy` it only frees the handle.
+// deferred to the end of the run. After `hypha_node_destroy`, and for a buffer from
+// `hypha_transform_buffer_create_fed`, it only frees the handle.
 //
 // `InvalidState`: the `WaitSet` runs on another thread; nothing changes and the handle
 // stays live. Never call it during a lookup on the same handle.
 //
 // # Safety
-// `buffer` is null or a live handle from `hypha_transform_buffer_create`, not used
-// after an `Ok`.
+// `buffer` is null or a live handle from `hypha_transform_buffer_create` or
+// `hypha_transform_buffer_create_fed`, not used after an `Ok`.
 HyphaStatus hypha_transform_buffer_destroy(struct HyphaTransformBuffer *buffer);
 
 // Check one transform before it is sent with the check every transform buffer and TF

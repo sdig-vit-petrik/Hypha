@@ -131,7 +131,8 @@ pub use subscriber::{
     hypha_subscriber_missing_sequences, hypha_subscriber_publisher_count, hypha_subscriber_topic,
 };
 pub use transform_buffer::{
-    hypha_transform_buffer_create, hypha_transform_buffer_destroy, hypha_transform_buffer_lookup,
+    hypha_transform_buffer_create, hypha_transform_buffer_create_fed,
+    hypha_transform_buffer_destroy, hypha_transform_buffer_feed, hypha_transform_buffer_lookup,
     hypha_transform_check,
 };
 pub use waitset::{

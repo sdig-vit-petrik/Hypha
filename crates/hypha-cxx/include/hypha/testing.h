@@ -17,6 +17,11 @@
 ///    ConfigError for a name a start would refuse, or for an entry that is a plain string
 ///    where a start requires a table;
 ///  - the verdict of a delivered input, by the rule of the capture, from `silence_ms`;
+///  - the counters of an input: received() counts in the next step each sample given to
+///    deliver() or set(), deliveredCount() each one that step takes as usable;
+///    setNeverArrived() sets both to zero;
+///  - the answers of a Transforms port, from the transforms given to deliver() and
+///    deliverStatic(): the library code of a cycle's TF input looks them up;
 ///  - the bound of perStep() on the sends of a step;
 ///  - what a disabled port does: deliver(), set(), setStale() and setStagnant() on a
 ///    disabled input are refused, since a started cycle gives it no sample and never judges
@@ -42,12 +47,15 @@
 /// Not part of hypha/hypha.h. The harness keeps pointers to the cycle and its ports, so
 /// declare it after them. A send the step refused and caught still fails step().
 
+#include "hypha/backend/handles.h"
+#include "hypha/backend/ros1_codec.h"
 #include "hypha/config.h"
 #include "hypha/cycle_arrivals.h"
 #include "hypha/cycle_latest.h"
 #include "hypha/cycle_node.h"
 #include "hypha/cycle_output.h"
 #include "hypha/cycle_runtime.h"
+#include "hypha/cycle_transforms.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -112,6 +120,7 @@ class StepHarness final : private detail::CaptureStore
         StepHarness::requireEnabled(port, "deliver()");
         const int64_t silenceNanos = StepHarness::silenceOf(port);
         this->forget(port);
+        this->accept(port, 1);
         port.candidate_ = std::move(value);
         port.supervision_.silenceNanos_ = silenceNanos;
         this->deliveries_.push_back(
@@ -127,6 +136,7 @@ class StepHarness final : private detail::CaptureStore
         StepHarness::requireEnabled(port, "deliver()");
         const int64_t silenceNanos = StepHarness::silenceOf(port);
         this->forget(port);
+        this->accept(port, samples.size());
         port.sampleCount_ = samples.size();
         port.stamps_.assign(samples.size(), detail::SampleStamp{});
         port.samples_ = std::move(samples);
@@ -144,6 +154,7 @@ class StepHarness final : private detail::CaptureStore
     {
         StepHarness::requireEnabled(port, "set()");
         this->forget(port);
+        this->accept(port, 1);
         port.held_ = std::move(value);
         port.heldStamp_ = detail::SampleStamp{};
         port.hasHeld_ = true;
@@ -170,6 +181,7 @@ class StepHarness final : private detail::CaptureStore
     void setNeverArrived(Latest<M>& port)
     {
         this->forget(port);
+        this->startCountersOver(port);
         port.hasHeld_ = false;
         port.fresh_ = false;
         port.verdict_ = InputVerdict::NeverArrived;
@@ -183,12 +195,13 @@ class StepHarness final : private detail::CaptureStore
     {
         StepHarness::requireEnabled(port, "set()");
         this->forget(port);
+        this->accept(port, samples.size());
         port.sampleCount_ = samples.size();
         port.stamps_.assign(samples.size(), detail::SampleStamp{});
         port.samples_ = std::move(samples);
         port.verdict_ = InputVerdict::Usable;
         StepHarness::judge(port, HYPHA_CYCLE_VERDICT_USABLE, false);
-        this->deliverOnce(port);
+        this->setOnce(port);
     }
 
     /// @brief The port has no sample and is stale.
@@ -208,22 +221,25 @@ class StepHarness final : private detail::CaptureStore
     void setNeverArrived(Arrivals<M>& port)
     {
         this->forget(port);
+        this->startCountersOver(port);
         port.sampleCount_ = 0;
         port.verdict_ = InputVerdict::NeverArrived;
         StepHarness::judge(port, HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, false);
     }
 
+    /// @brief The Transforms port receives @p transforms on `/tf`: each later step looks
+    ///        them up as a started cycle's TF input does, which keeps `cache` of history
+    ///        per frame. A transform that input refuses is left out, and a lookup on its
+    ///        frame answers TransformError::Refused.
+    void deliver(Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms);
+
+    /// @brief As deliver(Transforms&), on `/tf_static`: transforms that hold at every time.
+    void deliverStatic(Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms);
+
     /// @brief The port's alive value has (or has not) stopped changing.
     /// @throws std::logic_error when the port is disabled.
     template <typename M>
-    void setStagnant(Input<M>& port, bool stagnant)
-    {
-        StepHarness::requireEnabled(port, "setStagnant()");
-        HyphaSupervisionReport& report = port.facts_.supervision;
-        const uint8_t           others = report.faults & ~HYPHA_FAULT_STAGNANT;
-        report.faults = static_cast<uint8_t>(others | (stagnant ? HYPHA_FAULT_STAGNANT : 0U));
-        StepHarness::rejudge(port);
-    }
+    void setStagnant(Input<M>& port, bool stagnant);
 
     /// @brief Run the step of @p node once.
     void step(CycleNode& node, CycleTime time = {})
@@ -244,16 +260,7 @@ class StepHarness final : private detail::CaptureStore
 
     /// @brief What the last step sent on @p port, in send order.
     template <typename M>
-    const std::vector<M>& sent(const Output<M>& port) const
-    {
-        for (const Store& store : this->stores_) {
-            if (store.port == &port) {
-                return *static_cast<const std::vector<M>*>(store.sent);
-            }
-        }
-        static const std::vector<M> none;
-        return none;
-    }
+    const std::vector<M>& sent(const Output<M>& port) const;
 
   private:
     struct Store
@@ -279,6 +286,21 @@ class StepHarness final : private detail::CaptureStore
         int64_t silenceNanos;
         bool    unseen;
         void (*judge)(Delivery&, Time, std::vector<Pending>&);
+    };
+
+    /// The samples a port accepted since the last step, which the next step's capture
+    /// adds to received(). `report` is the held report of the port.
+    struct Intake
+    {
+        HyphaCycleHeldReport* report;
+        uint64_t              accepted;
+    };
+
+    /// The transforms a Transforms port holds, in a buffer the harness feeds.
+    struct FedTransforms
+    {
+        const Port*                    port;
+        backend::UniqueTransformBuffer buffer;
     };
 
     struct NodeStep
@@ -312,6 +334,9 @@ class StepHarness final : private detail::CaptureStore
     void        wirePorts();
     static bool startWouldEnable(const detail::TopicSource& topic);
     void*       storeFor(const Port& port, void* (*make)(), void (*destroy)(void*)) override;
+    const HyphaTransformBuffer* transformsFor(const Port& port, int64_t cacheNanos) override;
+    void
+    feed(Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms, bool isStatic);
     template <typename M>
     static void requireEnabled(const Input<M>& port, const char* call);
     template <typename M>
@@ -335,6 +360,8 @@ class StepHarness final : private detail::CaptureStore
     template <typename M>
     static void keepSamples(Port*);
     template <typename M>
+    static void countSamples(Port* port);
+    template <typename M>
     static void dropSamples(Port* port);
     template <typename M>
     void forget(Input<M>& port);
@@ -343,15 +370,24 @@ class StepHarness final : private detail::CaptureStore
     void freshNext(Latest<M>& port);
     template <typename M>
     void deliverOnce(Arrivals<M>& port);
+    template <typename M>
+    void setOnce(Arrivals<M>& port);
+    template <typename M>
+    void accept(Input<M>& port, uint64_t count);
+    template <typename M>
+    void startCountersOver(Input<M>& port);
+    void takeIntakes();
     void beginStep(Time now);
     void rethrowLatched();
     void endStep() noexcept;
 
-    Cycle&                cycle_;
-    std::vector<Store>    stores_;
-    std::vector<Pending>  pending_;
-    std::vector<Pending>  running_;
-    std::vector<Delivery> deliveries_;
+    Cycle&                     cycle_;
+    std::vector<Store>         stores_;
+    std::vector<Pending>       pending_;
+    std::vector<Pending>       running_;
+    std::vector<Delivery>      deliveries_;
+    std::vector<Intake>        intakes_;
+    std::vector<FedTransforms> transforms_;
 };
 
 }  // namespace hypha::testing
