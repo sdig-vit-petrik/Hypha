@@ -344,23 +344,44 @@ Reference: `hypha/node.h`, `hypha/publisher.h`, `hypha/topic.h`, `hypha/options.
   developer's job (`examples/large_payload`).
 - A large message is written once, in its slot: `loan(head, capacityBytes)` reserves it
   for `head`'s small fields and gives a `Loan<M>` whose `data()` is the loaned field's
-  bytes in shared memory (`Image::data`, `PointCloud2::data`; reference `hypha/loan.h`).
+  bytes in shared memory (reference `hypha/loan.h`). The loaned field is the message's
+  single top-level array of numbers, with only fixed-size numbers after it; the generator
+  marks it (`hypha::message_traits::LoanedField`) in 15 standard types: `Image`,
+  `CompressedImage`, `PointCloud2`, `OccupancyGrid` and the eleven `*MultiArray` types.
+  A message with two such arrays (`LaserScan`, `JointState`, `Joy`) has none, and
+  `loan()` on it does not compile ("no single top-level array of numbers").
   `publish(std::move(loan), usedBytes)` encodes the small fields around the first
   `usedBytes`, which may be fewer than reserved, and sends exactly what `publish(msg)`
-  sends for the same message. `head`'s strings and arrays (`frame_id`, `encoding`,
-  `fields`) are fixed at the loan, its numbers (`width`, a stamp) may change through
-  `loan.message()` until the publish. A full pool or the publisher's two loans is
-  `PoolExhausted` at once; a loan dropped unsent returns its slot and takes no
-  `header.seq`. The CRC is computed at the publish, over the bytes in the slot.
+  sends for the same message, with the next `header.seq`.
+  - The lengths of `head`'s strings and arrays (`frame_id`, `encoding`, `fields`) are
+    fixed at the loan; their contents and its numbers (`width`, a stamp) may change
+    through `loan.message()` until the publish.
+  - `data()` is not aligned: the ROS 1 encoding has no padding (a `Float64MultiArray`'s
+    numbers may start at 4 modulo 8). Write it with `std::memcpy`, or `loan.put(i, value)`,
+    which copies a trivially copyable `value` to element `i` of an array of its type;
+    never through a cast `Point*`, and not with aligned SIMD stores.
+  - A span taken from `data()` is dead after the publish: a write through it changes a
+    sent frame, which its subscribers then refuse as a corrupt payload.
+  - Nothing waits, and a refused loan is no lost frame: ask again later. `PoolExhausted`
+    is a full pool; `LoanLimit` means this publisher's two loans are both held. (For
+    `publish(msg)` the same refusals drop the message, and subscribers count it lost.)
+  - A loan dropped unsent returns its slot and takes no `header.seq`. A loan of another
+    publisher, a moved-from loan (it is empty: `capacity()` 0), a size that is not whole
+    elements or past `capacity()`, or a changed length is `InvalidArgument` at the publish:
+    nothing is sent and no `header.seq` is taken.
+  - The CRC is computed at the publish, over the bytes in the slot.
 
   ```cpp
   sensor_msgs::PointCloud2 head = cloudHead();           // frame_id, fields, point_step
-  auto loan = points.loan(head, maxPoints * sizeof(Point));
-  if (!loan) { return; }                                  // loan.error(): PoolExhausted, TooLarge
-  size_t count = decodeInto(loan->data(), packets);       // points written into the slot
+  auto loan = points.loan(head, maxPoints * sizeof(CloudPoint));
+  if (!loan) { return; }               // PoolExhausted, LoanLimit, TooLarge: no frame lost
+  size_t count = 0;
+  for (const auto& p : decoded) {
+      loan->put(count++, CloudPoint{p.x, p.y, p.z, p.intensity, p.ring, p.timestamp});
+  }
   loan->message().width = count;
-  loan->message().row_step = count * sizeof(Point);
-  (void)points.publish(std::move(*loan), count * sizeof(Point));
+  loan->message().row_step = count * sizeof(CloudPoint);
+  (void)points.publish(std::move(*loan), count * sizeof(CloudPoint));
   ```
 - `subscriberCount()` counts subscribers of every node on the machine at that instant.
   It is not delivery; check it first when a message is costly and nobody may listen.

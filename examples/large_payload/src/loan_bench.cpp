@@ -366,7 +366,16 @@ int runPub(const PubConfig& config)
             if (!loaned) {
                 status = loaned.error();
             } else {
-                convertPoints(clouds[r].data(), points, loaned->data().data());
+                // put() copies each point with memcpy: data() has no alignment.
+                const VendorPoint* in = clouds[r].data();
+                for (size_t i = 0; i < points; ++i) {
+                    loaned->put(
+                        i,
+                        CloudPoint{
+                            in[i].x, in[i].y, in[i].z, in[i].intensity, in[i].ring, in[i].timestamp
+                        }
+                    );
+                }
                 loaned->message().width = static_cast<uint32_t>(points);
                 loaned->message().row_step = static_cast<uint32_t>(points * 26);
                 const Clock::time_point p = Clock::now();

@@ -4,6 +4,7 @@
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/PointCloud2.h>
 
+#include <array>
 #include <cstddef>
 #include <cstring>
 #include <optional>
@@ -125,7 +126,11 @@ TEST_F(TypedLoanFixture, ACloudShrunkAtThePublishSendsTheBytesOfTheTypedPublish)
     auto loan = pub.loan(cloudHead(), 10 * 6);
     ASSERT_TRUE(loan.has_value()) << loan.error().name();
     const std::vector<uint8_t> points = pixels(7 * 6);
-    std::memcpy(loan->data().data(), points.data(), points.size());
+    for (size_t i = 0; i < 7; ++i) {
+        std::array<uint8_t, 6> point{};
+        std::memcpy(point.data(), points.data() + i * 6, 6);
+        loan->put(i, point);
+    }
     loan->message().width = 7;
     loan->message().row_step = 7 * 6;
     loan->message().header.stamp.secs = 9;
@@ -165,7 +170,7 @@ TEST_F(TypedLoanFixture, ATypedSubscriberReceivesALoanedImageUnchanged)
     EXPECT_EQ(*received, expected);
 }
 
-TEST_F(TypedLoanFixture, AFullPoolIsReportedAndADroppedLoanReturnsItsSlotAndNoSequence)
+TEST_F(TypedLoanFixture, ALoanPastTheLoanCountIsReportedAndADroppedLoanReturnsItsSlotAndNoSequence)
 {
     const std::string                 topic = testTopic("/image");
     std::vector<std::vector<uint8_t>> seen;
@@ -179,8 +184,8 @@ TEST_F(TypedLoanFixture, AFullPoolIsReportedAndADroppedLoanReturnsItsSlotAndNoSe
     ASSERT_TRUE(second.has_value());
     const auto third = pub.loan(imageHead(), 45);
     ASSERT_FALSE(third.has_value());
-    EXPECT_EQ(third.error(), hypha::Status::PoolExhausted);
-    EXPECT_EQ(pub.lastPublishStatus(), hypha::Status::PoolExhausted);
+    EXPECT_EQ(third.error(), hypha::Status::LoanLimit);
+    EXPECT_EQ(pub.lastPublishStatus(), hypha::Status::LoanLimit);
 
     {
         const auto dropped = std::move(first);

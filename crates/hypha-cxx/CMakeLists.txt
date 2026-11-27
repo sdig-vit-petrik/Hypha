@@ -300,11 +300,20 @@ if(HYPHA_BUILD_TESTS)
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target log_module_name_invalid)
   set_tests_properties(log_module_name_invalid_is_refused PROPERTIES WILL_FAIL TRUE)
 
+  # A loan of a message with no field to loan must stop the build, with the rule in words.
+  add_library(typed_loan_not_loanable OBJECT EXCLUDE_FROM_ALL test/typed_loan_not_loanable.cpp)
+  target_link_libraries(typed_loan_not_loanable PRIVATE hypha)
+  add_test(NAME typed_loan_of_a_message_without_an_array_is_refused
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target typed_loan_not_loanable)
+  set_tests_properties(typed_loan_of_a_message_without_an_array_is_refused PROPERTIES
+    PASS_REGULAR_EXPRESSION "this message has no single top-level array of numbers to write in place")
+
   add_executable(test_hypha
     test/test_main.cpp
     test/wall_clock_listener.cpp
     test/test_publisher.cpp
     test/test_typed_loan.cpp
+    test/test_typed_loan_contract.cpp
     test/test_subscriber.cpp
     test/subscriber_latest_pair_is_consistent.cpp
     test/test_parameters.cpp
@@ -424,6 +433,16 @@ if(HYPHA_BUILD_TESTS)
     add_test(NAME test_hypha_mcap_replay COMMAND test_hypha_mcap_replay)
     set_tests_properties(test_hypha_mcap_replay PROPERTIES LABELS "needs-iceoryx2")
     hypha_gtest_report(test_hypha_mcap_replay)
+    # `hypha record` stores the bytes of a typed loan shrunk at the publish.
+    if(HYPHA_BUILD_APPS)
+      add_executable(test_typed_loan_record test/test_main.cpp test/test_typed_loan_record.cpp)
+      target_link_libraries(test_typed_loan_record PRIVATE hypha hypha::testing_mcap GTest::gtest)
+      target_compile_definitions(test_typed_loan_record PRIVATE
+        HYPHA_NO_LOGGING HYPHA_TEST_HYPHA_TOOL="$<TARGET_FILE:hypha::hypha>")
+      add_test(NAME test_typed_loan_record COMMAND test_typed_loan_record)
+      set_tests_properties(test_typed_loan_record PROPERTIES LABELS "needs-iceoryx2" TIMEOUT 120)
+      hypha_gtest_report(test_typed_loan_record)
+    endif()
   endif()
   foreach(alone
       NodeStopSignalProcess.StopSignalEndsTheRun
@@ -439,4 +458,17 @@ if(HYPHA_BUILD_TESTS)
       RUN_SERIAL TRUE)
     hypha_gtest_report(test_hypha_${wall_time})
   endforeach()
+endif()
+
+# The typed loan's tests under AddressSanitizer and UBSan, on request: a moved-from loan,
+# a loan that outlives its publisher or its node, a span past the publish.
+option(HYPHA_TYPED_LOAN_SANITIZE "Build test_typed_loan_sanitized with ASan and UBSan" OFF)
+if(HYPHA_BUILD_TESTS AND HYPHA_TYPED_LOAN_SANITIZE)
+  add_executable(test_typed_loan_sanitized
+    test/test_main.cpp test/test_typed_loan.cpp test/test_typed_loan_contract.cpp)
+  target_link_libraries(test_typed_loan_sanitized PRIVATE hypha GTest::gtest)
+  target_compile_definitions(test_typed_loan_sanitized PRIVATE HYPHA_NO_LOGGING)
+  target_compile_options(test_typed_loan_sanitized PRIVATE
+    -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g)
+  target_link_options(test_typed_loan_sanitized PRIVATE -fsanitize=address,undefined)
 endif()
