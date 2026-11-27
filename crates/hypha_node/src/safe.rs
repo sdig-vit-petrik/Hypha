@@ -48,8 +48,8 @@ pub use crate::subscriber::{
     subscriber_publisher_count, subscriber_receive, subscriber_topic,
 };
 pub use crate::transforms::buffer::{
-    HyphaTransformBuffer, transform_buffer_create, transform_buffer_destroy,
-    transform_buffer_lookup,
+    HyphaTransformBuffer, transform_buffer_create, transform_buffer_create_fed,
+    transform_buffer_destroy, transform_buffer_feed, transform_buffer_lookup,
 };
 pub use crate::transforms::{HyphaSentTransform, TransformLookup, transform_check};
 pub use crate::waitset::registrations::waitset_attach_foreign;

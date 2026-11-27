@@ -552,6 +552,15 @@ static ROWS: &[Row] = rows! {
         assert_eq!(create(live.node, null(), &raw mut out), INVALID);
         assert_eq!(create(live.node, &raw const qos, null_mut()), INVALID);
     }
+    hypha_transform_buffer_create_fed => |_live| {
+        let mut out = null_mut();
+        assert_eq!(unsafe { hypha_transform_buffer_create_fed(0, &raw mut out) }, INVALID);
+        assert!(out.is_null(), "a refused create writes null");
+        assert_eq!(unsafe { hypha_transform_buffer_create_fed(1, null_mut()) }, INVALID);
+    }
+    hypha_transform_buffer_feed => |_live| {
+        assert_eq!(unsafe { hypha_transform_buffer_feed(null(), [0_u8].as_ptr(), 1, 0) }, INVALID);
+    }
     hypha_transform_buffer_lookup => |_live| {
         let mut result = 9_u32;
         let mut out = HyphaTransform::default();
