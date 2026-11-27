@@ -314,6 +314,29 @@ pub(crate) fn a_latest_input_sized_for_a_chunk_and_a_period_keeps_up_off_the_dea
 }
 
 #[test]
+pub(crate) fn a_queued_input_sized_for_a_chunk_and_a_period_keeps_up_off_the_deadline_grid() {
+    // (100 ms chunk + 100 ms period) x 100 Hz, and a `perStep` of 100 ms x 100 Hz.
+    let queued = HyphaCycleBindingOptions {
+        mode: HyphaCycleInputMode::Queued as u32,
+        max_samples_per_iteration: 10,
+        optional: 0,
+    };
+    let chunks = chunks_of_100_ms(10, &[110, 210, 310, 410]);
+    let (statuses, health, steps) = replay_an_input(queued, 20, 10, &chunks);
+    assert!(statuses.iter().all(|status| *status == HyphaStatus::Ok as i32), "{statuses:?}");
+    assert_eq!(health.overrun_total, 0, "no sample is lost: {health:?}");
+    let taken: Vec<(i64, usize, Option<u8>)> = steps
+        .iter()
+        .map(|step| (step.scheduled / MILLISECOND, step.sample_count, step.newest))
+        .collect();
+    // Each step takes every sample stamped from the last deadline up to its own.
+    assert_eq!(
+        taken,
+        [(100, 9, Some(9)), (200, 10, Some(19)), (300, 10, Some(29)), (400, 10, Some(39))]
+    );
+}
+
+#[test]
 pub(crate) fn a_latest_queue_of_one_chunk_drops_a_sample_off_the_deadline_grid() {
     // A queue of 100 ms x 100 Hz: the player shortens the first chunk, of 11 samples, at
     // 109 ms (4.3). The `/clock` at 110 runs no step, so nothing drains 110 before the

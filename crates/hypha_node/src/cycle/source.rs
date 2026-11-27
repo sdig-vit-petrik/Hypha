@@ -212,10 +212,11 @@ fn check_input_source<'set>(
     let history = match endpoint {
         None => None,
         Some(endpoint) => {
-            // The queue plus one slot. In replay the history keeps every sample from the last
-            // deadline run through the newest clock, up to a chunk and a period of the topic,
-            // so a `Latest` input's queue is sized for both (replay-flow-control.md §6.7). A
-            // queued binding adds its `perStep` (`reserve_arrivals`).
+            // The queue plus one slot, so a drain of a full queue keeps the newest sample of
+            // the drain before it. In replay the queue is drained only when a step runs,
+            // so it holds the samples from one step's clock to the next, up to a chunk and a
+            // period of the topic (replay-flow-control.md §6.7). A queued binding adds its
+            // `perStep` (`reserve_arrivals`).
             let depth = endpoint.port.buffer_size().saturating_add(1);
             let history = hypha_cycle::CycleHistory::new(depth).ok_or(Error::InvalidArgument)?;
             Some(Arc::new(Mutex::new(history)))

@@ -401,10 +401,11 @@ host keeps up with. Its steps run on the recording's deadlines, with the samples
 recorded before each deadline, and its data ages are measured in recorded time.
 A step that loses a sample on a queued input (a transport overflow or a history
 eviction) fails with `SequenceGap` and logs `replay not faithful`. The player
-fails the replay when a queue is too short for the samples a cycle has not read
-yet. Size a `Latest` input's queue for `--chunk` plus the cycle's period, times
-the topic's rate; a queued input's for `--chunk` times the rate, with a `perStep`
-of at least the period times the rate (`replay-flow-control.md` §6.7). The
+fails the replay when a queue is too short for the samples that arrive between
+two steps of a cycle, which drains its inputs only when a step runs. Size a
+`Latest` input's queue for `--chunk` plus the cycle's period, times the topic's
+rate, a queued input's too, with a `perStep` of at least the period times the
+rate (`replay-flow-control.md` §6.7). The
 execution model (section 11.1) describes the rules.
 
 Observers, such as a recorder or the bridge, are not waited for. A message sent

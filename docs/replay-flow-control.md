@@ -416,12 +416,14 @@ wait out.
 - **A loop of triggered cycles has no delay element.** It holds until `--timeout`, and the player
   names its nodes as a loop (6.1); a rate cycle or a clock driver in the loop is the delay element.
 - **Inputs are drained at step time.** A chunk is split so that a topic's samples fit the smallest
-  subscriber queue (4.3), but a node's history must also keep every sample its cycle has not read
-  when the next `/clock` arrives: those from its last deadline run through the new clock, which spans
-  up to a chunk plus a period. Size each replayed input for the topic's rate r, the chunk c and the
-  cycle's period p:
+  subscriber queue (4.3), but a `/clock` that runs no step of a node drains none of its inputs, so a
+  queue holds every sample from the `/clock` of one step to that of the next, which spans up to a
+  chunk plus a period. A queued input's history must also keep every sample its cycle has not read;
+  a `Latest` one needs only the newest sample before each deadline, which an eviction of a sample
+  that a retained one supersedes does not lose (6.6). Size each replayed input for the topic's rate
+  r, the chunk c and the cycle's period p:
   - a `Latest` input: a queue of (c + p) x r samples;
-  - a queued input (`Arrivals`): a queue of c x r samples and a `perStep` of at least p x r.
+  - a queued input (`Arrivals`): a queue of (c + p) x r samples and a `perStep` of at least p x r.
 
   A `Latest` history holds its queue plus one sample, a queued one its queue plus `perStep`. An input
   sized below this fails with `replay not faithful` (6.6) when the chunk grid and the deadline grid

@@ -907,9 +907,10 @@ captures it as a host-time step does, at every step: the newest sample whatever 
 stamp, its silence limit judged by host time (the sender's send time, so on one host),
 and no replay loss or time-base mismatch for it. Such an input makes the step depend on
 arrival timing, so a replay of the node is no longer deterministic for it.
-`hypha play --clock` waits for the nodes, so its replay fails only when an input is too short
-for the samples its cycle has not read yet: a `Latest` input needs a queue of (`--chunk` + period)
-x rate, a queued input chunk x rate and a `perStep` of at least period x rate
+`hypha play --clock` waits for the nodes, so its replay fails only when an input is too short:
+a cycle drains its inputs only when a step runs, so a queue holds the samples between two of
+its steps, and a queued input's history also those its cycle has not read yet. A `Latest` input needs a queue of (`--chunk` + period)
+x rate, a queued input the same queue and a `perStep` of at least period x rate
 (`replay-flow-control.md`, section 6.7). A run at a high
 `--rate` is only as faithful as the host keeps up.
 
