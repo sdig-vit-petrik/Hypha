@@ -538,8 +538,21 @@ own limit keys and cursor, in any cycle (`hypha/cycle_input.h`). In
 
 #### Queued work, budget and overflow
 
-An `Arrivals` port examines at most `perStep()` samples per step (default 8); a
-sample the age rule refuses still uses a slot. Pending samples beyond a share are
+An `Arrivals` port examines at most `perStep()` samples per step (default 8) and queues
+that many, so `perStep()` is at most the `maxDepth` of the port's policy: 32 for the
+`default` policy, at most 1024 with a policy of your own (section 7). A larger one is
+refused when the port is constructed with a `std::invalid_argument` that names the policy,
+and `runNode` exits 70: a `perStep` fixed in code is a programming error. The framework
+cannot tell that a number came from the parameter file. To refuse such a value as a
+configuration fault (78), read it with the range of its limit:
+
+```cpp
+Arrivals<Imu> imu{
+    *this, "imu",
+    perStep(config("ports.inputs.imu").required<uint32_t>("queue_size", constraints::range(1, 32)))};
+```
+
+A sample the age rule refuses still uses a slot. Pending samples beyond a share are
 the oldest; they are dropped and counted (execution-model.md §6.5). A `CycleNode`
 caps all queued ports together with `arrival_budget` (a positive integer, read at
 commit) in its `[cycle]` table, beside `rate_hz`:

@@ -348,6 +348,64 @@ class MissingSilenceApp final : public hypha::CycleNode
     }
 };
 
+/// A queued input whose perStep, fixed in code, is above the maxDepth (32) of its policy.
+class ConstantPerStepApp final : public hypha::CycleNode
+{
+  public:
+    Arrivals<std_msgs::Float64> samples{*this, hypha::Topic{"/k8_per_step"}, perStep(33)};
+
+    void setup(hypha::Node&) override
+    {
+        this->setRate(hypha::Hz(100.0));
+    }
+
+    void step(const hypha::CycleTime&) override
+    {
+    }
+};
+
+/// A queued input whose perStep is the `queue_size` of its port table, passed on as read:
+/// the framework cannot tell that the number came from the file.
+class FilePerStepApp final : public hypha::CycleNode
+{
+  public:
+    Arrivals<std_msgs::Float64> imu{
+        *this, "imu", perStep(hypha::config("ports.inputs.imu").required<uint32_t>("queue_size"))
+    };
+
+    void setup(hypha::Node&) override
+    {
+        this->setRate(hypha::Hz(100.0));
+    }
+
+    void step(const hypha::CycleTime&) override
+    {
+    }
+};
+
+/// The same, with the port's own range check: the way to refuse a file value with 78.
+class CheckedFilePerStepApp final : public hypha::CycleNode
+{
+  public:
+    Arrivals<std_msgs::Float64> imu{
+        *this,
+        "imu",
+        perStep(
+            hypha::config("ports.inputs.imu")
+                .required<uint32_t>("queue_size", hypha::constraints::range(1, 32))
+        )
+    };
+
+    void setup(hypha::Node&) override
+    {
+        this->setRate(hypha::Hz(100.0));
+    }
+
+    void step(const hypha::CycleTime&) override
+    {
+    }
+};
+
 /// Sends from setup(): no step runs there, so the send throws.
 class SendsInSetupApp final : public hypha::CycleNode
 {
@@ -657,6 +715,50 @@ TEST(RunNodeLifecycle, AMissingSilenceLimitReturnsTheConfigurationCode)
         ),
         std::string::npos
     ) << output;
+}
+
+TEST(RunNodeLifecycle, APerStepAboveTheLimitFixedInCodeReturnsTheRuntimeCodeAndNamesTheLimit)
+{
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithoutArguments(&hypha::runNode<ConstantPerStepApp>);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    EXPECT_EQ(exitCode, hypha::kExitRuntime) << output;
+    EXPECT_NE(output.find("node failed in application construction"), std::string::npos) << output;
+    EXPECT_NE(
+        output.find(
+            "a queue of 33 samples per step (perStep) exceeds the maxDepth of its QoS policy "
+            "'default' (publishers 8, subscribers 16, maxDepth 32)"
+        ),
+        std::string::npos
+    ) << output;
+}
+
+TEST(RunNodeLifecycle, APerStepAboveTheLimitPassedOnFromTheFileStillReturnsTheRuntimeCode)
+{
+    const std::filesystem::path path = parameterFile(
+        "hypha_run_node_per_step_file.toml",
+        "[ports.inputs.imu]\ntopic = '/k8_per_step_file'\nqueue_size = 33\nsilence_ms = 100\n"
+    );
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithFile(&hypha::runNode<FilePerStepApp>, path);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    std::filesystem::remove(path);
+    EXPECT_EQ(exitCode, hypha::kExitRuntime) << output;
+    EXPECT_NE(output.find("maxDepth 32"), std::string::npos) << output;
+}
+
+TEST(RunNodeLifecycle, ARangeCheckOfAPerStepReadFromTheFileReturnsTheConfigurationCode)
+{
+    const std::filesystem::path path = parameterFile(
+        "hypha_run_node_per_step_checked.toml",
+        "[ports.inputs.imu]\ntopic = '/k8_per_step_checked'\nqueue_size = 33\nsilence_ms = 100\n"
+    );
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithFile(&hypha::runNode<CheckedFilePerStepApp>, path);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    std::filesystem::remove(path);
+    EXPECT_EQ(exitCode, hypha::kExitConfiguration) << output;
+    EXPECT_NE(output.find("queue_size"), std::string::npos) << output;
 }
 
 TEST(RunNodeLifecycle, ASetupThatSendsFailsTheNodeNamingTheOutput)
