@@ -248,10 +248,11 @@ fn emit_serializer(output: &mut String, spec: &MessageSpec) {
     output.push_str("}  // namespace ros::serialization\n");
 }
 
-/// The field `Publisher<M>::loan()` writes in place, when the message has one: its last
-/// variable-length field, if that holds numbers, and only numbers or fixed arrays of numbers
-/// follow it. Its bytes then end where the fixed-size tail begins, so a loan can place the
-/// tail after however many bytes the field turns out to hold.
+/// The field `Publisher<M>::loan()` writes in place, when the message has one: its single
+/// top-level variable-length array of numbers, if only fixed-size numbers follow it. A
+/// message with two such arrays (`LaserScan`, `JointState`, `Joy`) has none, since the other
+/// would have to be filled in the head. The fixed tail (`PointCloud2::is_dense`) is placed
+/// after however many bytes the field turns out to hold.
 fn loaned_field(spec: &MessageSpec) -> Option<&Field> {
     let is_number = |field_type: &FieldType| {
         !matches!(
@@ -263,14 +264,19 @@ fn loaned_field(spec: &MessageSpec) -> Option<&Field> {
                 | FieldType::Message(_)
         )
     };
-    let position =
-        spec.fields.iter().rposition(|field| field.multiplicity == Multiplicity::Variable)?;
-    let (field, tail) = spec.fields.get(position..)?.split_first()?;
-    let fixed_tail = tail.iter().all(|after| {
+    let is_number_array = |field: &Field| {
+        field.multiplicity == Multiplicity::Variable && is_number(&field.field_type)
+    };
+    let mut arrays = spec.fields.iter().enumerate().filter(|(_, field)| is_number_array(field));
+    let (position, field) = arrays.next()?;
+    if arrays.next().is_some() {
+        return None;
+    }
+    let fixed_tail = spec.fields.get(position.checked_add(1)?..)?.iter().all(|after| {
         let primitive = after.field_type == FieldType::Bool || is_number(&after.field_type);
         primitive && after.multiplicity != Multiplicity::Variable
     });
-    (is_number(&field.field_type) && fixed_tail).then_some(field)
+    fixed_tail.then_some(field)
 }
 
 fn emit_loaned_field(output: &mut String, spec: &MessageSpec) {

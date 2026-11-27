@@ -118,9 +118,9 @@ inline const char* definition(const M& m)
 namespace hypha::message_traits {
 
 /// @brief The field of @p M that `Publisher<M>::loan()` writes in place, in the slot:
-///        `member` points to it. The generator specialises it for a message whose last
-///        variable-length field holds numbers and is followed by fixed-size numbers only
-///        (`sensor_msgs/Image::data`, `sensor_msgs/PointCloud2::data`); others have none.
+///        `member` points to it. The generator specialises it for a message with a single
+///        top-level array of numbers that only fixed-size numbers follow (`Image::data`,
+///        `PointCloud2::data`, the `*MultiArray` types: 15 standard types); others have none.
 template <typename M>
 struct LoanedField
 {
