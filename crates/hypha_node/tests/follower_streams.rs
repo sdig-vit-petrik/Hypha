@@ -244,7 +244,7 @@ fn a_latched_streams_sample_is_not_counted_as_sent_before_following() {
     }
     wait_for_streams(&mut follower, &bus, 1);
     assert!(latched.publish(&5_u32.to_le_bytes()));
-    assert!(!read_for(&mut follower, &bus, 2, 1).is_empty());
+    assert_ne!(read_for(&mut follower, &bus, 2, 1), Vec::<(u64, Vec<u8>)>::new());
     assert_eq!(follower.sent_before_following(), vec![]);
 }
 
