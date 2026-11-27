@@ -478,7 +478,13 @@ Three tags of an input answer three separate questions; none implies another:
 
 `advisory` and `unsupervised` exclude each other (`start()` fails). An input that
 counts for health and is not `unsupervised` needs a `silence_ms` ("Input
-supervision"). `ignored = true` in the table is the operator's override of what
+supervision"). An `unsupervised` input that has not yet delivered a sample has the verdict
+`NeverArrived`, so `usable()` is false and, because it counts for health, `~/state` stays
+`WAITING` until the first sample; after it the input is usable for good. An input that may
+never arrive (an operator's command) is `advisory`, not `unsupervised`. Every tag also takes
+a flag from a run-time value, `hypha::unsupervised(!expires)` (`hypha/options.h`), and the
+application may read the `silence_ms` key of its own port table to decide it
+(`ports/twist_mux` in the playground). `ignored = true` in the table is the operator's override of what
 `advisory` promises: the port starts with its fault overridden.
 
 ### 5.4 Cycle node (L3)
@@ -603,7 +609,9 @@ commit) in its `[cycle]` table, beside `rate_hz`:
 
 #### Triggered cycles
 
-`setTrigger(port)` before `start()` adds an `Arrivals` port to the triggers of the
+`setTrigger(port)` before `start()` (in the constructor or in `setup()`, which `runNode`
+calls first; a test that calls `start()` alone must call `setup(node)` before it, or the
+start is refused with `neither a rate nor a trigger`) adds an `Arrivals` port to the triggers of the
 cycle, which then runs one step per sample of any trigger in place of a rate. Call it
 once per trigger port; a repeat adds nothing, and the order of the calls has no
 meaning. The samples of all triggers step in send-stamp order, a tie in the
@@ -935,6 +943,10 @@ for (const auto sensor : settings.list("sensors")) {
   read as `bool`, `int64_t`, `double` or `std::string`. A list name may not equal a
   scalar name or be a dotted prefix of one (`InvalidArgument`). Errors name the
   entry: `sensors[2].topic`.
+- **Nested tables.** `hypha::config("calibration.camera_matrix")` is a view of the table
+  `[calibration.camera_matrix]`: `required<T>("rows")` and `requiredArray<double, 9>("data")`
+  through it read its keys and count them as read (`ports/arena_camera/src/camera_info.cpp`
+  in the playground).
 - **Environment.** Any string value, list elements, `[log]` and `include` too, may
   hold `${NAME}`, expanded when its file is read. An unset or empty variable fails
   node creation: ``could not load TOML configuration `<file>` at `<key>`: environment variable `<NAME>` is unset`` (or `is empty`). `$NAME` stays literal. An empty

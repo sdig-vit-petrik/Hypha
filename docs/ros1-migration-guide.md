@@ -268,6 +268,12 @@ effect for each message (a counter, an integrator, a queue) must use an
   trigger in `setup()` with `this->setTrigger(this->ground_truth)`. Its table in
   `examples/mrs/config/estimation_manager.toml` has a `silence_ms` (100), and no
   `[cycle]` table sets `rate_hz`: a rate and a trigger exclude each other.
+- **`setTrigger` (and `setRate`) run before `start()`**, in `setup(hypha::Node&)` or in the
+  constructor. `runNode` calls `setup()` before it starts the cycle, so nothing else is
+  needed there. A test that builds the node and calls `start()` alone, with the trigger in
+  `setup()`, is refused with `cycle 'x' is refused: it has neither a rate nor a trigger`,
+  which does not say where to set it: call `setup()` first (Step 6, "A test that starts the
+  cycle on a bus"). `StepHarness` runs neither.
 - Each trigger needs its own `silence_ms`, also when the port is `unsupervised`;
   `start()` fails without one and names the port. Carry the old timeout of the input
   when the node had one, else the longest gap the input may have.
@@ -529,7 +535,10 @@ const std::array<double, 9> data = table.requiredArray<double, 9>("data");
   - *`timeout: 0.0`, "not used", or a lock that never expires* (`twist_mux`): the input has
     no age limit. Declare the port `hypha::unsupervised` and give its table **no**
     `silence_ms` (0 is refused, and a limit is refused on an `unsupervised` port).
-    `unsupervised` does not mean "need not arrive": see the next item.
+    `unsupervised` does not mean "need not arrive": see the next item. **A trigger cannot be
+    `unsupervised`**: it needs a `silence_ms` of at most 3600 s, so the timeout 0.0 of a
+    velocity input that triggers the cycle has no answer yet (#238): ask the user. The
+    `twist_mux` port proposed 3600 s, the longest limit there is.
 - **`advisory` against `unsupervised`.** They answer different questions
   ([cpp-api.md](cpp-api.md) §5.3). `unsupervised`: the input has no age limit, and it still
   counts for health. An `unsupervised` input that has not yet delivered a sample has the
@@ -1290,7 +1299,10 @@ Rules:
 - **Do not work around a gap in the node.** Do not write a TF buffer, a second
   age check, a parameter reloader or a copy of framework logic in the node to
   fill a gap. Workarounds become second implementations that the framework
-  must later replace. Stop at the gap and report it.
+  must later replace. Stop at the gap and report it. The patterns that this guide shows by
+  name for a gap that is open (the deadline of a second timer, the paced worker, the queue
+  between a foreign thread and a worker, the topic pair of a service) are the exception: each
+  names its issue, and each is replaced when the issue closes.
 - **Continue where the gap does not block.** Finish the parts of the
   migration that the gap does not touch, and mark the open part in the code
   with one comment that names the report.
@@ -1330,7 +1342,11 @@ Report each item in the change description, with the evidence.
       fallback.
 - [ ] Every tuning value comes from the TOML file; each value is checked for
       range (`hypha::constraints`, or an exception in the constructor or `setup()`).
-- [ ] Every input port has a `silence_ms` chosen from the input rate.
+- [ ] Every input port has a `silence_ms` (the old timeout, or the value the user gave), or
+      is `unsupervised` with no `silence_ms` (a timeout of 0.0), and an input that may never
+      arrive is `advisory`.
+- [ ] `[log]` sets `level = "info"`, and every key of the file is read, or named by
+      `config().ignore()` or `unused`.
 - [ ] No input has an age limit besides `silence_ms`.
 - [ ] The response to each missing or stale input is explicit and approved.
 - [ ] `main` only calls `hypha::runNode`, for a `CycleNode` and an `ApplicationNode` alike: one TOML file at most, a second argument stops the node with status 2.
