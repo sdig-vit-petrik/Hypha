@@ -1,5 +1,8 @@
 T __internal_default_logger
 T hypha_abi_revision
+T hypha_client_call
+T hypha_client_status
+T hypha_client_wait_for_server
 T hypha_clock_advance_sim_time
 T hypha_clock_disable_sim_time
 T hypha_clock_enable_sim_time
@@ -70,7 +73,14 @@ T hypha_publisher_loan_frame
 T hypha_publisher_min_subscriber_buffer
 T hypha_publisher_reserve_frame
 T hypha_publisher_subscriber_count
+T hypha_request_answer
+T hypha_request_defer
+T hypha_request_destroy
 T hypha_schema_lookup
+T hypha_service_client_create
+T hypha_service_client_destroy
+T hypha_service_server_create
+T hypha_service_server_destroy
 T hypha_subscribe_typed
 T hypha_subscriber_counters
 T hypha_subscriber_destroy

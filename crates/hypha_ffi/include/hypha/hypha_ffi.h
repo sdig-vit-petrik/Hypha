@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 11
+#define HYPHA_ABI_REVISION 12
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -126,6 +126,41 @@
 
 // A periodic registration on framework time, owned by the `WaitSet`.
 #define HYPHA_ATTACH_TIMER 2
+
+// `hypha_client_call` sent the request, or holds it until a server appears: one outcome
+// follows.
+#define HYPHA_CALL_SENT 0
+
+// `hypha_client_call` refused: the client has its limit of calls in flight.
+#define HYPHA_CALL_BUSY 1
+
+// `hypha_client_call` refused: the request is above the service's bound.
+#define HYPHA_CALL_TOO_LARGE 2
+
+// The outcome of a call: the server answered.
+#define HYPHA_CALL_ANSWERED 0
+
+// The server refused, or left the request unanswered.
+#define HYPHA_CALL_REFUSED 1
+
+// No live server of the stream until the timeout.
+#define HYPHA_CALL_NO_SERVER 2
+
+// Nothing was sent: the transport refused the request.
+#define HYPHA_CALL_NOT_SENT 3
+
+// The server crashed or left, failed while it handled the call, or its answer did not
+// verify.
+#define HYPHA_CALL_SERVER_LOST 4
+
+// No answer within the timeout.
+#define HYPHA_CALL_TIMEOUT 5
+
+// Answer a request with a response: `bytes` is the encoded response.
+#define HYPHA_ANSWER_REPLY 0
+
+// Refuse a request: `bytes` is the reason, UTF-8, possibly empty.
+#define HYPHA_ANSWER_REFUSE 1
 
 // What a call reports back.
 //
@@ -310,6 +345,10 @@ typedef uint32_t HyphaNumberConstraint;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
+// A client, owned by its caller. Dropping it drops the outcomes of its calls in flight
+// without calling them: their callbacks belong to an owner that is gone.
+typedef struct HyphaClient HyphaClient;
+
 // A loaded parameter configuration, independent of any bus session. Opaque to the caller.
 typedef struct HyphaConfig HyphaConfig;
 
@@ -353,6 +392,14 @@ typedef struct HyphaNode HyphaNode;
 
 // A sending endpoint. Opaque to the caller.
 typedef struct HyphaPublisher HyphaPublisher;
+
+// A request of a server: borrowed by a handler for its call, or deferred and owned by its
+// caller, who may answer it from any thread. Dropped open, it refuses the request.
+typedef struct HyphaRequest HyphaRequest;
+
+// A server, owned by its caller. Dropping it ends every request it holds: their clients
+// read `ServerLost`, and a deferred handle's later answer is refused with `Disconnected`.
+typedef struct HyphaServer HyphaServer;
 
 // A receiving endpoint. Opaque to the caller.
 //
@@ -768,6 +815,116 @@ typedef struct HyphaPublisherOptions {
   // The service policy this publisher declares, and its payload bound.
   struct HyphaQos qos;
 } HyphaPublisherOptions;
+
+// The limits of a service. A `name_len` of 0 selects `defaultService` and every other
+// field must then be 0.
+typedef struct HyphaServicePolicy {
+  // The policy's name, `name_len` bytes of UTF-8; not NUL-terminated.
+  const char *name;
+  // Bytes of `name`.
+  size_t name_len;
+  // Clients the service admits, beyond the three for tools.
+  uint32_t clients;
+  // Calls one client may have in flight.
+  uint32_t outstanding;
+  // The largest request payload, in bytes.
+  uint64_t request_bytes;
+  // The largest response payload, in bytes.
+  uint64_t response_bytes;
+  // A call's timeout when its client names none.
+  uint64_t timeout_nanos;
+} HyphaServicePolicy;
+
+// What a server or a client is made of. Each text is `*_len` bytes of UTF-8, not
+// NUL-terminated, borrowed for the call.
+typedef struct HyphaServiceDesc {
+  // The port, whose `[ports.servers.<port>]` or `[ports.clients.<port>]` table names the
+  // service; or, with `literal` 1, the service: absolute, relative or `~/`.
+  const char *name;
+  // Bytes of `name`.
+  size_t name_len;
+  // 1 when `name` is the service, 0 when it is a port.
+  uint8_t literal;
+  // The `.srv` type, as `std_srvs/SetBool`.
+  const char *type_name;
+  // Bytes of `type_name`.
+  size_t type_name_len;
+  // The `.srv` MD5: 32 lower-case hexadecimal digits.
+  const char *md5;
+  // Bytes of `md5`: 32.
+  size_t md5_len;
+  // The limits, which both ends of the service declare alike.
+  struct HyphaServicePolicy policy;
+  // A client's timeout; 0 for the policy's. A client table's `timeout_ms` wins over both.
+  uint64_t timeout_nanos;
+  // A client: 1 for a blocking client, attached to nothing, whose call waits on the
+  // calling thread. 0 for a client of the node's `WaitSet`. A server: 0.
+  uint8_t blocking;
+} HyphaServiceDesc;
+
+// One request, borrowed for the handler's call.
+typedef struct HyphaRequestView {
+  // Answer it with `hypha_request_answer`, or take it over with `hypha_request_defer`;
+  // left alone, it is refused when the handler returns. Valid during the call only.
+  struct HyphaRequest *request;
+  // The encoded request.
+  const uint8_t *payload;
+  // Bytes of `payload`.
+  size_t payload_len;
+  // The client's node name; empty when it cannot be read.
+  const char *client_node;
+  // Bytes of `client_node`.
+  size_t client_node_len;
+} HyphaRequestView;
+
+// Called for each request of a server, on the thread that runs the node's `WaitSet`.
+// A failing result answers an open request as failed (the client reads `ServerLost`) and
+// fails the run.
+//
+// # Safety
+// Must not unwind. `view` is valid only for the call.
+typedef struct HyphaCallbackResult (*HyphaServeCallback)(const struct HyphaRequestView *view,
+                                                         void *context);
+
+// The one outcome of a call, borrowed for the outcome callback.
+typedef struct HyphaCallResult {
+  // One of the `HYPHA_CALL_ANSWERED` ... `HYPHA_CALL_TIMEOUT` outcomes.
+  uint32_t outcome;
+  // 1 when the server may have run the request: answered, server lost, timeout.
+  uint8_t may_have_run;
+  // 1 when a blind retry is safe: refused, no server, not sent.
+  uint8_t safe_to_retry;
+  // The encoded response of an answered call; null and 0 otherwise.
+  const uint8_t *response;
+  // Bytes of `response`.
+  size_t response_len;
+  // What became of the call, as one line: `refused: not armed`,
+  // `timeout after 1 s (policy defaultService)`.
+  const char *description;
+  // Bytes of `description`.
+  size_t description_len;
+  // The client's framework time of the call, in nanoseconds.
+  int64_t sent_nanos;
+  // The client's framework time of the outcome, in nanoseconds.
+  int64_t done_nanos;
+} HyphaCallResult;
+
+// Called once with the outcome of a call. For a client of the node's `WaitSet` it runs on
+// that `WaitSet`'s thread, and a failing result fails the run; for a blocking client it
+// runs on the calling thread before `hypha_client_call` returns, and its result is ignored.
+//
+// # Safety
+// Must not unwind. `result` is valid only for the call.
+typedef struct HyphaCallbackResult (*HyphaCallDoneCallback)(const struct HyphaCallResult *result,
+                                                            void *context);
+
+// What `hypha_client_status` reads.
+typedef struct HyphaClientStatus {
+  // 1 when a live server of the client's stream exists now.
+  uint8_t ready;
+  // Calls whose outcome is still to come.
+  uint32_t pending;
+} HyphaClientStatus;
 
 // Endpoint and resource options of a subscriber, passed to `hypha_subscribe_typed`.
 //
@@ -1741,6 +1898,126 @@ HyphaStatus hypha_schema_lookup(const struct HyphaNode *node,
                                 char *definition,
                                 size_t definition_capacity,
                                 size_t *definition_len);
+
+// Create the server `desc` describes and attach it to the node's `WaitSet`, whose run
+// calls `serve` with `context` for each request. Create it before the run. `release`
+// runs once with `context`: when the server is destroyed, or at once on a refusal.
+//
+// `InvalidArgument`: a null argument, text that is not UTF-8, a policy with a name of
+// length 0 and a field that is not 0, `blocking` not 0, or a port with no table (the
+// reason names the stanza to add); `InvalidTopic`: an invalid service name;
+// `ResourceLimit`: a live node serves the name (the reason names it); `QosMismatch`: the
+// service exists with another policy; `InvalidState`: during a run. `hypha_last_error`
+// gives the reason of each.
+//
+// # Safety
+// `node` is live; `desc` is readable with its texts; `out` is writable.
+HyphaStatus hypha_service_server_create(struct HyphaNode *node,
+                                        const struct HyphaServiceDesc *desc,
+                                        HyphaServeCallback serve,
+                                        void *context,
+                                        HyphaContextRelease release,
+                                        struct HyphaServer **out);
+
+// Destroy a server: every request it holds ends (their clients read `ServerLost`, and a
+// deferred request's later answer is `Disconnected`), and its handler's context is
+// released. Null does nothing.
+//
+// # Safety
+// `server` is null or comes from `hypha_service_server_create`, used no more.
+void hypha_service_server_destroy(struct HyphaServer *server);
+
+// Answer `request`: `kind` `HYPHA_ANSWER_REPLY` with the encoded response in `bytes`, or
+// `HYPHA_ANSWER_REFUSE` with the reason. A request is answered once, from the handler or,
+// deferred, from any thread; afterwards it is answered whatever the status.
+//
+// `InvalidState`: answered or deferred already; `TooLarge`: a response above the bound
+// (the client is refused with the sizes); `Disconnected`: the client or the server is
+// gone; `InvalidArgument`: a null argument, another kind, a reason that is not UTF-8.
+//
+// # Safety
+// `request` is the handler's request during its call, or a live deferred one; `bytes`
+// points to `len` readable bytes (it may be null when `len` is 0).
+HyphaStatus hypha_request_answer(struct HyphaRequest *request,
+                                 uint32_t kind,
+                                 const uint8_t *bytes,
+                                 size_t len);
+
+// Take the handler's `request` over, to answer later from any thread: `out` receives the
+// deferred request, which `hypha_request_destroy` releases. The handler's request is then
+// answered. `InvalidState`: answered, deferred already, or itself a deferred request.
+//
+// # Safety
+// `request` is the handler's request during its call; `out` is writable.
+HyphaStatus hypha_request_defer(struct HyphaRequest *request,
+                                struct HyphaRequest **out);
+
+// Release a deferred request. One still unanswered is refused, and counted and logged
+// once per server. Any thread may call it. Null does nothing.
+//
+// # Safety
+// `request` is null or comes from `hypha_request_defer`, used no more.
+void hypha_request_destroy(struct HyphaRequest *request);
+
+// Create the client `desc` describes. A server need not exist. With `blocking` 0 it is
+// attached to the node's `WaitSet`, whose run delivers its outcomes; create it before
+// the run. With `blocking` 1 it is attached to nothing.
+//
+// `InvalidArgument`, `InvalidTopic`, `QosMismatch`, `InvalidState`: as for
+// `hypha_service_server_create`; `ResourceLimit`: the stream's clients of this kind are
+// at their limit (a tool node takes one of three slots of its own).
+//
+// # Safety
+// `node` is live; `desc` is readable with its texts; `out` is writable.
+HyphaStatus hypha_service_client_create(struct HyphaNode *node,
+                                        const struct HyphaServiceDesc *desc,
+                                        struct HyphaClient **out);
+
+// Destroy a client. The outcomes of its calls in flight are dropped uncalled, and their
+// contexts released. Null does nothing.
+//
+// # Safety
+// `client` is null or comes from `hypha_service_client_create`, used no more.
+void hypha_service_client_destroy(struct HyphaClient *client);
+
+// Call with the encoded `request`. `status` receives `HYPHA_CALL_SENT`: `done` runs once
+// with the outcome, on the `WaitSet` thread at a later turn, or, for a blocking client, on
+// this thread before the call returns. Or `HYPHA_CALL_BUSY` (the client has its limit of
+// calls in flight) or `HYPHA_CALL_TOO_LARGE` (the request is above the bound): nothing is
+// sent and `done` is not called. `release` runs once with `context` in every case.
+//
+// `InvalidState`: a blocking client called on a thread that runs a `WaitSet` dispatch
+// (that thread would deliver the answer it waits for; `hypha_last_error` says what to use
+// instead). `InvalidArgument`: a null argument.
+//
+// # Safety
+// `client` is live; `request` points to `len` readable bytes (null when `len` is 0);
+// `status` is writable.
+HyphaStatus hypha_client_call(const struct HyphaClient *client,
+                              const uint8_t *request,
+                              size_t len,
+                              HyphaCallDoneCallback done,
+                              void *context,
+                              HyphaContextRelease release,
+                              uint32_t *status);
+
+// Read whether a live server of the client's stream exists now, and how many of its calls
+// are pending. Any thread may call it.
+//
+// # Safety
+// `client` is live; `out` is writable.
+HyphaStatus hypha_client_status(const struct HyphaClient *client,
+                                struct HyphaClientStatus *out);
+
+// Wait up to `timeout_nanos` of host time for a live server of a blocking client's
+// stream; `ready` receives 1 when one exists. `InvalidState`: a client of a `WaitSet`, or
+// a thread that runs a dispatch.
+//
+// # Safety
+// `client` is live; `ready` is writable.
+HyphaStatus hypha_client_wait_for_server(const struct HyphaClient *client,
+                                         uint64_t timeout_nanos,
+                                         uint8_t *ready);
 
 // Subscribe to `topic` with `options` and record `data_type` (null: empty) in the node
 // introspection. A topic carries one stream for each schema: with `expected_md5` the
