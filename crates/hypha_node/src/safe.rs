@@ -23,7 +23,9 @@ pub use crate::cycle::{
 pub use crate::domain::domain;
 pub use crate::introspection_abi::{config_record_config, node_introspect, node_record_config};
 pub use crate::last_error::last_error;
-pub use crate::loan::{HyphaLoan, loan_send, publisher_loan_frame};
+pub use crate::loan::{
+    HyphaLoan, loan_send, loan_shrink, publisher_loan_frame, publisher_reserve_frame,
+};
 pub use crate::metrics::{node_metrics, subscriber_metrics};
 pub use crate::node::{HyphaNode, node_create, node_destroy, node_name, node_ok, node_shutdown};
 pub use crate::node_discovery::{

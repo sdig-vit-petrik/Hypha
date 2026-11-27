@@ -1,7 +1,9 @@
 //! Encode and decode cost of the ROS 1 primitive codec.
 //!
 //! - small: a `std_msgs/Header` (`seq`, `stamp`, `frame_id`), 25 bytes;
-//! - large: a header and a `float32[]` of 16384 elements, 64 KiB of payload.
+//! - large: a header and a `float32[]` of 16384 elements, 64 KiB of payload;
+//! - frame: sealing and verifying the frame of the small message, the per-frame work of a
+//!   publish and of a receive besides the transport.
 //!
 //! Run with `cargo bench -p hypha_wire --bench codec`. Not a CI gate.
 #![expect(clippy::expect_used, reason = "a codec error in the fixed benchmark input stops the run")]
@@ -101,5 +103,27 @@ fn large(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, small, large);
+fn frame(c: &mut Criterion) {
+    use hypha_wire::frame::{FrameMetadata, TopicCode, seal, verify};
+    let topic = TopicCode::of("/bench/frame");
+    let metadata = FrameMetadata {
+        schema_hash: 1,
+        publisher_id: 2,
+        sequence: 3,
+        transport_sent_nanos: 4,
+        framework_sent_nanos: 5,
+    };
+    let payload = [7_u8; HEADER_BYTES];
+    let header = seal(topic, metadata, 0, &payload);
+    let mut group = c.benchmark_group("frame");
+    group.bench_function("seal", |b| {
+        b.iter(|| seal(topic, black_box(metadata), 0, black_box(&payload)));
+    });
+    group.bench_function("verify", |b| {
+        b.iter(|| verify(topic, black_box(&header), black_box(&payload)).is_ok());
+    });
+    group.finish();
+}
+
+criterion_group!(benches, small, large, frame);
 criterion_main!(benches);

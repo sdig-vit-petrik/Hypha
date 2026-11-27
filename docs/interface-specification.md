@@ -30,7 +30,7 @@ Every call that can fail returns `HyphaStatus`:
 | 0 | `Ok` | The call succeeded. |
 | 1 | `InvalidArgument` | A pointer was null, or a length made no sense. |
 | 2 | `InvalidTopic` | The topic name was empty or refused. |
-| 3 | `PoolExhausted` | No buffer was free, or the publisher's loan budget (the loans its caller holds) is full. The caller drops this message. |
+| 3 | `PoolExhausted` | No buffer was free. A send or `hypha_publisher_loan_frame` drops this message, and subscribers count it lost; `hypha_publisher_reserve_frame` takes no sequence, and its caller may ask again. |
 | 4 | `TooLarge` | The requested buffer is larger than the transport carries. |
 | 5 | `Disconnected` | The endpoint is closed. |
 | 6 | `Backend` | The transport failed for a reason of its own: a send that fails inside the transport, or an internal loan failure. Each cause has its own backend code in `crates/hypha_iceoryx2/src/lib.rs`. |
@@ -51,6 +51,7 @@ Every call that can fail returns `HyphaStatus`:
 | 21 | — | Retired (`Stale`; the verdict `HYPHA_CYCLE_VERDICT_STALE` names a stale input). No function returns it. |
 | 22 | `ClockRewound` | Simulated time went back under a timer or cycle of a `WaitSet`, or a node on simulated time read a `/clock` lower than its last one: a backward seek. Nothing rewinds in place; `runNode` exits 75 and `hypha launch` restarts the process. |
 | 23 | `ApplicationFailed` | The application asked for its run to fail (`hypha_waitset_request_failure`, C++ `failRun()`). The run report carries it with `HYPHA_RUN_REASON_RUNTIME_FAILED`. |
+| 24 | `LoanLimit` | The publisher's callers already hold all its loans (its loan count, two by default); the pool may have room. Lost frame or not as for `PoolExhausted`. Send or drop a held loan, then ask again. |
 
 `Panic` reports a foreign callback that threw; the C++ SDK catches the exception
 at the boundary and the call is reported as having had no effect. A fault inside
@@ -89,7 +90,12 @@ The cycle calls (`hypha_cycle_*`, `hypha_input_source_*`) give these causes:
 - **A loan must be released.** `hypha_publisher_loan_frame` hands
   out a buffer that is returned by either `hypha_loan_send` or
   `hypha_loan_drop`. Losing the pointer holds a transport buffer until the
-  publisher is destroyed.
+  publisher is destroyed. `hypha_loan_shrink` shortens an unsent loan to its first bytes
+  (never longer): the slot keeps its size, the frame's `payload_len` says the shorter
+  length, and subscribers see only those bytes.
+  `hypha_publisher_reserve_frame` lends as `hypha_publisher_loan_frame` does, but a refusal
+  takes no sequence number: it is for a caller that holds the loan to fill it and may ask
+  again, and subscribers count no lost frame.
 - **A callback context moves only on success.** A successful attach or cycle
   creation takes the `context` and its `release`, and calls `release` exactly once,
   after no callback can run again. A refused call leaves the context to the caller.
@@ -452,11 +458,22 @@ alone, as ROS 1 serialized bytes, so a payload has no header in front of it.
 | `sequence` | 64 bits | Per-publisher send sequence. It wraps to zero after the maximum value |
 | `transport_sent_nanos` | 64 bits | Host monotonic send time |
 | `framework_sent_nanos` | 64 bits | Framework send time: simulated on a sim-time node, wall otherwise, or the value set on the loan |
-| `crc` | 32 bits | CRC-32C (Castagnoli) that starts from the topic code and runs over `magic`, `flags`, the five 64-bit fields above in order, then the payload |
-| payload | variable | ROS 1 serialized message bytes, the sample's user payload |
+| `crc` | 32 bits | CRC-32C (Castagnoli) that starts from the topic code and runs over `magic`, `flags`, the five 64-bit fields above in order, `payload_len`, then the payload |
+| `payload_len` | 32 bits | The message's bytes: the first `payload_len` bytes of the sample's slice |
+| payload | variable | ROS 1 serialized message bytes, the first `payload_len` bytes of the sample's user payload |
 
-The magic is `0x3658_4F49` (`IOX6`). It changes when the header layout changes,
-and a receiver refuses any other value. Release 0.2.0 introduced the topic-bound CRC.
+The header is 56 bytes with 8-byte alignment, `payload_len` in the four bytes after `crc`
+that were the field `reserved` (always 0) before; a compile-time assertion pins the layout. The transport's slice keeps the size the publisher loaned; a
+loan shrunk before its send (`hypha_loan_shrink`) sets a shorter `payload_len`, and every
+reader takes the first `payload_len` bytes. A frame whose `payload_len` exceeds its slice is
+refused as `CorruptPayload`. A payload is at most 4 GiB − 1 bytes; a longer loan is
+`TooLarge`.
+
+The magic is `0x3758_4F49` (`IOX7`, 0.4.0, which added `payload_len`). It changes when
+the header layout changes, and a receiver refuses any other value: a 0.3.0 frame
+(`IOX6`) is `InvalidFrame`. A 0.3.0 and a 0.4.0 process in one domain still attach to
+each other's services (the header's type name and size are unchanged), so the refusal
+comes per frame, counted as `invalid_frame`, not at connect. Release 0.2.0 introduced the topic-bound CRC.
 It kept the 0.1.0 layout and its magic, so a frame from 0.1.0 fails its CRC and is
 refused as `corrupt_payload`: the two release lines do not share a domain.
 
@@ -484,6 +501,7 @@ frame for these conditions:
 |---|---|
 | Unsupported magic | `InvalidFrame` |
 | CRC-32C mismatch: a header field or a payload byte changed, or the frame was sealed for another topic | `CorruptPayload` |
+| `payload_len` longer than the sample's slice | `CorruptPayload` |
 | Send time later than the host clock | `InvalidFrame` |
 | Sequence that is not newer than the last one from its publisher | `SequenceGap` |
 

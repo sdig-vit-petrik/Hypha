@@ -1,5 +1,5 @@
 //! Frame verification and the schema record on arbitrary bytes.
-//! Input: the first 52 bytes are a frame header, the rest its payload. The whole
+//! Input: the first 56 bytes are a frame header, the rest the transport's slice. The whole
 //! input is also parsed as a schema record, raw and wrapped in a valid magic and
 //! checksum.
 #![no_main]
@@ -12,7 +12,7 @@ use hypha_wire::schema_record::{
 };
 use libfuzzer_sys::fuzz_target;
 
-const HEADER_LEN: usize = 52;
+const HEADER_LEN: usize = 56;
 const RECORD_MAGIC: u32 = 0x3558_4F49;
 const RECORD_HEADER_LEN: usize = 44;
 
@@ -40,13 +40,18 @@ fn header_from(bytes: &[u8]) -> FrameHeader {
             framework_sent_nanos: u64_at(bytes, 40),
         },
         crc: u32_at(bytes, 48),
+        payload_len: u32_at(bytes, 52),
     }
 }
 
-fn check_frame(header: &FrameHeader, payload: &[u8]) {
-    let sealed = seal(topic(), header.metadata, header.flags, payload);
-    let expected_ok = header.magic == FRAME_MAGIC && header.crc == sealed.crc;
-    match verify(topic(), header, payload) {
+fn check_frame(header: &FrameHeader, slice: &[u8]) {
+    // The message is the first payload_len bytes of the slice, when it has them.
+    let message = usize::try_from(header.payload_len).ok().and_then(|len| slice.get(..len));
+    let expected_ok = message.is_some_and(|payload| {
+        let sealed = seal(topic(), header.metadata, header.flags, payload);
+        header.magic == FRAME_MAGIC && header.crc == sealed.crc
+    });
+    match verify(topic(), header, slice) {
         Ok(frame) => {
             assert!(expected_ok, "verify accepted {header:?}");
             assert_eq!(frame.schema_hash(), header.metadata.schema_hash);
@@ -54,11 +59,12 @@ fn check_frame(header: &FrameHeader, payload: &[u8]) {
             assert_eq!(frame.sequence(), header.metadata.sequence);
             assert_eq!(frame.transport_sent_nanos(), header.metadata.transport_sent_nanos);
             assert_eq!(frame.framework_sent_nanos(), header.metadata.framework_sent_nanos);
-            assert_eq!(frame.payload(), payload);
+            assert_eq!(Some(frame.payload()), message);
         }
         Err(_) => assert!(!expected_ok, "verify refused a sealed frame"),
     }
-    assert!(verify(topic(), &sealed, payload).is_ok(), "a sealed header does not verify");
+    let sealed = seal(topic(), header.metadata, header.flags, slice);
+    assert!(verify(topic(), &sealed, slice).is_ok(), "a sealed header does not verify");
 }
 
 /// What a parsed record must satisfy against the payload length it came from.

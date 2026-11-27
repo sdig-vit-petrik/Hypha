@@ -80,7 +80,10 @@ pub use introspection_abi::{
     hypha_config_record_config, hypha_node_introspect, hypha_node_record_config,
 };
 pub use last_error::hypha_last_error;
-pub use loan::{hypha_loan_drop, hypha_loan_send, hypha_publisher_loan_frame};
+pub use loan::{
+    hypha_loan_drop, hypha_loan_send, hypha_loan_shrink, hypha_publisher_loan_frame,
+    hypha_publisher_reserve_frame,
+};
 pub use log::{hypha_log_enabled, hypha_log_module_register, hypha_log_write};
 pub use metrics::hypha_node_metrics;
 pub use node::{

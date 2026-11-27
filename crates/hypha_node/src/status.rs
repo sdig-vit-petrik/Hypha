@@ -52,6 +52,9 @@ pub enum HyphaStatus {
     ClockRewound = 22,
     /// The application asked for its run to fail (`hypha_waitset_request_failure`).
     ApplicationFailed = 23,
+    /// The publisher's callers already hold all its loans (its loan count). Nothing was
+    /// taken from the pool: send or drop a held loan, then ask again.
+    LoanLimit = 24,
 }
 
 impl HyphaStatus {
@@ -79,6 +82,7 @@ impl HyphaStatus {
             20 => Self::InvalidState,
             22 => Self::ClockRewound,
             23 => Self::ApplicationFailed,
+            24 => Self::LoanLimit,
             _ => Self::Backend,
         }
     }
@@ -130,6 +134,8 @@ pub enum Error {
     ClockRewound = 22,
     /// See [`HyphaStatus::ApplicationFailed`].
     ApplicationFailed = 23,
+    /// See [`HyphaStatus::LoanLimit`].
+    LoanLimit = 24,
 }
 
 impl Error {
@@ -162,6 +168,7 @@ impl Error {
             HyphaStatus::InvalidState => Self::InvalidState,
             HyphaStatus::ClockRewound => Self::ClockRewound,
             HyphaStatus::ApplicationFailed => Self::ApplicationFailed,
+            HyphaStatus::LoanLimit => Self::LoanLimit,
         }
     }
 }
@@ -189,6 +196,7 @@ impl From<Error> for HyphaStatus {
             Error::InvalidState => Self::InvalidState,
             Error::ClockRewound => Self::ClockRewound,
             Error::ApplicationFailed => Self::ApplicationFailed,
+            Error::LoanLimit => Self::LoanLimit,
         }
     }
 }
@@ -198,6 +206,7 @@ impl From<PortError> for Error {
         match cause {
             PortError::PoolExhausted => Self::PoolExhausted,
             PortError::BorrowLimit => Self::BorrowLimit,
+            PortError::LoanLimit => Self::LoanLimit,
             PortError::TooLarge { .. } => Self::TooLarge,
             PortError::Disconnected => Self::Disconnected,
             PortError::NotAvailable => Self::NotAvailable,
@@ -231,7 +240,7 @@ pub fn status_of(result: Result<(), Error>) -> HyphaStatus {
 mod error_code_tests {
     use super::{Error, HyphaStatus};
 
-    const EVERY_ERROR: [Error; 20] = [
+    const EVERY_ERROR: [Error; 21] = [
         Error::InvalidArgument,
         Error::InvalidTopic,
         Error::PoolExhausted,
@@ -252,6 +261,7 @@ mod error_code_tests {
         Error::InvalidState,
         Error::ClockRewound,
         Error::ApplicationFailed,
+        Error::LoanLimit,
     ];
 
     #[test]

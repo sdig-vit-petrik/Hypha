@@ -1,8 +1,11 @@
 //! The C ABI wrappers of `hypha_node::loan`.
 
-use crate::boundary::{handle_ref, take_box, write_out};
+use crate::boundary::{handle_mut, handle_ref, take_box, write_out};
 use crate::status::try_guard;
-use hypha_node::safe::{HyphaLoan, HyphaPublisher, loan_send, publisher_loan_frame};
+use hypha_node::safe::{
+    HyphaLoan, HyphaPublisher, loan_send, loan_shrink, publisher_loan_frame,
+    publisher_reserve_frame,
+};
 use hypha_node::status::HyphaStatus;
 
 /// Borrow a payload buffer of `payload_size` bytes for one sample.
@@ -36,6 +39,61 @@ pub unsafe extern "C" fn hypha_publisher_loan_frame(
             write_out(out, Box::into_raw(Box::new(held)))?;
             write_out(out_payload, payload)
         }
+    })
+}
+
+/// Borrow a payload buffer as `hypha_publisher_loan_frame` does, for a loan the caller may
+/// ask for again: a refusal takes no sequence number, so subscribers count no lost frame.
+///
+/// `PoolExhausted` when the pool has no free buffer, `LoanLimit` when the publisher's
+/// callers hold all its loans (send or drop one, then ask again); every other status, the
+/// outputs and the safety rules are those of `hypha_publisher_loan_frame`. The C++ typed loan
+/// (`Publisher<M>::loan`) uses it.
+///
+/// # Safety
+/// As `hypha_publisher_loan_frame`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hypha_publisher_reserve_frame(
+    publisher: *mut HyphaPublisher,
+    payload_size: usize,
+    out: *mut *mut HyphaLoan,
+    out_payload: *mut *mut u8,
+) -> HyphaStatus {
+    try_guard(|| {
+        let endpoint = unsafe { handle_ref(publisher) }?;
+        unsafe {
+            write_out(out, std::ptr::null_mut())?;
+            write_out(out_payload, std::ptr::null_mut())?;
+        }
+        let mut held = publisher_reserve_frame(endpoint, payload_size)?;
+        let payload = held.payload_mut().ok_or(HyphaStatus::InvalidState)?.as_mut_ptr();
+        unsafe {
+            write_out(out, Box::into_raw(Box::new(held)))?;
+            write_out(out_payload, payload)
+        }
+    })
+}
+
+/// Shorten a loan to its first `payload_size` bytes before it is sent, for a message
+/// that came out shorter than the bytes it reserved.
+///
+/// The bytes kept stay where they are, and the payload pointer from
+/// `hypha_publisher_loan_frame` stays valid; subscribers receive `payload_size` bytes.
+/// The slot keeps its size in the pool; the frame header's `payload_len` carries the
+/// shorter length, and the CRC covers exactly those bytes. A null `loan` and a `payload_size` longer than the
+/// loan are `InvalidArgument`, and the loan is unchanged. It may be called more than once.
+///
+/// # Safety
+/// `loan` must come from `hypha_publisher_loan_frame` and not yet be sent or dropped.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hypha_loan_shrink(
+    loan: *mut HyphaLoan,
+    payload_size: usize,
+) -> HyphaStatus {
+    try_guard(|| {
+        let held = unsafe { handle_mut(loan) }?;
+        loan_shrink(held, payload_size)?;
+        Ok(())
     })
 }
 

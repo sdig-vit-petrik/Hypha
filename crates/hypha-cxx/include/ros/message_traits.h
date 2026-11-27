@@ -114,3 +114,16 @@ inline const char* definition(const M& m)
 }
 
 }  // namespace ros::message_traits
+
+namespace hypha::message_traits {
+
+/// @brief The field of @p M that `Publisher<M>::loan()` writes in place, in the slot:
+///        `member` points to it. The generator specialises it for a message with a single
+///        top-level array of numbers that only fixed-size numbers follow (`Image::data`,
+///        `PointCloud2::data`, the `*MultiArray` types: 15 standard types); others have none.
+template <typename M>
+struct LoanedField
+{
+};
+
+}  // namespace hypha::message_traits

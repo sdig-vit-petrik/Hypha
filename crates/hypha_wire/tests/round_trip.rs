@@ -48,7 +48,8 @@ fn a_truncated_payload_is_refused() {
     let header = seal(topic(), metadata(), 0, &payload);
     assert_eq!(
         verify(topic(), &header, &payload[..payload.len() - 1]),
-        Err(ParseError::CrcMismatch)
+        Err(ParseError::LengthMismatch),
+        "the header's payload_len is one byte past the slice"
     );
 }
 

@@ -81,6 +81,22 @@ class LoanedBuffer
         return HYPHA_STATUS_OK;
     }
 
+    /// @brief Send only the first @p size bytes, for a message that came out shorter than
+    ///        the buffer. The bytes stay where they are; data() stays valid.
+    /// @return HYPHA_STATUS_OK. HYPHA_STATUS_INVALID_STATE when the buffer holds no loan,
+    ///         and HYPHA_STATUS_INVALID_ARGUMENT for a size beyond size(); then nothing changes.
+    [[nodiscard]] Status shrink(size_t size)
+    {
+        if (!this->loan) {
+            return HYPHA_STATUS_INVALID_STATE;
+        }
+        const Status status = hypha_loan_shrink(this->loan.get(), size);
+        if (status == HYPHA_STATUS_OK) {
+            this->length = size;
+        }
+        return status;
+    }
+
   private:
     friend class RawPublisherHandle;
 
@@ -215,6 +231,24 @@ class RawPublisherHandle
         uint8_t*     bytes = nullptr;
         const Status loanStatus =
             hypha_publisher_loan_frame(this->publisher.get(), size, &loaned, &bytes);
+        if (loanStatus != HYPHA_STATUS_OK) {
+            return std::unexpected(Status(loanStatus));
+        }
+        return LoanedBuffer(loaned, bytes, size);
+    }
+
+    /// @brief loan() for a buffer the caller may ask for again: a refusal takes no sequence,
+    ///        so subscribers count no lost frame. PoolExhausted for a full pool, LoanLimit
+    ///        while this publisher's callers hold all its loans.
+    [[nodiscard]] std::expected<LoanedBuffer, Status> reserve(size_t size) const
+    {
+        if (!this->valid) {
+            return std::unexpected(Status(HYPHA_STATUS_INVALID_STATE));
+        }
+        HyphaLoan*   loaned = nullptr;
+        uint8_t*     bytes = nullptr;
+        const Status loanStatus =
+            hypha_publisher_reserve_frame(this->publisher.get(), size, &loaned, &bytes);
         if (loanStatus != HYPHA_STATUS_OK) {
             return std::unexpected(Status(loanStatus));
         }

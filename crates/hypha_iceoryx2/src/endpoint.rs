@@ -10,7 +10,9 @@ use iceoryx2::prelude::CallbackProgression;
 use iceoryx2::service::port_factory::PortFactory;
 
 use hypha_core::port::{PortError, QosRequest, SchemaScope, topic_matches_pattern};
-use hypha_wire::frame::{FLAG_LATCHED, FrameHeader, FrameMetadata, TopicCode, seal};
+use hypha_wire::frame::{
+    FLAG_LATCHED, FrameHeader, FrameMetadata, MAX_PAYLOAD_LEN, TopicCode, message_bytes, seal,
+};
 use iceoryx2::port::ReceiveError;
 use iceoryx2::port::listener::Listener;
 use iceoryx2::port::notifier::Notifier;
@@ -37,15 +39,16 @@ pub(crate) const BACKEND_SEND_UNDELIVERED: u32 = 39;
 /// Backend code of a send that failed inside iceoryx2.
 pub(crate) const BACKEND_SEND_INTERNAL: u32 = 40;
 
-/// The status of a refused loan. A full pool and the publisher's loan budget are
-/// [`PortError::PoolExhausted`]; every other refusal names its cause.
+/// The status of a refused loan: a full pool is [`PortError::PoolExhausted`], the
+/// publisher's own loan budget [`PortError::LoanLimit`]; every other refusal names its cause.
 pub(crate) fn loan_port_error(
     cause: LoanError,
     requested: usize,
     max_payload: Option<usize>,
 ) -> PortError {
     match cause {
-        LoanError::OutOfMemory | LoanError::ExceedsMaxLoans => PortError::PoolExhausted,
+        LoanError::OutOfMemory => PortError::PoolExhausted,
+        LoanError::ExceedsMaxLoans => PortError::LoanLimit,
         LoanError::ExceedsMaxLoanSize => match max_payload {
             Some(limit) => PortError::TooLarge { requested, limit },
             None => PortError::Backend(BACKEND_LOAN_INTERNAL),
@@ -70,6 +73,9 @@ pub(crate) fn send_port_error(cause: SendError) -> PortError {
 /// message payload alone; its frame header is written when the loan is sent.
 pub struct Iox2Loan {
     sample: SampleMut<Ipc, [u8], Iox2FrameHeader>,
+    /// The bytes of the message: the slice's length, or less after [`Self::shrink`]. The
+    /// frame header carries it as `payload_len`; the slice keeps the loaned size.
+    used: usize,
     /// The code of the publisher's topic, which the frame is sealed for.
     topic_code: TopicCode,
     notifier: Arc<Notifier<Ipc>>,
@@ -78,27 +84,44 @@ pub struct Iox2Loan {
 }
 
 impl Iox2Loan {
-    /// The bytes currently in the buffer.
+    /// The bytes of the message currently in the buffer.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        self.sample.payload()
+        let payload = self.sample.payload();
+        payload.get(..self.used).unwrap_or(payload)
     }
 
     /// The bytes to write the message into.
     pub fn as_mut_bytes(&mut self) -> &mut [u8] {
-        self.sample.payload_mut()
+        let used = self.used;
+        let payload = self.sample.payload_mut();
+        let whole = payload.len();
+        payload.get_mut(..used.min(whole)).unwrap_or_default()
     }
 
-    /// How many bytes the buffer holds.
+    /// How many bytes the message holds.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.sample.payload().len()
+        self.used
     }
 
     /// True when the buffer holds nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Shorten the message to its first `len` bytes before the send. The slot keeps
+    /// its size; the frame's `payload_len` says `len`, and subscribers see `len` bytes.
+    ///
+    /// # Errors
+    /// [`PortError::TooLarge`] when `len` is longer than the message, which is unchanged.
+    pub fn shrink(&mut self, len: usize) -> Result<(), PortError> {
+        if len > self.used {
+            return Err(PortError::TooLarge { requested: len, limit: self.used });
+        }
+        self.used = len;
+        Ok(())
     }
 
     /// Seal the payload with `metadata` and `flags`, then send it, consuming the
@@ -110,7 +133,7 @@ impl Iox2Loan {
     /// The error of the failed send, see [`send_port_error`].
     pub fn send_frame(mut self, metadata: FrameMetadata, flags: u32) -> Result<(), PortError> {
         let flags = if self.latched { flags | FLAG_LATCHED } else { flags };
-        let header = seal(self.topic_code, metadata, flags, self.sample.payload());
+        let header = seal(self.topic_code, metadata, flags, self.as_bytes());
         *self.sample.user_header_mut() = Iox2FrameHeader::from(header);
         self.sample.send().map_err(send_port_error)?;
         if !crate::notification::notified(&self.notifier.notify()) {
@@ -146,10 +169,12 @@ impl Iox2Sample {
         FrameHeader::from(*self.sample.user_header())
     }
 
-    /// The message bytes, read where the publisher wrote them.
+    /// The message bytes, read where the publisher wrote them: the first `payload_len`
+    /// bytes of the slice. A header that claims more gives the whole slice, which
+    /// [`hypha_wire::frame::verify`] refuses.
     #[must_use]
     pub fn payload(&self) -> &[u8] {
-        self.sample.payload()
+        message_bytes(&self.header(), self.sample.payload())
     }
 }
 
@@ -187,11 +212,14 @@ impl Iox2Publisher {
     /// Borrow a buffer of `size` bytes to write a message into.
     ///
     /// # Errors
-    /// [`PortError::TooLarge`] when `size` exceeds the payload capacity,
-    /// [`PortError::PoolExhausted`] when no buffer is free; any other refusal names
-    /// its cause. A publisher never waits for a slow subscriber.
+    /// [`PortError::TooLarge`] when `size` exceeds the payload capacity or what a frame's
+    /// `payload_len` can say ([`MAX_PAYLOAD_LEN`], 4 GiB − 1 bytes),
+    /// [`PortError::PoolExhausted`] when no buffer is free, [`PortError::LoanLimit`] when
+    /// this publisher's callers hold all its loans; any other refusal names its cause. A
+    /// publisher never waits for a slow subscriber.
     pub fn loan(&self, size: usize) -> Result<Iox2Loan, PortError> {
-        if let Some(limit) = self.max_payload.filter(|limit| size > *limit) {
+        let limit = self.max_payload.map_or(MAX_PAYLOAD_LEN, |limit| limit.min(MAX_PAYLOAD_LEN));
+        if size > limit {
             return Err(PortError::TooLarge { requested: size, limit });
         }
         let loaned = self.publisher.loan_slice(size);
@@ -211,6 +239,7 @@ impl Iox2Publisher {
         loaned
             .map(|sample| Iox2Loan {
                 sample,
+                used: size,
                 topic_code: self.topic_code,
                 notifier: self.notifier.clone(),
                 latched: self.latched,
@@ -672,7 +701,7 @@ mod tests {
     #[test]
     fn a_full_pool_and_the_loan_budget_are_pool_exhaustion() {
         assert_eq!(loan_port_error(LoanError::OutOfMemory, 8, None), PortError::PoolExhausted);
-        assert_eq!(loan_port_error(LoanError::ExceedsMaxLoans, 8, None), PortError::PoolExhausted);
+        assert_eq!(loan_port_error(LoanError::ExceedsMaxLoans, 8, None), PortError::LoanLimit);
     }
 
     #[test]

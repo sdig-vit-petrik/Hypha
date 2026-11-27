@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 9
+#define HYPHA_ABI_REVISION 10
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -179,6 +179,9 @@ enum HyphaStatus
   HYPHA_STATUS_CLOCK_REWOUND = 22,
   // The application asked for its run to fail (`hypha_waitset_request_failure`).
   HYPHA_STATUS_APPLICATION_FAILED = 23,
+  // The publisher's callers already hold all its loans (its loan count). Nothing was
+  // taken from the pool: send or drop a held loan, then ask again.
+  HYPHA_STATUS_LOAN_LIMIT = 24,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -1416,6 +1419,35 @@ HyphaStatus hypha_publisher_loan_frame(struct HyphaPublisher *publisher,
                                        size_t payload_size,
                                        struct HyphaLoan **out,
                                        uint8_t **out_payload);
+
+// Borrow a payload buffer as `hypha_publisher_loan_frame` does, for a loan the caller may
+// ask for again: a refusal takes no sequence number, so subscribers count no lost frame.
+//
+// `PoolExhausted` when the pool has no free buffer, `LoanLimit` when the publisher's
+// callers hold all its loans (send or drop one, then ask again); every other status, the
+// outputs and the safety rules are those of `hypha_publisher_loan_frame`. The C++ typed loan
+// (`Publisher<M>::loan`) uses it.
+//
+// # Safety
+// As `hypha_publisher_loan_frame`.
+HyphaStatus hypha_publisher_reserve_frame(struct HyphaPublisher *publisher,
+                                          size_t payload_size,
+                                          struct HyphaLoan **out,
+                                          uint8_t **out_payload);
+
+// Shorten a loan to its first `payload_size` bytes before it is sent, for a message
+// that came out shorter than the bytes it reserved.
+//
+// The bytes kept stay where they are, and the payload pointer from
+// `hypha_publisher_loan_frame` stays valid; subscribers receive `payload_size` bytes.
+// The slot keeps its size in the pool; the frame header's `payload_len` carries the
+// shorter length, and the CRC covers exactly those bytes. A null `loan` and a `payload_size` longer than the
+// loan are `InvalidArgument`, and the loan is unchanged. It may be called more than once.
+//
+// # Safety
+// `loan` must come from `hypha_publisher_loan_frame` and not yet be sent or dropped.
+HyphaStatus hypha_loan_shrink(struct HyphaLoan *loan,
+                              size_t payload_size);
 
 // Send a filled loan. The loan is released whatever the result.
 //
