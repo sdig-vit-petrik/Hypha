@@ -65,6 +65,17 @@ target_include_directories(hypha INTERFACE
   $<BUILD_INTERFACE:${HYPHA_MSGS_INCLUDE_DIR}>
 )
 
+# The companion headers of sensor_msgs that ROS 1 ships beside the messages
+# (point_cloud2_iterator.h, point_field_conversion.h, image_encodings.h,
+# distortion_models.h): ros/common_msgs unchanged, in upstream/common_msgs, which the
+# SDK installs into the include directory of sensor_msgs. The ROS 2 names of the same
+# headers (<sensor_msgs/point_cloud2_iterator.hpp>, ...) are include/sensor_msgs/*.hpp.
+set(HYPHA_COMMON_MSGS_INCLUDE_DIR
+  "${CMAKE_CURRENT_SOURCE_DIR}/upstream/common_msgs/sensor_msgs/include")
+target_include_directories(hypha SYSTEM INTERFACE
+  $<BUILD_INTERFACE:${HYPHA_COMMON_MSGS_INCLUDE_DIR}>
+)
+
 # hypha::testing_mcap: the static MCAP reader (crate hypha_testing_mcap) under
 # hypha/testing/mcap_replay.h (and its mcap_*.h parts), with HYPHA_BUILD_TESTING_MCAP.
 if(HYPHA_BUILD_TESTING_MCAP)
@@ -104,6 +115,7 @@ else()
   install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     PATTERN "mcap_*.h" EXCLUDE)
 endif()
+install(DIRECTORY "${HYPHA_COMMON_MSGS_INCLUDE_DIR}/" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY log/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY base/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
@@ -358,7 +370,12 @@ if(HYPHA_BUILD_TESTS)
     test/test_raw_endpoints.cpp
     test/test_qos.cpp
     test/test_topic_overloading.cpp
+    test/test_sensor_msgs_companions.cpp
+    test/test_sensor_msgs_ros2_names.cpp
   )
+  # The ROS 2 names of sensor_msgs, for test_sensor_msgs_ros2_names.cpp.
+  hypha_generate_ros2_headers(test_hypha_ros2_headers PACKAGES sensor_msgs)
+  target_link_libraries(test_hypha PRIVATE test_hypha_ros2_headers)
   # Every public header compiles on its own: one generated translation unit each.
   file(GLOB_RECURSE HYPHA_PUBLIC_HEADERS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/include"
        CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h")
@@ -382,6 +399,29 @@ if(HYPHA_BUILD_TESTS)
   endif()
   target_compile_definitions(test_hypha_header_contract PRIVATE HYPHA_NO_LOGGING)
   add_dependencies(test_hypha test_hypha_header_contract)
+
+  # The companion headers of sensor_msgs compile on their own, first in their unit,
+  # under both names. Upstream's point_field_conversion.h does not include PointField.h
+  # (in ROS 1 neither); its unit does, which the ROS 2 name does itself.
+  set(HYPHA_COMPANION_HEADERS
+    sensor_msgs/point_cloud2_iterator.h sensor_msgs/point_field_conversion.h
+    sensor_msgs/image_encodings.h sensor_msgs/distortion_models.h
+    sensor_msgs/point_cloud2_iterator.hpp sensor_msgs/point_field_conversion.hpp
+    sensor_msgs/image_encodings.hpp sensor_msgs/distortion_models.hpp)
+  set(HYPHA_COMPANION_UNITS)
+  foreach(header IN LISTS HYPHA_COMPANION_HEADERS)
+    string(MAKE_C_IDENTIFIER "${header}" unit)
+    set(unit "${CMAKE_CURRENT_BINARY_DIR}/header_contract/companion_${unit}.cpp")
+    set(prelude "")
+    if(header STREQUAL "sensor_msgs/point_field_conversion.h")
+      set(prelude "#include <sensor_msgs/PointField.h>\n")
+    endif()
+    file(CONFIGURE OUTPUT "${unit}" CONTENT "${prelude}#include <${header}>\n")
+    list(APPEND HYPHA_COMPANION_UNITS "${unit}")
+  endforeach()
+  add_library(test_hypha_companion_headers OBJECT ${HYPHA_COMPANION_UNITS})
+  target_link_libraries(test_hypha_companion_headers PRIVATE hypha)
+  add_dependencies(test_hypha test_hypha_companion_headers)
 
   add_library(test_hypha_log_header_order OBJECT
     test/headers/log_status_first.cpp

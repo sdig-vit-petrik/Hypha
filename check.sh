@@ -26,7 +26,8 @@ if ! grep -q "^ARG HYPHA_RUST_VERSION=${toolchain}\$" docker/Dockerfile; then
 fi
 
 # C++ public headers: at most 400 lines each.
-long_headers="$(git ls-files 'crates/hypha-cxx/*include/*.h' | xargs wc -l | awk '$2 != "total" && $1 > 400')"
+# The vendored upstream headers (crates/hypha-cxx/upstream) keep their own length.
+long_headers="$(git ls-files 'crates/hypha-cxx/*include/*.h' ':!crates/hypha-cxx/upstream' | xargs wc -l | awk '$2 != "total" && $1 > 400')"
 if [[ -n "$long_headers" ]]; then
   echo "C++ headers over 400 lines:" >&2
   echo "$long_headers" >&2
