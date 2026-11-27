@@ -237,3 +237,31 @@ TEST_F(ClockDriverFixture, WithATriggerIsRefused)
     EXPECT_NE(started.error().find("cycle 'clock_driver_test'"), std::string::npos)
         << started.error();
 }
+
+/// A driver whose start value `/clock` cannot carry.
+class LateStart final : public hypha::CycleNode
+{
+  public:
+    LateStart()
+    {
+        this->setRate(hypha::Hz(100.0));
+        this->setClockDriver(
+            hypha::ClockDriverOptions{
+                .start = hypha::Time::fromNanos((int64_t{1} << 32) * 1'000'000'000),
+                .participants = {kPeer},
+            }
+        );
+    }
+
+    void step(const hypha::CycleTime&) override
+    {
+    }
+};
+
+TEST_F(ClockDriverFixture, AStartBeyondTheClockMessageIsRefusedNamingTheRange)
+{
+    LateStart  simulator;
+    const auto started = simulator.start(*this->node);
+    ASSERT_FALSE(started.has_value());
+    EXPECT_NE(started.error().find("4294967296 s"), std::string::npos) << started.error();
+}

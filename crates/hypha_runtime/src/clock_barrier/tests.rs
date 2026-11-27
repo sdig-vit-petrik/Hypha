@@ -406,19 +406,31 @@ fn the_pace_counts_from_the_acknowledged_start_not_the_start_wait() {
     assert_eq!(schedule.next(acked + 10 * MS), DriverAction::Step { deadline: 10_000_000 });
 }
 
+/// The last value `/clock` carries: `u32::MAX` seconds and 999 999 999 nanoseconds.
+const LAST_CLOCK_NANOS: i64 = 4_294_967_295_999_999_999;
+
 #[test]
-fn new_refuses_a_negative_start() {
-    let options = DriverOptions { start_nanos: -1, ..options(&["a"]) };
-    assert!(DriverSchedule::new(options, Instant::now()).is_err());
+fn new_refuses_a_start_outside_the_clock_range_naming_it() {
+    let refused = |start_nanos| {
+        let options = DriverOptions { start_nanos, ..options(&["a"]) };
+        DriverSchedule::new(options, Instant::now()).err()
+    };
+    assert!(refused(-1).is_some());
+    let reason = refused(LAST_CLOCK_NANOS + 1).expect("2^32 s is refused");
+    assert!(reason.contains("4294967296 s"), "{reason}");
+    assert_eq!(refused(LAST_CLOCK_NANOS), None);
+    assert_eq!(check_clock_value(0), Ok(()));
 }
 
 #[test]
 fn a_deadline_past_the_clock_range_fails_the_driver() {
     let now = Instant::now();
-    let options = DriverOptions { start_nanos: i64::MAX - 5, ..options(&["a"]) };
+    let start = LAST_CLOCK_NANOS;
+    let options =
+        DriverOptions { start_nanos: start, period_nanos: 1_000_000_000, ..options(&["a"]) };
     let mut schedule = DriverSchedule::new(options, now).unwrap();
-    schedule.sent(i64::MAX - 5, 1, now);
-    schedule.observe("a", u64::try_from(i64::MAX - 5).unwrap(), 1, now);
+    schedule.sent(start, 1, now);
+    schedule.observe("a", u64::try_from(start).unwrap(), 1, now);
     assert_eq!(schedule.next(now), DriverAction::Exhausted);
 }
 

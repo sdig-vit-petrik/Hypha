@@ -7,7 +7,8 @@ use std::os::raw::c_char;
 
 /// Copy the reason of the last refusal on this thread to `out`, UTF-8 without a
 /// terminator; empty when none was recorded since the last `hypha_cycle_create` or
-/// `hypha_cycle_commit` on this thread. `*out_len` receives the length; `TooLarge`, with
+/// `hypha_cycle_commit` on this thread. `hypha_cycle_set_clock_driver` records the reason
+/// of a start value it refuses. `*out_len` receives the length; `TooLarge`, with
 /// `out` untouched, when `capacity` is too small. `InvalidArgument` for a null `out_len`.
 ///
 /// # Safety

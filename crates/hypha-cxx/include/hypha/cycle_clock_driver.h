@@ -17,6 +17,8 @@ namespace hypha {
 struct ClockDriverOptions
 {
     /// The first `/clock` value, sent with no step: the first step runs one period later.
+    /// From zero up to, not including, 2^32 seconds: `/clock` carries seconds in 32 bits, and
+    /// start() refuses a value outside it, naming the range.
     Time start{};
     /// A participant that acknowledges nothing for this long fails the run with Timeout.
     Duration timeout = Duration::fromSeconds(5.0);
