@@ -484,10 +484,7 @@ pub fn subscribe_typed(
     };
     let resolved = node.resolve_name(topic)?;
     let name = resolved.as_str();
-    let mut spec = TopicSpec::new(name).with_qos(settings.request);
-    if settings.depth > 0 {
-        spec = spec.keeping(settings.depth);
-    }
+    let mut spec = TopicSpec::new(name).with_qos(settings.request.clone());
     if !data_type.is_empty() {
         spec = spec.with_type(data_type);
     }
@@ -502,6 +499,66 @@ pub fn subscribe_typed(
         }
         spec = spec.with_definition(definition);
     }
+    let watch = (!name.contains('*'))
+        .then_some(expected_schema_hash)
+        .flatten()
+        .map(|own| node.topic_streams.watch(name, own));
+    let md5 = expected_md5.unwrap_or_default();
+    open(node, spec, &settings, Own { data_type, md5, schema_hash: expected_schema_hash }, watch)
+}
+
+/// Subscribe on `node` to the one stream of `schema_hash` on the literal `topic`, which the
+/// subscriber names no MD5 for: a reader that follows the streams a listing shows, such as
+/// a tool, reads each by its hash whether or not its schema is known. It reads no other
+/// stream, and a frame on it that names another hash is refused as in any typed subscriber.
+///
+/// # Errors
+/// `InvalidTopic` for a refused name or a pattern, `NotAvailable` when the stream does not
+/// exist, and the transport's error otherwise.
+pub fn subscribe_stream(
+    node: &HyphaNode,
+    topic: &str,
+    schema_hash: u64,
+    settings: SubscriberSettings,
+) -> Result<Arc<HyphaSubscriber>, Error> {
+    let resolved = node.resolve_name(topic)?;
+    if resolved.contains('*') {
+        return Err(Error::InvalidTopic);
+    }
+    let spec = TopicSpec::new(resolved.as_str())
+        .with_qos(settings.request.clone())
+        .reading_stream(schema_hash);
+    open(
+        node,
+        spec,
+        &settings,
+        Own { data_type: "", md5: "", schema_hash: Some(schema_hash) },
+        None,
+    )
+}
+
+/// What a subscriber says it reads: the type and MD5 its introspection row names, and the
+/// hash every frame on its stream must carry; `None` for a reader of several streams.
+struct Own<'a> {
+    data_type: &'a str,
+    md5: &'a str,
+    schema_hash: Option<u64>,
+}
+
+/// The subscriber of `spec`, with the type and MD5 its introspection row names. Its frames
+/// must carry the hash of the one stream it reads, when it reads one.
+fn open(
+    node: &HyphaNode,
+    mut spec: TopicSpec,
+    settings: &SubscriberSettings,
+    own: Own<'_>,
+    watch: Option<crate::topic_streams::Watch>,
+) -> Result<Arc<HyphaSubscriber>, Error> {
+    let Own { data_type, md5, schema_hash: expected_schema_hash } = own;
+    if settings.depth > 0 {
+        spec = spec.keeping(settings.depth);
+    }
+    let name = spec.name.clone();
     let port = node.transport.subscribe(&spec).map_err(Error::from)?;
     let depth = port.buffer_size();
     let budget = Arc::new(LoanBudget {
@@ -511,29 +568,26 @@ pub fn subscribe_typed(
     });
     Ok(Arc::new(HyphaSubscriber {
         owner_node: std::ptr::from_ref(node) as usize,
-        topic: name.to_owned(),
+        topic: name.clone(),
         data_type: data_type.to_owned(),
-        md5: expected_md5.unwrap_or_default().to_owned(),
+        md5: md5.to_owned(),
         port,
         budget,
         mode: AtomicU8::new(MODE_UNSET),
         attached: AtomicBool::new(false),
         validator: FrameValidator::new(expected_schema_hash),
         no_publisher_watch: NoPublisherWatch::new(
-            no_publisher_delay(name, settings.no_publisher_warning_after_nanos),
+            no_publisher_delay(&name, settings.no_publisher_warning_after_nanos),
             std::time::Instant::now(),
         ),
-        watch: (!name.contains('*'))
-            .then_some(expected_schema_hash)
-            .flatten()
-            .map(|own| node.topic_streams.watch(name, own)),
+        watch,
         rejection_report: RejectionReport::default(),
         introspection: crate::introspection::IntrospectionRow::new(
             &node.introspection,
             crate::introspection::Row::Subscriber(hypha_core::introspection::EndpointRow {
                 queue_depth: depth,
-                md5: expected_md5.unwrap_or_default().to_owned(),
-                ..hypha_core::introspection::EndpointRow::new(name, data_type)
+                md5: md5.to_owned(),
+                ..hypha_core::introspection::EndpointRow::new(&name, data_type)
             }),
         ),
     }))

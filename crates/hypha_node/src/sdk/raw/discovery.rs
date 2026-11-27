@@ -46,3 +46,29 @@ pub(super) fn list_topic_ports(node: &ffi::HyphaNode) -> Result<Vec<TopicInfo>, 
         .map_err(|error| numbered_error("topic listing failed", error))?;
     Ok(topics)
 }
+
+/// A watch of the bus's graph: whether an endpoint came or went since it last asked.
+///
+/// A tool that follows streams as they appear opens one before it lists the streams, and
+/// lists again when [`GraphWatch::changed`] says so, with no timer of its own. It is the
+/// event a node's housekeeping hears, read on the caller's thread.
+pub struct GraphWatch {
+    watch: ffi::GraphWatch,
+}
+
+impl GraphWatch {
+    /// Whether a publisher or a subscriber of the domain came or went since the last call.
+    /// One non-blocking read; it takes every pending notification.
+    ///
+    /// # Errors
+    /// Returns a message when the notification service cannot be read.
+    pub fn changed(&self) -> Result<bool, String> {
+        self.watch.changed().map_err(|error| numbered_error("graph event failed", error))
+    }
+}
+
+pub(super) fn open_graph_watch(node: &ffi::HyphaNode) -> Result<GraphWatch, String> {
+    ffi::graph_watch(node)
+        .map(|watch| GraphWatch { watch })
+        .map_err(|error| numbered_error("cannot watch the graph", error))
+}

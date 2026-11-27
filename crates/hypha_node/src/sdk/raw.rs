@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 mod discovery;
 mod publisher;
-use discovery::list_topic_ports;
-pub use discovery::{domain, list_nodes};
+pub use discovery::{GraphWatch, domain, list_nodes};
+use discovery::{list_topic_ports, open_graph_watch};
 /// True when `name` is a CLI tool node name, `_hyphacli_<tool>`. Any number of
 /// processes run under one such name, and the tools do not show them.
 pub use hypha_core::port::is_cli_node_name;
@@ -15,7 +15,7 @@ pub use hypha_core::port::topic_matches_pattern;
 pub use publisher::RawPublisher;
 
 use crate::sdk::ffi;
-use crate::sdk::loan::{RawSubscriber, subscribe_on};
+use crate::sdk::loan::{RawSubscriber, subscribe_on, subscribe_stream_on};
 use crate::sdk::options::{PublisherOptions, SubscriberOptions};
 use crate::sdk::status::numbered_error;
 
@@ -128,6 +128,29 @@ impl BusNode {
         options: SubscriberOptions,
     ) -> Result<RawSubscriber, String> {
         subscribe_on(&self.node, topic_pattern, data_type, md5, options)
+    }
+
+    /// Subscribes to the one stream of `schema_hash` on the literal `topic`, which the caller
+    /// knows from [`BusNode::list_topics`]: no MD5 is needed, so a stream whose publisher gave
+    /// no definition is read too. A stream that does not exist is `NotAvailable`.
+    ///
+    /// # Errors
+    /// Returns a message when the library refuses the subscription.
+    pub fn subscribe_raw_stream(
+        &self,
+        topic: &str,
+        schema_hash: u64,
+        options: SubscriberOptions,
+    ) -> Result<RawSubscriber, String> {
+        subscribe_stream_on(&self.node, topic, schema_hash, options)
+    }
+
+    /// Watches the graph: whether an endpoint of the domain came or went. See [`GraphWatch`].
+    ///
+    /// # Errors
+    /// Returns a message when the notification service cannot be opened.
+    pub fn graph_watch(&self) -> Result<GraphWatch, String> {
+        open_graph_watch(&self.node)
     }
 
     /// Publishes `topic` under an explicit type identity.

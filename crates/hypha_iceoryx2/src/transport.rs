@@ -88,6 +88,15 @@ impl Iox2Transport {
         crate::notification::create_listener(&self.node, GRAPH_EVENT, None)
     }
 
+    /// Watch the graph event without a `WaitSet`: a reader of the domain that wants to learn
+    /// of a new stream when it appears asks the watch whether an endpoint came or went.
+    ///
+    /// # Errors
+    /// Returns [`PortError`] when the event service cannot be opened.
+    pub fn graph_watch(&self) -> Result<GraphWatch, PortError> {
+        self.graph_listener().map(|listener| GraphWatch { listener })
+    }
+
     /// Hand the last sample of each latched topic to the subscribers that joined
     /// since the last call, and wake them.
     pub fn replay_latched(&self) {
@@ -237,6 +246,25 @@ impl Iox2Transport {
             pool_refusing: std::sync::atomic::AtomicBool::new(false),
             _schema_release: schema_release,
             _graph: graph,
+        })
+    }
+}
+
+/// A listener of the graph event that is read on the caller's own thread.
+pub struct GraphWatch {
+    listener: iceoryx2::port::listener::Listener<Ipc>,
+}
+
+impl GraphWatch {
+    /// Whether an endpoint came or went since the last call. It takes the pending
+    /// notifications and waits for none: one non-blocking read.
+    ///
+    /// # Errors
+    /// [`PortError::Disconnected`] when the listener cannot be read.
+    pub fn changed(&self) -> Result<bool, PortError> {
+        self.listener.try_wait(|_| {}).map(|events| events > 0).map_err(|cause| {
+            log::error!(target: "hypha/transport", "hypha_iceoryx2: failed to read the graph event: {cause:?}");
+            PortError::Disconnected
         })
     }
 }
@@ -501,7 +529,7 @@ impl Iox2Transport {
         }
         crate::stream::refuse_overlong(spec)?;
         let is_pattern = spec.name.contains('*');
-        if is_pattern || spec.schemas == SchemaScope::Every {
+        if is_pattern || spec.schemas != SchemaScope::Own {
             let is_valid_name = if is_pattern {
                 is_valid_topic_pattern(&spec.name)
             } else {

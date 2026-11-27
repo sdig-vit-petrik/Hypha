@@ -109,7 +109,7 @@ pub use schema::{
     RecordedStream, invalid_record_count, lookup_schema, schema_file_path, topic_records,
 };
 pub use stream::stream_service_name;
-pub use transport::{GRAPH_EVENT, Iox2Transport};
+pub use transport::{GRAPH_EVENT, GraphWatch, Iox2Transport};
 pub use waitset::{
     Dispatcher, EventOutcome, Iox2Listener, Iox2WaitSet, Progression, StopHandle, Trigger,
 };

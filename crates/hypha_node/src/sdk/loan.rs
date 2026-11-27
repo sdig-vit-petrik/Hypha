@@ -206,3 +206,21 @@ pub(crate) fn subscribe_on(
         .map(|subscriber| RawSubscriber { subscriber })
         .map_err(|error| numbered_error(format!("subscribe failed for '{topic_pattern}'"), error))
 }
+
+/// Open a raw subscriber of the one stream of `schema_hash`, without registering it with an
+/// executor.
+pub(crate) fn subscribe_stream_on(
+    node: &ffi::HyphaNode,
+    topic: &str,
+    schema_hash: u64,
+    options: SubscriberOptions,
+) -> Result<RawSubscriber, String> {
+    let settings = ffi::SubscriberSettings {
+        depth: options.depth,
+        no_publisher_warning_after_nanos: ffi::HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS,
+        request: hypha_core::port::QosRequest::Undeclared,
+    };
+    ffi::subscribe_stream(node, topic, schema_hash, settings)
+        .map(|subscriber| RawSubscriber { subscriber })
+        .map_err(|error| numbered_error(format!("subscribe failed for '{topic}'"), error))
+}

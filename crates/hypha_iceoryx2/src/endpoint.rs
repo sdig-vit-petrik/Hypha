@@ -557,6 +557,7 @@ fn open_matching_streams(
     let own_schema = match spec.schemas {
         SchemaScope::Own => Some(spec.stream_schema_hash().ok_or(PortError::InvalidTopic)?),
         SchemaScope::Every => None,
+        SchemaScope::Stream(hash) => Some(hash),
     };
     let mut subscribers = Vec::new();
     let mut streams = Vec::new();

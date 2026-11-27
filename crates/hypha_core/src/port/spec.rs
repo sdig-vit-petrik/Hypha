@@ -293,6 +293,14 @@ impl TopicSpec {
         self
     }
 
+    /// The same subscription, reading the one stream of `schema_hash`, with no MD5 named: a
+    /// reader that follows the streams a listing shows, whether or not their schema is known.
+    #[must_use]
+    pub fn reading_stream(mut self, schema_hash: u64) -> Self {
+        self.schemas = SchemaScope::Stream(schema_hash);
+        self
+    }
+
     /// The schema hash of this endpoint's own stream: its MD5's, or 0 when it names no
     /// MD5. `None` for an MD5 that is not one.
     #[must_use]
@@ -315,6 +323,8 @@ pub enum SchemaScope {
     /// Every stream of the topic that exists when the subscription is created, whatever
     /// its schema. Such a subscription never creates a stream.
     Every,
+    /// The one stream with this schema hash, if it exists when the subscription is created.
+    Stream(u64),
 }
 
 /// Which schema record a lookup accepts.

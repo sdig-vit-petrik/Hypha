@@ -113,8 +113,8 @@ pub use loan::{
 };
 pub use options::{PayloadCapacity, PublisherOptions, SubscriberOptions};
 pub use raw::{
-    BusNode, NodeInfo, RawPublisher, TopicInfo, WaitResult, domain, is_cli_node_name, list_nodes,
-    topic_matches_pattern,
+    BusNode, GraphWatch, NodeInfo, RawPublisher, TopicInfo, WaitResult, domain, is_cli_node_name,
+    list_nodes, topic_matches_pattern,
 };
 pub use schema::{ResolvedSchema, SCHEMA_RETRY_INTERVAL, SchemaError, SchemaIdentityCache};
 pub use waitset::{AttachmentId, Delivery, RunResult, StopReason, WaitSet};
