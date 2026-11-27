@@ -109,7 +109,11 @@ TEST(SubscriberDiagnostics, ARawSubscriberCountsAQueueOverflowToo)
     uint64_t          delivered = 0;
     auto              publisher = node.advertise<Reading>(hypha::Topic{topic}, SHALLOW);
     std::expected<hypha::RawSubscriber, hypha::Status> raw = hypha::subscribeRawOfType(
-        topic, hypha::codec::dataType<Reading>(), CountRawSamples{&delivered}, 0, SHALLOW
+        topic,
+        {.dataType = hypha::codec::dataType<Reading>(), .md5 = hypha::codec::md5Sum<Reading>()},
+        CountRawSamples{&delivered},
+        0,
+        SHALLOW
     );
     ASSERT_TRUE(raw.has_value());
 

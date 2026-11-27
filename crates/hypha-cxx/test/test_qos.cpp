@@ -186,9 +186,9 @@ TEST_F(QosFixture, ASpecialisationOfQosOfDeclaresItsPolicy)
     EXPECT_NE(full.find("ResourceLimit"), std::string::npos) << full;
 }
 
-// A topic name carries more than one message type (topic name overloading, #209), but the
-// service of a name has one policy: types the application maps to different policies cannot
-// share a name, and the second endpoint is refused with QosMismatch.
+// A topic name carries one stream for each message type (topic name overloading, #209), and
+// each stream has its own policy: types the application maps to different policies share a
+// name, and an endpoint is refused only by its own type's stream.
 TEST_F(QosFixture, TwoTypesOfOneNameWithTheSamePolicyShareTheTopic)
 {
     const std::string topic = testTopic("/overload_same_policy");
@@ -198,23 +198,27 @@ TEST_F(QosFixture, TwoTypesOfOneNameWithTheSamePolicyShareTheTopic)
     EXPECT_TRUE(second.enabled());
 }
 
-TEST_F(QosFixture, TwoTypesOfOneNameWithTwoPoliciesAreRefusedWhicheverComesFirst)
+TEST_F(QosFixture, TwoTypesOfOneNameKeepTheirOwnPoliciesWhicheverComesFirst)
 {
     const std::string colourFirst = testTopic("/overload_colour_first");
     auto colour = this->node->advertise<std_msgs::ColorRGBA>(hypha::Topic{colourFirst});
-    ASSERT_TRUE(colour.enabled());
-    const std::string refusedDefault = refusalOf([&colourFirst, this] {
-        static_cast<void>(this->node->advertise<Float64>(hypha::Topic{colourFirst}));
-    });
-    EXPECT_NE(refusedDefault.find("QosMismatch"), std::string::npos) << refusedDefault;
+    auto plainAfter = this->node->advertise<Float64>(hypha::Topic{colourFirst});
+    EXPECT_TRUE(colour.enabled());
+    EXPECT_TRUE(plainAfter.enabled());
 
     const std::string defaultFirst = testTopic("/overload_default_first");
     auto              plain = this->node->advertise<Float64>(hypha::Topic{defaultFirst});
-    ASSERT_TRUE(plain.enabled());
-    const std::string refusedColour = refusalOf([&defaultFirst, this] {
-        static_cast<void>(this->node->advertise<std_msgs::ColorRGBA>(hypha::Topic{defaultFirst}));
+    auto colourAfter = this->node->advertise<std_msgs::ColorRGBA>(hypha::Topic{defaultFirst});
+    EXPECT_TRUE(plain.enabled());
+    EXPECT_TRUE(colourAfter.enabled());
+
+    const std::string refused = refusalOf([&colourFirst, this] {
+        static_cast<void>(
+            this->node->advertise<std_msgs::ColorRGBA>(hypha::Topic{colourFirst}, qos_test::OTHER)
+        );
     });
-    EXPECT_NE(refusedColour.find("QosMismatch"), std::string::npos) << refusedColour;
+    EXPECT_NE(refused.find("QosMismatch"), std::string::npos)
+        << "the stream of a type keeps its policy: " << refused;
 }
 
 TEST_F(QosFixture, ThePolicyOptionOfAPortLetsTwoTypesOfOneNameShareAPolicy)
@@ -446,7 +450,7 @@ TEST_F(QosFixture, ARawEndpointAdoptsTheTopicUnlessItNamesAPolicy)
         .definition = hypha::codec::definition<std_msgs::ColorRGBA>()
     };
     // No topic yet: a subscriber that declares nothing cannot create it.
-    auto early = hypha::subscribeRawOfType(topic, type.dataType, [](const hypha::RawSample&) {
+    auto early = hypha::subscribeRawOfType(topic, type, [](const hypha::RawSample&) {
     });
     ASSERT_FALSE(early.has_value());
     EXPECT_EQ(early.error(), hypha::Status::NotAvailable);

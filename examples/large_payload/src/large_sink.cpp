@@ -87,7 +87,11 @@ int runSink(hypha::Node& node, uint64_t warmup, uint64_t expectedFrames)
     auto       subscriber = hypha::require(
         // Depth zero: the deepest queue the policy allows.
         hypha::subscribeRawOfType(
-            "/large_frames", "hypha/LargeFrame", std::ref(stats), 0, hypha_bench::LARGE_FRAME_QOS
+            "/large_frames",
+            hypha_bench::LARGE_FRAME_TYPE,
+            std::ref(stats),
+            0,
+            hypha_bench::LARGE_FRAME_QOS
         ),
         "large frame subscriber"
     );

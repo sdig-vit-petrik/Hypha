@@ -54,13 +54,13 @@ struct SelfRemovingCollector
     }
 };
 
+const hypha::RawType BYTES{
+    .dataType = "t/Bytes", .md5 = "00000000000000000000000000000000", .definition = ""
+};
+
 hypha::RawPublisher bytesPublisher(const std::string& topic)
 {
-    return hypha::rawPublisher(
-               topic,
-               {.dataType = "t/Bytes", .md5 = "00000000000000000000000000000000", .definition = ""}
-    )
-        .value();
+    return hypha::rawPublisher(topic, BYTES).value();
 }
 
 class RawEndpoints : public ::testing::Test
@@ -81,8 +81,7 @@ TEST_F(RawEndpoints, ARawSampleCarriesItsTransportAge)
 
     std::vector<int64_t> ages;
     auto                 subscriber =
-        hypha::subscribeRawOfType(topic, "t/Bytes", AgeCollector{&ages}, 0, hypha::defaultQos)
-            .value();
+        hypha::subscribeRawOfType(topic, BYTES, AgeCollector{&ages}, 0, hypha::defaultQos).value();
     auto publisher = bytesPublisher(topic);
 
     ASSERT_EQ(publisher.publish(bytesOf("aged")), hypha::Status::Ok);
@@ -121,7 +120,7 @@ TEST_F(RawEndpoints, EveryByteValueAndAnEmptyPayloadSurvive)
     const std::string        topic = testTopic("/raw/bytes");
     std::vector<std::string> seen;
     auto                     subscriber =
-        hypha::subscribeRawOfType(topic, "t/Bytes", Collector{&seen}, 0, hypha::defaultQos).value();
+        hypha::subscribeRawOfType(topic, BYTES, Collector{&seen}, 0, hypha::defaultQos).value();
     auto publisher = bytesPublisher(topic);
 
     std::vector<uint8_t> payload(256);
@@ -144,7 +143,7 @@ TEST_F(RawEndpoints, ACallbackMayDestroyItsOwnSubscriber)
     std::optional<hypha::RawSubscriber> subscriber;
     subscriber.emplace(
         hypha::subscribeRawOfType(
-            topic, "t/Bytes", SelfRemovingCollector{&subscriber, &deliveries}, 2, hypha::defaultQos
+            topic, BYTES, SelfRemovingCollector{&subscriber, &deliveries}, 2, hypha::defaultQos
         )
             .value()
     );

@@ -164,7 +164,8 @@ struct SubscriberMetrics
     uint64_t invalidFrame{0};
     /// Frames whose CRC-32C does not match.
     uint64_t corruptPayload{0};
-    /// Frames of another schema than the subscriber expects.
+    /// Frames whose header names another schema than the stream they arrived on: a fault
+    /// of their sender. A frame of another type of the topic is on another stream.
     uint64_t schemaMismatch{0};
     /// Frames sent later than the host clock reads.
     uint64_t invalidTimestamp{0};

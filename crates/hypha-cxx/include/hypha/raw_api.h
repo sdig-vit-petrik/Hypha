@@ -196,15 +196,17 @@ inline std::expected<RawSubscriber, Status> subscribeRaw(
     return RawSubscriber(std::move(*attached));
 }
 
-/// @brief Subscribe to @p topic, whose messages are of @p dataType, as raw bytes. A depth
-///        of zero is the topic's maxDepth.
+/// @brief Subscribe to the stream of @p type on @p topic, as raw bytes. A depth of zero is
+///        the stream's maxDepth.
 ///
-/// Without @p qos it is NotAvailable until the topic exists; with @p qos it can open it.
+/// A topic carries one stream for each MD5, so the subscriber reads the messages of
+/// `type.md5` alone; `type.definition` may be empty. Without @p qos it is NotAvailable
+/// until the stream exists; with @p qos it can open it.
 /// @return The subscriber, or the refusal status as for subscribeRaw(); QosMismatch
-///         when the topic carries another policy than @p qos.
+///         when the stream carries another policy than @p qos.
 inline std::expected<RawSubscriber, Status> subscribeRawOfType(
     const std::string&                           topic,
-    const std::string&                           dataType,
+    const RawType&                               type,
     std::function<void(const hypha::RawSample&)> callback,
     size_t                                       depth = 0,
     std::optional<Qos>                           qos = std::nullopt
@@ -214,8 +216,9 @@ inline std::expected<RawSubscriber, Status> subscribeRawOfType(
     if (qos.has_value()) {
         options.qos = detail::declaredQos(*qos, 0);
     }
-    std::expected<backend::SubscriberHandle, Status> attached =
-        backend::subscribeTypedWithQos(topic, dataType, std::move(callback), "", "", options);
+    std::expected<backend::SubscriberHandle, Status> attached = backend::subscribeTypedWithQos(
+        topic, type.dataType, std::move(callback), type.md5, type.definition, options
+    );
     if (!attached) {
         return std::unexpected(attached.error());
     }

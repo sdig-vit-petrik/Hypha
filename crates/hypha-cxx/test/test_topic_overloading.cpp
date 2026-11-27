@@ -1,12 +1,12 @@
-// Topic name overloading: one topic name carries more than one message type, and each type
-// is its own stream (#209). The transport keys a topic by name alone; a frame carries the
-// hash of its schema, and a typed reader keeps the frames of its own type. These tests
-// observe what a user sees: delivery, the verdicts of cycle inputs, the outputs, a wildcard,
-// and what the library counts and says about the frames of the other type.
+// Topic name overloading: one topic name carries more than one schema, and each schema is
+// its own stream (#209), so a typed reader never meets a frame of another type. The case
+// that matters is a migration: two versions of one message type (one type name, two MD5s)
+// on one topic. These tests observe what a user sees: delivery, the verdicts of cycle
+// inputs, the outputs, a wildcard, the ~/state rows, and what the library says to a reader
+// whose version nobody publishes.
 
 #include "hypha/cycle_node.h"
 #include "hypha/hypha.h"
-
 #include <hypha_msgs/NodeState.h>
 
 #include "test_types.h"
@@ -23,8 +23,85 @@
 #include <thread>
 #include <vector>
 
+namespace hypha_test {
+
+/// Version 2 of Reading: the same type name, one field more, so another MD5.
+struct ReadingV2
+{
+    int         value{0};
+    std::string label;
+    double      weight{0.0};
+};
+
+}  // namespace hypha_test
+
+namespace ros::message_traits {
+
+template <>
+struct DataType<hypha_test::ReadingV2>
+{
+    static const char* value()
+    {
+        return "hypha_test/Reading";
+    }
+
+    static const char* value(const hypha_test::ReadingV2&)
+    {
+        return value();
+    }
+};
+
+template <>
+struct MD5Sum<hypha_test::ReadingV2>
+{
+    static const char* value()
+    {
+        return "f79835def461350458ead76f07016dd7";
+    }
+
+    static const char* value(const hypha_test::ReadingV2&)
+    {
+        return value();
+    }
+};
+
+template <>
+struct Definition<hypha_test::ReadingV2>
+{
+    static const char* value()
+    {
+        return "int32 value\nstring label\nfloat64 weight\n";
+    }
+
+    static const char* value(const hypha_test::ReadingV2&)
+    {
+        return value();
+    }
+};
+
+}  // namespace ros::message_traits
+
+namespace ros::serialization {
+
+template <>
+struct Serializer<hypha_test::ReadingV2>
+{
+    template <typename Stream, typename T>
+    inline static void allInOne(Stream& stream, T m)
+    {
+        stream.next(m.value);
+        stream.next(m.label);
+        stream.next(m.weight);
+    }
+
+    ROS_DECLARE_ALLINONE_SERIALIZER
+};
+
+}  // namespace ros::serialization
+
 using hypha_test::Command;
 using hypha_test::Reading;
+using hypha_test::ReadingV2;
 using hypha_test::testTopic;
 using namespace hypha::literals;
 
@@ -64,6 +141,13 @@ Command command(double target)
     Command result;
     result.target = target;
     return result;
+}
+
+/// True when a subscriber refused no frame.
+bool refusedNothing(const hypha::SubscriberMetrics& metrics)
+{
+    return metrics.sequenceGap == 0 && metrics.invalidFrame == 0 && metrics.corruptPayload == 0
+        && metrics.schemaMismatch == 0 && metrics.invalidTimestamp == 0;
 }
 
 /// Runs short slices of simulated time until @p done holds, or fails after a generous
@@ -131,7 +215,8 @@ class OverloadingFixture : public ::testing::Test
 class JointCycle final : public hypha_test::StepCycle
 {
   public:
-    JointCycle() : hypha_test::StepCycle("joint_cycle"), latest(*this, "joint"), arrivals(*this, "joint")
+    JointCycle()
+        : hypha_test::StepCycle("joint_cycle"), latest(*this, "joint"), arrivals(*this, "joint")
     {
     }
 
@@ -241,20 +326,16 @@ TEST_F(OverloadingFixture, SubscribersCreatedBeforeThePublishersReadTheirOwnType
     EXPECT_EQ(commands, std::vector<double>{2.5});
 }
 
-TEST_F(OverloadingFixture, ASubscriberOfAnotherTypeThanTheOnlyPublisherReceivesNothingAndWarnsOfRefusedFrames)
+TEST_F(OverloadingFixture, ASubscriberOfAnotherTypeThanTheOnlyPublisherMeetsNoFrameOfIt)
 {
     std::vector<double> commands;
-    auto                readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
+    auto readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
     ASSERT_TRUE(readingPublisher.enabled());
 
     ::testing::internal::CaptureStderr();
     auto commandSubscriber =
         hypha::Node().subscribe<Command>(hypha::Topic{this->topic}, KeepCommands{&commands});
-    const std::string atCreation = ::testing::internal::GetCapturedStderr();
     ASSERT_TRUE(commandSubscriber.enabled());
-    EXPECT_EQ(atCreation, "") << "a topic with a publisher of another type is a topic with a publisher";
-
-    ::testing::internal::CaptureStderr();
     for (int index = 1; index <= 5; ++index) {
         ASSERT_TRUE(readingPublisher.publish(reading(index)));
     }
@@ -264,18 +345,14 @@ TEST_F(OverloadingFixture, ASubscriberOfAnotherTypeThanTheOnlyPublisherReceivesN
     EXPECT_TRUE(commands.empty());
     EXPECT_EQ(commandSubscriber.messageCount(), 0U);
     EXPECT_FALSE(commandSubscriber.latestSample().has_value());
-    // The only sign is the warning about refused frames: it names the topic and says
-    // "schema mismatch", not the two types, and it is the same line a wrong type gives.
-    EXPECT_NE(afterwards.find("[WARN]"), std::string::npos) << afterwards;
-    EXPECT_NE(afterwards.find("topic '" + this->topic + "' refused a frame: schema mismatch"), std::string::npos)
-        << afterwards;
-    EXPECT_EQ(commandSubscriber.metrics().schemaMismatch, 5U);
+    EXPECT_EQ(afterwards.find("refused a frame"), std::string::npos) << afterwards;
+    EXPECT_TRUE(refusedNothing(commandSubscriber.metrics())) << "nothing refused, nothing counted";
 }
 
 TEST_F(OverloadingFixture, ALatestAndAnArrivalsOfTwoTypesOnOnePortNameAreEachUsable)
 {
-    auto readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
-    auto commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
+    auto       readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
+    auto       commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
     JointCycle cycle;
     cycle.setRate(hypha::Hz(100.0));
     ASSERT_TRUE(cycle.start(*this->node).has_value());
@@ -297,8 +374,8 @@ TEST_F(OverloadingFixture, ALatestAndAnArrivalsOfTwoTypesOnOnePortNameAreEachUsa
 
 TEST_F(OverloadingFixture, EachInputOfTheNameHasItsOwnVerdictAndItsOwnSilence)
 {
-    auto readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
-    auto commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
+    auto       readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
+    auto       commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
     JointCycle cycle;
     cycle.setRate(hypha::Hz(100.0));
     ASSERT_TRUE(cycle.start(*this->node).has_value());
@@ -313,7 +390,8 @@ TEST_F(OverloadingFixture, EachInputOfTheNameHasItsOwnVerdictAndItsOwnSilence)
     EXPECT_FALSE(cycle.latest.has());
     EXPECT_EQ(cycle.latest.received(), 0U);
     EXPECT_EQ(cycle.arrivalsVerdict, hypha::InputVerdict::Usable);
-    EXPECT_FALSE(cycle.inputsOk()) << "the input that never arrived makes the cycle's inputs not ok";
+    EXPECT_FALSE(cycle.inputsOk())
+        << "the input that never arrived makes the cycle's inputs not ok";
 
     // One Reading arrives: the Latest is usable, with the value of the Reading.
     ASSERT_TRUE(readingPublisher.publish(reading(5)));
@@ -344,9 +422,9 @@ TEST_F(OverloadingFixture, EachInputOfTheNameHasItsOwnVerdictAndItsOwnSilence)
     EXPECT_GE(cycle.lastReading.value_or(0), 6);
 }
 
-TEST_F(OverloadingFixture, TheStateRowOfTheTopicTakesTheWorstVerdictOfItsTypes)
+TEST_F(OverloadingFixture, EachTypeOfTheTopicIsARowOfItsOwnInTheState)
 {
-    auto commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
+    auto       commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
     JointCycle cycle;
     cycle.setRate(hypha::Hz(100.0));
     ASSERT_TRUE(cycle.start(*this->node).has_value());
@@ -358,14 +436,25 @@ TEST_F(OverloadingFixture, TheStateRowOfTheTopicTakesTheWorstVerdictOfItsTypes)
     ASSERT_EQ(cycle.arrivalsVerdict, hypha::InputVerdict::Usable);
     ASSERT_EQ(cycle.latestVerdict, hypha::InputVerdict::NeverArrived);
 
-    // `~/state` has one row for each topic: the Latest that never arrived is the verdict of
-    // the row, and the node waits, though the Arrivals of the same name is usable.
+    // `~/state` has one row for each stream: the Arrivals is usable and the Latest never
+    // arrived, and the node waits for the Latest.
     const std::expected<hypha_msgs::NodeState, hypha::Status> state = hypha::nodeState();
     ASSERT_TRUE(state.has_value());
     EXPECT_EQ(state->state, hypha_msgs::NodeState::WAITING);
-    ASSERT_EQ(state->inputs.size(), 1U);
-    EXPECT_EQ(state->inputs[0].topic, this->topic);
-    EXPECT_EQ(state->inputs[0].verdict, hypha_msgs::RequiredInput::NEVER_ARRIVED);
+    ASSERT_EQ(state->inputs.size(), 2U);
+    for (const hypha_msgs::RequiredInput& input : state->inputs) {
+        EXPECT_EQ(input.topic, this->topic);
+        const bool isReading = input.data_type == "hypha_test/Reading";
+        EXPECT_EQ(
+            input.md5,
+            isReading ? "581e4b1bda6a172aa19e1038a38e01eb" : "c2f7134c29a3ad4daf56996f7fc77409"
+        );
+        EXPECT_EQ(
+            input.verdict,
+            isReading ? hypha_msgs::RequiredInput::NEVER_ARRIVED : hypha_msgs::RequiredInput::USABLE
+        );
+        EXPECT_EQ(input.rejected, 0U);
+    }
 }
 
 TEST_F(OverloadingFixture, TwoOutputsOfTwoTypesOnOnePortNameReachTheSubscriberOfEachType)
@@ -400,8 +489,8 @@ TEST_F(OverloadingFixture, ATypedWildcardSubscriberReadsOnlyItsTypeOfAnOverloade
 {
     std::vector<int>    readings;
     std::vector<double> commands;
-    auto                readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
-    auto                commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
+    auto readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
+    auto commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
 
     const std::string pattern = testTopic("/*");
     auto              readingSubscriber =
@@ -429,9 +518,9 @@ TEST_F(OverloadingFixture, ABurstOfOneTypeDoesNotPushTheFramesOfTheOtherTypeOutO
 {
     std::vector<int>    readings;
     std::vector<double> commands;
-    auto                readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
-    auto                commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
-    auto                readingSubscriber =
+    auto readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
+    auto commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
+    auto readingSubscriber =
         hypha::Node().subscribe<Reading>(hypha::Topic{this->topic}, KeepReadings{&readings});
     auto commandSubscriber =
         hypha::Node().subscribe<Command>(hypha::Topic{this->topic}, KeepCommands{&commands});
@@ -461,17 +550,16 @@ TEST_F(OverloadingFixture, ABurstOfOneTypeDoesNotPushTheFramesOfTheOtherTypeOutO
     EXPECT_EQ(commandSubscriber.missingSequences(), static_cast<uint64_t>(BURST - 32));
 }
 
-// What the library counts for the frames of the other type. Today a subscriber reads a
-// frame of another schema as a refused frame: it counts `schemaMismatch` for every one, and
-// the cycle's `~/state` row counts them as `rejected`. These two tests pin that accounting,
-// so a change to it is a change of these tests.
-TEST_F(OverloadingFixture, TheFramesOfTheOtherTypeAreCountedAsSchemaMismatchOfEachSubscriber)
+// What the library counts for the frames of the other type: nothing. They travel on another
+// stream, so they are neither refused nor counted, and `schemaMismatch` keeps meaning a
+// sender that stamped another schema than its stream's.
+TEST_F(OverloadingFixture, TheFramesOfTheOtherTypeAreNoSchemaMismatchOfAnySubscriber)
 {
     std::vector<int>    readings;
     std::vector<double> commands;
-    auto                readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
-    auto                commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
-    auto                readingSubscriber =
+    auto readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
+    auto commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
+    auto readingSubscriber =
         hypha::Node().subscribe<Reading>(hypha::Topic{this->topic}, KeepReadings{&readings});
     auto commandSubscriber =
         hypha::Node().subscribe<Command>(hypha::Topic{this->topic}, KeepCommands{&commands});
@@ -490,18 +578,18 @@ TEST_F(OverloadingFixture, TheFramesOfTheOtherTypeAreCountedAsSchemaMismatchOfEa
 
     const hypha::SubscriberMetrics ofReadings = readingSubscriber.metrics();
     const hypha::SubscriberMetrics ofCommands = commandSubscriber.metrics();
-    EXPECT_EQ(ofReadings.schemaMismatch, 5U) << "the five Commands";
-    EXPECT_EQ(ofCommands.schemaMismatch, 3U) << "the three Readings";
+    EXPECT_EQ(ofReadings.schemaMismatch, 0U);
+    EXPECT_EQ(ofCommands.schemaMismatch, 0U);
     EXPECT_EQ(ofReadings.sequenceGap, 0U);
     EXPECT_EQ(ofCommands.sequenceGap, 0U);
     EXPECT_EQ(readingSubscriber.missingSequences(), 0U);
     EXPECT_EQ(commandSubscriber.missingSequences(), 0U);
 }
 
-TEST_F(OverloadingFixture, TheFramesOfTheOtherTypeAreRejectedFramesOfTheStateRow)
+TEST_F(OverloadingFixture, TheFramesOfTheOtherTypeAreNoRejectedFramesOfTheStateRows)
 {
-    auto readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
-    auto commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
+    auto       readingPublisher = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
+    auto       commandPublisher = hypha::Node().advertise<Command>(hypha::Topic{this->topic});
     JointCycle cycle;
     cycle.setRate(hypha::Hz(100.0));
     ASSERT_TRUE(cycle.start(*this->node).has_value());
@@ -517,7 +605,94 @@ TEST_F(OverloadingFixture, TheFramesOfTheOtherTypeAreRejectedFramesOfTheStateRow
 
     const std::expected<hypha_msgs::NodeState, hypha::Status> state = hypha::nodeState();
     ASSERT_TRUE(state.has_value());
+    ASSERT_EQ(state->inputs.size(), 2U);
+    for (const hypha_msgs::RequiredInput& input : state->inputs) {
+        EXPECT_EQ(input.verdict, hypha_msgs::RequiredInput::USABLE) << input.data_type;
+        EXPECT_EQ(input.rejected, 0U) << input.data_type;
+    }
+}
+
+/// A migration on one port name: version 1 of Reading is the cycle's input, and version 2
+/// is published beside it.
+class MigratingCycle final : public hypha_test::StepCycle
+{
+  public:
+    MigratingCycle() : hypha_test::StepCycle("migrating_cycle"), reading(*this, "joint")
+    {
+    }
+
+    hypha::Latest<Reading> reading;
+    hypha::InputVerdict    verdict{hypha::InputVerdict::NeverArrived};
+    std::optional<int>     lastValue;
+
+    void step(const hypha::CycleTime&) override
+    {
+        this->verdict = this->reading.verdict();
+        if (this->reading.usable()) {
+            this->lastValue = (*this->reading).value;
+        }
+    }
+};
+
+// Two versions of one type name coexist on one topic: each subscriber reads its own, nothing
+// is refused. When version 1's publisher leaves, the input of version 1 goes stale, the node
+// keeps running, and after the no-publisher delay (5 s) the log names its version and the one
+// that is published. A version 1 publisher that comes back is read again.
+TEST_F(OverloadingFixture, TwoVersionsOfOneTypeShareATopicAndAReaderOfTheMissingOneIsTold)
+{
+    std::vector<int> secondVersion;
+    auto v1 = std::optional(hypha::Node().advertise<Reading>(hypha::Topic{this->topic}));
+    auto v2 = hypha::Node().advertise<ReadingV2>(hypha::Topic{this->topic});
+    auto v2Reader = hypha::Node().subscribe<ReadingV2>(
+        hypha::Topic{this->topic}, [&secondVersion](const hypha::MessagePtr<ReadingV2>& message) {
+            secondVersion.push_back(message->value);
+        }
+    );
+    MigratingCycle cycle;
+    cycle.setRate(hypha::Hz(100.0));
+    ASSERT_TRUE(cycle.start(*this->node).has_value());
+
+    ReadingV2 heavier;
+    heavier.value = 20;
+    heavier.weight = 1.5;
+    ASSERT_TRUE(v1->publish(reading(10)));
+    ASSERT_TRUE(v2.publish(heavier));
+    ASSERT_TRUE(runUntil(*this->node, [&] {
+        return cycle.lastValue == 10 && !secondVersion.empty();
+    }));
+    EXPECT_EQ(secondVersion, std::vector<int>{20});
+    EXPECT_EQ(cycle.reading.received(), 1U) << "version 1 reads version 1 alone";
+    EXPECT_TRUE(refusedNothing(v2Reader.metrics()));
+
+    ::testing::internal::CaptureStderr();
+    v1.reset();
+    const auto told = std::chrono::steady_clock::now() + std::chrono::milliseconds(6500);
+    while (std::chrono::steady_clock::now() < told) {
+        ASSERT_TRUE(v2.publish(heavier));
+        ASSERT_TRUE(runSlices(*this->node, 1)) << "the node keeps running";
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    const std::string log = ::testing::internal::GetCapturedStderr();
+    const std::string line =
+        "hypha: topic '" + this->topic
+        + "' has publishers, none of type hypha_test/Reading (581e4b1b): published are "
+          "hypha_test/Reading (f79835de)";
+    EXPECT_NE(log.find(line), std::string::npos) << log;
+    EXPECT_EQ(log.find(line), log.rfind(line)) << "said once: " << log;
+    EXPECT_EQ(log.find("refused a frame"), std::string::npos) << log;
+    EXPECT_EQ(cycle.verdict, hypha::InputVerdict::Stale);
+
+    const std::expected<hypha_msgs::NodeState, hypha::Status> state = hypha::nodeState();
+    ASSERT_TRUE(state.has_value());
     ASSERT_EQ(state->inputs.size(), 1U);
-    EXPECT_EQ(state->inputs[0].verdict, hypha_msgs::RequiredInput::USABLE);
-    EXPECT_EQ(state->inputs[0].rejected, 4U) << "the Latest refused the four Commands";
+    EXPECT_EQ(state->inputs[0].md5, "581e4b1bda6a172aa19e1038a38e01eb");
+    EXPECT_EQ(state->inputs[0].verdict, hypha_msgs::RequiredInput::STALE);
+    EXPECT_EQ(state->inputs[0].rejected, 0U);
+
+    auto back = hypha::Node().advertise<Reading>(hypha::Topic{this->topic});
+    ASSERT_TRUE(runUntil(*this->node, [&] {
+        static_cast<void>(back.publish(reading(11)));
+        return cycle.lastValue == 11;
+    }));
+    EXPECT_EQ(cycle.verdict, hypha::InputVerdict::Usable);
 }
