@@ -11,6 +11,7 @@
 #include <rosgraph_msgs/Clock.h>
 #include <std_msgs/Float64.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -112,7 +113,7 @@ class ClockDriverFixture : public ::testing::Test
 
 }  // namespace
 
-TEST_F(ClockDriverFixture, StepsAtStartPlusMultiplesOfThePeriod)
+TEST_F(ClockDriverFixture, StepsAtMultiplesOfThePeriodAfterTheStart)
 {
     Peer peer;
     ASSERT_TRUE(peer.clock.has_value());
@@ -125,12 +126,13 @@ TEST_F(ClockDriverFixture, StepsAtStartPlusMultiplesOfThePeriod)
         ASSERT_TRUE(this->node->runFor(50_ms).ok());
     }
     ASSERT_GE(simulator.deadlines.size(), 3U);
+    // The start value is the start barrier, with no step: the first step is one period later.
     for (size_t index = 0; index < simulator.deadlines.size(); ++index) {
-        EXPECT_EQ(simulator.deadlines[index], kStart + static_cast<int64_t>(index) * kPeriod);
+        EXPECT_EQ(simulator.deadlines[index], kStart + static_cast<int64_t>(index + 1) * kPeriod);
     }
 }
 
-TEST_F(ClockDriverFixture, PublishesClockAfterEachStep)
+TEST_F(ClockDriverFixture, PublishesTheStartThenClockAfterEachStep)
 {
     Peer peer;
     ASSERT_TRUE(peer.clock.has_value());
@@ -141,9 +143,14 @@ TEST_F(ClockDriverFixture, PublishesClockAfterEachStep)
     const auto started = simulator.start(*this->node);
     ASSERT_TRUE(started.has_value()) << started.error();
     ASSERT_TRUE(this->node->runFor(50_ms).ok());
+    // A value the peer answers late is sent again; each value counts once.
+    seen.erase(std::unique(seen.begin(), seen.end()), seen.end());
     ASSERT_FALSE(seen.empty());
-    const std::vector<int64_t> expected(
-        simulator.deadlines.begin(), simulator.deadlines.begin() + static_cast<long>(seen.size())
+    ASSERT_LE(seen.size(), simulator.deadlines.size() + 1U);
+    std::vector<int64_t> expected{kStart};
+    expected.insert(
+        expected.end(), simulator.deadlines.begin(),
+        simulator.deadlines.begin() + static_cast<long>(seen.size() - 1U)
     );
     EXPECT_EQ(seen, expected);
 }
