@@ -67,3 +67,62 @@ fn a_stream_is_read_by_its_hash_alone_and_no_other_stream_is() {
     let absent = reader.subscribe_raw_stream(&topic, 7, SubscriberOptions::default());
     assert!(absent.is_err(), "a stream nobody opened is refused");
 }
+
+/// A late reader of a latched stream gets its last sample, whether it subscribes by name or, as
+/// every follower does, by the stream's hash. The publisher's node runs its `WaitSet`, which
+/// hands the history to a reader that joins.
+fn latched_sample_reaches_a_late_reader(by_hash: bool) -> bool {
+    use hypha_node::sdk::{PublisherOptions, WaitSet};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let topic = format!("/{}/tf_static", unique_name("latched"));
+    let hash = schema_hash_from_md5(V1).expect("hash");
+    let (stop, ready) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let publisher = {
+        let (stop, ready, topic) = (Arc::clone(&stop), Arc::clone(&ready), topic.clone());
+        std::thread::spawn(move || {
+            let node = BusNode::new(&unique_name("latched_pub")).expect("node");
+            let mut latched = node
+                .publish_raw_configured(
+                    &topic,
+                    "t/T",
+                    V1,
+                    "",
+                    PublisherOptions::default().latched(),
+                )
+                .expect("latched publisher");
+            assert!(latched.publish(&[9, 0, 0, 0]));
+            let mut waitset = WaitSet::new(&node).expect("waitset");
+            ready.store(true, Ordering::Release);
+            while !stop.load(Ordering::Relaxed) {
+                let _ = waitset.run_for(Duration::from_millis(20));
+            }
+        })
+    };
+    while !ready.load(Ordering::Acquire) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let bus = BusNode::new(&unique_name("latched_reader")).expect("reader");
+    let options = SubscriberOptions::default().keeping(0);
+    let mut reader = if by_hash {
+        bus.subscribe_raw_stream(&topic, hash, options).expect("by hash")
+    } else {
+        bus.subscribe_raw_with_options(&topic, options).expect("by name")
+    };
+    let got = within(3, || reader.try_receive().expect("receive").is_some());
+    stop.store(true, Ordering::Relaxed);
+    publisher.join().expect("publisher thread");
+    got
+}
+
+#[test]
+fn a_late_reader_of_a_latched_stream_gets_its_sample_by_name() {
+    assert!(latched_sample_reaches_a_late_reader(false));
+}
+
+#[test]
+fn a_late_reader_of_a_latched_stream_gets_its_sample_by_hash() {
+    assert!(latched_sample_reaches_a_late_reader(true));
+}
