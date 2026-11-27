@@ -319,6 +319,9 @@ impl Dispatcher for CallbackDispatcher<'_> {
         if self.is_detached(attachment) {
             return EventOutcome::Drained;
         }
+        if let Some(outcome) = self.on_service_event(attachment) {
+            return outcome;
+        }
         let detached = self.detached;
         let mut outcome = EventOutcome::Drained;
         let mut answer: Option<HyphaCallbackResult> = None;
@@ -346,7 +349,8 @@ impl Dispatcher for CallbackDispatcher<'_> {
                 | Target::Timer { .. }
                 | Target::Triggered(_)
                 | Target::Driver(_)
-                | Target::TriggerWake => return EventOutcome::Drained,
+                | Target::TriggerWake
+                | Target::Service(_) => return EventOutcome::Drained,
             };
 
             let mut turn = BatchTurn::new(batch_size);
@@ -426,6 +430,10 @@ impl Dispatcher for CallbackDispatcher<'_> {
         if decision != Progression::Continue {
             return decision;
         }
+        let decision = self.drive_services();
+        if decision != Progression::Continue {
+            return decision;
+        }
         // `sim` says the node reads `/clock`; a replay cycle also runs on simulated time
         // set through the C ABI, which `on_sim_time` adds. Only then can one be attached.
         if self.node.on_sim_time() {
@@ -497,7 +505,8 @@ impl Dispatcher for CallbackDispatcher<'_> {
         // deadline like a timer's, so the timer that ends the wait ends it for this too.
         let housekeeping =
             self.node.topic_streams.next_deadline(crate::subscriber::host_now_nanos());
-        timers.into_iter().chain(housekeeping).min().map(hypha_time::Time::from_nanos)
+        let calls = self.service_deadline();
+        timers.into_iter().chain(housekeeping).chain(calls).min().map(hypha_time::Time::from_nanos)
     }
 }
 

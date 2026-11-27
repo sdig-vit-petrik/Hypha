@@ -27,6 +27,8 @@ pub use registrations::{
 pub(crate) use registrations::{attach_cycle_timer, attach_triggered_cycle};
 pub mod run;
 pub use run::{waitset_request_stop, waitset_run};
+mod services;
+pub(crate) use services::{ServiceTarget, attach_service, detach_service};
 pub mod timer_control;
 use timer_control::TimerControl;
 pub use timer_control::{
@@ -545,6 +547,8 @@ enum Target {
     TriggerWake,
     /// A cycle that drives `/clock` for a simulator. Its 1 ms wake polls the acknowledgements.
     Driver(Box<clock_driver::DriverCycle>),
+    /// A server or a client, woken by its request or response event.
+    Service(ServiceTarget),
 }
 
 /// The slow-callback diagnostics of one registration, apart from its target.
