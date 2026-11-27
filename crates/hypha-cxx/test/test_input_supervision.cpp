@@ -680,6 +680,63 @@ class TaggedPort final : public hypha::CycleNode
     }
 };
 
+/// The console line that reports the stale verdict of the input on @p topic, or empty.
+std::string staleLineOf(const std::string& output, const std::string& topic)
+{
+    const std::string subject = "(" + topic + ") is stale: ";
+    const std::size_t found = output.find(subject);
+    if (found == std::string::npos) {
+        return {};
+    }
+    const std::size_t begin = output.rfind('\n', found);
+    const std::size_t end = output.find('\n', found);
+    return output.substr(
+        begin == std::string::npos ? 0 : begin + 1,
+        end == std::string::npos ? std::string::npos : end - begin
+    );
+}
+
+/// Starts @p port, sends one sample on @p topic and lets the input go stale. Returns the
+/// console line of that verdict.
+template <typename Port>
+std::string staleLineOfStartedPort(hypha::Node& node, Port& port, const std::string& topic)
+{
+    auto publisher = hypha::Node().advertise<UInt32>(hypha::Topic{topic});
+    port.setRate(hypha::Hz(100.0));
+    EXPECT_TRUE(port.start(node).has_value());
+    ::testing::internal::CaptureStderr();
+    EXPECT_TRUE(publisher.publish(UInt32{1}));
+    EXPECT_TRUE(runUntil(
+        node,
+        [&port]() {
+            return port.input.stale();
+        },
+        std::chrono::seconds(10)
+    ));
+    EXPECT_TRUE(advanceSimulated(node, 50));
+    return staleLineOf(::testing::internal::GetCapturedStderr(), topic);
+}
+
+TEST_F(SupervisionFixture, AnAdvisoryInputLogsItsStaleVerdictAtInfo)
+{
+    const std::string topic = topicFor("arbiter");
+    this->initWith("[ports.inputs.arbiter]\ntopic='" + topic + "'\nsilence_ms = 100\n");
+    TaggedPort        port(hypha::advisory);
+    const std::string line = staleLineOfStartedPort(*this->node, port, topic);
+    EXPECT_NE(line.find("[INFO]"), std::string::npos) << line;
+    EXPECT_NE(line.find("(advisory)"), std::string::npos) << line;
+}
+
+TEST_F(SupervisionFixture, ARequiredInputLogsItsStaleVerdictAtWarn)
+{
+    const std::string topic = topicFor("arbiter");
+    this->initWith("[ports.inputs.arbiter]\ntopic='" + topic + "'\nsilence_ms = 100\n");
+    LatestPort        port("arbiter", false);
+    const std::string line = staleLineOfStartedPort(*this->node, port, topic);
+    EXPECT_NE(line.find("[WARN]"), std::string::npos) << line;
+    EXPECT_EQ(line.find("(advisory)"), std::string::npos) << line;
+}
+
 TEST_F(SupervisionFixture, AnUnsupervisedInputStartsWithoutSilenceMsAndHasNoLimit)
 {
     const std::string topic = topicFor("arbiter");

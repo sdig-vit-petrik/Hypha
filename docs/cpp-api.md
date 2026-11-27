@@ -97,6 +97,8 @@ int main() {
 `hypha::Topic{...}` names a topic that code fixes; a bare string names a port table of
 the parameter file (section 9). A default-constructed `hypha::Node` is a handle to the
 process session, for code without the `Node` at hand: `hypha::Node().advertise<T>(...)`.
+It needs a named `Node` created first; without one the call throws
+`... failed: InvalidState: no session exists; create a named hypha::Node first`.
 The object form holds the endpoints as members, and `hypha::bind` registers a member
 function as the callback:
 
@@ -329,6 +331,8 @@ status.header.stamp = hypha::toRosTime(hypha::now());  // in a callback
 
 Outside a cycle, `node.advertise<M>(port | hypha::Topic{...}, options...)` creates a
 `hypha::Publisher<M>` (`examples/sim_twin/src/sim_clock.cpp`; in a cycle an `Output`).
+`node` may be `hypha::Node()`, the handle that joins no session, once a named `Node`
+exists (section 1); before that `advertise` throws `... InvalidState: no session exists`.
 Reference: `hypha/node.h`, `hypha/publisher.h`, `hypha/topic.h`, `hypha/options.h`.
 
 - A fixed-size message is bounded to its encoded size. Any other is growable, unless

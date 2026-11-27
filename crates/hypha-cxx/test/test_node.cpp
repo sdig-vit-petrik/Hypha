@@ -459,6 +459,29 @@ TEST(NodeSetup, TimerWithoutANodePreservesStatus)
     EXPECT_NE(refusal.find("InvalidState"), std::string::npos) << refusal;
 }
 
+/// A handle that joins no session reads no port table and opens no endpoint. The refusal
+/// says that no session exists and what to do, not which table failed (#209).
+TEST(NodeSetup, AnEndpointOfASessionlessHandleSaysThatNoSessionExists)
+{
+    const std::string publisher = hypha_test::refusalOf([] {
+        static_cast<void>(hypha::Node().advertise<Reading>("/x"));
+    });
+    const std::string subscriber = hypha_test::refusalOf([] {
+        static_cast<void>(hypha::Node().subscribe<Reading>("/x"));
+    });
+    const std::string literal = hypha_test::refusalOf([] {
+        static_cast<void>(hypha::Node().advertise<Reading>(hypha::Topic{"/x"}));
+    });
+    for (const std::string& refusal : {publisher, subscriber, literal}) {
+        EXPECT_NE(refusal.find("no session exists"), std::string::npos) << refusal;
+        EXPECT_NE(refusal.find("create a named hypha::Node first"), std::string::npos) << refusal;
+        EXPECT_NE(refusal.find("InvalidState"), std::string::npos) << refusal;
+    }
+    EXPECT_NE(publisher.find("ports.outputs./x"), std::string::npos) << publisher;
+    EXPECT_NE(subscriber.find("ports.inputs./x"), std::string::npos) << subscriber;
+    EXPECT_NE(literal.find("topic '/x'"), std::string::npos) << literal;
+}
+
 TEST(NodeSetup, RawSubscriberWithoutANodeIsRefused)
 {
     const auto created = hypha::subscribeRaw("/no_node", [](const hypha::RawSample&) {
