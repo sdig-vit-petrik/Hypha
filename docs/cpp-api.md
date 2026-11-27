@@ -247,7 +247,9 @@ subscriber or a triggered cycle; every publisher notifies. Latch it for late sta
 
 Every `Node` of a process joins one session, and the last one destroyed leaves the bus
 and destroys every cycle of the session, whatever order the `Node`s were made in (#97);
-a default-constructed `Node` joins nothing and does not count (`hypha/node.h`). A
+a default-constructed `Node` joins nothing and does not count (`hypha/node.h`). A second
+`Node` keeps the first name and shares the process's parameter file (section 9): it names
+no file or the same one, and another file throws, naming both (#208). A
 publisher of a session that has left sends nothing: `publish()` returns false with
 `lastPublishStatus()` `InvalidState`, as the C ABI's loan and send do once the node was
 destroyed.
@@ -841,6 +843,14 @@ argument of `Node`) through `hypha::config()`. `examples/scan_cycle/inc/scan_cyc
 reads checked scalars, `examples/sensor_fusion/src/sensors_main.cpp` a `[[sensors]]`
 list, and `examples/mrs/config/mrs_simulator_teleop.toml` includes another file. The
 file is read once, at start: there is no parameter server and no mutation API.
+
+A process has one parameter file, whatever its `Node`s and `ConfigContext`s are. The first
+one that names a file loads it; each later `Node` or `ConfigContext` names no file, to share
+the configuration, or the same file, to join it. A different file throws `std::runtime_error`
+that names both (`hypha: node 'beta' creation failed: InvalidState: the process already
+loaded '/etc/a.toml', so '/etc/b.toml' is refused: a process reads one parameter file; name
+'/etc/a.toml' or no file to share it`); so does a file after a first `Node` that named none
+(#208). A test's client `Node` therefore needs no file beside the node under test.
 
 ```cpp
 const auto settings = hypha::config();                       // config("controller") scopes reads

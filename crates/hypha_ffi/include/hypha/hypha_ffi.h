@@ -1473,10 +1473,11 @@ HyphaStatus hypha_node_name(const struct HyphaNode *node,
 // Create a node called `name`: `[a-z][a-z0-9_]`, at most 64 bytes, that no live node of
 // another process in the domain holds (`InvalidState`), or a CLI tool name `_hyphacli_`
 // plus a node name (64 bytes in all), which any number of processes may hold. A
-// non-null `config` (still owned by the caller) supplies the parameters; a nonzero
-// `parameter_file_len` must then name its file (`InvalidArgument` otherwise). A null
-// `config` loads `parameter_file`, or none when the length is 0. `Backend`: the dead
-// run of its own name cannot be reclaimed.
+// non-null `config` (still owned by the caller) supplies the parameters; a zero
+// `parameter_file_len` shares them, a nonzero one must name the file the configuration
+// was loaded from (`InvalidArgument` otherwise, and the log names both files): a process
+// reads one parameter file. A null `config` loads `parameter_file`, or none when the
+// length is 0. `Backend`: the dead run of its own name cannot be reclaimed.
 // # Safety
 // `name` points to `name_len` bytes, `parameter_file` to `parameter_file_len` bytes when
 // nonzero; `config` is null or live; `out` points to one writable pointer. The caller

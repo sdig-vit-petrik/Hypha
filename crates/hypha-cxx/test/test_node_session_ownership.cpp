@@ -2,13 +2,27 @@
 
 #include "hypha/hypha.h"
 
+#include "test_types.h"
+
 #include <gtest/gtest.h>
 #include <std_msgs/UInt32.h>
 
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
+#include <string>
 
 namespace {
+
+/// A parameter file `session_file_<tag>.toml` in the temporary directory with `x = <value>`.
+std::string parameterFile(const std::string& tag, int value)
+{
+    const std::filesystem::path path =
+        std::filesystem::temp_directory_path() / ("session_file_" + tag + ".toml");
+    std::ofstream(path) << "x = " << value << "\n";
+    return path.string();
+}
 
 TEST(NodeSessionOwnership, aSecondNodeLeavesTheFirstNodesSessionAlive)
 {
@@ -81,6 +95,96 @@ TEST(NodeSessionOwnership, aPublisherOfALeftSessionIsRefusedWithInvalidState)
     std_msgs::UInt32 value{};
     EXPECT_FALSE(publisher->publish(value)) << "nothing is sent on a left session";
     EXPECT_EQ(publisher->lastPublishStatus(), hypha::Status::InvalidState);
+}
+
+// One parameter file per process, read once (cpp-api.md section 9, #208): a Node that names
+// no file shares the process configuration, the same file joins, another file is refused.
+
+TEST(NodeParameterFile, aSecondNodeWithoutAFileSharesTheFirstNodesFile)
+{
+    const std::string file = parameterFile("share", 1);
+    hypha::Node       first("file_share_alpha", file);
+    hypha::Node       second("file_share_beta");
+    EXPECT_EQ(hypha::nodeName(), "file_share_alpha");
+    EXPECT_EQ(hypha::config().required<int>("x"), 1);
+    std::filesystem::remove(file);
+}
+
+TEST(NodeParameterFile, theSameFileTwiceJoins)
+{
+    const std::string file = parameterFile("same", 2);
+    hypha::Node       first("file_same_alpha", file);
+    hypha::Node       second("file_same_beta", file);
+    EXPECT_EQ(hypha::config().required<int>("x"), 2);
+    std::filesystem::remove(file);
+}
+
+TEST(NodeParameterFile, aDifferentFileIsRefusedAndTheMessageNamesBothFiles)
+{
+    const std::string held = parameterFile("held", 3);
+    const std::string other = parameterFile("other", 4);
+    {
+        hypha::Node       first("file_other_alpha", held);
+        const std::string refusal = hypha_test::refusalOf([&other] {
+            hypha::Node second("file_other_beta", other);
+        });
+        EXPECT_NE(refusal.find(held), std::string::npos) << refusal;
+        EXPECT_NE(refusal.find(other), std::string::npos) << refusal;
+        EXPECT_EQ(hypha::config().required<int>("x"), 3) << "the first file stays";
+    }
+    EXPECT_EQ(hypha::backend::nodeHandle(), nullptr) << "a refused Node did not join";
+    std::filesystem::remove(held);
+    std::filesystem::remove(other);
+}
+
+TEST(NodeParameterFile, aFileAfterANodeWithoutOneIsRefusedAndTheMessageNamesIt)
+{
+    const std::string file = parameterFile("late", 5);
+    hypha::Node       first("file_late_alpha");
+    const std::string refusal = hypha_test::refusalOf([&file] {
+        hypha::Node second("file_late_beta", file);
+    });
+    EXPECT_NE(refusal.find(file), std::string::npos) << refusal;
+    std::filesystem::remove(file);
+}
+
+TEST(NodeParameterFile, aConfigContextIsSharedByTwoNodesWithoutAFile)
+{
+    const std::string    file = parameterFile("context", 6);
+    hypha::ConfigContext context(file);
+    {
+        hypha::Node first("file_context_alpha");
+        hypha::Node second("file_context_beta");
+        EXPECT_EQ(hypha::nodeName(), "file_context_alpha");
+        EXPECT_EQ(hypha::config().required<int>("x"), 6);
+    }
+    EXPECT_EQ(hypha::config().required<int>("x"), 6) << "the context outlives its Nodes";
+    {
+        hypha::Node again("file_context_gamma", file);
+        EXPECT_EQ(hypha::config().required<int>("x"), 6);
+    }
+    std::filesystem::remove(file);
+}
+
+TEST(NodeParameterFile, aConfigContextRefusesANodeWithAnotherFileAndNamesBoth)
+{
+    const std::string held = parameterFile("context_held", 7);
+    const std::string other = parameterFile("context_other", 8);
+    {
+        hypha::ConfigContext context(held);
+        const std::string    refusal = hypha_test::refusalOf([&other] {
+            hypha::Node node("file_context_other", other);
+        });
+        EXPECT_NE(refusal.find(held), std::string::npos) << refusal;
+        EXPECT_NE(refusal.find(other), std::string::npos) << refusal;
+        const std::string contextRefusal = hypha_test::refusalOf([&other] {
+            hypha::ConfigContext second(other);
+        });
+        EXPECT_NE(contextRefusal.find(held), std::string::npos) << contextRefusal;
+        EXPECT_NE(contextRefusal.find(other), std::string::npos) << contextRefusal;
+    }
+    std::filesystem::remove(held);
+    std::filesystem::remove(other);
 }
 
 }  // namespace

@@ -171,15 +171,21 @@ class Node
     }
 
     /// A name is `[a-z][a-z0-9_]`, at most 64 characters; the `node.name` key of
-    /// @p parameterFile overrides it. A second Node joins the session and keeps the
-    /// first name.
-    /// @throws std::runtime_error when the node cannot be created.
+    /// @p parameterFile overrides it. A second Node joins the session, keeps the first
+    /// name and shares the process configuration: a process reads one parameter file, so
+    /// the second Node names no file or the first Node's file, and any other file is
+    /// refused.
+    /// @throws std::runtime_error when the node cannot be created; for another parameter
+    ///         file than the process holds it names both files.
     Node(const std::string& name, const std::string& parameterFile)
     {
-        const Status status = backend::init(name, parameterFile);
+        std::string  refusal;
+        const Status status = backend::init(name, parameterFile, nullptr, &refusal);
         this->joined_ = status == Status::Ok;
         if (status != Status::Ok) {
-            throw std::runtime_error(detail::failureText("node '" + name + "' creation", status));
+            throw std::runtime_error(
+                detail::failureText("node '" + name + "' creation", status, refusal)
+            );
         }
     }
 
