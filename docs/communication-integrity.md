@@ -48,12 +48,11 @@ each subscriber endpoint's at each frame it takes. Two subscribers of one topic 
 process each verify the frame. A cycle input verifies a frame when it drains it and
 decodes it later from its history with no second pass.
 
-| Payload, from memory | Apple M1 Pro, macOS | Linux aarch64, same machine |
-|---|---|---|
-| 64 bytes | 19 ns | LINUX64 |
-| 15 MiB | 0.33 ms (`memcpy` of it: 0.39 ms) | LINUX15 |
-
-Release build, `cargo bench -p hypha_wire --bench integrity`. x86_64 is not measured.
+On an Apple M1 Pro (macOS, release build, `cargo bench -p hypha_wire --bench integrity`)
+the code of a 15 MiB payload read from memory takes 0.33 ms, less than a `memcpy` of
+it (0.39 ms), and that of a 64-byte message 18 ns. Linux aarch64 on the same machine
+takes the same path and, measured in a container under heavy load, about half the time of
+a `memcpy` of the payload. x86_64 is not measured.
 
 ## 3. Faults and the check that covers each
 
