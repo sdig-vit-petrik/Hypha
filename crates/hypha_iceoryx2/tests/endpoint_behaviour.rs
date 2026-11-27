@@ -170,3 +170,33 @@ fn a_loan_shrunk_to_nothing_arrives_empty_and_every_slot_returns_whole() {
             .expect("the seal covers the shrunk payload");
     }
 }
+
+/// A loan shrunk at the send is, header and payload, the frame of a loan of exactly the
+/// bytes it kept: with the same metadata the two headers are equal field by field, the CRC
+/// and `payload_len` included, and the payloads are equal.
+#[test]
+#[allow(clippy::expect_used)]
+fn a_shrunk_loan_sends_the_frame_of_a_loan_of_its_kept_size() {
+    let transport = Iox2Transport::with_name(&unique_name("loan_shrink_same")).expect("transport");
+    let topic = format!("/{}", unique_name("shrink_same"));
+    let spec = TopicSpec::new(&topic).with_type("std_msgs/String").keeping(4);
+    let publisher = transport.publish(&spec).expect("publisher");
+    let subscriber = transport.subscribe(&spec).expect("subscriber");
+    let message: Vec<u8> = (0..40_u8).collect();
+    let metadata = sealed_send::metadata();
+
+    let mut shrunk = publisher.loan(64).expect("a loan with room");
+    shrunk.as_mut_bytes().get_mut(..40).expect("40 bytes").copy_from_slice(&message);
+    shrunk.shrink(40).expect("shrink");
+    shrunk.send_frame(metadata, 0).expect("send the shrunk loan");
+    let mut exact = publisher.loan(40).expect("a loan of the kept size");
+    exact.as_mut_bytes().copy_from_slice(&message);
+    exact.send_frame(metadata, 0).expect("send the exact loan");
+
+    let first = subscriber.try_receive().expect("receive").expect("the shrunk frame");
+    let second = subscriber.try_receive().expect("receive").expect("the exact frame");
+    assert_eq!(first.header(), second.header());
+    assert_eq!(first.header().payload_len, 40);
+    assert_eq!(first.payload(), message.as_slice());
+    assert_eq!(second.payload(), message.as_slice());
+}
