@@ -209,6 +209,17 @@ class PortTest(unittest.TestCase):
         with self.assertRaisesRegex(port.PortError, "no file at"):
             port.vendor(self.repository, ["pkg/missing"], None)
 
+    def test_verify_sdk_checks_the_sdk_upstream_directory(self) -> None:
+        sdk = self.scratch / "sdk-upstream"
+        self.assertEqual(port.verify_sdk(sdk), [])
+        shutil.copytree(self.repository, sdk / "demo")
+        self.assertEqual(port.verify_sdk(sdk), [])
+        (sdk / "demo" / "pkg" / "src" / "filter.cpp").write_text(FILTER_EDITED)
+        self.assertEqual(
+            port.verify_sdk(sdk),
+            ["demo/pkg/src/filter.cpp: differs from its SHA-256 in vendor.toml"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

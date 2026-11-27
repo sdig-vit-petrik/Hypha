@@ -4,3 +4,5 @@ crates/hypha_testing_mcap/include/hypha/testing/mcap_reader.h
 # Vendored MRS and Autoware sources keep their upstream formatting.
 examples/mrs/upstream/**
 examples/autoware/upstream/**
+# Vendored ROS common_msgs headers of the SDK keep their upstream formatting.
+crates/hypha-cxx/upstream/**

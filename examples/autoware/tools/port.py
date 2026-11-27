@@ -41,6 +41,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 AUTOWARE = Path(__file__).resolve().parents[1]
+# The vendored files of the C++ SDK (crates/hypha-cxx/upstream): verified and vendored
+# the same way, with no patches.
+SDK_UPSTREAM = AUTOWARE.parents[1] / "crates" / "hypha-cxx" / "upstream"
 MANIFEST = "vendor.toml"
 README = "README.md"
 PATCHES = "patches"
@@ -267,6 +270,15 @@ def verify(root: Path) -> list[str]:
     return problems + verify_patches(root)
 
 
+def verify_sdk(upstream: Path) -> list[str]:
+    """The problems of the SDK's vendored repositories, if it has any."""
+    problems = []
+    if upstream.is_dir():
+        for directory in sorted(p for p in upstream.iterdir() if p.is_dir()):
+            problems += verify_repository(directory)
+    return problems
+
+
 def _git(repository: Path, *arguments: str) -> bytes:
     result = subprocess.run(  # noqa: S603
         ["git", "-C", str(repository), *arguments],  # noqa: S607
@@ -392,7 +404,10 @@ def main(argv: list[str]) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("verify", help="check the vendored files and the patches, offline")
     vendor_parser = commands.add_parser("vendor", help="fetch a repository's listed files")
-    vendor_parser.add_argument("repository", help="the directory name under upstream/")
+    vendor_parser.add_argument(
+        "repository",
+        help="the directory name under examples/autoware/upstream/ or crates/hypha-cxx/upstream/",
+    )
     vendor_parser.add_argument("--add", action="append", default=[], metavar="PATH")
     vendor_parser.add_argument("--from", dest="origin", metavar="URL|DIR")
     for name, text in (("edit", "make a patched copy"), ("diff", "write the patch back")):
@@ -407,11 +422,17 @@ def main(argv: list[str]) -> int:
             problems = verify(AUTOWARE)
             for problem in problems:
                 print(f"examples/autoware/upstream: {problem}", file=sys.stderr)
-            if problems:
+            sdk_problems = verify_sdk(SDK_UPSTREAM)
+            for problem in sdk_problems:
+                print(f"crates/hypha-cxx/upstream: {problem}", file=sys.stderr)
+            if problems or sdk_problems:
                 return EXIT_FAILED
             print("examples/autoware/upstream: the vendored files and the patches match")
+            print("crates/hypha-cxx/upstream: the vendored files match")
         elif arguments.command == "vendor":
             directory = AUTOWARE / "upstream" / arguments.repository
+            if not directory.is_dir():
+                directory = SDK_UPSTREAM / arguments.repository
             if arguments.repository in (PATCHES, "") or not directory.is_dir():
                 raise PortError(f"{arguments.repository}: not a vendored repository")
             manifest = vendor(directory, arguments.add, arguments.origin)
