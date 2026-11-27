@@ -144,7 +144,7 @@ void report(
         "RESULT %s sent=%" PRIu64 " failed=%" PRIu64
         " last_failure=%s frame_p50_us=%.0f frame_p99_us=%.0f "
         "publish_p50_us=%.0f publish_p99_us=%.0f cpu_pct=%.1f cpu_ms_per_msg=%.2f "
-        "thread_cpu_us: frame_p50=%.0f loan_p50=%.0f publish_p50=%.0f\n",
+        "thread_cpu_us: frame_p50=%.0f frame_p99=%.0f loan_p50=%.0f publish_p50=%.0f\n",
         label,
         stats.sent,
         stats.failed,
@@ -156,6 +156,7 @@ void report(
         100.0 * cpu / seconds,
         stats.sent ? 1e3 * cpu / static_cast<double>(stats.sent) : 0.0,
         hypha_bench::percentileNs(stats.cpuFrameNs, 0.5) / 1e3,
+        hypha_bench::percentileNs(stats.cpuFrameNs, 0.99) / 1e3,
         hypha_bench::percentileNs(stats.cpuLoanNs, 0.5) / 1e3,
         hypha_bench::percentileNs(stats.cpuPublishNs, 0.5) / 1e3
     );
