@@ -153,30 +153,18 @@ fn two_streams_of_one_topic_are_two_channels_each_with_its_own_schema() {
     std::fs::remove_file(output).expect("remove recording");
 }
 
-/// The file the recorder wrote before streams: the calls it made on the MCAP writer for a
-/// topic of one type, in the order it made them.
-fn the_file_of_the_recorder_before_streams(samples: &[(&str, u64, &[u8])]) -> Vec<u8> {
+/// The file the recorder wrote before streams, for a topic of one type: the calls it made on the
+/// MCAP writer, in the order it made them.
+fn the_file_of_the_recorder_before_streams(topic: &str, samples: &[(u64, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
     let options =
         mcap::WriteOptions::new().profile("ros1").compression(Some(mcap::Compression::Lz4));
     let mut writer =
         mcap::Writer::with_options(std::io::Cursor::new(&mut out), options).expect("writer");
-    let mut channels: Vec<(String, u16, u32)> = Vec::new();
-    for (topic, stamp, bytes) in samples {
-        let position = channels.iter().position(|(known, _, _)| known == topic);
-        let (channel_id, sequence) = if let Some(index) = position {
-            let entry = channels.get_mut(index).expect("known");
-            entry.2 = entry.2.saturating_add(1);
-            (entry.1, entry.2.saturating_sub(1))
-        } else {
-            let schema =
-                writer.add_schema("std_msgs/Bool", "ros1msg", b"bool data\n").expect("schema");
-            let metadata =
-                std::collections::BTreeMap::from([("md5sum".to_owned(), BOOL_MD5.to_owned())]);
-            let channel = writer.add_channel(schema, topic, "ros1", &metadata).expect("channel");
-            channels.push(((*topic).to_owned(), channel, 1));
-            (channel, 0)
-        };
+    let schema = writer.add_schema("std_msgs/Bool", "ros1msg", b"bool data\n").expect("schema");
+    let metadata = std::collections::BTreeMap::from([("md5sum".to_owned(), BOOL_MD5.to_owned())]);
+    let channel_id = writer.add_channel(schema, topic, "ros1", &metadata).expect("channel");
+    for (sequence, (stamp, bytes)) in (0_u32..).zip(samples) {
         let header = mcap::records::MessageHeader {
             channel_id,
             sequence,
@@ -190,23 +178,26 @@ fn the_file_of_the_recorder_before_streams(samples: &[(&str, u64, &[u8])]) -> Ve
     out
 }
 
+/// The recording of a topic of one type is the file the recorder wrote before streams, byte for
+/// byte. With more than one channel it is not a property of this recorder: the MCAP library
+/// writes its summary records in hash-map order, so two runs of any recorder differ in the order
+/// of records, not in content.
 #[test]
-fn a_recording_of_one_type_per_topic_is_the_file_the_recorder_made_before_streams() {
+fn a_recording_of_one_type_is_the_file_the_recorder_made_before_streams() {
     let name = unique("rec_identical");
+    let topic = format!("/{name}/a");
     let output = std::env::temp_dir().join(format!("{name}.mcap"));
     let bus = BusNode::new(&name).expect("recorder test node");
-    let (a, b) = (format!("/{name}/a"), format!("/{name}/b"));
-    let _publisher_a = bus.publish_raw(&a, "std_msgs/Bool", BOOL_MD5, "bool data\n").expect("a");
-    let _publisher_b = bus.publish_raw(&b, "std_msgs/Bool", BOOL_MD5, "bool data\n").expect("b");
+    let _publisher =
+        bus.publish_raw(&topic, "std_msgs/Bool", BOOL_MD5, "bool data\n").expect("publisher");
     let mut session = RecorderSession::new(&bus, Recorder::new(&output), false);
-    let written: [(&str, u64, &[u8]); 4] =
-        [(&a, 100, &[1]), (&b, 150, &[0]), (&a, 200, &[0]), (&b, 250, &[1])];
-    for (topic, stamp, bytes) in written {
-        session.on_sample(&sample(topic, stamp), bytes);
+    let written: [(u64, &[u8]); 3] = [(100, &[1]), (200, &[0]), (300, &[1])];
+    for (stamp, bytes) in written {
+        session.on_sample(&sample(&topic, stamp), bytes);
     }
     drop(session.finish());
 
     let now = std::fs::read(&output).expect("recording");
-    assert_eq!(now, the_file_of_the_recorder_before_streams(&written));
+    assert_eq!(now, the_file_of_the_recorder_before_streams(&topic, &written));
     std::fs::remove_file(output).expect("remove recording");
 }
