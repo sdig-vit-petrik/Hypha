@@ -17,6 +17,9 @@
 ///    ConfigError for a name a start would refuse, or for an entry that is a plain string
 ///    where a start requires a table;
 ///  - the verdict of a delivered input, by the rule of the capture, from `silence_ms`;
+///  - the counters of an input: received() counts in the next step each sample given to
+///    deliver() or set(), deliveredCount() each one that step takes as usable;
+///    setNeverArrived() sets both to zero;
 ///  - the bound of perStep() on the sends of a step;
 ///  - what a disabled port does: deliver(), set(), setStale() and setStagnant() on a
 ///    disabled input are refused, since a started cycle gives it no sample and never judges
@@ -112,6 +115,7 @@ class StepHarness final : private detail::CaptureStore
         StepHarness::requireEnabled(port, "deliver()");
         const int64_t silenceNanos = StepHarness::silenceOf(port);
         this->forget(port);
+        this->accept(port, 1);
         port.candidate_ = std::move(value);
         port.supervision_.silenceNanos_ = silenceNanos;
         this->deliveries_.push_back(
@@ -127,6 +131,7 @@ class StepHarness final : private detail::CaptureStore
         StepHarness::requireEnabled(port, "deliver()");
         const int64_t silenceNanos = StepHarness::silenceOf(port);
         this->forget(port);
+        this->accept(port, samples.size());
         port.sampleCount_ = samples.size();
         port.stamps_.assign(samples.size(), detail::SampleStamp{});
         port.samples_ = std::move(samples);
@@ -144,6 +149,7 @@ class StepHarness final : private detail::CaptureStore
     {
         StepHarness::requireEnabled(port, "set()");
         this->forget(port);
+        this->accept(port, 1);
         port.held_ = std::move(value);
         port.heldStamp_ = detail::SampleStamp{};
         port.hasHeld_ = true;
@@ -170,6 +176,7 @@ class StepHarness final : private detail::CaptureStore
     void setNeverArrived(Latest<M>& port)
     {
         this->forget(port);
+        this->startCountersOver(port);
         port.hasHeld_ = false;
         port.fresh_ = false;
         port.verdict_ = InputVerdict::NeverArrived;
@@ -183,12 +190,13 @@ class StepHarness final : private detail::CaptureStore
     {
         StepHarness::requireEnabled(port, "set()");
         this->forget(port);
+        this->accept(port, samples.size());
         port.sampleCount_ = samples.size();
         port.stamps_.assign(samples.size(), detail::SampleStamp{});
         port.samples_ = std::move(samples);
         port.verdict_ = InputVerdict::Usable;
         StepHarness::judge(port, HYPHA_CYCLE_VERDICT_USABLE, false);
-        this->deliverOnce(port);
+        this->setOnce(port);
     }
 
     /// @brief The port has no sample and is stale.
@@ -208,6 +216,7 @@ class StepHarness final : private detail::CaptureStore
     void setNeverArrived(Arrivals<M>& port)
     {
         this->forget(port);
+        this->startCountersOver(port);
         port.sampleCount_ = 0;
         port.verdict_ = InputVerdict::NeverArrived;
         StepHarness::judge(port, HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, false);
@@ -281,6 +290,14 @@ class StepHarness final : private detail::CaptureStore
         void (*judge)(Delivery&, Time, std::vector<Pending>&);
     };
 
+    /// The samples a port accepted since the last step, which the next step's capture
+    /// adds to received(). `report` is the held report of the port.
+    struct Intake
+    {
+        HyphaCycleHeldReport* report;
+        uint64_t              accepted;
+    };
+
     struct NodeStep
     {
         CycleNode* node;
@@ -335,6 +352,8 @@ class StepHarness final : private detail::CaptureStore
     template <typename M>
     static void keepSamples(Port*);
     template <typename M>
+    static void countSamples(Port* port);
+    template <typename M>
     static void dropSamples(Port* port);
     template <typename M>
     void forget(Input<M>& port);
@@ -343,6 +362,13 @@ class StepHarness final : private detail::CaptureStore
     void freshNext(Latest<M>& port);
     template <typename M>
     void deliverOnce(Arrivals<M>& port);
+    template <typename M>
+    void setOnce(Arrivals<M>& port);
+    template <typename M>
+    void accept(Input<M>& port, uint64_t count);
+    template <typename M>
+    void startCountersOver(Input<M>& port);
+    void takeIntakes();
     void beginStep(Time now);
     void rethrowLatched();
     void endStep() noexcept;
@@ -352,6 +378,7 @@ class StepHarness final : private detail::CaptureStore
     std::vector<Pending>  pending_;
     std::vector<Pending>  running_;
     std::vector<Delivery> deliveries_;
+    std::vector<Intake>   intakes_;
 };
 
 }  // namespace hypha::testing

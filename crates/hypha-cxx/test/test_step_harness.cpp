@@ -482,6 +482,84 @@ TEST(StepHarnessDeliver, ADeliverWithoutALoadedConfigurationIsRefused)
     EXPECT_TRUE(judged.open.usable()) << "an unsupervised port reads no table";
 }
 
+/// #271: the counters of an input advance under the harness as they do on the bus. A
+/// code that decides "a new sample arrived" from received() or deliveredCount() sees every
+/// sample in a step test, not only the first.
+TEST(StepHarness, AnInputCountsTheSamplesAStepTestFeedsItAsTheBusDoes)
+{
+    Relay                       relay;
+    hypha::testing::StepHarness harness{relay};
+    EXPECT_EQ(relay.speed.received(), 0U);
+    EXPECT_EQ(relay.speed.deliveredCount(), 0U);
+
+    harness.set(relay.speed, Float64{1.0});
+    harness.step(relay);
+    EXPECT_EQ(relay.speed.received(), 1U);
+    EXPECT_EQ(relay.speed.deliveredCount(), 1U);
+
+    harness.step(relay);
+    EXPECT_EQ(relay.speed.received(), 1U) << "a step with no new sample counts nothing";
+    EXPECT_EQ(relay.speed.deliveredCount(), 1U);
+
+    harness.set(relay.speed, Float64{2.0});
+    harness.step(relay);
+    EXPECT_EQ(relay.speed.received(), 2U);
+    EXPECT_EQ(relay.speed.deliveredCount(), 2U);
+}
+
+TEST_F(DeliverFixture, ADeliveredLatestValueAdvancesTheCountersOncePerSample)
+{
+    Judged                      judged;
+    hypha::testing::StepHarness harness{judged};
+    harness.deliver(judged.limited, Float64{1.0}, Time::fromNanos(kStartNanos));
+    EXPECT_EQ(judged.limited.received(), 0U) << "a capture counts it, not the sender";
+    harness.step(judged, stepAt(kStartNanos + 1));
+    EXPECT_EQ(judged.limited.received(), 1U);
+    EXPECT_EQ(judged.limited.deliveredCount(), 1U);
+
+    harness.step(judged, stepAt(kStartNanos + 2));
+    EXPECT_EQ(judged.limited.received(), 1U);
+    EXPECT_EQ(judged.limited.deliveredCount(), 1U);
+
+    harness.deliver(judged.limited, Float64{2.0}, Time::fromNanos(kStartNanos + 3));
+    harness.step(judged, stepAt(kStartNanos + 4));
+    EXPECT_EQ(judged.limited.received(), 2U);
+    EXPECT_EQ(judged.limited.deliveredCount(), 2U);
+}
+
+TEST_F(DeliverFixture, TwoValuesDeliveredBeforeOneStepAreTwoReceivedAndOneDelivered)
+{
+    Judged                      judged;
+    hypha::testing::StepHarness harness{judged};
+    harness.deliver(judged.limited, Float64{1.0}, Time::fromNanos(kStartNanos));
+    harness.deliver(judged.limited, Float64{2.0}, Time::fromNanos(kStartNanos + 5));
+    harness.step(judged, stepAt(kStartNanos + 10));
+    EXPECT_EQ(judged.limited.received(), 2U) << "the source accepted both";
+    EXPECT_EQ(judged.limited.deliveredCount(), 1U) << "the step took the newest";
+}
+
+TEST_F(DeliverFixture, AValueThatIsStaleWhenCapturedIsReceivedAndNotDelivered)
+{
+    Judged                      judged;
+    hypha::testing::StepHarness harness{judged};
+    harness.deliver(judged.limited, Float64{1.0}, Time::fromNanos(kStartNanos));
+    harness.step(judged, stepAt(kStartNanos + 10 * kLimitNanos));
+    EXPECT_EQ(judged.limited.received(), 1U);
+    EXPECT_EQ(judged.limited.deliveredCount(), 0U);
+}
+
+TEST_F(DeliverFixture, SetNeverArrivedStartsTheCountersOver)
+{
+    Judged                      judged;
+    hypha::testing::StepHarness harness{judged};
+    harness.set(judged.limited, Float64{1.0});
+    harness.step(judged);
+    ASSERT_EQ(judged.limited.received(), 1U);
+    harness.setNeverArrived(judged.limited);
+    EXPECT_EQ(judged.limited.received(), 0U);
+    EXPECT_EQ(judged.limited.deliveredCount(), 0U);
+}
+
 namespace {
 
 using UInt32 = std_msgs::UInt32;
@@ -499,11 +577,15 @@ class Recorded final : public hypha::CycleNode
         this->times.push_back(time.now.nanos());
         this->verdicts.push_back(this->input.verdict());
         this->usables.push_back(this->input.usable());
+        this->received.push_back(this->input.received());
+        this->delivered.push_back(this->input.deliveredCount());
     }
 
     std::vector<int64_t>      times;
     std::vector<InputVerdict> verdicts;
     std::vector<bool>         usables;
+    std::vector<uint64_t>     received;
+    std::vector<uint64_t>     delivered;
 };
 
 /// What the steps of the started cycle showed, kept after the cycle and its node are gone.
@@ -512,6 +594,8 @@ struct Observed
     std::vector<int64_t>      times;
     std::vector<InputVerdict> verdicts;
     std::vector<bool>         usables;
+    std::vector<uint64_t>     received;
+    std::vector<uint64_t>     delivered;
 };
 
 /// A value the test sent on the real bus: when, and how many steps had run before.
@@ -581,6 +665,8 @@ TEST(StepHarnessDeliver, TheHarnessGivesTheVerdictOfARealCycleForOneInputSequenc
         real.times = cycle.times;
         real.verdicts = cycle.verdicts;
         real.usables = cycle.usables;
+        real.received = cycle.received;
+        real.delivered = cycle.delivered;
     }
     ASSERT_GT(real.times.size(), 30U);
     ASSERT_EQ(sends.size(), 4U);
@@ -605,6 +691,8 @@ TEST(StepHarnessDeliver, TheHarnessGivesTheVerdictOfARealCycleForOneInputSequenc
         EXPECT_EQ(simulated.input.verdict(), real.verdicts[index]) << "step " << index;
         EXPECT_EQ(simulated.input.usable(), static_cast<bool>(real.usables[index]))
             << "step " << index;
+        EXPECT_EQ(simulated.input.received(), real.received[index]) << "step " << index;
+        EXPECT_EQ(simulated.input.deliveredCount(), real.delivered[index]) << "step " << index;
         const bool stale = real.verdicts[index] == InputVerdict::Stale;
         staleSteps += stale ? 1U : 0U;
         usableSteps += real.usables[index] ? 1U : 0U;
@@ -616,6 +704,8 @@ TEST(StepHarnessDeliver, TheHarnessGivesTheVerdictOfARealCycleForOneInputSequenc
     EXPECT_GE(staleSteps, 5U) << "the sequence must cross the limit, or it proves nothing";
     EXPECT_GE(usableSteps, 15U);
     EXPECT_GE(atTheLimit, 1U) << "a step at an age of exactly the limit must occur";
+    EXPECT_EQ(real.received.back(), 4U) << "all four sends were accepted";
+    EXPECT_LT(real.delivered.back(), real.received.back()) << "two sends shared one step";
     std::filesystem::remove(path);
 }
 
@@ -695,6 +785,42 @@ TEST_F(DeliverFixture, ASetAfterDeliveredArrivalsReplacesTheDeliveredState)
     EXPECT_EQ(queued.sawVerdict, InputVerdict::Usable);
     harness.step(queued, stepAt(kStartNanos + 60 * kLimitNanos));
     EXPECT_EQ(queued.sawVerdict, InputVerdict::Usable);
+}
+
+TEST_F(DeliverFixture, DeliveredArrivalsAreCountedBySampleAndOnlyWhenUsable)
+{
+    Queued                      queued;
+    hypha::testing::StepHarness harness{queued};
+    harness.deliver(queued.queue, {Float64{1.0}, Float64{2.0}}, Time::fromNanos(kStartNanos));
+    harness.step(queued, stepAt(kStartNanos + 1));
+    EXPECT_EQ(queued.queue.received(), 2U);
+    EXPECT_EQ(queued.queue.deliveredCount(), 2U);
+
+    harness.step(queued, stepAt(kStartNanos + 2));
+    EXPECT_EQ(queued.queue.received(), 2U);
+    EXPECT_EQ(queued.queue.deliveredCount(), 2U);
+
+    harness.deliver(queued.queue, {Float64{3.0}}, Time::fromNanos(kStartNanos + 3));
+    harness.step(queued, stepAt(kStartNanos + 4));
+    EXPECT_EQ(queued.queue.received(), 3U);
+    EXPECT_EQ(queued.queue.deliveredCount(), 3U);
+
+    harness.deliver(queued.queue, {Float64{4.0}}, Time::fromNanos(kStartNanos));
+    harness.step(queued, stepAt(kStartNanos + 10 * kLimitNanos));
+    EXPECT_EQ(queued.queue.received(), 4U) << "accepted";
+    EXPECT_EQ(queued.queue.deliveredCount(), 3U) << "but too old to deliver";
+}
+
+TEST_F(DeliverFixture, SetArrivalsAreCountedBySample)
+{
+    Queued                      queued;
+    hypha::testing::StepHarness harness{queued};
+    harness.set(queued.queue, {Float64{1.0}, Float64{2.0}, Float64{3.0}});
+    harness.step(queued);
+    EXPECT_EQ(queued.queue.received(), 3U);
+    EXPECT_EQ(queued.queue.deliveredCount(), 3U);
+    harness.step(queued);
+    EXPECT_EQ(queued.queue.received(), 3U);
 }
 
 namespace {

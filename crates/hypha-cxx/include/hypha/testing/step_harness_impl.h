@@ -148,6 +148,7 @@ void StepHarness::judgeDelivery(Delivery& delivery, Time now, std::vector<Pendin
         port.heldStamp_ = detail::SampleStamp{static_cast<uint64_t>(sent), 0, 0};
         port.hasHeld_ = true;
         port.fresh_ = true;
+        port.heldReport_.delivered_total += 1;
         delivery.unseen = false;
         running.push_back(Pending{&port, &StepHarness::keepFresh<M>, &StepHarness::endFresh<M>});
     }
@@ -167,6 +168,8 @@ void StepHarness::judgeArrivals(Delivery& delivery, Time now, std::vector<Pendin
     const bool    refusesTheSamples = delivery.unseen && !usable;
     if (refusesTheSamples) {
         port.sampleCount_ = 0;
+    } else if (delivery.unseen) {
+        port.heldReport_.delivered_total += port.sampleCount_;
     }
     delivery.unseen = false;
     port.verdict_ = usable ? InputVerdict::Usable : InputVerdict::Stale;
@@ -199,7 +202,9 @@ void StepHarness::rejudge(Input<M>& port)
 template <typename M>
 void StepHarness::makeFresh(Port* port)
 {
-    static_cast<Latest<M>*>(port)->fresh_ = true;
+    Latest<M>& latest = *static_cast<Latest<M>*>(port);
+    latest.fresh_ = true;
+    latest.heldReport_.delivered_total += 1;
 }
 
 template <typename M>
@@ -216,6 +221,13 @@ void StepHarness::endFresh(Port* port)
 template <typename M>
 void StepHarness::keepSamples(Port*)
 {
+}
+
+template <typename M>
+void StepHarness::countSamples(Port* port)
+{
+    Arrivals<M>& arrivals = *static_cast<Arrivals<M>*>(port);
+    arrivals.heldReport_.delivered_total += arrivals.sampleCount_;
 }
 
 template <typename M>
@@ -263,6 +275,46 @@ void StepHarness::deliverOnce(Arrivals<M>& port)
     );
 }
 
+template <typename M>
+void StepHarness::setOnce(Arrivals<M>& port)
+{
+    this->pending_.push_back(
+        Pending{&port, &StepHarness::countSamples<M>, &StepHarness::dropSamples<M>}
+    );
+}
+
+/// The source of @p port accepts @p count samples; the next step's capture counts them in
+/// received(), as a capture counts what the source accepted until then.
+template <typename M>
+void StepHarness::accept(Input<M>& port, uint64_t count)
+{
+    for (Intake& intake : this->intakes_) {
+        if (intake.report == &port.heldReport_) {
+            intake.accepted += count;
+            return;
+        }
+    }
+    this->intakes_.push_back(Intake{&port.heldReport_, count});
+}
+
+/// A port that never had a sample has accepted none: both counters read zero again.
+template <typename M>
+void StepHarness::startCountersOver(Input<M>& port)
+{
+    std::erase_if(this->intakes_, [&port](const Intake& intake) {
+        return intake.report == &port.heldReport_;
+    });
+    port.heldReport_ = HyphaCycleHeldReport{};
+}
+
+inline void StepHarness::takeIntakes()
+{
+    for (Intake& intake : this->intakes_) {
+        intake.report->received_total += intake.accepted;
+        intake.accepted = 0;
+    }
+}
+
 /// Clears the last step's messages and routes every send() of the cycle's ports here.
 inline void StepHarness::beginStep(Time now)
 {
@@ -275,6 +327,7 @@ inline void StepHarness::beginStep(Time now)
     for (Pending& item : this->running_) {
         item.begin(item.port);
     }
+    this->takeIntakes();
     for (Delivery& delivery : this->deliveries_) {
         delivery.judge(delivery, now, this->running_);
     }
