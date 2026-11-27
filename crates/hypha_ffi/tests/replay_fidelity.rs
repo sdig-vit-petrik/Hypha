@@ -446,7 +446,7 @@ pub(crate) fn the_first_frames_of_a_period_longer_than_a_queue_are_all_delivered
 pub(crate) fn a_history_too_short_for_the_step_fails_it_and_counts_the_loss() {
     // The same replay with a `perStep` of 10: a history of 10 + 10 cannot hold the 21
     // samples 10..210 that arrive before the step at 200, and it evicts 10 unread. The
-    // drain moved the loss from the transport into the history, where it is counted.
+    // loss is in the history, where the capture counts it and fails the step.
     let (statuses, health, steps) = replay_a_first_period_of_two_chunks(10, 10);
     let ok = HyphaStatus::Ok as i32;
     assert_eq!(statuses, [ok, ok, HyphaStatus::SequenceGap as i32], "{health:?}");
@@ -933,4 +933,151 @@ pub(crate) fn a_bounded_run_ends_after_one_slice_of_a_long_jump() {
         runs += 1;
     }
     assert_eq!(rig.steps().len(), 200, "the rest runs on later turns");
+}
+
+/// Two publishers on one input bound as `bind` of a 100 ms cycle: publisher 1 sends 150
+/// and publisher 0 sends 140, both before the step at 200, and a `/clock` at 160 runs no
+/// step. With `turn_between`, the node's turn at 160 falls between the two sends; else
+/// after both. Returns each step's deadline, how many samples it took and the value of
+/// the last.
+fn two_publishers_around_a_turn(
+    bind: HyphaCycleBindingOptions,
+    turn_between: bool,
+) -> Vec<(i64, usize, Option<u8>)> {
+    let _clock = SimulatedClock::start(10 * MILLISECOND);
+    let node = create_node(&unique("two_publishers_turn"));
+    let waitset = unsafe { create_waitset(node) };
+    let topic = format!("/{}", unique("two_publishers_turn"));
+    let (first, subscriber) = unsafe { create_pubsub(node, &topic, 10) };
+    let second = unsafe {
+        open_publisher(node, &topic, "std_msgs/Counter", "d9d213e8c146065ec958333c617eb1a6", "")
+    };
+    let mut source = ptr::null_mut();
+    assert_eq!(
+        unsafe { hypha_input_source_create(waitset, subscriber, &raw mut source) },
+        HyphaStatus::Ok
+    );
+    let recorder = Box::new(Recorder::new(Duration::ZERO));
+    let cycle = unsafe { recorded_cycle(waitset, 100_000_000, &recorder) };
+    let mut index = 0_u32;
+    assert_eq!(
+        unsafe { hypha_cycle_bind_input(cycle, source, &raw const bind, &raw mut index) },
+        HyphaStatus::Ok
+    );
+    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
+    unsafe { send_stamped(first, 9, 90 * MILLISECOND) };
+    set_clock(110 * MILLISECOND);
+    assert_eq!(run_status(waitset, 5_000_000), HyphaStatus::Ok as i32);
+    unsafe { send_stamped(second, 15, 150 * MILLISECOND) };
+    if turn_between {
+        set_clock(160 * MILLISECOND);
+        assert_eq!(run_status(waitset, 5_000_000), HyphaStatus::Ok as i32);
+        unsafe { send_stamped(first, 14, 140 * MILLISECOND) };
+    } else {
+        unsafe { send_stamped(first, 14, 140 * MILLISECOND) };
+        set_clock(160 * MILLISECOND);
+        assert_eq!(run_status(waitset, 5_000_000), HyphaStatus::Ok as i32);
+    }
+    set_clock(210 * MILLISECOND);
+    assert_eq!(run_status(waitset, 5_000_000), HyphaStatus::Ok as i32);
+    let taken = recorder
+        .steps()
+        .iter()
+        .map(|step| (step.scheduled / MILLISECOND, step.sample_count, step.newest))
+        .collect();
+    unsafe {
+        assert_eq!(hypha_cycle_destroy(cycle), HyphaStatus::Ok);
+        assert_eq!(hypha_input_source_destroy(source), HyphaStatus::Ok);
+        hypha_publisher_destroy(first);
+        hypha_publisher_destroy(second);
+        hypha_node_destroy(node);
+    }
+    taken
+}
+
+#[test]
+pub(crate) fn two_publishers_on_one_input_order_by_when_the_node_drained_them() {
+    // A limit (replay-flow-control.md §6.7): the history keeps samples in the order the
+    // node's turns drained them, and a drain reads the publishers in a fixed order, so
+    // with two publishers what a step takes depends on when the node had a turn.
+    let latest = [LATEST, queued(8)].map(|bind| {
+        (two_publishers_around_a_turn(bind, true), two_publishers_around_a_turn(bind, false))
+    });
+    // A `Latest` input takes the newest arrival before the cut: 140 or 150.
+    assert_eq!(latest[0].0, [(100, 1, Some(9)), (200, 1, Some(14))]);
+    assert_eq!(latest[0].1, [(100, 1, Some(9)), (200, 1, Some(15))]);
+    // A queued input delivers both, in arrival order.
+    assert_eq!(latest[1].0, [(100, 1, Some(9)), (200, 2, Some(14))]);
+    assert_eq!(latest[1].1, [(100, 1, Some(9)), (200, 2, Some(15))]);
+}
+
+/// The player's chunks of a 100 Hz topic from 90 ms into a queue of 10: the first chunk,
+/// 90..190, is one sample past the queue and closes at 189. Every later chunk closes
+/// 10 ms before a deadline, so the `/clock` that runs a step brings 10 samples stamped
+/// at or after its deadline.
+fn chunks_from_90() -> Vec<(Vec<i64>, i64)> {
+    vec![
+        (every_10_ms(90, 180), 189),
+        (vec![190], 190),
+        (every_10_ms(200, 290), 290),
+        (every_10_ms(300, 390), 390),
+    ]
+}
+
+#[test]
+pub(crate) fn a_per_step_below_period_times_rate_fails_when_the_step_brings_a_full_chunk() {
+    // From 90, the `/clock` that runs the step at 200 brings 200..290 with it: the history
+    // of 10 + 9 then evicts 100, which the step at 100 left unread.
+    let ok = HyphaStatus::Ok as i32;
+    let gap = HyphaStatus::SequenceGap as i32;
+    let (statuses, health, steps) = replay_an_input(queued(9), 10, 90, &chunks_from_90());
+    assert_eq!(statuses, [ok, ok, gap, gap], "{health:?}");
+    assert_eq!((health.capture.lost_total, health.work_limit_drops_total), (2, 0), "{health:?}");
+    assert_eq!(deadlines_and_counts(&steps), [(100, 1), (200, 9), (300, 9)]);
+    // A `perStep` of period x rate keeps up on the same phase.
+    let (statuses, health, steps) = replay_an_input(queued(10), 10, 90, &chunks_from_90());
+    assert_eq!(statuses, [ok; 4], "{health:?}");
+    assert_eq!(health.overrun_total, 0, "{health:?}");
+    assert_eq!(deadlines_and_counts(&steps), [(100, 1), (200, 10), (300, 10)]);
+}
+
+#[test]
+pub(crate) fn a_per_step_below_period_times_rate_drops_when_the_step_brings_little() {
+    // From 10, the `/clock` that runs each step brings at most 2 samples stamped at or
+    // after its deadline: the history of 10 + 9 holds what is unread, and each step
+    // drops the oldest due sample on purpose, counted and no failure.
+    let (statuses, health, steps) =
+        replay_an_input(queued(9), 10, 10, &split_chunks_off_the_grid());
+    assert!(statuses.iter().all(|status| *status == HyphaStatus::Ok as i32), "{health:?}");
+    assert_eq!((health.overrun_total, health.work_limit_drops_total), (0, 3), "{health:?}");
+    assert_eq!(deadlines_and_counts(&steps), [(100, 9), (200, 9), (300, 9), (400, 9)]);
+}
+
+#[test]
+pub(crate) fn a_latest_queue_of_one_chunk_keeps_up_on_every_phase_and_after_a_silence() {
+    let all_ok = |statuses: &[i32]| statuses.iter().all(|status| *status == HyphaStatus::Ok as i32);
+    // Each chunk closes 10 ms before a deadline.
+    let (statuses, health, steps) = replay_an_input(LATEST, 10, 90, &chunks_from_90());
+    assert!(all_ok(&statuses) && health.overrun_total == 0, "{health:?}");
+    assert_eq!(deadlines_and_values(&steps), [(100, Some(9)), (200, Some(19)), (300, Some(29))]);
+    // On the deadline grid, from 0: the player splits 0..100 at 99.
+    let on_grid = vec![
+        (every_10_ms(0, 90), 99),
+        (vec![100], 100),
+        (every_10_ms(110, 200), 200),
+        (every_10_ms(210, 300), 300),
+    ];
+    let (statuses, health, steps) = replay_an_input(LATEST, 10, 0, &on_grid);
+    assert!(all_ok(&statuses) && health.overrun_total == 0, "{health:?}");
+    assert_eq!(deadlines_and_values(&steps), [(100, Some(9)), (200, Some(19)), (300, Some(29))]);
+    // Five empty chunks, then full ones: the steps hold 110 through the silence.
+    let mut silent = vec![(every_10_ms(10, 100), 109), (vec![110], 110)];
+    silent.extend([210, 310, 410, 510, 610].map(|close| (Vec::new(), close)));
+    silent.push((every_10_ms(620, 710), 710));
+    silent.push((every_10_ms(720, 810), 810));
+    let (statuses, health, steps) = replay_an_input(LATEST, 10, 10, &silent);
+    assert!(all_ok(&statuses) && health.overrun_total == 0, "{health:?}");
+    let values: Vec<Option<u8>> = steps.iter().map(|step| step.newest).collect();
+    let held = [Some(11); 5];
+    assert_eq!(values, [&[Some(9)][..], &held, &[Some(69), Some(79)]].concat());
 }

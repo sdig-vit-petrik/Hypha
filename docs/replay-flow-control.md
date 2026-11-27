@@ -21,7 +21,8 @@ only as warnings after the fact.
 One rule: **`/clock` never runs ahead of what every participant has finished.**
 
 - A replay in sync mode is lossless and deterministic on any host, under any load, in any start
-  order. Its output equals that of a replay at any other rate.
+  order. Its output equals that of a replay at any other rate. The one exception is a replay input
+  whose topic has several publishers (6.7).
 - The player publishes every message of the recording; it never skips ahead of a slow node.
 - Nodes need no change. Live operation (no player) is unchanged.
 - **Two modes, one switch.** The lockstep is the default and is deterministic. The open loop, a
@@ -97,11 +98,13 @@ runtime publishes one `ReplayProgress` for the newest `/clock` sample it has rea
   reason but a `run_for` deadline, when it runs again without such a cycle, or when it is
   destroyed. The offers left are then reported once they answer one sample.
 - **The inputs are drained before the report.** Each turn of such a `WaitSet` drains the inputs of
-  every replay cycle it holds, after its steps and whether or not one of them ran, and a triggered
-  cycle drains its inputs on each of its turns. A drain takes as many samples as the queues of all
+  every replay cycle it holds that ran no step on the turn; one that ran steps drained them before
+  its first step, and a triggered cycle drains its inputs on each of its turns. Every such drain
+  begins after the `/clock` sample was read. A drain takes as many samples as the queues of all
   publishers of the input hold. So a report answers a `/clock` sample only once the samples sent
   before it are in the input histories, and the next chunk cannot push an unread one out of a queue
-  (6.7).
+  (6.7). A publisher that keeps sending during a drain can use up that bound and leave samples
+  queued after the report. Plain callback subscriptions are not drained before the report.
 - **A failure to publish** is logged once as an error. The node keeps running, and the player times
   out on the missing acknowledgement.
 - **The data of a step is published before its progress report.** On one host, iceoryx2 places a
@@ -437,10 +440,14 @@ wait out.
     the step, and those fit the queue;
   - a queued input (`Arrivals`) needs a `perStep` of at least p x r. Its history, its queue plus
     `perStep`, then holds what its cycle has not read when a step runs: the samples stamped since the
-    previous deadline, at most p x r, and those that came with the `/clock` that ran the step. A
-    smaller `perStep` drops the oldest samples of a step on purpose, counted in
-    `work_limit_drops_total` and no failure; a history that evicts a sample its cycle has not read
-    fails the step.
+    previous deadline, at most p x r, and the s samples stamped at or after the deadline that came
+    with the `/clock` that ran the step, at most the queue q. A smaller `perStep` drops the oldest
+    due samples of a step on purpose, counted in `work_limit_drops_total` and no failure, but only
+    while p x r + s ≤ q + `perStep`; past that the history evicts a sample its cycle has not read,
+    and the step fails. s depends on how the chunk grid lines up with the deadline grid: at 100 Hz
+    with chunks and a period of 100 ms, q = 10 and a `perStep` of 9, a replay from 10 ms (s ≤ 2)
+    drops one sample a step, and one from 90 ms (s = 10) fails at 200 ms. Only a `perStep` of at
+    least p x r holds on every phase.
 
   A topic with several publishers gives each one its queue, and a drain empties all of them, so the
   player's queue still holds one chunk. What the other publishers send, cycle nodes upstream
@@ -449,6 +456,15 @@ wait out.
   publisher's first frame that the node accepted loses it uncounted
   (`communication-integrity.md` §3). A `WaitSet` that has not reported yet does not hold its node's
   report (4.2), so its queues are guarded only from its first report.
+- **Several publishers on one topic make a replay input depend on turn timing.** The history keeps
+  samples in the order the node drained them, and one drain reads the publishers in a fixed order.
+  A `Latest` input takes the newest arrival before the cut and a queued input delivers in arrival
+  order, so when two publishers send before one step, which sample the step takes, or in which
+  order, depends on whether a turn of the node fell between the two sends. Before every turn
+  drained, the same held for samples split across two step turns. A deterministic replay needs one
+  publisher per topic of a replay input, or publishers whose samples arrive in stamp order.
+  `two_publishers_on_one_input_order_by_when_the_node_drained_them` in
+  `crates/hypha_ffi/tests/replay_fidelity.rs` pins it.
 - **A forward jump of `/clock` costs one step per period.** It runs one step per period it covers (4.4),
   in slices of at most 1024 steps or 50 ms, so a jump across a long gap is slow, but a turn stays short.
 - **Simulated time is process-global.** With two sim-time nodes in one process, a backward seek can be

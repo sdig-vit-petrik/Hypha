@@ -70,19 +70,23 @@ Notes:
   accepted as it is, and a loss before it is not counted. A publisher that restarts
   is a new publisher. A sequence half the range or more ahead is refused as not
   newer.
-- Under simulated time (development only) a sample that a queue drops fails the run:
-  a replay that lost data is not faithful.
-- In the replay lockstep a queue does not overflow on a topic that only the player or
-  a clock driver publishes, at an input of a participant that the sender waits for:
-  the participant drains its inputs before it acknowledges each `/clock`, and the next
-  chunk or step fits the queue
-  ([replay-flow-control.md](replay-flow-control.md) §4.2, §6.7). The loss of such a
-  publisher's first frames is prevented there, not detected. It stays undetectable
+- Under simulated time (development only) a cycle input that loses a sample fails the
+  run: a transport gap, or a history eviction of a sample the input had not read. A
+  replay that lost data is not faithful. A queued input's `perStep` drops the oldest
+  samples of a step on purpose: counted in `work_limit_drops_total`, no failure.
+- In the replay lockstep a participant drains its cycle inputs before it acknowledges
+  each `/clock` ([replay-flow-control.md](replay-flow-control.md) §4.2, §6.7). A queue
+  of a topic that only the player publishes therefore does not overflow at an input of
+  a participant the player waits for: the player splits its chunks to fit the queue.
+  A topic that only a clock driver publishes holds the outputs of one driver step,
+  which nothing bounds: the queue does not overflow when they fit it. On those paths the
+  loss of a publisher's first frames is prevented, not detected. It stays undetectable
   elsewhere: on a topic with another publisher, for that publisher's frames; at a
   participant the sender does not wait for (a node with only plain callbacks, a node
   not yet heard in the first chunk without `--nodes`, a `WaitSet` that has not reported
-  yet, the open loop); for frames sent before the participant's first turn; and on
-  host time.
+  yet, the open loop); at the plain callback subscriptions of any node, which are not
+  drained before its report; for frames sent before the participant's first turn; and
+  on host time.
 - A frame is bound to its topic, not to its sender: a trusted process that publishes
   the right message type on a topic is accepted. The deployment's access control is
   the measure against that.

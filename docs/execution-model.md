@@ -846,8 +846,9 @@ host:
   stamp. The header stamp of each step is `Di` too.
 - **Each step sees its deadline's data.** A step takes only the samples whose
   framework send time is before `Di`. A queued input stops its cursor at that
-  cut, and a latest input takes the newest sample before it. A sample sent at
-  `Di` belongs to the next step. A step therefore never sees data that the
+  cut, and a latest input takes the newest sample before it, newest by arrival: with
+  several publishers on one topic, which one arrived last depends on host timing
+  (`replay-flow-control.md` §6.7). A sample sent at `Di` belongs to the next step. A step therefore never sees data that the
   replay has not yet reached.
 - **Ages are data-time ages.** A sample is judged by `Di − sent`, and supervision
   (silence and stagnation) is measured against `Di`. A sample 600 ms old at the
@@ -859,7 +860,8 @@ host:
   that holds a replay cycle or a triggered cycle (section 6.6), it publishes `hypha_msgs/ReplayProgress` on
   `/clock_progress`: the node's name, a clock value and the host send time of the
   sample it answers. Before it reports, the turn drains the inputs of every replay
-  cycle of the `WaitSet`, also on a turn that ran no step of it, so the samples sent
+  cycle of the `WaitSet`, also on a turn that ran no step of it (not its plain callback
+  subscriptions), so the samples sent
   before the sample it answers are in the input histories. The clock value is the
   sample's value, lowered to one nanosecond below the earliest deadline that has not
   run. A report is sent for
