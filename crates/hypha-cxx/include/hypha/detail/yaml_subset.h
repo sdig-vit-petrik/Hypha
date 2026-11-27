@@ -19,19 +19,14 @@ namespace hypha::detail::yaml {
 
 struct Node
 {
-    enum class Kind
-    {
-        Scalar,
-        Sequence,
-        Mapping
-    };
+    enum class Kind { Scalar, Sequence, Mapping };
 
     Kind                     kind{Kind::Scalar};
     size_t                   line{0};  ///< the line of its key, or of the list item
-    std::string              text;     ///< a scalar, without quotes
-    std::vector<Node>        items;    ///< a list's items, all scalars
-    std::vector<std::string> keys;     ///< a mapping's keys, in file order
-    std::vector<Node>        values;   ///< one for each key
+    std::string              text;  ///< a scalar, without quotes
+    std::vector<Node>        items;  ///< a list's items, all scalars
+    std::vector<std::string> keys;  ///< a mapping's keys, in file order
+    std::vector<Node>        values;  ///< one for each key
 
     const Node* find(std::string_view key) const
     {
@@ -162,7 +157,8 @@ class Parser
             map.keys.push_back(key);
             map.values.push_back(std::move(value));
         }
-        const bool deeper = this->pos_ < this->lines_.size() && this->lines_[this->pos_].indent > indent;
+        const bool deeper =
+            this->pos_ < this->lines_.size() && this->lines_[this->pos_].indent > indent;
         if (deeper) {
             fail(this->where_, this->lines_[this->pos_].number, "unexpected indentation");
         }
@@ -196,10 +192,11 @@ class Parser
     {
         Node node;
         if (rest.empty()) {
-            const bool hasNext = this->pos_ < this->lines_.size();
+            const bool   hasNext = this->pos_ < this->lines_.size();
             const size_t next = hasNext ? this->lines_[this->pos_].indent : 0;
             if (hasNext && next > indent) {
-                return isItem(this->lines_[this->pos_]) ? this->sequence(next) : this->mapping(next);
+                return isItem(this->lines_[this->pos_]) ? this->sequence(next)
+                                                        : this->mapping(next);
             }
             if (hasNext && next == indent && isItem(this->lines_[this->pos_])) {
                 return this->sequence(indent);
@@ -210,7 +207,8 @@ class Parser
             fail(
                 this->where_,
                 line.number,
-                key + ": a flow mapping '{...}' is not supported; write its entries on their own "
+                key
+                    + ": a flow mapping '{...}' is not supported; write its entries on their own "
                       "lines"
             );
         }
@@ -230,7 +228,8 @@ class Parser
             item.text = unquote(trim(line.text.substr(1)));
             list.items.push_back(std::move(item));
         }
-        const bool deeper = this->pos_ < this->lines_.size() && this->lines_[this->pos_].indent > indent;
+        const bool deeper =
+            this->pos_ < this->lines_.size() && this->lines_[this->pos_].indent > indent;
         if (deeper) {
             fail(this->where_, this->lines_[this->pos_].number, "unexpected indentation");
         }
@@ -246,7 +245,7 @@ class Parser
         bool   needsComma = false;
         rest.erase(0, 1);
         for (;;) {
-            const size_t close = rest.find(']');
+            const size_t      close = rest.find(']');
             const std::string fragment = rest.substr(0, close);
             if (fragment.find('[') != std::string::npos) {
                 fail(this->where_, line, key + ": a list inside a list is not supported");
@@ -261,8 +260,8 @@ class Parser
                 }
                 return list;
             }
-            const bool continues = this->pos_ < this->lines_.size()
-                                && this->lines_[this->pos_].indent > indent;
+            const bool continues =
+                this->pos_ < this->lines_.size() && this->lines_[this->pos_].indent > indent;
             if (!continues) {
                 fail(this->where_, first.number, key + ": the list is not closed");
             }
@@ -277,7 +276,7 @@ class Parser
         bool   pending = false;
         size_t start = 0;
         while (start <= fragment.size()) {
-            const size_t comma = std::min(fragment.find(',', start), fragment.size());
+            const size_t      comma = std::min(fragment.find(',', start), fragment.size());
             const std::string text = trim(fragment.substr(start, comma - start));
             const bool        last = comma == fragment.size();
             if (!text.empty()) {

@@ -41,9 +41,12 @@ inline const Node& required(const Node& map, const char* key, const std::string&
 }
 
 /// Refuses a key of @p map that is not in @p known: a typo is not silently dropped.
-inline void
-onlyKeys(const Node& map, std::initializer_list<const char*> known, const std::string& prefix,
-         const std::string& where)
+inline void onlyKeys(
+    const Node&                        map,
+    std::initializer_list<const char*> known,
+    const std::string&                 prefix,
+    const std::string&                 where
+)
 {
     for (size_t index = 0; index < map.keys.size(); ++index) {
         bool isKnown = false;
@@ -56,7 +59,8 @@ onlyKeys(const Node& map, std::initializer_list<const char*> known, const std::s
     }
 }
 
-inline const std::string& scalar(const Node& node, const std::string& name, const std::string& where)
+inline const std::string&
+scalar(const Node& node, const std::string& name, const std::string& where)
 {
     if (node.kind != Node::Kind::Scalar) {
         fail(where, node.line, name + ": expected a single value");
@@ -127,22 +131,25 @@ matrix(const Node& root, const char* key, size_t rows, size_t cols, const std::s
     const bool fixed = rows > 0;
     if (fixed && (fileRows != rows || fileCols != cols)) {
         fail(
-            where, node.line,
-            name + ": expected " + std::to_string(rows) + " x " + std::to_string(cols)
-                + ", found " + std::to_string(fileRows) + " x " + std::to_string(fileCols)
+            where,
+            node.line,
+            name + ": expected " + std::to_string(rows) + " x " + std::to_string(cols) + ", found "
+                + std::to_string(fileRows) + " x " + std::to_string(fileCols)
         );
     }
     const size_t held = fileRows * fileCols;
     if (fixed && data.items.size() != held) {
         fail(
-            where, data.line,
+            where,
+            data.line,
             name + ".data: expected " + std::to_string(held) + " numbers (" + std::to_string(rows)
                 + " x " + std::to_string(cols) + "), found " + std::to_string(data.items.size())
         );
     }
     if (!fixed && data.items.size() != held) {
         fail(
-            where, node.line,
+            where,
+            node.line,
             name + ": rows " + std::to_string(fileRows) + " x cols " + std::to_string(fileCols)
                 + " holds " + std::to_string(held) + " numbers, but data has "
                 + std::to_string(data.items.size())
@@ -175,7 +182,7 @@ inline void readRoi(const Node& node, sensor_msgs::CameraInfo& info, const std::
     const Node* rectify = node.find("do_rectify");
     if (rectify != nullptr) {
         const std::string& text = scalar(*rectify, "roi.do_rectify", where);
-        const bool         isBool = text == "true" || text == "false" || text == "True" || text == "False";
+        const bool isBool = text == "true" || text == "false" || text == "True" || text == "False";
         if (!isBool) {
             fail(where, rectify->line, "roi.do_rectify: '" + text + "' is not true or false");
         }
@@ -202,9 +209,17 @@ parseCameraInfo(std::string_view text, const std::string& source, std::string* c
     const Node        root = detail::yaml::parse(text, where);
     onlyKeys(
         root,
-        {"image_width", "image_height", "camera_name", "camera_matrix", "distortion_model",
-         "distortion_coefficients", "rectification_matrix", "projection_matrix", "binning_x",
-         "binning_y", "roi"},
+        {"image_width",
+         "image_height",
+         "camera_name",
+         "camera_matrix",
+         "distortion_model",
+         "distortion_coefficients",
+         "rectification_matrix",
+         "projection_matrix",
+         "binning_x",
+         "binning_y",
+         "roi"},
         "",
         where
     );
@@ -242,9 +257,11 @@ parseCameraInfo(std::string_view text, const std::string& source, std::string* c
     return info;
 }
 
-/// @brief parseCameraInfo() of the file @p path: `readCameraInfo(config().path("camera_info_url"))`.
+/// @brief parseCameraInfo() of the file @p path:
+/// `readCameraInfo(config().path("camera_info_url"))`.
 /// @throws ConfigError as parseCameraInfo(), and when the file cannot be read.
-inline sensor_msgs::CameraInfo readCameraInfo(const std::string& path, std::string* cameraName = nullptr)
+inline sensor_msgs::CameraInfo
+readCameraInfo(const std::string& path, std::string* cameraName = nullptr)
 {
     std::ifstream file(path, std::ios::binary);
     const bool    readable = std::filesystem::is_regular_file(path) && file.is_open();

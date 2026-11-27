@@ -55,7 +55,7 @@ std::string refusal(const std::string& text)
 /// kCalibration with @p from replaced by @p to.
 std::string changed(const std::string& from, const std::string& to)
 {
-    std::string text = kCalibration;
+    std::string  text = kCalibration;
     const size_t at = text.find(from);
     EXPECT_NE(at, std::string::npos) << from;
     text.replace(at, from.size(), to);
@@ -66,7 +66,7 @@ std::string changed(const std::string& from, const std::string& to)
 
 TEST(CameraInfo, ReadsTheFileThatCameraCalibrationWrites)
 {
-    std::string                    name;
+    std::string                   name;
     const sensor_msgs::CameraInfo info = hypha::parseCameraInfo(kCalibration, "calib.yaml", &name);
 
     EXPECT_EQ(name, "narrow_stereo");
@@ -96,7 +96,9 @@ TEST(CameraInfo, AcceptsBlockListsCommentsQuotesAndAWindowsFile)
     text.replace(text.find("camera_name: narrow_stereo"), 26, "camera_name: 'cam 0'");
     const std::string flat = "  data: [1, 0, 0, 0, 1, 0, 0, 0, 1]";
     text.replace(
-        text.find(flat), flat.size(), "  data:\n  - 1\n  - 0\n  - 0\n  - 0\n  - 1\n  - 0\n  - 0\n  - 0\n  - 1"
+        text.find(flat),
+        flat.size(),
+        "  data:\n  - 1\n  - 0\n  - 0\n  - 0\n  - 1\n  - 0\n  - 0\n  - 0\n  - 1"
     );
     std::string windows;
     for (const char c : text) {
@@ -105,7 +107,7 @@ TEST(CameraInfo, AcceptsBlockListsCommentsQuotesAndAWindowsFile)
         }
         windows += c;
     }
-    std::string                    name;
+    std::string                   name;
     const sensor_msgs::CameraInfo info = hypha::parseCameraInfo(windows, "calib.yaml", &name);
     EXPECT_EQ(name, "cam 0");
     EXPECT_EQ(info.width, 640U);
@@ -131,8 +133,9 @@ TEST(CameraInfo, AFlowMappingIsRefusedWithItsLine)
 TEST(CameraInfo, ReadsOptionalBinningAndRoi)
 {
     const sensor_msgs::CameraInfo info = hypha::parseCameraInfo(
-        kCalibration + "binning_x: 2\nbinning_y: 2\nroi:\n  x_offset: 10\n  y_offset: 20\n"
-                       "  height: 100\n  width: 200\n  do_rectify: true\n",
+        kCalibration
+            + "binning_x: 2\nbinning_y: 2\nroi:\n  x_offset: 10\n  y_offset: 20\n"
+              "  height: 100\n  width: 200\n  do_rectify: true\n",
         "calib.yaml"
     );
     EXPECT_EQ(info.binning_x, 2U);
@@ -180,9 +183,14 @@ TEST(CameraInfo, ARefusalNamesTheFileTheLineAndTheField)
 TEST(CameraInfo, EachRequiredKeyIsNamedWhenMissing)
 {
     for (const std::string key :
-         {"image_width", "image_height", "camera_matrix", "distortion_model",
-          "distortion_coefficients", "rectification_matrix", "projection_matrix"}) {
-        std::string text = kCalibration;
+         {"image_width",
+          "image_height",
+          "camera_matrix",
+          "distortion_model",
+          "distortion_coefficients",
+          "rectification_matrix",
+          "projection_matrix"}) {
+        std::string  text = kCalibration;
         const size_t at = text.find(key + ":");
         ASSERT_NE(at, std::string::npos) << key;
         text.replace(at, key.size(), "x_" + key);
@@ -226,9 +234,8 @@ TEST(CameraInfo, ABadSizeOrNumberIsRefused)
         "'.nan' is not a finite number"
     );
     EXPECT_NE(
-        refusal(changed("distortion_model: plumb_bob", "distortion_model: ''")).find(
-            "distortion_model"
-        ),
+        refusal(changed("distortion_model: plumb_bob", "distortion_model: ''"))
+            .find("distortion_model"),
         std::string::npos
     );
 }
@@ -245,7 +252,9 @@ TEST(CameraInfo, AFileOfAnotherFormatIsRefusedWithItsLine)
     );
     EXPECT_EQ(refusal(""), "hypha: camera calibration 'calib.yaml': the file is empty");
     EXPECT_EQ(
-        refusal(changed("  rows: 3\n  cols: 3\n  data: [430", "\trows: 3\n  cols: 3\n  data: [430")),
+        refusal(
+            changed("  rows: 3\n  cols: 3\n  data: [430", "\trows: 3\n  cols: 3\n  data: [430")
+        ),
         "hypha: camera calibration 'calib.yaml': line 5: a tab indents the line"
     );
     EXPECT_EQ(
@@ -297,9 +306,7 @@ TEST(CameraInfo, ADriverReadsItsCalibrationFromACameraInfoUrlParameter)
         const sensor_msgs::CameraInfo info =
             hypha::readCameraInfo(hypha::config().path("camera_info_url"));
         EXPECT_EQ(info.width, 640U);
-        EXPECT_THROW(
-            hypha::readCameraInfo(hypha::config().path("bad_url")), hypha::ConfigError
-        );
+        EXPECT_THROW(hypha::readCameraInfo(hypha::config().path("bad_url")), hypha::ConfigError);
     }
     std::filesystem::remove_all(directory);
 }
