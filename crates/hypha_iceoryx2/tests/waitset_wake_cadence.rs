@@ -1,5 +1,9 @@
 //! A `WaitSet` wakes for its timers and its notifications alone: nothing polls.
-#![allow(clippy::expect_used, clippy::arithmetic_side_effects)]
+#![expect(
+    clippy::expect_used,
+    clippy::arithmetic_side_effects,
+    reason = "a failed setup stops the test with its message; the turn counts are small"
+)]
 
 use core::time::Duration;
 
