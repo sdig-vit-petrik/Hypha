@@ -265,6 +265,8 @@ impl Iox2Server {
                 response.len(),
                 self.policy.name
             );
+            // Shortened to the bound itself, so even a tiny bound carries the refusal.
+            let reason = self.bounded_reason(&reason).to_owned();
             self.answer(handle, Answer::Refusal, reason.as_bytes(), framework_nanos)?;
             return Err(ReplyError::TooLarge { requested: response.len(), limit });
         }

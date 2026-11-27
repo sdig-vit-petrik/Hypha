@@ -689,3 +689,26 @@ fn raw_stream(
         .open()
         .expect("open the stream")
 }
+
+#[test]
+fn a_refusal_for_a_response_above_a_tiny_bound_still_reaches_the_client() {
+    let name = service_name();
+    let tiny = ServicePolicy {
+        name: "tiny".to_owned(),
+        max_response_bytes: 8,
+        ..ServicePolicy::default_service()
+    };
+    let spec = spec(&name).with_policy(tiny);
+    let server_side = new_transport();
+    let mut server = server_side.serve(&spec).expect("a server");
+    let client_side = new_transport();
+    let mut client = client_side.service_client(&spec, None).expect("a client");
+    client.send(&[1], 0).expect("send");
+    let held = server.receive().expect("receive").expect("the request");
+    assert_eq!(
+        server.reply(held.handle, &[0; 9], 0),
+        Err(ReplyError::TooLarge { requested: 9, limit: 8 })
+    );
+    let reports = collect(&mut client, 1, Duration::from_secs(2));
+    assert_eq!(reports[0].event, CallEvent::Refused("response".to_owned()), "shortened to 8 bytes");
+}
