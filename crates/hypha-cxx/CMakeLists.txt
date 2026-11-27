@@ -313,7 +313,6 @@ if(HYPHA_BUILD_TESTS)
     test/wall_clock_listener.cpp
     test/test_publisher.cpp
     test/test_typed_loan.cpp
-    test/test_typed_loan_contract.cpp
     test/test_subscriber.cpp
     test/subscriber_latest_pair_is_consistent.cpp
     test/test_parameters.cpp
@@ -418,6 +417,15 @@ if(HYPHA_BUILD_TESTS)
       ENVIRONMENT "GTEST_TOTAL_SHARDS=${HYPHA_TEST_SHARDS};GTEST_SHARD_INDEX=${shard}")
     hypha_gtest_report(test_hypha_${shard})
   endforeach()
+  # The typed loan's contract over every loanable standard type, in its own program: it
+  # publishes std_msgs/UInt8MultiArray under the default policy, which test_qos.cpp maps to
+  # a policy of its own (QosOf), and one program must see one QosOf per type.
+  add_executable(test_typed_loan_contract test/test_main.cpp test/test_typed_loan_contract.cpp)
+  target_link_libraries(test_typed_loan_contract PRIVATE hypha GTest::gtest)
+  target_compile_definitions(test_typed_loan_contract PRIVATE HYPHA_NO_LOGGING)
+  add_test(NAME test_typed_loan_contract COMMAND test_typed_loan_contract)
+  set_tests_properties(test_typed_loan_contract PROPERTIES LABELS "needs-iceoryx2")
+  hypha_gtest_report(test_typed_loan_contract)
   # The MCAP replay of the testing component, in its own program: test_hypha links
   # nothing of hypha::testing_mcap, as an application that does not replay links nothing.
   if(HYPHA_BUILD_TESTING_MCAP)
