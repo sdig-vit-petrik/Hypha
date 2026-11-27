@@ -231,28 +231,15 @@ class StepHarness final : private detail::CaptureStore
     ///        them up as a started cycle's TF input does, which keeps `cache` of history
     ///        per frame. A transform that input refuses is left out, and a lookup on its
     ///        frame answers TransformError::Refused.
-    void deliver(Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms)
-    {
-        this->feed(port, std::move(transforms), false);
-    }
+    void deliver(Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms);
 
     /// @brief As deliver(Transforms&), on `/tf_static`: transforms that hold at every time.
-    void deliverStatic(Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms)
-    {
-        this->feed(port, std::move(transforms), true);
-    }
+    void deliverStatic(Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms);
 
     /// @brief The port's alive value has (or has not) stopped changing.
     /// @throws std::logic_error when the port is disabled.
     template <typename M>
-    void setStagnant(Input<M>& port, bool stagnant)
-    {
-        StepHarness::requireEnabled(port, "setStagnant()");
-        HyphaSupervisionReport& report = port.facts_.supervision;
-        const uint8_t           others = report.faults & ~HYPHA_FAULT_STAGNANT;
-        report.faults = static_cast<uint8_t>(others | (stagnant ? HYPHA_FAULT_STAGNANT : 0U));
-        StepHarness::rejudge(port);
-    }
+    void setStagnant(Input<M>& port, bool stagnant);
 
     /// @brief Run the step of @p node once.
     void step(CycleNode& node, CycleTime time = {})
@@ -273,16 +260,7 @@ class StepHarness final : private detail::CaptureStore
 
     /// @brief What the last step sent on @p port, in send order.
     template <typename M>
-    const std::vector<M>& sent(const Output<M>& port) const
-    {
-        for (const Store& store : this->stores_) {
-            if (store.port == &port) {
-                return *static_cast<const std::vector<M>*>(store.sent);
-            }
-        }
-        static const std::vector<M> none;
-        return none;
-    }
+    const std::vector<M>& sent(const Output<M>& port) const;
 
   private:
     struct Store
