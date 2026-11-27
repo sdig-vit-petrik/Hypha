@@ -98,9 +98,9 @@ runtime publishes one `ReplayProgress` for the newest `/clock` sample it has rea
   reason but a `run_for` deadline, when it runs again without such a cycle, or when it is
   destroyed. The offers left are then reported once they answer one sample.
 - **The inputs are drained before the report.** Each turn of such a `WaitSet` drains the inputs of
-  every replay cycle it holds that ran no step on the turn; one that ran steps drained them before
-  its first step, and a triggered cycle drains its inputs on each of its turns. Every such drain
-  begins after the `/clock` sample was read. A drain takes as many samples as the queues of all
+  every replay cycle it holds after its steps and its other callbacks, which may publish into them,
+  whether or not a step ran, and a triggered cycle drains its inputs on each of its turns. Every
+  such drain begins after the `/clock` sample was read. A drain takes as many samples as the queues of all
   publishers of the input hold. So a report answers a `/clock` sample only once the samples sent
   before it are in the input histories, and the next chunk cannot push an unread one out of a queue
   (6.7). A publisher that keeps sending during a drain can use up that bound and leave samples

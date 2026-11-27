@@ -3,7 +3,7 @@
 
 use hypha_runtime::replay_progress::{ProgressTurn, progress_turn};
 
-use super::dispatch::{Due, fail_with, is_detached_in};
+use super::dispatch::{fail_with, is_detached_in};
 use super::{BatchStep, BatchTurn, CallbackDispatcher, Progression, ReceiveFailure, Target};
 use crate::cycle::DrainClock;
 use crate::node_progress::{self, ClockRead};
@@ -79,24 +79,17 @@ impl CallbackDispatcher<'_> {
         Ok(last)
     }
 
-    /// Drain the inputs of every replay cycle of this `WaitSet` that ran no step on this
-    /// turn, after the clock was read. One that ran steps drained after reading the clock
-    /// too, before its first step (`run_replay`), and a triggered cycle drains on each of
-    /// its turns. The progress offered next then answers no sample whose data still waits
-    /// in a transport queue: each queue holds only what was sent since, and a loss shows as
-    /// a history eviction, which the capture judges (replay-flow-control.md §4.2).
+    /// Drain the inputs of every replay cycle of this `WaitSet`, after the turn's steps and
+    /// other callbacks, which may have published into them; a triggered cycle drains on
+    /// each of its turns. The progress offered next then answers no sample whose data still
+    /// waits in a transport queue: each queue holds only what was sent since, and a loss
+    /// shows as a history eviction, which the capture judges (replay-flow-control.md §4.2).
     pub(super) fn drain_replay_inputs(&mut self) -> Progression {
-        let (detached, due) = (self.detached, &self.due);
-        let stepped = |attachment| {
-            due.iter()
-                .any(|item| matches!(item, Due::Replay(replay) if replay.attachment == attachment))
-        };
+        let detached = self.detached;
         let replay =
             self.registrations.iter().filter_map(|registration| match registration.target {
                 Target::Timer { ref timer, cycle: Some(ref owned), .. }
-                    if timer.is_grid()
-                        && !is_detached_in(detached, registration.id)
-                        && !stepped(registration.id) =>
+                    if timer.is_grid() && !is_detached_in(detached, registration.id) =>
                 {
                     Some((registration.id, owned.cycle))
                 }
