@@ -804,7 +804,8 @@ A timer is the one periodic registration: the host-time interval
 host timer is due on the monotonic clock: the `WaitSet` sleeps until its next deadline,
 and a step of the system clock neither delays nor advances it. On Linux a `timerfd` armed
 with the deadline ends the wait, so a timer runs within the kernel's wake-up latency of its
-deadline; on macOS the wait is `select` with a timeout in microseconds, which the kernel's
+deadline (the wait needs `timerfd`: without it creating a `WaitSet` fails with `Backend`
+code 42); on macOS the wait is `select` with a timeout in microseconds, which the kernel's
 timer coalescing defers by up to half the wait, and by at most about 10 ms.
 
 A timer callback runs on the same thread as your subscription callbacks,

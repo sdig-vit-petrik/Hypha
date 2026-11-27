@@ -40,6 +40,9 @@
 //! | 39 | a send that reached some subscribers but not all | a subscriber that cannot take the data |
 //! | 40 | a send that failed inside iceoryx2 | an internal iceoryx2 failure |
 //! | 41 | the dead run of the node's own name could not be reclaimed, so the node did not start | a crashed run that still holds the name's ports; `hypha clean` with the domain stopped |
+//! | 42 | creating a `WaitSet`'s deadline timer (`timerfd_create`, Linux) | a kernel without `timerfd`, or no file descriptor left |
+//! | 43 | attaching the deadline timer to the run's native `WaitSet` | the native `WaitSet` is full |
+//! | 44 | setting the deadline timer before a wait (`timerfd_settime`) | an internal kernel failure |
 //!
 //! Every publisher notifies its topic's event service after each successful
 //! send. A wildcard subscriber has no event service and is polled. This crate
