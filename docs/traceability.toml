@@ -49,7 +49,10 @@ id = "FSR-05"
 tests = [
   "hypha_core/frame_validation",
   "cxx:test_typed_schema_identity",
+  "cxx:test_topic_overloading",
   "hypha_node/client_facade_round_trip",
+  "hypha_node/topic_overloading",
+  "hypha_ffi/subscriber_no_publisher_warning",
 ]
 evidence = "R4 harness, by hand (wrong schema hash: all rejected and counted)"
 

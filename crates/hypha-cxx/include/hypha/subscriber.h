@@ -39,7 +39,10 @@ class Node;
 /// @brief Typed subscriber that the node's WaitSet drives. Node::subscribe() creates one.
 ///
 /// The run delivers every sample to the callback and keeps the newest one for
-/// latestSample(). It delivers only frames whose schema hash is that of M.
+/// latestSample(). It reads the stream of M's MD5 on the topic: a topic carries one stream
+/// for each type, and each version of a type, so the frames of another type never reach it.
+/// Without a publisher of M after 5 s it logs a warning that names the types published
+/// on the topic instead.
 ///
 /// A topic with `*` is a pattern: `*` is a whole segment (`/a/*`), `**` only the last
 /// one (`/a/**`). It resolves once, at creation, to the topics that exist then.

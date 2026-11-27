@@ -64,7 +64,7 @@ Classes:
 |---|---|---|---|---|---|---|
 | FM-10 | Corruption | Memory fault, a stray write into shared memory | The CRC-32C over header and payload fails; the frame is refused and counted (`corrupt_payload`). A corruption passes with a probability of about 2^-32. | FSR-09, FSR-10; `hypha_core/frame_validation` | C | AoU-09 |
 | FM-11 | Truncated or unknown frame | A peer of another version; a damaged header | Refused and counted (`invalid_frame`). | FSR-10; `hypha_core/frame_validation` | C | |
-| FM-12 | Wrong message definition | Publisher and subscriber built from different definitions | Refused and counted (`schema_mismatch`). | FSR-05; `cxx:test_typed_schema_identity` | C | |
+| FM-12 | Wrong message definition | Publisher and subscriber built from different definitions | Each definition is its own stream of the topic: nothing is delivered, and after the no-publisher delay the subscriber logs the definitions that are published. A frame that names another definition than its stream is refused and counted (`schema_mismatch`). | FSR-05; `cxx:test_typed_schema_identity` | C | |
 | FM-13 | Repetition | Transport fault | A sequence equal to the last accepted one of that publisher is refused and counted. | FSR-10; `hypha_wire/sequence_validator` | C | |
 | FM-14 | Wrong order | Transport fault | A sequence older than the last accepted one is refused and counted. | FSR-10; `hypha_wire/sequence_validator` | C | |
 | FM-15 | Loss | The reader's queue overflowed; a refused send | The next frame is accepted and the skipped sequence numbers are counted (`missingSequences()`). The lost data is not recovered. | FSR-10; `hypha_ffi/subscriber_missing_sequences` | R | AoU-04, AoU-07 |

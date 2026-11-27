@@ -175,7 +175,8 @@ class RawSubscriber
     std::shared_ptr<backend::RawSubscriberHandle> held;
 };
 
-/// @brief Subscribe to every topic matching @p pattern; it adopts the service of each topic.
+/// @brief Subscribe to every stream of every topic matching @p pattern: each type of a topic
+///        is a stream of its own, and this subscriber names none, so it reads them all.
 /// @param depth Pending samples per topic before an older one is dropped. Zero is the
 ///        topic's maxDepth.
 /// The pattern resolves once, at creation. A `*` must be a whole segment and `**` the
