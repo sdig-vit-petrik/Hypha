@@ -15,9 +15,9 @@ impl Iox2Transport {
     /// the stream does not exist or is being created or removed. The record of a stream that
     /// does not exist is removed: its endpoints died and a node start reclaimed their ports.
     ///
-    /// The open takes one node slot of the stream while it lasts: on a stream whose slots
-    /// are all taken it fails with [`PortError::ResourceLimit`], and an endpoint that needs
-    /// the last slot meanwhile is refused.
+    /// The open takes one node slot of the stream while it lasts. The service keeps
+    /// [`crate::qos::PROBE_NODE_SLOTS`] beyond its endpoints for it, so it succeeds on a
+    /// stream whose endpoints fill their slots, and no endpoint is refused for it.
     ///
     /// # Errors
     /// [`PortError`] when the session is gone, the open fails for another reason, or the

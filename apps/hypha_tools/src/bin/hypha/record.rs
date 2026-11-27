@@ -318,8 +318,12 @@ fn answer_chunk(
     let Some(report) = participant.poll()? else {
         return Ok(Flow::Continue);
     };
-    // A stream that came before the chunk's data is followed before the chunk is answered.
-    follower.settle(bus)?;
+    // A stream that came before the chunk's data is followed before the chunk is answered. One
+    // that vanished or refuses its subscription is told, as the loop tells it: it does not
+    // end the recording of the streams that are there.
+    if let Err(error) = follower.settle(bus) {
+        eprintln!("hypha record: cannot list topics: {error}");
+    }
     while let Some(sample) = follower.next_sample()? {
         record_one(session, &sample);
     }

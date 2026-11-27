@@ -307,12 +307,12 @@ reserve nothing.
 |---|---|---|
 | `subscriber_max_buffer_size` | 32 | The `default` policy's `max_depth`: the largest subscriber queue, and the queue of a subscriber that sets none. Every hypha service sets its own |
 | `subscriber_max_borrowed_samples` | 2 | hypha copies a sample and releases it at once |
-| `max_subscribers` / `max_publishers` / `max_nodes` | 16 / 8 / 24 | The `default` policy's limits, which apply to a service that hypha does not set. Every hypha service sets its policy's `max_subscribers` and `max_publishers`, and `max_nodes` as their sum (`crates/hypha_iceoryx2/src/qos.rs`) |
+| `max_subscribers` / `max_publishers` / `max_nodes` | 16 / 8 / 26 | The `default` policy's limits, which apply to a service that hypha does not set. Every hypha service sets its policy's `max_subscribers` and `max_publishers`, and `max_nodes` as their sum plus 2 node slots for a probe and a release check (`crates/hypha_iceoryx2/src/qos.rs`) |
 | `publisher_history_size` | 1 | The ROS 1 latch: the last sample of each publisher |
 | `enable_safe_overflow`, `backpressure_strategy` | true, `DiscardData` | A full queue drops its oldest sample; a publisher never blocks |
 | `subscriber_expired_connection_buffer` | 8 | Connections of departed publishers that still hold undelivered samples; one per publisher of the `default` policy. A declared policy may admit more publishers than this, and this is a domain value that the builder does not set |
 | `publisher_allocation_strategy` | `Static` | A default only: a bounded publisher sets `Static` with its payload limit, a growable one `PowerOfTwo` |
-| event `max_notifiers` / `max_listeners` / `max_nodes` | 128 | The graph event, which every node of the domain joins. A topic's event service takes its data service's `max_publishers` / `max_subscribers` / `max_nodes` (the policy's own limits, `default` 8 / 16 / 24), and a `WaitSet` control service 1 / 1 / 1: a notifier keeps about 1.3 KB of heap for every listener its service allows |
+| event `max_notifiers` / `max_listeners` / `max_nodes` | 128 | The graph event, which every node of the domain joins. A topic's event service takes its data service's `max_publishers` / `max_subscribers` / `max_nodes` (the policy's own limits, `default` 8 / 16 / 26), and a `WaitSet` control service 1 / 1 / 1: a notifier keeps about 1.3 KB of heap for every listener its service allows |
 
 A framework topic (`/clock`, `/clock_progress`) holds at most 32 publishers,
 32 subscribers and 64 nodes; every node that subscribes `/clock` or reports on
@@ -399,12 +399,14 @@ the same with and without another version published, 6 to 21 ms on that loaded m
 subscriber reads its topic's streams with one lock and one `Arc` clone, and opens nothing.
 
 Each open of a stream by a refresh takes one node slot of the stream while it lasts, as an
-endpoint does, and so does the check of the record release when an endpoint drops
-(`max_nodes` is the policy's `max_publishers` plus the subscribers it admits, with no
-spare). On a stream whose node slots are all taken the refresh is refused with
-`ResourceLimit` and keeps the topic's last result, and an endpoint that needs the last slot
-at the instant a refresh holds it is refused with `ResourceLimit`: a policy sized to the
-exact number of endpoints can see that under churn.
+endpoint does, and so does the check of the record release when an endpoint drops. A
+stream keeps two node slots for them beyond its endpoints (`max_nodes` is the policy's
+`max_publishers` plus the subscribers it admits plus 2, `PROBE_NODE_SLOTS`, about 64 bytes
+each): a refresh succeeds on a stream whose endpoints fill their slots, and no endpoint is
+refused because one holds a slot (a tight loop of 3,000 creations beside two probing nodes
+refuses none). The slots admit no endpoint: `max_publishers` and the subscriber limits are
+enforced as before. A refresh that cannot read a stream for another reason keeps the
+topic's last result.
 
 The fact has three states: not checked (before the first refresh, for a subscriber of no
 single stream, and for a node whose default `WaitSet` does not run), none, or these. The
