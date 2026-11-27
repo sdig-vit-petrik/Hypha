@@ -215,43 +215,73 @@ namespace {
 
 __extension__ typedef unsigned __int128 Wide;
 
+uint64_t magnitudeOf(int64_t nanos)
+{
+    return nanos < 0 ? 0 - static_cast<uint64_t>(nanos) : static_cast<uint64_t>(nanos);
+}
+
+/// @brief The exact distance |candidate * 1e9 - magnitude| of a finite positive double from
+///        magnitude / 1e9, in units of 2^-shift ns, as an integer.
+///
+/// A finite double c is m * 2^-shift with an integer m below 2^53 (frexp and ldexp by 53), so
+/// c * 1e9 is m * 1e9 * 2^-shift and its distance to magnitude is
+/// |m * 1e9 - magnitude * 2^shift| / 2^shift. Both products are below 2^91 and fit an
+/// unsigned __int128.
+Wide scaledDistance(uint64_t magnitude, double candidate, int& shift)
+{
+    int          exponent = 0;
+    const double fraction = std::frexp(candidate, &exponent);
+    const auto   mantissa = static_cast<Wide>(std::ldexp(fraction, 53));
+    shift = 53 - exponent;
+    const Wide product = mantissa * 1000000000u;
+    const Wide target = static_cast<Wide>(magnitude) << shift;
+    return product > target ? product - target : target - product;
+}
+
+/// @brief |candidate - magnitude / 1e9| in seconds, as a double (its relative error is
+///        about 1e-16, far below what the tests compare it to).
+double distanceSeconds(uint64_t magnitude, double candidate)
+{
+    int        shift = 0;
+    const Wide distance = scaledDistance(magnitude, candidate, shift);
+    return std::ldexp(static_cast<double>(distance), -shift) / 1e9;
+}
+
 /// @brief The double nearest to the exact value nanos / 1e9, decided in integers.
 ///
-/// A finite double c is m * 2^-k with an integer m below 2^53 (frexp and ldexp by 53), so
-/// c * 1e9 is m * 1e9 * 2^-k and its distance to nanos is |m * 1e9 - nanos * 2^k| / 2^k.
-/// Both products are below 2^91 and fit an unsigned __int128. The candidates are the double
-/// division's result and its two neighbours, and the exact distances pick the nearest. A
-/// tie is impossible for a value that is not itself a double: nanos / 1e9 = nanos /
-/// (2^9 * 5^9) has a finite binary expansion only when 5^9 divides nanos, and then it is a
-/// multiple of 2^-9 below 2^34, a double.
+/// The candidates are the double division's result and its two neighbours, and the exact
+/// distances (scaledDistance) pick the nearest. A tie is impossible for a value that is not
+/// itself a double: nanos / 1e9 = nanos / (2^9 * 5^9) has a finite binary expansion only
+/// when 5^9 divides nanos, and then it is a multiple of 2^-9 below 2^34, a double.
 double referenceSeconds(int64_t nanos)
 {
     if (nanos == 0) {
         return 0.0;
     }
-    const bool negative = nanos < 0;
-    const auto magnitude =
-        negative ? 0 - static_cast<uint64_t>(nanos) : static_cast<uint64_t>(nanos);
-    const double approximate = static_cast<double>(magnitude) / 1e9;
-    const double candidates[] = {
+    const uint64_t magnitude = magnitudeOf(nanos);
+    const double   approximate = static_cast<double>(magnitude) / 1e9;
+    const double   candidates[] = {
         std::nextafter(approximate, 0.0), approximate, std::nextafter(approximate, 1e300)
     };
+    // The candidates may sit on both sides of a power of two, so their units differ by a
+    // factor of two: bring every distance to the finest unit.
+    Wide distances[3];
+    int  shifts[3];
+    int  finest = 0;
+    for (int i = 0; i < 3; ++i) {
+        distances[i] = scaledDistance(magnitude, candidates[i], shifts[i]);
+        finest = std::max(finest, shifts[i]);
+    }
     double best = approximate;
     Wide   bestDistance = ~static_cast<Wide>(0);
-    for (const double candidate : candidates) {
-        int          exponent = 0;
-        const double fraction = std::frexp(candidate, &exponent);
-        const auto   mantissa = static_cast<Wide>(std::ldexp(fraction, 53));
-        const int    shift = 53 - exponent;  // candidate = mantissa * 2^-shift
-        const Wide   product = mantissa * 1000000000u;
-        const Wide   target = static_cast<Wide>(magnitude) << shift;
-        const Wide   distance = product > target ? product - target : target - product;
-        if (distance < bestDistance) {
-            bestDistance = distance;
-            best = candidate;
+    for (int i = 0; i < 3; ++i) {
+        const Wide comparable = distances[i] << (finest - shifts[i]);
+        if (comparable < bestDistance) {
+            bestDistance = comparable;
+            best = candidates[i];
         }
     }
-    return negative ? -best : best;
+    return nanos < 0 ? -best : best;
 }
 
 /// The stamps whose seconds() is checked: near the present, around the whole-second and
@@ -297,16 +327,36 @@ std::vector<int64_t> secondsStamps()
 struct SecondsTally
 {
     int         checked = 0;
-    int         wrong = 0;
+    int         notNearest = 0;  // not the nearest double: allowed above 2^53 ns, within a bound
+    int         wrong = 0;  // outside what seconds() promises
     double      worstUlps = 0.0;
     std::string firstWrong;
 };
 
+/// seconds() promises the nearest double up to 2^53 ns. Above, it is the nearest or, only
+/// when the exact value lies within 2^-52 s of the midpoint between two doubles, the
+/// neighbour on the other side of that midpoint.
 void recordSeconds(SecondsTally& tally, int64_t nanos, double got)
 {
     const double want = referenceSeconds(nanos);
     ++tally.checked;
     if (got == want) {
+        return;
+    }
+    ++tally.notNearest;
+    bool allowed = false;
+    if (magnitudeOf(nanos) > (uint64_t{1} << 53) && std::fabs(got) != std::fabs(want)
+        && (std::nextafter(std::fabs(want), 1e300) == std::fabs(got)
+            || std::nextafter(std::fabs(want), 0.0) == std::fabs(got))) {
+        // The exact value is x; got is the neighbour of want that x is not nearest to.
+        // Its distance from the midpoint is half the difference of the two distances.
+        const uint64_t magnitude = magnitudeOf(nanos);
+        const double   fromMidpoint = (distanceSeconds(magnitude, std::fabs(got))
+                                       - distanceSeconds(magnitude, std::fabs(want)))
+                                    / 2;
+        allowed = std::signbit(got) == std::signbit(want) && fromMidpoint <= std::ldexp(1.0, -52);
+    }
+    if (allowed) {
         return;
     }
     ++tally.wrong;
@@ -341,7 +391,7 @@ TEST(SecondsPrecision, ReferenceMatchesKnownValues)
     EXPECT_EQ(referenceSeconds(std::numeric_limits<int64_t>::min()), -9223372036.854775808);
 }
 
-TEST(SecondsPrecision, TimeIsTheDoubleNearestTheExactValue)
+TEST(SecondsPrecision, TimeIsTheNearestDoubleUpTo2e53AndWithinTheBoundAbove)
 {
     SecondsTally tally;
     for (const int64_t nanos : secondsStamps()) {
@@ -350,9 +400,11 @@ TEST(SecondsPrecision, TimeIsTheDoubleNearestTheExactValue)
     EXPECT_EQ(tally.wrong, 0) << tally.wrong << " of " << tally.checked
                               << " stamps are off, by up to " << tally.worstUlps
                               << " spacings; first: " << tally.firstWrong;
+    std::cout << "[  INFO   ] " << tally.notNearest << " of " << tally.checked
+              << " stamps are not the nearest double (all within the bound)\n";
 }
 
-TEST(SecondsPrecision, DurationIsTheDoubleNearestTheExactValueAndSymmetric)
+TEST(SecondsPrecision, DurationIsTheNearestDoubleUpTo2e53AndWithinTheBoundAbove)
 {
     SecondsTally tally;
     for (const int64_t nanos : secondsStamps()) {
@@ -369,6 +421,8 @@ TEST(SecondsPrecision, DurationIsTheDoubleNearestTheExactValueAndSymmetric)
     EXPECT_EQ(tally.wrong, 0) << tally.wrong << " of " << tally.checked
                               << " spans are off, by up to " << tally.worstUlps
                               << " spacings; first: " << tally.firstWrong;
+    std::cout << "[  INFO   ] " << tally.notNearest << " of " << tally.checked
+              << " stamps are not the nearest double (all within the bound)\n";
 }
 
 TEST(SecondsPrecision, ConstantExpressionsAndZero)
@@ -418,7 +472,9 @@ TEST(SecondsPrecision, RoundTripIsExactWhereADoubleHoldsTheNanosecond)
 }
 
 /// At an epoch stamp the double is coarser than a nanosecond; the round trip is then within
-/// half its spacing, plus the half nanosecond fromSeconds rounds by.
+/// half its spacing, plus the half nanosecond fromSeconds rounds by (a result that is the
+/// other neighbour of a near-midpoint value is 2^-52 s, 2e-7 ns, farther: the integer bound
+/// below absorbs it).
 TEST(SecondsPrecision, RoundTripNearThePresentIsWithinTheSpacingOfTheDouble)
 {
     int         wrong = 0;

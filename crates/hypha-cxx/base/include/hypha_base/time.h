@@ -90,49 +90,23 @@ constexpr int64_t nanosFromSeconds(double seconds)
     return saturatingAdd(saturatingMul(whole, 1000000000), fraction);
 }
 
-// The 128-bit integer of gcc and clang, spelled so that -Wpedantic stays quiet.
-__extension__ typedef unsigned __int128 Wide;
-
-/// @brief `nanos / 1e9`, correctly rounded: the double nearest to the exact quotient (#253).
+/// @brief `nanos / 1e9` as a double: the nearest one up to 2^53 ns, and above that nearly.
 ///
-/// `double(nanos) / 1e9` rounds twice. Above 2^53 ns (104 days) the conversion of the
-/// nanoseconds to a double already drops low bits, to a multiple of 256 ns at a stamp since
-/// the epoch, and the division rounds again: one spacing off for about a quarter of those stamps.
-/// Up to 2^53 ns both operands are exact and the single division is the correct rounding.
-/// Above, the quotient is formed in 128 bits, 64 bits finer than the result needs, and
-/// rounded once to 53 bits, to nearest even, with the remainder of the division as the sticky
-/// bit. Scaling by a power of two is exact.
+/// `double(nanos) / 1e9` rounds twice above 2^53 ns (104 days): the conversion of the
+/// nanoseconds already drops low bits, to a multiple of 256 ns at a stamp since the epoch (#253).
+/// Up to 2^53 ns both operands are exact and the single division is the nearest double. Above,
+/// the whole seconds and the remainder (`/` and `%` truncate toward zero, so negatives mirror)
+/// are each exact in a double, the division of the remainder rounds far below the spacing of
+/// the result, and the sum rounds once. The result is the nearest double except where the exact
+/// value lies within about 1e-16 s of a midpoint between two doubles, where it may be the
+/// other neighbour.
 constexpr double secondsFromNanos(int64_t nanos)
 {
     constexpr int64_t kExactNanos = int64_t{1} << 53;
     if (nanos >= -kExactNanos && nanos <= kExactNanos) {
         return static_cast<double>(nanos) / 1e9;
     }
-    const bool     negative = nanos < 0;
-    const uint64_t magnitude =
-        negative ? 0 - static_cast<uint64_t>(nanos) : static_cast<uint64_t>(nanos);
-    const Wide scaled = static_cast<Wide>(magnitude) << 64;
-    const Wide quotient = scaled / 1000000000u;
-    const bool inexact = scaled != quotient * 1000000000u;
-    // quotient has 87 to 98 bits; keep its top 53.
-    int length = 0;
-    for (Wide rest = quotient; rest != 0; rest >>= 1) {
-        ++length;
-    }
-    const int  drop = length - 53;
-    const Wide one = 1;
-    Wide       mantissa = quotient >> drop;
-    const Wide below = quotient & ((one << drop) - 1);
-    const Wide half = one << (drop - 1);
-    if (below > half || (below == half && (inexact || (mantissa & 1) != 0))) {
-        mantissa += 1;
-    }
-    // The value is mantissa * 2^(drop - 64). A mantissa of 2^53 is still exact.
-    double seconds = static_cast<double>(mantissa);
-    for (int halvings = drop; halvings < 64; ++halvings) {
-        seconds *= 0.5;
-    }
-    return negative ? -seconds : seconds;
+    return static_cast<double>(nanos / 1000000000) + static_cast<double>(nanos % 1000000000) / 1e9;
 }
 
 }  // namespace detail
