@@ -199,8 +199,9 @@ class Loan
         return this->head_;
     }
 
-    /// @brief The loaned field's bytes in the slot, capacity() of them, not initialised.
-    ///        Valid until the loan is published, moved or destroyed.
+    /// @brief The loaned field's bytes in the slot, capacity() of them. They hold zeros,
+    ///        never an earlier frame's bytes (the transport fills each loan). Valid until the
+    ///        loan is published, moved or destroyed.
     std::span<std::byte> data()
     {
         if (this->capacity_ == 0) {
