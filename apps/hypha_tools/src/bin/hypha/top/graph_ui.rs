@@ -208,7 +208,7 @@ fn build_graph(state: &AppState, nodes: &[NodeInfo], now: Instant) -> Graph {
         infrastructure: state.graph.infrastructure,
         filter: &state.filter_query,
     };
-    graph::build(&facts, state.topics.keys().map(String::as_str), &options)
+    graph::build(&facts, state.topics.names(), &options)
 }
 
 /// Switches to the Nodes or Topics tab with the selected vertex selected there.
@@ -229,7 +229,7 @@ fn open(state: &mut AppState, nodes: &[NodeInfo], vertex: Option<&Vertex>) {
         }
         VertexKind::Topic { .. } => {
             let position =
-                state.visible_topics().iter().position(|(topic, _)| **topic == vertex.name);
+                state.visible_topics().iter().position(|(stream, _)| stream.topic == vertex.name);
             match position {
                 Some(index) => {
                     state.selected_topic = index;

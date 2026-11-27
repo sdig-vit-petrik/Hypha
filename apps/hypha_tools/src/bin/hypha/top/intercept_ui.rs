@@ -21,7 +21,7 @@ use crate::top::intercept::{
     BitState, FormField, InterceptView, Layout, NewForm, Pane, RowKind, StatusLine, TreeRow,
     build_rows, byte_index, suggestions,
 };
-use crate::top::state::TopicStats;
+use crate::top::state::Topics;
 
 /// Bits per grid row when the editor is narrower than this.
 const WIDE_GRID: u16 = 56;
@@ -111,7 +111,7 @@ pub(crate) fn draw_body(
     area: Rect,
     layout: Layout,
     view: &mut InterceptView,
-    topics: &BTreeMap<String, TopicStats>,
+    topics: &Topics,
     schema: InputSchema<'_>,
     now: Instant,
 ) {
@@ -170,12 +170,7 @@ pub(crate) fn draw_body(
 }
 
 /// The interceptions above the selected one's details.
-fn draw_left(
-    f: &mut Frame<'_>,
-    area: Rect,
-    view: &InterceptView,
-    topics: &BTreeMap<String, TopicStats>,
-) {
+fn draw_left(f: &mut Frame<'_>, area: Rect, view: &InterceptView, topics: &Topics) {
     let details = details_lines(view, topics);
     let wanted = u16::try_from(details.len()).unwrap_or(u16::MAX).saturating_add(2);
     let height = wanted.min(area.height.saturating_sub(4));
@@ -195,7 +190,7 @@ fn draw_right(
     f: &mut Frame<'_>,
     area: Rect,
     view: &InterceptView,
-    topics: &BTreeMap<String, TopicStats>,
+    topics: &Topics,
     schema: Option<&mut MessageSchema>,
     error: Option<&str>,
 ) {
@@ -215,7 +210,7 @@ fn draw_right(
 /// as the bus announces it.
 fn input_type<'a>(
     view: &'a InterceptView,
-    topics: &'a BTreeMap<String, TopicStats>,
+    topics: &'a Topics,
     input: &str,
     name: &str,
 ) -> Option<&'a str> {
@@ -226,17 +221,14 @@ fn input_type<'a>(
         .filter(|data_type| !data_type.is_empty())
 }
 
-fn rate_text(topics: &BTreeMap<String, TopicStats>, topic: &str) -> String {
+fn rate_text(topics: &Topics, topic: &str) -> String {
     topics
         .get(topic)
         .map_or_else(|| "no traffic".to_owned(), |stats| format!("{:.1} Hz", stats.rate_hz))
 }
 
 /// The selected interception: its topics, type, relay state and counters.
-fn details_lines(
-    view: &InterceptView,
-    topics: &BTreeMap<String, TopicStats>,
-) -> Vec<Line<'static>> {
+fn details_lines(view: &InterceptView, topics: &Topics) -> Vec<Line<'static>> {
     let Some(spec) = view.spec() else {
         return vec![Line::styled("n adds an interception", Style::default().fg(MUTED))];
     };
@@ -316,7 +308,7 @@ fn draw_modal(f: &mut Frame<'_>, area: Rect, title: &str, width: u16, lines: Vec
 
 /// The new-interception modal: three fields, the input's type, and topic hints
 /// under the focused topic field.
-fn draw_form(f: &mut Frame<'_>, area: Rect, form: &NewForm, topics: &BTreeMap<String, TopicStats>) {
+fn draw_form(f: &mut Frame<'_>, area: Rect, form: &NewForm, topics: &Topics) {
     let width = area.width.saturating_sub(4).min(76);
     let room = usize::from(width.saturating_sub(12));
     let hints = suggestions(form, topics);
@@ -435,7 +427,7 @@ pub(crate) fn draw_hints(f: &mut Frame<'_>, area: Rect, view: &InterceptView) {
 /// no tree, when there is none.
 fn refresh_rows(
     view: &mut InterceptView,
-    topics: &BTreeMap<String, TopicStats>,
+    topics: &Topics,
     schema: Option<&mut MessageSchema>,
     schema_error: Option<&str>,
 ) -> Option<String> {
@@ -514,12 +506,7 @@ fn draw_list(f: &mut Frame<'_>, area: Rect, view: &InterceptView) {
     );
 }
 
-fn draw_selector(
-    f: &mut Frame<'_>,
-    area: Rect,
-    view: &InterceptView,
-    topics: &BTreeMap<String, TopicStats>,
-) {
+fn draw_selector(f: &mut Frame<'_>, area: Rect, view: &InterceptView, topics: &Topics) {
     let names = &view.config.interception;
     let line = match view.spec() {
         Some(spec) => {
@@ -599,7 +586,7 @@ fn draw_tree(
     f: &mut Frame<'_>,
     area: Rect,
     view: &InterceptView,
-    topics: &BTreeMap<String, TopicStats>,
+    topics: &Topics,
     schema: Option<&mut MessageSchema>,
     error: Option<&str>,
 ) {
@@ -704,7 +691,7 @@ fn draw_tree(
 /// and shows `–`: an old value is never shown in its place.
 fn output_values(
     view: &InterceptView,
-    topics: &BTreeMap<String, TopicStats>,
+    topics: &Topics,
     schema: Option<&mut MessageSchema>,
     visible: &[&TreeRow],
 ) -> BTreeMap<String, String> {
@@ -732,12 +719,7 @@ fn output_values(
     values
 }
 
-fn draw_editor(
-    f: &mut Frame<'_>,
-    area: Rect,
-    view: &InterceptView,
-    topics: &BTreeMap<String, TopicStats>,
-) {
+fn draw_editor(f: &mut Frame<'_>, area: Rect, view: &InterceptView, topics: &Topics) {
     let block = pane_block("Override", view.pane() == Pane::Editor);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -745,11 +727,7 @@ fn draw_editor(
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
-fn editor_lines<'a>(
-    view: &'a InterceptView,
-    topics: &BTreeMap<String, TopicStats>,
-    width: u16,
-) -> Vec<Line<'a>> {
+fn editor_lines<'a>(view: &'a InterceptView, topics: &Topics, width: u16) -> Vec<Line<'a>> {
     let mut lines: Vec<Line<'_>> = Vec::new();
     let Some(edit) = &view.edit else {
         lines.push(Line::styled("select a field, then Enter", Style::default().fg(MUTED)));

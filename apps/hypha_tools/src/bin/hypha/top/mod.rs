@@ -20,6 +20,8 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use hypha_node::sdk::BusNode;
+use hypha_tools::stream::StreamSelector;
+use hypha_tools::stream_follower::StreamFollower;
 use inspector::SchemaCache;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -115,13 +117,20 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         Err(code) => return code,
     };
 
-    let mut sub = match bus.subscribe_raw("**", 0) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("hypha top: failed wildcard subscription: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    // Every stream of every topic, each one as it appears: a second version of a topic joins
+    // the table when its publisher starts.
+    let mut follower =
+        match StreamFollower::new(&bus, vec!["**".to_owned()], StreamSelector::default(), 0) {
+            Ok(follower) => follower,
+            Err(e) => {
+                eprintln!("hypha top: cannot follow the bus: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+    if let Err(e) = follower.refresh(&bus) {
+        eprintln!("hypha top: cannot list topics: {e}");
+        return ExitCode::FAILURE;
+    }
 
     let guard = match TerminalGuard::new() {
         Ok(g) => g,
@@ -145,8 +154,14 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
     state.intercept.intercept_dir = Some(intercept_dir);
     let mut schema_cache = SchemaCache::new("hypha_top");
 
-    let loop_result =
-        run_tui_loop(&mut terminal, &bus, &mut sub, &mut state, &mut schema_cache, &stop_signal);
+    let loop_result = run_tui_loop(
+        &mut terminal,
+        &bus,
+        &mut follower,
+        &mut state,
+        &mut schema_cache,
+        &stop_signal,
+    );
 
     // The guard leaves the alternate screen, so the error is printed on the normal one.
     drop(guard);
@@ -168,7 +183,7 @@ fn exit_code_for(loop_result: &io::Result<()>) -> ExitCode {
 fn run_tui_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     bus: &BusNode,
-    sub: &mut hypha_node::sdk::RawSubscriber,
+    follower: &mut StreamFollower,
     state: &mut AppState,
     schema_cache: &mut SchemaCache,
     stop_signal: &Arc<AtomicBool>,
@@ -176,12 +191,13 @@ fn run_tui_loop(
     let mut last_render = Instant::now();
     let mut last_rate_calc = Instant::now();
     let mut retry_schemas = std::collections::BTreeMap::new();
-    let mut followed = listed_topics(bus).unwrap_or_default();
-    let mut last_rescan = Instant::now();
     let mut last_usage = Instant::now().checked_sub(USAGE_PERIOD).unwrap_or_else(Instant::now);
 
     while bus.ok() && !stop_signal.load(Ordering::Relaxed) {
-        while let Some(received) = sub.try_receive().unwrap_or_else(|error| {
+        if let Err(error) = follower.refresh_if_changed(bus) {
+            eprintln!("hypha top: {error}");
+        }
+        while let Some(received) = follower.next_sample().unwrap_or_else(|error| {
             eprintln!("hypha top: {error}");
             None
         }) {
@@ -189,11 +205,6 @@ fn run_tui_loop(
                 continue;
             };
             state.on_sample(identity.topic, identity.schema_hash, bytes);
-        }
-
-        if last_rescan.elapsed() >= TOPIC_RESCAN {
-            last_rescan = Instant::now();
-            follow_new_topics(bus, sub, &mut followed);
         }
 
         resolve_one_schema(bus, state, &mut retry_schemas);
@@ -235,35 +246,6 @@ fn run_tui_loop(
 
 /// How often node CPU and memory are sampled; CPU is the average over this window.
 const USAGE_PERIOD: Duration = Duration::from_secs(1);
-
-/// How often the bus is listed for topics the wildcard subscription does not follow.
-const TOPIC_RESCAN: Duration = Duration::from_secs(1);
-
-fn listed_topics(bus: &BusNode) -> Option<std::collections::BTreeSet<String>> {
-    let listed = bus.list_topics().ok()?;
-    Some(listed.into_iter().map(|topic| topic.name).collect())
-}
-
-/// A wildcard subscription follows the topics that existed when it was created; a
-/// topic created later is followed by opening the wildcard again, right after the old
-/// one was drained. A sample sent between that drain and the swap is not counted.
-fn follow_new_topics(
-    bus: &BusNode,
-    sub: &mut hypha_node::sdk::RawSubscriber,
-    followed: &mut std::collections::BTreeSet<String>,
-) {
-    let Some(listed) = listed_topics(bus) else { return };
-    if listed.is_subset(followed) {
-        return;
-    }
-    match bus.subscribe_raw("**", 0) {
-        Ok(next) => {
-            *sub = next;
-            *followed = listed;
-        }
-        Err(error) => eprintln!("hypha top: cannot follow new topics: {error}"),
-    }
-}
 
 /// Resolves the schema of one shown topic that has none yet, without waiting.
 fn resolve_one_schema(
@@ -312,8 +294,10 @@ fn handle_key(state: &mut AppState, code: KeyCode, modifiers: KeyModifiers) -> b
     }
 
     if state.active_tab == Tab::Intercept && !state.search_focused {
-        let picked =
-            state.visible_topics().get(state.selected_topic).map(|(topic, _)| (*topic).clone());
+        let picked = state
+            .visible_topics()
+            .get(state.selected_topic)
+            .map(|(stream, _)| stream.topic.clone());
         if state.intercept.handle_key(code, modifiers, &state.topics, picked.as_deref()) {
             return false;
         }

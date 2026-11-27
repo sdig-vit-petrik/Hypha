@@ -86,6 +86,9 @@ pub fn short_md5(md5: &str) -> &str {
 /// A message type as a line names it: `type (md5 start)`.
 #[must_use]
 pub fn type_label(data_type: &str, md5: &str) -> String {
+    if md5.is_empty() {
+        return data_type.to_owned();
+    }
     format!("{data_type} ({})", short_md5(md5))
 }
 
