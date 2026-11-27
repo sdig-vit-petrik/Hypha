@@ -5,8 +5,8 @@
 //! - cold: the next buffer of an arena much larger than the last-level cache, so the
 //!   bytes come from memory, as a camera frame does.
 //!
-//! Sizes 4 KiB to 15 MiB. Run with `cargo bench -p hypha_wire --bench integrity`. Not a
-//! CI gate.
+//! Sizes 64 bytes (a small message) to 15 MiB (a camera frame). Run with
+//! `cargo bench -p hypha_wire --bench integrity`. Not a CI gate.
 #![expect(clippy::expect_used, reason = "a size that does not fit u64 stops the run")]
 
 use std::hint::black_box;
@@ -17,8 +17,14 @@ use hypha_wire::frame::{FrameMetadata, TopicCode, seal};
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * KIB;
-const SIZES: [(usize, &str); 5] =
-    [(4 * KIB, "4KiB"), (64 * KIB, "64KiB"), (MIB, "1MiB"), (5 * MIB, "5MiB"), (15 * MIB, "15MiB")];
+const SIZES: [(usize, &str); 6] = [
+    (64, "64B"),
+    (4 * KIB, "4KiB"),
+    (64 * KIB, "64KiB"),
+    (MIB, "1MiB"),
+    (5 * MIB, "5MiB"),
+    (15 * MIB, "15MiB"),
+];
 /// Far larger than any last-level cache of the machines measured.
 const ARENA: usize = 512 * MIB;
 
