@@ -1,6 +1,8 @@
 //! Automatic same-name route discovery and reconciliation primitives.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+use hypha_node::sdk::StreamKey;
 
 /// The two cross-side data paths that automatic mode can create.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +39,22 @@ pub struct HyphaTopicState {
     pub published: bool,
     /// At least one external hypha subscriber exists.
     pub subscribed: bool,
+}
+
+/// The hypha graph state of each topic name, from the state of each of its streams: a name is
+/// published, or subscribed, when any of its streams is. A stream's flags are its own: a
+/// stream nobody subscribes to does not hide the subscriber of another.
+#[must_use]
+pub fn topic_states(
+    streams: &BTreeMap<StreamKey, HyphaTopicState>,
+) -> BTreeMap<String, HyphaTopicState> {
+    let mut topics: BTreeMap<String, HyphaTopicState> = BTreeMap::new();
+    for (stream, state) in streams {
+        let topic = topics.entry(stream.topic.clone()).or_default();
+        topic.published |= state.published;
+        topic.subscribed |= state.subscribed;
+    }
+    topics
 }
 
 /// Returns the cross-side pipes required by two graph snapshots.

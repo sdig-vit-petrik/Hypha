@@ -6,13 +6,19 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use hypha_node::sdk::{BusNode, PublisherOptions, RawPublisher, ResolvedSchema, SubscriberOptions};
+use hypha_node::sdk::{
+    BusNode, PublisherOptions, RawPublisher, ReceivedSample, ResolvedSchema, StreamFollower,
+    StreamKey, StreamSelector,
+};
 use roslibrust::ros1::{NodeHandle, PublisherAny};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::automatic::RosTopicState;
-use crate::automatic::{AutoFlow, HyphaTopicState, RecentSample, RecentSamples, desired_flows};
+use crate::automatic::{
+    AutoFlow, HyphaTopicState, RecentSample, RecentSamples, desired_flows, topic_states,
+};
+use crate::bridged_streams::{Admission, BridgedStreams};
 use crate::error::BridgeError;
 use crate::publisher_identity::{RosIdentity, agreed_identity, probe_publisher};
 use crate::ros_graph::{RosGraphClient, RosGraphSnapshot};
@@ -26,12 +32,12 @@ const GRAPH_REFRESH: Duration = Duration::from_millis(500);
 const TOPIC_REFRESH: Duration = Duration::from_millis(500);
 /// Topics this bridge follows. Every hypha topic reaches ROS.
 const BRIDGED_TOPICS: &str = "**";
-/// Pending samples one followed topic may buffer: zero, the depth of the topic's `QoS`
+/// Pending samples one followed stream may buffer: zero, the depth of the topic's `QoS`
 /// policy depth (8, the `default` policy), which a larger depth would exceed.
 const SUBSCRIPTION_DEPTH: usize = 0;
-/// Samples taken from one topic per pass, so one busy topic cannot hold the
-/// loop open while others wait.
-const DRAIN_BUDGET_PER_TOPIC: usize = 64;
+/// Samples taken from the bus per pass, so one busy stream cannot hold the loop open while
+/// others wait.
+const DRAIN_BUDGET_PER_PASS: usize = 512;
 const RECENT_SAMPLE_LIMIT: usize = 256;
 const EVENT_QUEUE_DEPTH: usize = 64;
 
@@ -41,11 +47,12 @@ enum AutoEvent {
 }
 
 struct AutoBusRuntime {
-    /// One subscription per followed topic, keyed by topic name, with the
-    /// topic its samples carry.
-    subscribers: BTreeMap<String, (Arc<str>, hypha_node::sdk::RawSubscriber)>,
-    /// Topics whose subscription failure was already reported.
-    subscription_failures: BTreeSet<String>,
+    /// What following the streams last refused, so a refusal that lasts is reported once.
+    follow_error: Option<String>,
+    /// The one stream of each topic that reaches ROS.
+    bridged: BridgedStreams,
+    /// The topic each sample names for the ROS side, shared by its messages.
+    topic_names: BTreeMap<String, Arc<str>>,
     publishers: BTreeMap<String, IngressPublisher>,
     recent: RecentSamples,
     topic_states: BTreeMap<String, HyphaTopicState>,
@@ -70,8 +77,9 @@ fn same_identity(left: &Arc<ResolvedSchema>, right: &Arc<ResolvedSchema>) -> boo
 impl AutoBusRuntime {
     fn new(ros_to_hypha_rx: mpsc::Receiver<BridgeMsg>, event_tx: mpsc::Sender<AutoEvent>) -> Self {
         Self {
-            subscribers: BTreeMap::new(),
-            subscription_failures: BTreeSet::new(),
+            follow_error: None,
+            bridged: BridgedStreams::default(),
+            topic_names: BTreeMap::new(),
             publishers: BTreeMap::new(),
             recent: RecentSamples::new(RECENT_SAMPLE_LIMIT),
             topic_states: BTreeMap::new(),
@@ -84,10 +92,20 @@ impl AutoBusRuntime {
 
     fn run(mut self, bus: BusNode, stop: Arc<AtomicBool>) -> Result<(), BridgeError> {
         let mut waitset = schema_serving_waitset(&bus)?;
+        // Every stream of every topic, each as the graph event shows it: a version that joins a
+        // topic later is read too.
+        let mut follower = StreamFollower::new(
+            &bus,
+            vec![BRIDGED_TOPICS.to_owned()],
+            StreamSelector::default(),
+            SUBSCRIPTION_DEPTH,
+        )
+        .map_err(BridgeError::Bus)?;
         while bus.ok() && !stop.load(Ordering::Acquire) {
             serve_bus(&mut waitset)?;
+            self.follow_new_streams(&bus, &mut follower);
             self.drain_ros_to_hypha(&bus, &stop);
-            self.drain_hypha_to_ros(&bus, &stop)?;
+            self.drain_hypha_to_ros(&bus, &mut follower, &stop)?;
             if self.last_topic_refresh.elapsed() >= TOPIC_REFRESH {
                 self.publish_topic_snapshot(&bus, &stop)?;
                 self.last_topic_refresh = Instant::now();
@@ -101,18 +119,22 @@ impl AutoBusRuntime {
         bus: &BusNode,
         stop: &AtomicBool,
     ) -> Result<(), BridgeError> {
-        let topics: BTreeMap<String, HyphaTopicState> = bus
+        // Each stream has its own flags: a name is published or subscribed when any of its
+        // streams is, and a stream's choice for ROS ends with its publishers.
+        let streams: BTreeMap<StreamKey, HyphaTopicState> = bus
             .list_topics()
             .map_err(BridgeError::Bus)?
-            .into_iter()
-            .map(|topic| {
+            .iter()
+            .map(|stream| {
                 (
-                    topic.name,
-                    HyphaTopicState { published: topic.published, subscribed: topic.subscribed },
+                    StreamKey::from(stream),
+                    HyphaTopicState { published: stream.published, subscribed: stream.subscribed },
                 )
             })
             .collect();
-        self.follow_new_topics(bus, &topics);
+        self.bridged.retain_published(&streams);
+        let topics = topic_states(&streams);
+        self.topic_names.retain(|topic, _| topics.contains_key(topic));
         self.topic_states = topics.clone();
         self.publishers.retain(|topic, _| topics.get(topic).is_some_and(|state| state.subscribed));
         if stop.load(Ordering::Acquire) {
@@ -124,34 +146,13 @@ impl AutoBusRuntime {
         Ok(())
     }
 
-    /// Subscribes to every topic this bridge does not follow yet.
-    ///
-    /// A pattern subscription resolves its topics once, when it is created.
-    fn follow_new_topics(&mut self, bus: &BusNode, topics: &BTreeMap<String, HyphaTopicState>) {
-        for name in topics.keys() {
-            let already_followed = self.subscribers.contains_key(name);
-            if already_followed || !hypha_node::sdk::topic_matches_pattern(BRIDGED_TOPICS, name) {
-                continue;
-            }
-            match bus.subscribe_raw_with_options(
-                name,
-                SubscriberOptions::default().keeping(SUBSCRIPTION_DEPTH),
-            ) {
-                Ok(subscriber) => {
-                    self.subscription_failures.remove(name);
-                    log::debug!("automatic bridge follows {name}");
-                    self.subscribers.insert(name.clone(), (Arc::from(name.as_str()), subscriber));
-                }
-                // A topic that refuses a subscription now is tried again on
-                // the next snapshot.
-                Err(error) => {
-                    if self.subscription_failures.insert(name.clone()) {
-                        log::error!(
-                            "automatic bridge cannot follow {name}; it will retry: {error}"
-                        );
-                    }
-                }
-            }
+    /// Follows the streams that joined the bus since the last pass. A refusal that lasts is
+    /// logged once.
+    fn follow_new_streams(&mut self, bus: &BusNode, follower: &mut StreamFollower) {
+        let Err(error) = follower.refresh_if_changed(bus) else { return };
+        if self.follow_error.as_ref() != Some(&error) {
+            log::error!("automatic bridge cannot follow every stream; it will retry: {error}");
+            self.follow_error = Some(error);
         }
     }
 
@@ -206,39 +207,27 @@ impl AutoBusRuntime {
         }
     }
 
-    fn drain_hypha_to_ros(&mut self, bus: &BusNode, stop: &AtomicBool) -> Result<(), BridgeError> {
-        for (topic, subscriber) in self.subscribers.values_mut() {
-            let mut drained = 0_usize;
-            while drained < DRAIN_BUDGET_PER_TOPIC {
-                let received = subscriber
-                    .try_receive()
-                    .map_err(|error| BridgeError::Bus(error.to_string()))?;
-                let Some(sample) = received else { break };
-                drained = drained.saturating_add(1);
-                Self::forward_sample(
-                    bus,
-                    &mut self.recent,
-                    &self.schema_resolver,
-                    &self.event_tx,
-                    topic,
-                    &sample,
-                    stop,
-                )?;
-                if stop.load(Ordering::Acquire) {
-                    return Ok(());
-                }
+    fn drain_hypha_to_ros(
+        &mut self,
+        bus: &BusNode,
+        follower: &mut StreamFollower,
+        stop: &AtomicBool,
+    ) -> Result<(), BridgeError> {
+        for _ in 0..DRAIN_BUDGET_PER_PASS {
+            let received = follower.next_sample().map_err(BridgeError::Bus)?;
+            let Some(sample) = received else { break };
+            self.forward_sample(bus, &sample, stop)?;
+            if stop.load(Ordering::Acquire) {
+                return Ok(());
             }
         }
         Ok(())
     }
 
     fn forward_sample(
+        &mut self,
         bus: &BusNode,
-        recent: &mut RecentSamples,
-        schema_resolver: &SchemaIdentityCache,
-        event_tx: &mpsc::Sender<AutoEvent>,
-        topic: &Arc<str>,
-        sample: &hypha_node::sdk::ReceivedSample,
+        sample: &ReceivedSample,
         stop: &AtomicBool,
     ) -> Result<(), BridgeError> {
         if stop.load(Ordering::Acquire) {
@@ -248,37 +237,73 @@ impl AutoBusRuntime {
             log::debug!("ignoring automatic hypha sample without identity");
             return Ok(());
         };
+        let topic = identity.topic;
         let Some(bytes) = sample.bytes() else {
             log::warn!("dropping malformed automatic hypha sample on {topic}");
             return Ok(());
         };
-        if recent.take(topic, identity.transport_sent_nanos, bytes) {
+        // The bridge's own samples come first: they must not choose the stream of their topic.
+        if self.recent.take(topic, identity.transport_sent_nanos, bytes) {
             return Ok(());
         }
+        match self.bridged.admit(topic, identity.schema_hash) {
+            Admission::Bridged => {}
+            Admission::Dropped { bridged, report } => {
+                if report {
+                    self.report_unbridged(bus, topic, bridged, identity.schema_hash);
+                }
+                return Ok(());
+            }
+        }
         // A retained record always holds a type, a valid MD5 and a definition.
-        let schema = match schema_resolver.resolve(bus, topic, identity.schema_hash, Instant::now())
-        {
-            Ok(Some(schema)) => schema,
-            Ok(None) => {
-                log::debug!("ignoring automatic sample on {topic} without a retained schema");
-                return Ok(());
-            }
-            Err(error) => {
-                log::warn!("automatic schema lookup failed on {topic}: {error}");
-                return Ok(());
-            }
-        };
+        let schema =
+            match self.schema_resolver.resolve(bus, topic, identity.schema_hash, Instant::now()) {
+                Ok(Some(schema)) => schema,
+                Ok(None) => {
+                    log::debug!("ignoring automatic sample on {topic} without a retained schema");
+                    return Ok(());
+                }
+                Err(error) => {
+                    log::warn!("automatic schema lookup failed on {topic}: {error}");
+                    return Ok(());
+                }
+            };
+        let topic = Arc::clone(
+            self.topic_names.entry(topic.to_owned()).or_insert_with(|| Arc::from(topic)),
+        );
         let message = BridgeMsg {
             route_id: None,
-            topic: Arc::clone(topic),
+            topic,
             identity: schema,
             stamp_nanos: identity.transport_sent_nanos,
             bytes: bytes.to_vec(),
         };
-        if event_tx.send(AutoEvent::Sample(message)).is_err() {
+        if self.event_tx.send(AutoEvent::Sample(message)).is_err() {
             return handoff_closed(stop, "automatic hypha handoff");
         }
         Ok(())
+    }
+
+    /// Says, once for the stream, that ROS 1 carries one type per topic and which of the
+    /// topic's streams it is not given.
+    fn report_unbridged(&self, bus: &BusNode, topic: &str, bridged: u64, dropped: u64) {
+        let describe = |schema_hash: u64| match self.schema_resolver.resolve(
+            bus,
+            topic,
+            schema_hash,
+            Instant::now(),
+        ) {
+            Ok(Some(schema)) => {
+                format!("{} ({})", schema.data_type, schema.md5.get(..8).unwrap_or(&schema.md5))
+            }
+            Ok(None) | Err(_) => format!("schema {schema_hash:016x}"),
+        };
+        log::warn!(
+            "{topic} carries more than one stream and a ROS 1 topic carries one type: bridging \
+             {}, the first; not bridging {}",
+            describe(bridged),
+            describe(dropped)
+        );
     }
 }
 
@@ -609,12 +634,20 @@ async fn forward_to_ros(
         .topics
         .get(topic)
         .is_some_and(|state| desired_flows(state, hypha_state).contains(&AutoFlow::HyphaToRos));
-    if let Some(existing) = publisher_identity.get(topic) {
-        if !same_identity(existing, &message.identity) {
-            log::error!("dropping automatic ROS sample with a conflicting identity on {topic}");
-            return Ok(());
-        }
-    } else {
+    // The bus side lets one stream of a topic through at a time, so another identity means the
+    // bridged stream changed: its publishers left and another version took its place.
+    let replaced = publisher_identity
+        .get(topic)
+        .is_some_and(|existing| !same_identity(existing, &message.identity));
+    if replaced {
+        log::info!(
+            "{topic} is bridged as {} now; replacing its ROS publisher",
+            message.identity.data_type
+        );
+        publishers.remove(topic);
+        publisher_identity.remove(topic);
+    }
+    if !publisher_identity.contains_key(topic) {
         let publisher = ros
             .advertise_any(
                 topic,
@@ -635,4 +668,101 @@ async fn forward_to_ros(
         return Ok(());
     };
     publish_to_ros(publisher, &message).await
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use hypha_testkit::unique_name;
+    use std::time::Duration;
+
+    const V1: &str = "b3087778e93fcd34cc8d65bc54e850d1";
+    const V2: &str = "f79835def461350458ead76f07016dd7";
+
+    /// The md5 of each sample the bus side handed to the ROS side so far.
+    fn handed_over(events: &mpsc::Receiver<AutoEvent>) -> Vec<String> {
+        events
+            .try_iter()
+            .filter_map(|event| match event {
+                AutoEvent::Sample(message) => Some(message.identity.md5.clone()),
+                AutoEvent::Topics(_) => None,
+            })
+            .collect()
+    }
+
+    /// Passes of the bus loop, `send` before each, until `done` holds of what was handed over,
+    /// or a few seconds.
+    fn pass_until(
+        runtime: &mut AutoBusRuntime,
+        bus: &BusNode,
+        follower: &mut StreamFollower,
+        events: &mpsc::Receiver<AutoEvent>,
+        mut send: impl FnMut(),
+        done: impl Fn(&[String]) -> bool,
+    ) -> Vec<String> {
+        let stop = AtomicBool::new(false);
+        let mut seen = Vec::new();
+        let deadline = Instant::now().checked_add(Duration::from_secs(10)).expect("a deadline");
+        while Instant::now() < deadline && !done(&seen) {
+            send();
+            runtime.follow_new_streams(bus, follower);
+            runtime.drain_hypha_to_ros(bus, follower, &stop).expect("drain");
+            runtime.publish_topic_snapshot(bus, &stop).expect("snapshot");
+            seen.extend(handed_over(events));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        seen
+    }
+
+    #[test]
+    fn one_stream_of_a_topic_reaches_ros_and_the_next_takes_over_when_it_ends() {
+        let name = unique_name("bridge_streams");
+        let topic = format!("/{name}/odom");
+        let bus = BusNode::new(&name).expect("bridge node");
+        let peer = BusNode::new(&unique_name("bridge_streams_peer")).expect("peer");
+        let mut v1 = peer.publish_raw(&topic, "t/R", V1, "int32 value\n").expect("v1");
+        let mut v2 = peer
+            .publish_raw(&topic, "t/R", V2, "int32 value\nstring label\nfloat64 weight\n")
+            .expect("v2");
+        let (_ros_tx, ros_rx) = mpsc::channel();
+        let (event_tx, events) = mpsc::channel();
+        let mut runtime = AutoBusRuntime::new(ros_rx, event_tx);
+        let mut follower = StreamFollower::new(
+            &bus,
+            vec![topic.clone()],
+            StreamSelector::default(),
+            SUBSCRIPTION_DEPTH,
+        )
+        .expect("follower");
+        follower.refresh(&bus).expect("refresh");
+
+        let long = [3_u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for _ in 0..5 {
+            assert!(v1.publish(&[1, 0, 0, 0]));
+            assert!(v2.publish(&long));
+        }
+        let first =
+            pass_until(&mut runtime, &bus, &mut follower, &events, || {}, |seen| seen.len() >= 5);
+        std::thread::sleep(Duration::from_millis(100));
+        let first: Vec<String> = first.into_iter().chain(handed_over(&events)).collect();
+        assert_eq!(first.len(), 5, "the five samples of one stream, not ten: {first:?}");
+        let bridged = first.first().expect("a sample").clone();
+        assert!(first.iter().all(|md5| *md5 == bridged), "{first:?}");
+
+        // The bridged version's publishers leave: the other stream takes its place.
+        let (mut staying, left) = if bridged == V1 { (v2, v1) } else { (v1, v2) };
+        drop(left);
+        let other = if bridged == V1 { V2 } else { V1 };
+        let payload: &[u8] = if bridged == V1 { &long } else { &[1, 0, 0, 0] };
+        let after = pass_until(
+            &mut runtime,
+            &bus,
+            &mut follower,
+            &events,
+            || assert!(staying.publish(payload)),
+            |seen| !seen.is_empty(),
+        );
+        assert!(after.iter().all(|md5| md5 == other), "the other version now: {after:?}");
+    }
 }
