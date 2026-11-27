@@ -175,7 +175,9 @@ licence headers and the SHA-256 of each in `vendor.toml`; `python3 -I
 examples/autoware/tools/port.py verify` (run by `./check.sh`) checks them.
 `point_field_conversion.h` needs `<sensor_msgs/PointField.h>` (or `PointCloud2.h`) before
 it, as upstream does. Left out: `fill_image.h` and `point_cloud_conversion.h` (the second
-needs the deprecated `sensor_msgs/PointCloud`, which hypha does not ship).
+needs the deprecated `sensor_msgs/PointCloud`, which hypha does not ship). The SDK has no
+counterpart of `camera_info_manager`: a port reads its camera calibration into a
+`sensor_msgs::CameraInfo` itself (#265 leaves that decision open).
 `crates/hypha-cxx/test/test_sensor_msgs_companions.cpp` runs them.
 
 An application generates its own `.msg` and
