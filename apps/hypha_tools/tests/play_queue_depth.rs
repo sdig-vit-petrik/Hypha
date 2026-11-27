@@ -4,7 +4,7 @@
 mod common;
 
 use common::Responder;
-use hypha_node::sdk::{BusNode, RawSubscriber, SubscriberOptions};
+use hypha_node::sdk::{BusNode, RawSubscriber, StreamKey, SubscriberOptions};
 use hypha_tools::play_session::{channel_publisher_options, publish_channel};
 use hypha_tools::player::ChannelResolution;
 use hypha_tools::utc_time::parse_utc_nanos;
@@ -53,6 +53,7 @@ fn a_topic_opened_before_its_subscriber_is_still_published() {
         .subscribe_raw_with_schema(&topic, DATA_TYPE, &md5, SubscriberOptions::default().keeping(4))
         .expect("the subscriber joins the opened topic");
     let channel = ChannelResolution {
+        stream: StreamKey { topic: topic.clone(), schema_hash: 0 },
         topic: topic.clone(),
         data_type: DATA_TYPE.to_string(),
         md5,

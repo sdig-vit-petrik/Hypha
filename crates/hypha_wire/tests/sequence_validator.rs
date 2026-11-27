@@ -134,3 +134,22 @@ fn publishers_that_restart_for_years_keep_the_table_bounded() {
     // The oldest were forgotten, so the table stayed bounded.
     assert!(validator.accept(0, 1));
 }
+
+#[test]
+fn the_first_sequence_of_a_publisher_less_one_is_what_was_sent_before_it() {
+    let mut validator = SequenceValidator::new();
+    assert!(validator.accept(1, 1), "a publisher that was read from its first frame");
+    assert!(validator.accept(2, 41), "a publisher whose first 40 frames were never read");
+    assert!(validator.accept(2, 42));
+    assert!(validator.accept(1, 9), "a gap after the first is a missing sequence, not this");
+    assert_eq!(validator.sent_before_first(), 40);
+    assert_eq!(validator.missing_sequences(), 7);
+}
+
+#[test]
+fn a_latched_replay_is_not_counted_as_sent_before() {
+    let mut validator = SequenceValidator::new();
+    assert!(validator.accept_as(1, 5, false), "the replayed sample of a latched publisher");
+    assert!(validator.accept_as(1, 6, false));
+    assert_eq!(validator.sent_before_first(), 0);
+}

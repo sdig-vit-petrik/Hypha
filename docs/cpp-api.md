@@ -889,10 +889,10 @@ struct hypha::QosOf<my_msgs::Image>
   (`~/introspection`) to `reportQos` (2 publishers, 2 subscribers, depth 1, 1 KiB
   first slot: only tools read them, from the observer slots). An application cannot
   remap them.
-- A policy's node slots are exact (`max_publishers` plus the subscribers it admits), and a
-  node's refresh of the other versions of a topic opens the stream for a moment, taking a
-  slot: an endpoint that needs the last slot at that instant is refused with
-  `ResourceLimit`, and a full stream keeps its last refresh result
+- A policy's node slots are its `max_publishers` plus the subscribers it admits, plus 2 kept
+  for the moment a node's refresh of the other versions of a topic opens the stream, and for
+  the check of its record when an endpoint drops: neither takes a slot an endpoint needs, and
+  the 2 admit no extra publisher or subscriber
   ([interface-specification.md](interface-specification.md#streams)).
 - A later endpoint of the same definition (the same MD5) with another policy is refused
   with `QosMismatch`, and the log names both policies: `advertise` and `subscribe` throw, a

@@ -26,7 +26,9 @@ pub use crate::last_error::last_error;
 pub use crate::loan::{HyphaLoan, loan_send, publisher_loan_frame};
 pub use crate::metrics::{node_metrics, subscriber_metrics};
 pub use crate::node::{HyphaNode, node_create, node_destroy, node_name, node_ok, node_shutdown};
-pub use crate::node_discovery::{ListedNode, ListedServicePort, list_nodes, list_service_ports};
+pub use crate::node_discovery::{
+    GraphWatch, ListedNode, ListedServicePort, graph_watch, list_nodes, list_service_ports,
+};
 pub use crate::node_state::node_state;
 pub use crate::param_topic::param_topic;
 pub use crate::parameter_parse::{ParamRead, config_list_len, config_list_value, config_value};
@@ -40,8 +42,8 @@ pub use crate::schema::{schema_lookup, schema_resolve_hash, schema_resolve_hash_
 pub use crate::status::Error;
 pub use crate::subscriber::{
     FrameIdentity, HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS, HyphaSubscriber, SubscriberIdentity,
-    SubscriberSettings, subscribe_typed, subscriber_counters, subscriber_publisher_count,
-    subscriber_receive, subscriber_topic,
+    SubscriberSettings, subscribe_stream, subscribe_typed, subscriber_counters,
+    subscriber_publisher_count, subscriber_receive, subscriber_topic,
 };
 pub use crate::transforms::buffer::{
     HyphaTransformBuffer, transform_buffer_create, transform_buffer_destroy,

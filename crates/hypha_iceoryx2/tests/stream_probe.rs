@@ -221,44 +221,73 @@ fn tight(topic: &str, k: u32, policy: &QosPolicy) -> TopicSpec {
     vk(topic, k).keeping(1).with_qos(QosRequest::Declared(policy.clone()))
 }
 
-/// A probe's open takes a node slot of the stream (`max_nodes` is `max_publishers` plus the
-/// subscribers the stream admits): on a stream whose slots are all taken the probe is
-/// refused, and a refresh keeps its last result for the topic.
-#[test]
-fn a_probe_of_a_stream_whose_node_slots_are_taken_is_refused() {
-    let topic = format!("/{}", unique_name("probe_full"));
+/// A stream whose endpoints fill their slots: one publisher, one declared reader and the
+/// observer readers a tool may be, each from a node of its own.
+struct FullStream {
+    topic: String,
+    policy: QosPolicy,
+    _nodes: Vec<Iox2Transport>,
+    _endpoints: Vec<Box<dyn std::any::Any>>,
+}
+
+fn full_stream(label: &str) -> FullStream {
+    let topic = format!("/{}", unique_name(label));
     let policy = QosPolicy::new("tight", 1, 1, 1);
-    let publisher_node = Iox2Transport::with_name(&unique_name("probe_full_pub")).expect("node");
-    let _publisher = publisher_node.publish(&tight(&topic, 2, &policy)).expect("v2 publisher");
-    // Node slots: max_publishers + max_subscribers + 3 observer slots = 5.
     let mut nodes = Vec::new();
-    let mut holders = Vec::new();
+    let mut endpoints: Vec<Box<dyn std::any::Any>> = Vec::new();
+    let publisher_node = Iox2Transport::with_name(&unique_name("probe_full_pub")).expect("node");
+    endpoints.push(Box::new(publisher_node.publish(&tight(&topic, 2, &policy)).expect("v2")));
+    nodes.push(publisher_node);
     let reader_node = Iox2Transport::with_name(&unique_name("probe_full_sub")).expect("node");
-    holders.push(reader_node.subscribe(&tight(&topic, 2, &policy)).expect("declared reader"));
+    endpoints.push(Box::new(reader_node.subscribe(&tight(&topic, 2, &policy)).expect("reader")));
     nodes.push(reader_node);
     for _ in 0..3 {
         let node = Iox2Transport::with_name(&unique_name("probe_full_obs")).expect("node");
         let observer = TopicSpec::new(&topic).with_type("rv/Kind").with_md5(&md5_of(2)).keeping(1);
-        holders.push(node.subscribe(&observer).expect("observer"));
+        endpoints.push(Box::new(node.subscribe(&observer).expect("observer")));
         nodes.push(node);
     }
-    let watcher = Iox2Transport::with_name(&unique_name("probe_full_watch")).expect("node");
-    let hash = hypha_wire::schema_hash_from_md5(&md5_of(2)).expect("hash");
-    let probed = watcher.live_publishers(&topic, hash);
-    assert!(matches!(probed, Err(PortError::ResourceLimit)), "{probed:?}");
+    FullStream { topic, policy, _nodes: nodes, _endpoints: endpoints }
 }
 
-/// While a probe's open lasts it holds a node slot, so an endpoint that needs the last slot
-/// of the stream at that instant is refused with `ResourceLimit`.
+/// A probe's open takes a node slot of the stream, and the service keeps slots beyond its
+/// endpoints for it: on a stream whose endpoints fill theirs the probe succeeds.
 #[test]
-fn a_probe_can_hold_the_last_node_slot_an_endpoint_needs() {
+fn a_probe_of_a_stream_whose_endpoint_slots_are_taken_succeeds() {
+    let full = full_stream("probe_full");
+    let watcher = Iox2Transport::with_name(&unique_name("probe_full_watch")).expect("node");
+    let hash = hypha_wire::schema_hash_from_md5(&md5_of(2)).expect("hash");
+    assert_eq!(watcher.live_publishers(&full.topic, hash).expect("probe"), Some(1));
+}
+
+/// The slots kept for probes admit no endpoint: every kind of endpoint is still refused by its
+/// own limit when its slots are taken.
+#[test]
+fn the_slots_kept_for_probes_admit_no_extra_publisher_or_subscriber() {
+    let full = full_stream("probe_extra");
+    let publisher = Iox2Transport::with_name(&unique_name("probe_extra_pub")).expect("node");
+    let refused = publisher.publish(&tight(&full.topic, 2, &full.policy)).err();
+    assert_eq!(refused, Some(PortError::ResourceLimit), "a second publisher");
+    let reader = Iox2Transport::with_name(&unique_name("probe_extra_sub")).expect("node");
+    let refused = reader.subscribe(&tight(&full.topic, 2, &full.policy)).err();
+    assert_eq!(refused, Some(PortError::ResourceLimit), "a second reader");
+    let observer = TopicSpec::new(&full.topic).with_type("rv/Kind").with_md5(&md5_of(2)).keeping(1);
+    let refused = reader.subscribe(&observer).err();
+    assert_eq!(refused, Some(PortError::ResourceLimit), "a fourth observer");
+}
+
+/// An endpoint is never refused because a probe, or the release check of an endpoint that
+/// dropped, holds a node slot: the tight loop of the review, which refused 54 of 2,571
+/// creations while the stream had no spare slot.
+#[test]
+fn a_probe_never_costs_an_endpoint_its_node_slot() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     let topic = format!("/{}", unique_name("probe_slot"));
     let policy = QosPolicy::new("tight", 1, 1, 1);
     let publisher_node = Iox2Transport::with_name(&unique_name("probe_slot_pub")).expect("node");
     let _publisher = publisher_node.publish(&tight(&topic, 2, &policy)).expect("v2 publisher");
-    // Four of the five node slots taken: the reader below and a probe compete for the last.
+    // Endpoint slots: the publisher, the reader below and three observers fill all five.
     let mut nodes = Vec::new();
     let mut holders = Vec::new();
     for _ in 0..3 {
@@ -278,25 +307,27 @@ fn a_probe_can_hold_the_last_node_slot_an_endpoint_needs() {
                 .collect();
             while !stop.load(Ordering::Relaxed) {
                 for probe in &probes {
-                    let _ = probe.live_publishers(&topic, hash);
+                    probe.live_publishers(&topic, hash).expect("a probe is never refused");
                 }
             }
         })
     };
     let reader_node = Iox2Transport::with_name(&unique_name("probe_slot_sub")).expect("node");
-    let mut refused = 0_u32;
+    let mut created = 0_u32;
     let deadline =
-        Instant::now().checked_add(std::time::Duration::from_secs(10)).expect("deadline");
-    while refused == 0 && Instant::now() < deadline {
-        match reader_node.subscribe(&tight(&topic, 2, &policy)) {
-            Ok(reader) => drop(reader),
-            Err(PortError::ResourceLimit) => refused = refused.saturating_add(1),
-            Err(other) => panic!("{other:?}"),
-        }
+        Instant::now().checked_add(std::time::Duration::from_secs(30)).expect("deadline");
+    while created < 3000 && Instant::now() < deadline {
+        // Each drop runs the release check of the stream's record, a node slot of its own.
+        let reader = reader_node
+            .subscribe(&tight(&topic, 2, &policy))
+            .unwrap_or_else(|error| panic!("creation {created} refused: {error:?}"));
+        drop(reader);
+        created = created.saturating_add(1);
     }
     stop.store(true, Ordering::Relaxed);
     probing.join().expect("prober");
-    assert!(refused > 0, "no probe ever held the reader's slot in 10 s");
+    // How many creations a loaded machine manages is not the test's: none was refused.
+    assert!(created >= 200, "only {created} creations in 30 s");
 }
 
 #[test]

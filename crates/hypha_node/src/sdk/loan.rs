@@ -133,6 +133,16 @@ impl RawSubscriber {
         Ok(self.subscriber.missing_sequences())
     }
 
+    /// Frames that the publishers this subscriber has met sent before the first one it
+    /// accepted from each: a publisher's first frame has sequence 1, so a first sequence of `n`
+    /// means `n - 1` frames this subscriber never saw. A publisher that ran before the subscriber is
+    /// among them, so a reader judges the count only for streams and publishers it knows
+    /// came later. A latched publisher's replayed sample is not counted.
+    #[must_use]
+    pub fn sent_before_first(&self) -> u64 {
+        self.subscriber.validator_sent_before_first()
+    }
+
     /// A handle to this subscriber's counters. It stays readable after the subscriber
     /// moved into a [`crate::sdk::WaitSet`] attachment, and while the subscriber lives
     /// it reads the same counts as [`RawSubscriber::missing_sequences`] and
@@ -205,4 +215,56 @@ pub(crate) fn subscribe_on(
     ffi::subscribe_typed(node, topic_pattern, &identity, settings)
         .map(|subscriber| RawSubscriber { subscriber })
         .map_err(|error| numbered_error(format!("subscribe failed for '{topic_pattern}'"), error))
+}
+
+/// Why a stream could not be subscribed to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamSubscribeError {
+    /// The stream's service has no observer slot left for a reader that declares no policy:
+    /// other tools hold them all.
+    SlotsTaken,
+    /// The library refused the subscription for another reason.
+    Refused(String),
+}
+
+impl std::fmt::Display for StreamSubscribeError {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SlotsTaken => write!(
+                out,
+                "all {} observer slots of the stream are taken by other tools",
+                crate::sdk::UNDECLARED_SUBSCRIBER_SLOTS
+            ),
+            Self::Refused(message) => write!(out, "{message}"),
+        }
+    }
+}
+
+impl std::error::Error for StreamSubscribeError {}
+
+/// Open a raw subscriber of the one stream of `schema_hash`, without registering it with an
+/// executor.
+pub(crate) fn subscribe_stream_on(
+    node: &ffi::HyphaNode,
+    topic: &str,
+    schema_hash: u64,
+    options: SubscriberOptions,
+) -> Result<RawSubscriber, StreamSubscribeError> {
+    let settings = ffi::SubscriberSettings {
+        depth: options.depth,
+        no_publisher_warning_after_nanos: ffi::HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS,
+        request: hypha_core::port::QosRequest::Undeclared,
+    };
+    ffi::subscribe_stream(node, topic, schema_hash, settings)
+        .map(|subscriber| RawSubscriber { subscriber })
+        .map_err(|error| {
+            if ffi::status_code(error) == ffi::HYPHA_STATUS_RESOURCE_LIMIT {
+                StreamSubscribeError::SlotsTaken
+            } else {
+                StreamSubscribeError::Refused(numbered_error(
+                    format!("subscribe failed for '{topic}'"),
+                    error,
+                ))
+            }
+        })
 }

@@ -16,6 +16,7 @@
 pub mod cdr;
 pub mod convert;
 pub mod echo_args;
+pub mod following;
 pub mod foxglove;
 pub mod intercept_doc;
 pub mod intercept_relay;
@@ -40,9 +41,9 @@ pub mod replay_bus;
 pub mod replay_report;
 pub mod replay_sync;
 pub mod ros2_bag;
+pub mod stream;
 pub mod terminal_ui;
 pub mod theme;
-pub mod topic_follower;
 pub mod utc_time;
 
 /// A count, size or time as `f64` for a displayed statistic. Above 2^53 the

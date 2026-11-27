@@ -18,6 +18,42 @@ pub struct ListedNode<'a> {
     pub alive: bool,
 }
 
+/// A watch of the domain's graph: it tells a reader on its own thread that an endpoint came
+/// or went since it last asked. See [`graph_watch`].
+pub struct GraphWatch(hypha_iceoryx2::GraphWatch);
+
+impl GraphWatch {
+    /// Whether an endpoint of the domain came or went since the last call: one
+    /// non-blocking read that takes every pending notification.
+    ///
+    /// # Errors
+    /// [`Error::Disconnected`] when the notification service cannot be read.
+    pub fn changed(&self) -> Result<bool, Error> {
+        self.0.changed().map_err(Error::from)
+    }
+}
+
+impl GraphWatch {
+    /// Waits up to `timeout` for an endpoint of the domain to come or go, and takes the
+    /// notifications; true when one came. The calling thread sleeps meanwhile.
+    ///
+    /// # Errors
+    /// [`Error::Disconnected`] when the notification service cannot be read.
+    pub fn wait(&self, timeout: std::time::Duration) -> Result<bool, Error> {
+        self.0.wait(timeout).map_err(Error::from)
+    }
+}
+
+/// Open a watch of the domain's graph event, the event a node's own housekeeping hears.
+/// A reader that lists the streams once, opens this watch before it lists, and lists again
+/// whenever the watch says the graph changed, misses no stream.
+///
+/// # Errors
+/// The transport's error when the event service cannot be opened.
+pub fn graph_watch(node: &HyphaNode) -> Result<GraphWatch, Error> {
+    node.transport.graph_watch().map(GraphWatch).map_err(Error::from)
+}
+
 /// One stream, a topic and a schema, as `list_service_ports` reports it.
 #[derive(Debug, Clone, Copy)]
 pub struct ListedServicePort<'a> {

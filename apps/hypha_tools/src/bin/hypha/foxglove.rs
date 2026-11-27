@@ -2,8 +2,10 @@
 
 use crate::cli::{connect, parse_cli};
 use clap::Parser;
+use hypha_node::sdk::{StreamFollower, StreamSelector};
+use hypha_tools::following::Following;
 use hypha_tools::foxglove::{BridgeConfig, FOXGLOVE_SUBPROTOCOL, FoxgloveBridge, ServerOptions};
-use hypha_tools::topic_follower::TopicFollower;
+use hypha_tools::stream::follow_error_text;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -55,8 +57,6 @@ fn parse_latency_ms(text: &str) -> Result<u64, String> {
 /// Pending samples one followed topic may buffer: zero, the depth of the topic's `QoS`
 /// policy depth (8, the `default` policy), which a larger depth would exceed.
 const SUBSCRIPTION_DEPTH: usize = 0;
-/// How often the bridge looks for topics that appeared after it started.
-const TOPIC_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 /// Samples served per pass, so one busy topic cannot hold the loop open.
 const DRAIN_BUDGET_PER_PASS: usize = 512;
 
@@ -67,7 +67,7 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         Err(code) => return code,
     };
     let bus = match connect("hypha foxglove: ", "hypha_foxglove_bridge") {
-        Ok(bus) => bus,
+        Ok(bus) => std::sync::Arc::new(bus),
         Err(code) => return code,
     };
 
@@ -96,21 +96,29 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
     println!(" URL: ws://localhost:{}", bridge.local_port());
     println!("===============================================================\n");
 
-    // A pattern subscription resolves its topics once, so the follower lists topics on
-    // its own cadence and subscribes to new ones by name.
-    let mut follower = TopicFollower::new(
+    // A pattern subscription resolves its streams once, so the follower subscribes to each
+    // stream as the graph shows it, from listings made on a thread of its own.
+    let follower = StreamFollower::new(
         bridge.subscription_patterns(),
+        StreamSelector::default(),
         SUBSCRIPTION_DEPTH,
-        TOPIC_REFRESH_INTERVAL,
     );
-    if let Err(error) = follower.refresh(&bus) {
-        eprintln!("hypha foxglove: cannot list topics: {error}");
-    }
+    let mut follower = match Following::start(&bus, follower) {
+        Ok(following) => following,
+        Err(error) => {
+            eprintln!("hypha foxglove: cannot follow the bus: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let mut last_health_log = Instant::now();
+    let mut told = None;
     while bus.ok() {
-        if let Err(error) = follower.refresh_if_due(&bus) {
-            eprintln!("hypha foxglove: cannot list topics: {error}");
+        if let Err(error) = follower.pass(&bus)
+            && told.as_ref() != Some(&error)
+        {
+            eprintln!("hypha foxglove: {}", follow_error_text(&bus, &error));
+            told = Some(error);
         }
         let mut drained = 0_usize;
         while drained < DRAIN_BUDGET_PER_PASS {

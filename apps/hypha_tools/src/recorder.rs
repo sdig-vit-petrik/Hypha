@@ -1,5 +1,6 @@
 //! Pure core of `hypha record`: writes MCAP containers with schemas, channels, and message records.
 
+use crate::stream::{stream_title, type_label};
 use mcap::records::MessageHeader;
 use mcap::{Compression, WriteOptions, Writer};
 use std::collections::BTreeMap;
@@ -48,12 +49,39 @@ pub struct RecordSample<'a> {
     pub publish_time_nanos: u64,
 }
 
+/// One MCAP channel: the stream of one schema on one topic.
 #[derive(Debug)]
-struct TopicState {
+struct ChannelState {
     channel_id: u16,
     sequence: u32,
     messages: u64,
+    /// The channel's type as a line names it, `type (md5 start)`.
+    label: String,
 }
+
+/// What a recording holds of one channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelCount {
+    /// The topic name.
+    pub topic: String,
+    /// The channel's type as a line names it: `type (md5 start)`.
+    pub label: String,
+    /// Messages written to the channel.
+    pub messages: u64,
+}
+
+impl ChannelCount {
+    /// The channel as a line names it: its topic, and its type and MD5 start when `all`
+    /// holds another channel of the topic.
+    #[must_use]
+    pub fn title(&self, all: &[Self]) -> String {
+        let shared = all.iter().filter(|other| other.topic == self.topic).take(2).count() > 1;
+        stream_title(&self.topic, &self.label, shared)
+    }
+}
+
+/// The stream a sample is written to: its topic and MD5, not case sensitive.
+type ChannelKey = (String, String);
 
 /// MCAP recorder managing channels, schemas, and thread-safe chunked recording.
 pub struct Recorder {
@@ -65,8 +93,8 @@ pub struct Recorder {
 
 #[derive(Debug, Default)]
 struct RecorderState {
-    topics: BTreeMap<String, TopicState>,
-    topic_order: Vec<String>,
+    channels: BTreeMap<ChannelKey, ChannelState>,
+    channel_order: Vec<ChannelKey>,
 }
 
 impl Recorder {
@@ -119,14 +147,16 @@ impl Recorder {
         &self.error
     }
 
-    /// Records a single sample, declaring schema and channel if first seen for `sample.topic`.
+    /// Records a single sample, declaring schema and channel if its stream, the topic and the
+    /// MD5, is first seen. One topic with two schemas is two channels.
     pub fn record(&mut self, sample: &RecordSample<'_>) -> bool {
         let Some(ref mut writer) = self.writer else {
             return false;
         };
 
         let state = &mut self.state;
-        let (channel_id, sequence) = if let Some(ts) = state.topics.get_mut(sample.topic) {
+        let key = (sample.topic.to_owned(), sample.md5.to_ascii_lowercase());
+        let (channel_id, sequence) = if let Some(ts) = state.channels.get_mut(&key) {
             let seq = ts.sequence;
             ts.sequence = ts.sequence.saturating_add(1);
             ts.messages = ts.messages.saturating_add(1);
@@ -149,11 +179,11 @@ impl Recorder {
                 return false;
             };
 
-            state.topic_order.push(sample.topic.to_owned());
-            state.topics.insert(
-                sample.topic.to_owned(),
-                TopicState { channel_id, sequence: 1, messages: 1 },
-            );
+            state.channel_order.push(key.clone());
+            let label = type_label(sample.data_type, sample.md5);
+            state
+                .channels
+                .insert(key, ChannelState { channel_id, sequence: 1, messages: 1, label });
 
             (channel_id, 0)
         };
@@ -183,17 +213,22 @@ impl Recorder {
         }
     }
 
-    /// Returns per-topic recorded message counts in order of discovery.
+    /// Returns per-channel recorded message counts in order of discovery.
     #[must_use]
-    pub fn counters(&self) -> Vec<(String, u64)> {
+    pub fn counters(&self) -> Vec<ChannelCount> {
         let state = &self.state;
-        let mut res = Vec::with_capacity(state.topic_order.len());
-        for topic in &state.topic_order {
-            if let Some(ts) = state.topics.get(topic) {
-                res.push((topic.clone(), ts.messages));
-            }
-        }
-        res
+        state
+            .channel_order
+            .iter()
+            .filter_map(|key| {
+                let channel = state.channels.get(key)?;
+                Some(ChannelCount {
+                    topic: key.0.clone(),
+                    label: channel.label.clone(),
+                    messages: channel.messages,
+                })
+            })
+            .collect()
     }
 }
 

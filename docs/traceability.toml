@@ -161,7 +161,7 @@ evidence = "the installed SDK flow (`scripts/test-installed-sdk.sh`)"
 
 [[requirement]]
 id = "FSR-22"
-tests = ["hypha_tools/echo_plot_cli", "hypha_tools/topic_follower", "hypha_ffi/introspection_rows"]
+tests = ["hypha_tools/echo_plot_cli", "hypha_node/stream_follower", "hypha_ffi/introspection_rows"]
 gap = "The O(1) clause has no measurement (R7)."
 
 [[requirement]]
