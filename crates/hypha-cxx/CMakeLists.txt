@@ -380,6 +380,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_qos.cpp
     test/test_topic_overloading.cpp
     test/test_sensor_msgs_companions.cpp
+    test/test_camera_info.cpp
     test/test_sensor_msgs_ros2_names.cpp
   )
   # The ROS 2 names of sensor_msgs, for test_sensor_msgs_ros2_names.cpp.

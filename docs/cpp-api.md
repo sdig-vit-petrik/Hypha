@@ -176,8 +176,9 @@ examples/autoware/tools/port.py verify` (run by `./check.sh`) checks them.
 `point_field_conversion.h` needs `<sensor_msgs/PointField.h>` (or `PointCloud2.h`) before
 it, as upstream does. Left out: `fill_image.h` and `point_cloud_conversion.h` (the second
 needs the deprecated `sensor_msgs/PointCloud`, which hypha does not ship). The SDK has no
-counterpart of `camera_info_manager`: a port reads its camera calibration into a
-`sensor_msgs::CameraInfo` itself (#265 leaves that decision open).
+counterpart of `camera_info_manager` (it needs a `NodeHandle`, a service and a URL
+scheme): the calibration file is read by `hypha::readCameraInfo()` (section 9, *Camera
+calibration*).
 `crates/hypha-cxx/test/test_sensor_msgs_companions.cpp` runs them.
 
 An application generates its own `.msg` and
@@ -1078,6 +1079,25 @@ for (const auto sensor : settings.list("sensors")) {
   The check is in the C ABI layer (`hypha_config_ignore`, and `hypha_config_unread_keys`
   leaves ignored keys out), so every SDK gets it.
 - **Arrays of scalars.** `cfg.requiredArray<T>(key)` returns `std::vector<T>`; `cfg.requiredArray<T, N>(key)` returns `std::array<T, N>` and refuses any other length. `optionalArray<T>` and `optionalArray<T, N>` return a `std::optional` of the same, empty only when the key is absent. T is any type `required<T>` reads (bool, an integer, float, double, std::string), and each element gets the same conversion and range check. A key that is not an array, an element of the wrong type, an array of tables and a wrong length throw `ParameterError` for the `required*` and the `optional*` form alike, and the message names the key and, for an element, its index (`hypha: parameter 'voxel_weights[2]': expected a number, found "x"`; `hypha: parameter 'extrinsic_t': expected 3 elements, found 4`). An empty array is an empty vector, and a length error for N > 0. Reading an array marks the key as read, so `unreadKeys()` does not list it. An array inside an entry of a table list is refused like a nested list.
+- **Camera calibration.** `<hypha/camera_info.h>` reads the file that a camera driver
+  loads with `camera_info_manager` or `camera_calibration_parsers`, the YAML that
+  `camera_calibration` writes (ROS 1 and ROS 2), into a `sensor_msgs::CameraInfo`:
+  `hypha::readCameraInfo(hypha::config().path("camera_info_url"))`, or
+  `readCameraInfo(path, &cameraName)` for the file's `camera_name`;
+  `parseCameraInfo(text, source)` reads text in memory. `path()` resolves the name against the
+  directory of the parameter file, so `camera_info_url = "calib/left.yaml"` works from any
+  working directory. Only the YAML that the tools write is understood, with no YAML
+  library: block mappings, `[a, b]` lists on one or more lines, `- a` lists, comments,
+  quotes. Anything else (a flow mapping `{...}`, a list inside a list, anchors) and
+  a file that does not hold a camera calibration throw `ConfigError`, so a bad file
+  stops the node at start with 78. The message names the file, the line and the field:
+  `hypha: camera calibration 'left.yaml': line 7: camera_matrix.data: expected 9 numbers (3 x 3), found 8`.
+  `image_width`, `image_height`, `camera_matrix` (3 x 3), `distortion_model`,
+  `distortion_coefficients`, `rectification_matrix` (3 x 3) and `projection_matrix`
+  (3 x 4) are required; `camera_name`, `binning_x`, `binning_y` and `roi` are not; an
+  unknown key (a typo) is refused. `header` of the result is empty: the driver names the
+  frame and stamps each message. Writing a calibration back (the `set_camera_info` service) is not
+  provided. `crates/hypha-cxx/test/test_camera_info.cpp` runs it.
 - **Porting.** A ROS 1 list parameter, with the fixed-size form:
   [ros1-migration-guide.md](ros1-migration-guide.md#108-a-list-of-scalars-in-the-parameter-file).
 - **Without a bus.** A `hypha::ConfigContext` serves `hypha::config()` in a test
@@ -1324,6 +1344,7 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hyph
 | `hypha/raw_api.h`, `hypha/raw.h`                                     | Raw endpoints, `lookupDefinition`, `listNodes`; `RawSample`, `NodeInfo`, `Metric`, `SubscriberMetrics`                                                                                                          |
 | `hypha/status.h`                                                       | `Status`, `ConfigError`, `require`                                                                                                                                                             |
 | `hypha/config.h`                                                       | `config()`, `ConfigView`, `ConfigList`, `ConfigContext`, `ParameterError`; it includes `constraints.h` (`constraints`)                                                                                                 |
+| `hypha/camera_info.h`                                                  | `readCameraInfo`, `parseCameraInfo`: the ROS camera calibration YAML as `sensor_msgs::CameraInfo`                                                                                       |
 | `hypha/introspection.h`, `hypha/metrics.h`                           | `introspect`, `nodeState`, `recordConfig`; `metrics`, `metric`                                                                                                                             |
 | `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h` | `Duration`, `Time`, literals; `now`, `steadyNow`, simulated time; `toRosTime`, `fromRosTime`                                                                                             |
 | `hypha_base/short_namespace.h`                                     | the alias `hy` of `hypha`; `HYPHA_NO_SHORT_NAMESPACE` leaves it out                                                                                                                      |
