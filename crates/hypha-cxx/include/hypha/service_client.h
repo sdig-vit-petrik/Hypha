@@ -281,12 +281,15 @@ backend::ServiceDeclaration declarationOf(std::string name, bool literal)
 }
 
 template <typename Srv>
-ServiceServer serve(backend::ServiceDeclaration declaration, std::function<void(Request<Srv>&)> handler)
+ServiceServer
+serve(backend::ServiceDeclaration declaration, std::function<void(Request<Srv>&)> handler)
 {
     auto* state = new ServerState<Srv>{std::move(handler), declaration.describe("servers"), {}};
-    return ServiceServer(backend::createServer(
-        declaration, &ServerState<Srv>::serve, state, &ServerState<Srv>::release
-    ));
+    return ServiceServer(
+        backend::createServer(
+            declaration, &ServerState<Srv>::serve, state, &ServerState<Srv>::release
+        )
+    );
 }
 
 }  // namespace detail

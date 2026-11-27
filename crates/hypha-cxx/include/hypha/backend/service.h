@@ -126,10 +126,9 @@ inline HyphaServiceDesc descriptionOf(const ServiceDeclaration& declaration)
 [[noreturn]] inline void
 throwServiceFailure(const ServiceDeclaration& declaration, const char* table, Status status)
 {
-    const std::string text =
-        detail::failureText(declaration.describe(table), status, lastError());
-    const bool configuration = status == Status::QosMismatch
-                            || (!declaration.literal && status == Status::InvalidArgument);
+    const std::string text = detail::failureText(declaration.describe(table), status, lastError());
+    const bool        configuration = status == Status::QosMismatch
+                                   || (!declaration.literal && status == Status::InvalidArgument);
     if (configuration) {
         throw ConfigError(text);
     }

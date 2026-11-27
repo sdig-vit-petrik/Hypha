@@ -30,8 +30,7 @@ struct Service
 };
 
 /// @brief What call() did with a request.
-enum class CallStatus : uint32_t
-{
+enum class CallStatus : uint32_t {
     /// Sent, or held until a server appears: exactly one outcome follows.
     Sent = HYPHA_CALL_SENT,
     /// The client has its limit of calls in flight, expired calls the server still holds
@@ -55,8 +54,7 @@ inline const char* toString(CallStatus status)
 }
 
 /// @brief What became of a call. Each sent call ends in exactly one.
-enum class CallOutcome : uint32_t
-{
+enum class CallOutcome : uint32_t {
     Answered = HYPHA_CALL_ANSWERED,
     /// refuse(), a request left unanswered, a response above its bound.
     Refused = HYPHA_CALL_REFUSED,
@@ -137,8 +135,8 @@ class CallResult
         result.text_.assign(raw.description, raw.description_len);
         result.sent_ = Time::fromNanos(raw.sent_nanos);
         result.done_ = Time::fromNanos(raw.done_nanos);
-        const bool decoded = !result.ok()
-                          || codec::decode(raw.response, raw.response_len, result.response_);
+        const bool decoded =
+            !result.ok() || codec::decode(raw.response, raw.response_len, result.response_);
         if (!decoded) {
             result.outcome_ = CallOutcome::ServerLost;
             result.mayHaveRun_ = true;

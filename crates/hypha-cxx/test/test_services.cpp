@@ -3,14 +3,14 @@
 // from another thread, refused when destroyed unanswered, and disconnected when it
 // outlives its server.
 
+#include <hypha_test_srvs/Echo.h>
+
 #include "test_types.h"
 
 #include <camera_control_msgs/SetExposure.h>
-#include <hypha_test_srvs/Echo.h>
+#include <gtest/gtest.h>
 #include <std_srvs/SetBool.h>
 #include <std_srvs/Trigger.h>
-
-#include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>
@@ -63,9 +63,13 @@ class ServiceFixture : public ::testing::Test
     {
         std::optional<hypha::CallResult<Srv>> result;
         const hypha::CallStatus               status =
-            client.call(request, [&result](const hypha::CallResult<Srv>& r) { result = r; });
+            client.call(request, [&result](const hypha::CallResult<Srv>& r) {
+                result = r;
+            });
         EXPECT_EQ(status, hypha::CallStatus::Sent);
-        this->runUntil([&result] { return result.has_value(); });
+        this->runUntil([&result] {
+            return result.has_value();
+        });
         EXPECT_TRUE(result.has_value()) << "no outcome within 5 s";
         return result.value_or(hypha::CallResult<Srv>::notSent(hypha::CallStatus::Busy));
     }
@@ -81,8 +85,7 @@ class ServiceFixture : public ::testing::Test
 TEST_F(ServiceFixture, AnAnsweredCallDeliversTheResponseAtALaterTurn)
 {
     auto server = this->node->advertiseService<SetBool>(
-        hypha::Service{this->name("arming")},
-        [](hypha::Request<SetBool>& request) {
+        hypha::Service{this->name("arming")}, [](hypha::Request<SetBool>& request) {
             static_cast<void>(request.reply({.success = request->data, .message = "armed"}));
         }
     );
@@ -100,8 +103,9 @@ TEST_F(ServiceFixture, AnAnsweredCallDeliversTheResponseAtALaterTurn)
 TEST_F(ServiceFixture, ARefusalCarriesItsReason)
 {
     auto server = this->node->advertiseService<SetBool>(
-        hypha::Service{this->name("refusing")},
-        [](hypha::Request<SetBool>& request) { static_cast<void>(request.refuse("not armed")); }
+        hypha::Service{this->name("refusing")}, [](hypha::Request<SetBool>& request) {
+            static_cast<void>(request.refuse("not armed"));
+        }
     );
     auto client = this->node->serviceClient<SetBool>(hypha::Service{this->name("refusing")});
 
@@ -115,7 +119,8 @@ TEST_F(ServiceFixture, ARefusalCarriesItsReason)
 TEST_F(ServiceFixture, ARequestTheHandlerLeavesUnansweredIsRefused)
 {
     auto server = this->node->advertiseService<SetBool>(
-        hypha::Service{this->name("silent")}, [](hypha::Request<SetBool>&) {}
+        hypha::Service{this->name("silent")}, [](hypha::Request<SetBool>&) {
+        }
     );
     auto client = this->node->serviceClient<SetBool>(hypha::Service{this->name("silent")});
 
@@ -141,7 +146,8 @@ TEST_F(ServiceFixture, ACallWithoutAServerEndsNoServerAtItsDeadline)
 
 TEST_F(ServiceFixture, ARequestAboveItsBoundIsTooLargeAndABlockingOneIsNotSent)
 {
-    auto client = this->node->serviceClient<hypha_test_srvs::Echo>(hypha::Service{this->name("echo")});
+    auto client =
+        this->node->serviceClient<hypha_test_srvs::Echo>(hypha::Service{this->name("echo")});
     const hypha_test_srvs::Echo::Request large{.text = std::string(100, 'x')};
     EXPECT_EQ(client.call(large, {}), hypha::CallStatus::TooLarge);
 
@@ -158,8 +164,9 @@ TEST_F(ServiceFixture, ARequestTheServerHoldsPastTheTimeoutEndsTimeout)
 {
     hypha::Deferred<SetBool> held;
     auto                     server = this->node->advertiseService<SetBool>(
-        hypha::Service{this->name("slow")},
-        [&held](hypha::Request<SetBool>& request) { held = request.defer(); }
+        hypha::Service{this->name("slow")}, [&held](hypha::Request<SetBool>& request) {
+            held = request.defer();
+        }
     );
     auto client = this->node->serviceClient<SetBool>(
         hypha::Service{this->name("slow")}, hypha::timeout(SHORT)
@@ -174,23 +181,33 @@ TEST_F(ServiceFixture, ARequestTheServerHoldsPastTheTimeoutEndsTimeout)
 
 TEST_F(ServiceFixture, AServerDestroyedWithTheRequestEndsServerLostAndItsDeferredIsDisconnected)
 {
-    hypha::Deferred<SetBool> held;
+    hypha::Deferred<SetBool>            held;
     std::optional<hypha::ServiceServer> server = this->node->advertiseService<SetBool>(
-        hypha::Service{this->name("leaving")},
-        [&held](hypha::Request<SetBool>& request) { held = request.defer(); }
+        hypha::Service{this->name("leaving")}, [&held](hypha::Request<SetBool>& request) {
+            held = request.defer();
+        }
     );
     auto client = this->node->serviceClient<SetBool>(hypha::Service{this->name("leaving")});
     std::optional<hypha::CallResult<SetBool>> result;
     ASSERT_EQ(
-        client.call({.data = true}, [&result](const hypha::CallResult<SetBool>& r) { result = r; }),
+        client.call(
+            {.data = true},
+            [&result](const hypha::CallResult<SetBool>& r) {
+                result = r;
+            }
+        ),
         hypha::CallStatus::Sent
     );
-    this->runUntil([&held] { return static_cast<bool>(held); });
+    this->runUntil([&held] {
+        return static_cast<bool>(held);
+    });
     ASSERT_TRUE(static_cast<bool>(held));
 
     server.reset();
     EXPECT_EQ(held.reply({.success = true, .message = "too late"}), hypha::Status::Disconnected);
-    this->runUntil([&result] { return result.has_value(); });
+    this->runUntil([&result] {
+        return result.has_value();
+    });
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->outcome(), hypha::CallOutcome::ServerLost);
     EXPECT_TRUE(result->mayHaveRun());
@@ -200,13 +217,19 @@ TEST_F(ServiceFixture, AServerDestroyedWithTheRequestEndsServerLostAndItsDeferre
 TEST_F(ServiceFixture, AHandlerThatThrowsLosesTheCallAndFailsTheRun)
 {
     auto server = this->node->advertiseService<SetBool>(
-        hypha::Service{this->name("throwing")},
-        [](hypha::Request<SetBool>&) { throw std::runtime_error("device on fire"); }
+        hypha::Service{this->name("throwing")}, [](hypha::Request<SetBool>&) {
+            throw std::runtime_error("device on fire");
+        }
     );
     auto client = this->node->serviceClient<SetBool>(hypha::Service{this->name("throwing")});
     std::optional<hypha::CallResult<SetBool>> result;
     ASSERT_EQ(
-        client.call({.data = true}, [&result](const hypha::CallResult<SetBool>& r) { result = r; }),
+        client.call(
+            {.data = true},
+            [&result](const hypha::CallResult<SetBool>& r) {
+                result = r;
+            }
+        ),
         hypha::CallStatus::Sent
     );
     bool failed = false;
@@ -225,11 +248,12 @@ TEST_F(ServiceFixture, ADeferredRequestIsAnsweredFromAnotherThread)
 {
     std::thread worker;
     auto        server = this->node->advertiseService<SetBool>(
-        hypha::Service{this->name("worker")},
-        [&worker](hypha::Request<SetBool>& request) {
+        hypha::Service{this->name("worker")}, [&worker](hypha::Request<SetBool>& request) {
             worker = std::thread([deferred = request.defer()]() mutable {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                EXPECT_EQ(deferred.reply({.success = true, .message = "worker"}), hypha::Status::Ok);
+                EXPECT_EQ(
+                    deferred.reply({.success = true, .message = "worker"}), hypha::Status::Ok
+                );
                 EXPECT_FALSE(static_cast<bool>(deferred));
             });
         }
@@ -245,8 +269,9 @@ TEST_F(ServiceFixture, ADeferredRequestIsAnsweredFromAnotherThread)
 TEST_F(ServiceFixture, ADeferredRequestDestroyedUnansweredIsRefusedNeverSilent)
 {
     auto server = this->node->advertiseService<SetBool>(
-        hypha::Service{this->name("dropping")},
-        [](hypha::Request<SetBool>& request) { static_cast<void>(request.defer()); }
+        hypha::Service{this->name("dropping")}, [](hypha::Request<SetBool>& request) {
+            static_cast<void>(request.defer());
+        }
     );
     auto client = this->node->serviceClient<SetBool>(hypha::Service{this->name("dropping")});
 
@@ -262,7 +287,12 @@ TEST_F(ServiceFixture, ACallMadeBeforeItsServerExistsIsSentWhenOneAppears)
     EXPECT_FALSE(client.ready());
     std::optional<hypha::CallResult<SetBool>> result;
     ASSERT_EQ(
-        client.call({.data = true}, [&result](const hypha::CallResult<SetBool>& r) { result = r; }),
+        client.call(
+            {.data = true},
+            [&result](const hypha::CallResult<SetBool>& r) {
+                result = r;
+            }
+        ),
         hypha::CallStatus::Sent
     );
     EXPECT_TRUE(client.pending());
@@ -270,13 +300,14 @@ TEST_F(ServiceFixture, ACallMadeBeforeItsServerExistsIsSentWhenOneAppears)
     ASSERT_FALSE(result.has_value()) << result->description();
 
     auto server = this->node->advertiseService<SetBool>(
-        hypha::Service{this->name("late")},
-        [](hypha::Request<SetBool>& request) {
+        hypha::Service{this->name("late")}, [](hypha::Request<SetBool>& request) {
             static_cast<void>(request.reply({.success = true, .message = "here now"}));
         }
     );
     EXPECT_TRUE(client.ready());
-    this->runUntil([&result] { return result.has_value(); });
+    this->runUntil([&result] {
+        return result.has_value();
+    });
     ASSERT_TRUE(result.has_value());
     ASSERT_TRUE(result->ok()) << result->description();
     EXPECT_EQ(result->response().message, "here now");
@@ -284,9 +315,8 @@ TEST_F(ServiceFixture, ACallMadeBeforeItsServerExistsIsSentWhenOneAppears)
 
 TEST_F(ServiceFixture, ABlockingCallOnTheRunThreadIsRefusedWithWhatToUseInstead)
 {
-    auto blocking = this->node->serviceClient<SetBool>(
-        hypha::Service{this->name("blocked")}, hypha::blocking
-    );
+    auto blocking =
+        this->node->serviceClient<SetBool>(hypha::Service{this->name("blocked")}, hypha::blocking);
     std::string refusal;
     auto        timer = this->node->timer(hypha::Duration::fromMillis(1), [&blocking, &refusal] {
         if (!refusal.empty()) {
@@ -299,7 +329,9 @@ TEST_F(ServiceFixture, ABlockingCallOnTheRunThreadIsRefusedWithWhatToUseInstead)
             refusal = error.what();
         }
     });
-    this->runUntil([&refusal] { return !refusal.empty(); });
+    this->runUntil([&refusal] {
+        return !refusal.empty();
+    });
     EXPECT_NE(refusal.find("InvalidState"), std::string::npos) << refusal;
     EXPECT_NE(refusal.find("call(request, onResult)"), std::string::npos) << refusal;
 }
@@ -307,11 +339,13 @@ TEST_F(ServiceFixture, ABlockingCallOnTheRunThreadIsRefusedWithWhatToUseInstead)
 TEST_F(ServiceFixture, ASecondServerOfTheNameIsRefusedNamingTheHolder)
 {
     auto first = this->node->advertiseService<SetBool>(
-        hypha::Service{this->name("taken")}, [](hypha::Request<SetBool>&) {}
+        hypha::Service{this->name("taken")}, [](hypha::Request<SetBool>&) {
+        }
     );
     try {
         static_cast<void>(this->node->advertiseService<std_srvs::Trigger>(
-            hypha::Service{this->name("taken")}, [](hypha::Request<std_srvs::Trigger>&) {}
+            hypha::Service{this->name("taken")}, [](hypha::Request<std_srvs::Trigger>&) {
+            }
         ));
         FAIL() << "a second server of the name was created";
     } catch (const std::runtime_error& error) {
@@ -352,15 +386,17 @@ class FakeCamera : public hypha::ApplicationNode
                 this->push(Command{std::nullopt, request->target_exposure, {}, request.defer()});
             }
         );
-        this->worker_ = std::thread([this] { this->grabLoop(); });
+        this->worker_ = std::thread([this] {
+            this->grabLoop();
+        });
     }
 
   private:
     struct Command
     {
-        std::optional<bool>                         enable;
-        float                                       exposure{0.0F};
-        hypha::Deferred<SetBool>                    enableReply;
+        std::optional<bool>                               enable;
+        float                                             exposure{0.0F};
+        hypha::Deferred<SetBool>                          enableReply;
         hypha::Deferred<camera_control_msgs::SetExposure> exposureReply;
     };
 
@@ -378,7 +414,9 @@ class FakeCamera : public hypha::ApplicationNode
     {
         for (;;) {
             std::unique_lock<std::mutex> lock(this->mutex_);
-            this->wake_.wait(lock, [this] { return this->stopping_ || !this->commands_.empty(); });
+            this->wake_.wait(lock, [this] {
+                return this->stopping_ || !this->commands_.empty();
+            });
             if (this->stopping_) {
                 return;
             }
@@ -414,8 +452,8 @@ TEST_F(ServiceFixture, TheCameraWorkerAnswersSettersCalledByABlockingClient)
 {
     FakeCamera camera;
     camera.setup(*this->node);
-    std::atomic<bool> done{false};
-    std::optional<hypha::CallResult<SetBool>>                         enabled;
+    std::atomic<bool>                                                  done{false};
+    std::optional<hypha::CallResult<SetBool>>                          enabled;
     std::optional<hypha::CallResult<camera_control_msgs::SetExposure>> exposed;
     std::thread                                                        operatorThread([&] {
         auto enable = this->node->serviceClient<SetBool>(
@@ -429,7 +467,9 @@ TEST_F(ServiceFixture, TheCameraWorkerAnswersSettersCalledByABlockingClient)
         exposed = exposure.callAndWait({.target_exposure = 20000.0F});
         done = true;
     });
-    this->runUntil([&done] { return done.load(); });
+    this->runUntil([&done] {
+        return done.load();
+    });
     operatorThread.join();
     ASSERT_TRUE(enabled.has_value() && enabled->ok()) << (enabled ? enabled->description() : "");
     EXPECT_EQ(enabled->response().message, "streaming");
