@@ -311,9 +311,13 @@ pub fn cycle_commit(set: &HyphaWaitSet, cycle: CycleId) -> Result<(), Error> {
     let silences = trigger_silences(cycle, &registration)?;
     let driver = registration.driver.is_some();
     check_clock_owner(node, cycle, driver)?;
-    // A downstream can see a replay cycle wait for its first clock.
+    // A downstream can see a replay cycle wait for its first clock, and the cycle cuts
+    // its inputs by stamp.
     if node.on_sim_time() {
         crate::node_progress::ensure_publisher(node).map_err(Error::from_status)?;
+        for source in &registration.inputs {
+            source.replayed.store(true, Ordering::Release);
+        }
     }
     let step: &mut CycleStep = &mut registration;
     step.supervision.resize_with(step.inputs.len(), RefCell::default);

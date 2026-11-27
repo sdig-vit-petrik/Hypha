@@ -61,6 +61,10 @@ pub(crate) struct CycleInputSource {
     /// Queued (`Arrivals`) bindings ever made on this source. While there is none, a
     /// host-time drain stores only the newest sample. Never decremented.
     pub(crate) queued_bindings: std::sync::atomic::AtomicUsize,
+    /// Whether a cycle committed on simulated time reads this source: its replay cuts
+    /// admit older samples, so every drain keeps every sample, whoever drains it. Never
+    /// cleared.
+    pub(crate) replayed: std::sync::atomic::AtomicBool,
     /// The payload of the newest frame of a keep-newest drain, reused across drains.
     newest: Mutex<NewestFrame>,
     /// Samples a port of this source could not decode, each counted once.
@@ -119,8 +123,10 @@ impl CycleInputSource {
         let limit = queued.saturating_add(1);
         let only_latest_bindings =
             self.queued_bindings.load(std::sync::atomic::Ordering::Acquire) == 0;
-        // A replay cut admits older samples, so simulated time keeps every one.
-        let keep_newest = only_latest_bindings && !sim;
+        // A replay cut admits older samples: a source that a replay cycle reads keeps
+        // every one, also when a host-clock step drains it.
+        let replayed = self.replayed.load(std::sync::atomic::Ordering::Acquire);
+        let keep_newest = only_latest_bindings && !sim && !replayed;
         if keep_newest {
             return self.drain_newest(subscriber, history, limit, &mut now);
         }
@@ -273,6 +279,7 @@ fn add_input_source(
         topic,
         fidelity: Mutex::new(ReplayFidelity::default()),
         queued_bindings: std::sync::atomic::AtomicUsize::new(0),
+        replayed: std::sync::atomic::AtomicBool::new(false),
         newest: Mutex::new(NewestFrame::default()),
         undecodable: std::sync::atomic::AtomicU64::new(0),
         undecodable_logged: Mutex::new(None),

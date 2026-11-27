@@ -1081,3 +1081,52 @@ pub(crate) fn a_latest_queue_of_one_chunk_keeps_up_on_every_phase_and_after_a_si
     let held = [Some(11); 5];
     assert_eq!(values, [&[Some(9)][..], &held, &[Some(69), Some(79)]].concat());
 }
+
+#[test]
+pub(crate) fn a_host_cycle_sharing_a_source_with_a_replay_cycle_keeps_its_samples() {
+    // A cycle committed on host time and a replay cycle committed after simulated time
+    // was turned on read one source, both `Latest`. The host cycle's step drains the
+    // source first on the turn at 210; the replay step at 200 must still find 150.
+    let node = create_node(&unique("host_and_replay"));
+    let waitset = unsafe { create_waitset(node) };
+    let topic = format!("/{}", unique("host_and_replay"));
+    let (publisher, subscriber) = unsafe { create_pubsub(node, &topic, 10) };
+    let mut source = ptr::null_mut();
+    assert_eq!(
+        unsafe { hypha_input_source_create(waitset, subscriber, &raw mut source) },
+        HyphaStatus::Ok
+    );
+    let host_steps = Box::new(Recorder::new(Duration::ZERO));
+    let host = unsafe { recorded_cycle(waitset, 100_000_000, &host_steps) };
+    let mut index = 0_u32;
+    let latest = LATEST;
+    assert_eq!(
+        unsafe { hypha_cycle_bind_input(host, source, &raw const latest, &raw mut index) },
+        HyphaStatus::Ok
+    );
+    assert_eq!(unsafe { hypha_cycle_commit(host) }, HyphaStatus::Ok);
+    let _clock = SimulatedClock::start(10 * MILLISECOND);
+    let replay_steps = Box::new(Recorder::new(Duration::ZERO));
+    let replay = unsafe { recorded_cycle(waitset, 100_000_000, &replay_steps) };
+    assert_eq!(
+        unsafe { hypha_cycle_bind_input(replay, source, &raw const latest, &raw mut index) },
+        HyphaStatus::Ok
+    );
+    assert_eq!(unsafe { hypha_cycle_commit(replay) }, HyphaStatus::Ok);
+    // The first turn anchors both on the clock at 10.
+    assert_eq!(run_status(waitset, 5_000_000), HyphaStatus::Ok as i32);
+    for (value, stamp) in [(14, 140), (15, 150), (21, 210)] {
+        unsafe { send_stamped(publisher, value, stamp * MILLISECOND) };
+    }
+    set_clock(210 * MILLISECOND);
+    assert_eq!(run_status(waitset, 5_000_000), HyphaStatus::Ok as i32);
+    assert!(!host_steps.steps().is_empty(), "the host cycle stepped on the turn at 210");
+    assert_eq!(deadlines_and_values(&replay_steps.steps()), [(100, None), (200, Some(15))]);
+    unsafe {
+        assert_eq!(hypha_cycle_destroy(replay), HyphaStatus::Ok);
+        assert_eq!(hypha_cycle_destroy(host), HyphaStatus::Ok);
+        assert_eq!(hypha_input_source_destroy(source), HyphaStatus::Ok);
+        hypha_publisher_destroy(publisher);
+        hypha_node_destroy(node);
+    }
+}
