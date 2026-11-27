@@ -303,8 +303,11 @@ count alone. `hypha record` prints `hypha record: <stream>: <n> samples were sen
 was followed` as it finds them and `<stream> sent <n> samples before it was followed` under
 `Recorded messages:` (the recording is not failed for it, as a node that starts during a
 recording cannot be avoided); `echo` and `hz` print one such line on standard error; `--sync`
-fails the recording on them. At 100 Hz a late stream's first 17 samples were counted, and the
-recording began at counter 17; at 1 kHz 135 and 135 (`record_late_streams.rs`).
+fails the recording on them. A stream is followed after the listing that shows it, and the listing waits for the
+spacing: at 100 Hz the recorder counted 17 to 73 samples, and the recording began at the
+counter it named, and at 1 kHz 135 to 599 (`record_late_streams.rs`, runs on a loaded
+machine; before the count existed the same late streams were recorded from 22 to 55 and from
+1397 with no word).
 
 **Not followers.** `hypha topic list` listens on `**` for its `--timeout` and names the
 streams that publish while it listens, among those that exist when it starts: a stream that

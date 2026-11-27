@@ -13,6 +13,8 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const DATA_TYPE: &str = "overload_test/Tick";
@@ -33,18 +35,23 @@ fn first_recorded(path: &std::path::Path, md5: &str) -> u32 {
 }
 
 /// Paces `rate` frames a second for `seconds`, the counter first.
-fn pace(publisher: &mut hypha_node::sdk::RawPublisher, rate: u32, seconds: u64, pad: bool) {
+fn pace(
+    publisher: &mut hypha_node::sdk::RawPublisher,
+    rate: u32,
+    seconds: u64,
+    pad: bool,
+    count: &mut u32,
+) {
     let started = Instant::now();
     let period = Duration::from_secs(1).checked_div(rate).expect("a rate");
     let mut next = started;
-    let mut count = 0_u32;
     while started.elapsed() < Duration::from_secs(seconds) {
         let mut bytes = count.to_le_bytes().to_vec();
         if pad {
             bytes.push(0);
         }
         assert!(publisher.publish(&bytes));
-        count = count.saturating_add(1);
+        *count = count.saturating_add(1);
         next = next.checked_add(period).expect("time");
         while Instant::now() < next {
             std::hint::spin_loop();
@@ -80,12 +87,31 @@ fn run(rate: u32) -> (u64, String, u32) {
         line.clear();
         assert!(stdout.read_line(&mut line).expect("a line") > 0, "the recorder ended early");
     }
-    let told = std::thread::spawn(move || {
-        BufReader::new(stderr).lines().map_while(Result::ok).collect::<Vec<_>>()
-    });
-    pace(&mut v1, 10, 1, false);
+    let followed = Arc::new(AtomicBool::new(false));
+    let told = {
+        let followed = Arc::clone(&followed);
+        std::thread::spawn(move || {
+            BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+                .inspect(|line| {
+                    if line.contains("following 1 more stream") {
+                        followed.store(true, Ordering::Release);
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    pace(&mut v1, 10, 1, false, &mut 0);
     let mut v2 = bus.publish_raw(&topic, DATA_TYPE, &md5_2, VERSION_2).expect("v2");
-    pace(&mut v2, rate, 3, true);
+    // Until the recorder says it follows the stream, as long as a loaded machine takes to list.
+    let mut sent = 0_u32;
+    let began = Instant::now();
+    while !followed.load(Ordering::Acquire) {
+        assert!(began.elapsed() < Duration::from_secs(30), "the recorder never followed v2");
+        pace(&mut v2, rate, 1, true, &mut sent);
+    }
+    pace(&mut v2, rate, 1, true, &mut sent);
     kill(Pid::from_raw(i32::try_from(recorder.id()).expect("pid")), Signal::SIGTERM).expect("stop");
     recorder.wait().expect("status");
     let mut summary = String::new();

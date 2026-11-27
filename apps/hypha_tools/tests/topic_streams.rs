@@ -184,9 +184,13 @@ fn a_selector_that_matches_nothing_names_the_streams_the_name_has() {
     let _bare =
         bus.publish_raw(&topic, DATA_TYPE, "00112233445566778899aabbccddeeff", "").expect("bare");
     let mut echo = spawn(&["echo", &topic, "--type", "std_msgs/Other"]);
-    std::thread::sleep(Duration::from_millis(1500));
-    echo.collect();
-    let errors = echo.errors();
+    // What it says is said once, when its first listing is made: as late as a loaded machine is.
+    let mut errors = String::new();
+    let began = Instant::now();
+    while !errors.contains("waiting") && began.elapsed() < Duration::from_secs(30) {
+        std::thread::sleep(Duration::from_millis(100));
+        errors.push_str(&echo.errors());
+    }
     assert!(!echo.exited(), "it waits");
     assert!(errors.contains("has no stream with --type std_msgs/Other"), "{errors}");
     assert!(
