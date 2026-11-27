@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use crate::put;
 use hypha_msgdef::constant::{ConstantValue, constant_value};
 use hypha_msgdef::resolve::{ResolveError, ServiceIdentity, SpecSet, definition_text};
-use hypha_msgdef::spec::{Constant, FieldType, MessageSpec, Multiplicity, ServiceSpec};
+use hypha_msgdef::spec::{Constant, Field, FieldType, MessageSpec, Multiplicity, ServiceSpec};
 
 /// The three C++ files generated for one service.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +66,7 @@ pub fn emit_message_with_definition(spec: &MessageSpec, md5: &str, definition: &
     emit_struct(&mut output, spec, md5);
     emit_message_traits(&mut output, spec, md5, definition);
     emit_serializer(&mut output, spec);
+    emit_loaned_field(&mut output, spec);
     output
 }
 
@@ -245,6 +246,51 @@ fn emit_serializer(output: &mut String, spec: &MessageSpec) {
     output.push_str("  ROS_DECLARE_ALLINONE_SERIALIZER\n");
     output.push_str("};\n\n");
     output.push_str("}  // namespace ros::serialization\n");
+}
+
+/// The field `Publisher<M>::loan()` writes in place, when the message has one: its single
+/// top-level variable-length array of numbers, if only fixed-size numbers follow it. A
+/// message with two such arrays (`LaserScan`, `JointState`, `Joy`) has none, since the other
+/// would have to be filled in the head. The fixed tail (`PointCloud2::is_dense`) is placed
+/// after however many bytes the field turns out to hold.
+fn loaned_field(spec: &MessageSpec) -> Option<&Field> {
+    let is_number = |field_type: &FieldType| {
+        !matches!(
+            field_type,
+            FieldType::Bool
+                | FieldType::Text
+                | FieldType::Time
+                | FieldType::Duration
+                | FieldType::Message(_)
+        )
+    };
+    let is_number_array = |field: &Field| {
+        field.multiplicity == Multiplicity::Variable && is_number(&field.field_type)
+    };
+    let mut arrays = spec.fields.iter().enumerate().filter(|(_, field)| is_number_array(field));
+    let (position, field) = arrays.next()?;
+    if arrays.next().is_some() {
+        return None;
+    }
+    let fixed_tail = spec.fields.get(position.checked_add(1)?..)?.iter().all(|after| {
+        let primitive = after.field_type == FieldType::Bool || is_number(&after.field_type);
+        primitive && after.multiplicity != Multiplicity::Variable
+    });
+    fixed_tail.then_some(field)
+}
+
+fn emit_loaned_field(output: &mut String, spec: &MessageSpec) {
+    let Some(field) = loaned_field(spec) else {
+        return;
+    };
+    let full_cpp_type = format!("::{}::{}", spec.type_name.package, spec.type_name.name);
+    put(
+        output,
+        format_args!(
+            "\nnamespace hypha::message_traits {{\n\ntemplate <>\nstruct LoanedField<{full_cpp_type}> {{\n  static constexpr auto member = &{full_cpp_type}::{};\n}};\n\n}}  // namespace hypha::message_traits\n",
+            field_name_safe(&field.name)
+        ),
+    );
 }
 
 fn escape_c_string(s: &str) -> String {
