@@ -463,11 +463,21 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   in node creation, and the player sends its `/clock` only once `/clock_progress`
   has no publisher left (`replay-flow-control.md` §4.4).
 - **A replay step with a lost input fails.** A step with a sequence gap or an
-  evicted sample on a queued input, or a lost sample on a `Latest` input under replay
-  that was stamped at or after the oldest deadline still to run, fails its `WaitSet`
-  run with `SequenceGap`. Its signs are the `replay not faithful: N samples lost on <topic>`
-  log line and `overrun_total`. In host time, a latest input neither fails nor counts a loss,
-  because a value it did not read was superseded.
+  evicted sample on a queued input fails its `WaitSet` run with `SequenceGap`. So does a
+  `Latest` input under replay with a sequence gap, or with an evicted sample at a step
+  that finds no retained sample before the deadline that no reader rejected. Until then
+  a newer sample that no reader rejected, retained or held, supersedes the evicted one in
+  data time; a rejection of it, by the step or by another reader of the history, ends
+  that. Its signs are the `replay not faithful: N samples lost on <topic>` log line and
+  `overrun_total`. In host time, a latest input neither fails nor counts a loss, because
+  a value it did not read was superseded.
+- **A replay report follows a drain of every replay input.** Under simulated time a
+  `WaitSet` turn drains the inputs of each of its replay cycles after its steps and
+  before it offers progress, on a turn that ran no step too, and a drain takes the
+  queues of all publishers. Drain only at a due step, or only one queue's depth, and
+  the player's next chunk pushes unread samples out of a queue: a transport gap that a
+  selection supersedes fails the step (#222), and a loss before a publisher's first
+  accepted frame is not counted at all (#247). Host time keeps its drain at the step.
 - **Benchmarks: a green test run misses a slowdown.** A hot-path change (dispatch,
   publish, receive, cycle tick, wire codec) reports its benchmark numbers before and
   after, in the commit message. `cargo bench -p hypha_wire --bench codec` measures the

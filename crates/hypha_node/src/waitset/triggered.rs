@@ -8,7 +8,7 @@ use hypha_runtime::upstream_hold::Limit;
 use super::dispatch::{CallbackDispatcher, fail_with, record_action};
 use super::upstream::UpstreamHold;
 use super::{AttachmentId, ExecutionHealth, Progression, Registration, Target, invoke_cycle};
-use crate::cycle::{Cycle, CycleId};
+use crate::cycle::{Cycle, CycleId, DrainClock};
 use crate::status::Error;
 use crate::waitset::{HyphaCallbackResult, HyphaWaitSet};
 
@@ -132,7 +132,8 @@ impl CallbackDispatcher<'_> {
         } else {
             Limit { at: None, blocking: None }
         };
-        crate::cycle::drain_inputs(cycle)?;
+        let drain = if sim { DrainClock::Simulated } else { DrainClock::Host };
+        crate::cycle::drain_inputs(cycle, drain)?;
         state.read_pending(cycle)?;
         let clock = if sim {
             TriggerClock::Sim { now, limit: &limit }

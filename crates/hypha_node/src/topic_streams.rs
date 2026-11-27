@@ -14,21 +14,21 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::{Duration, Instant};
 
 use hypha_iceoryx2::{Iox2Transport, RecordedStream};
 
 /// The reads (a topic's records, one stream's publishers) one housekeeping pass does at most.
 const WORK_PER_PASS: usize = 4;
 
-/// The longest time between two rounds without a graph event.
-const BACKSTOP: Duration = Duration::from_secs(1);
+/// The longest time between two rounds without a graph event, in nanoseconds.
+const BACKSTOP: u64 = 1_000_000_000;
 
-/// The shortest time between the starts of two rounds; a graph event within it waits.
-const SPACING: Duration = Duration::from_millis(100);
+/// The shortest time between the starts of two rounds, in nanoseconds; a graph event
+/// within it waits.
+const SPACING: u64 = 100_000_000;
 
-/// How soon the run comes back to a round that a pass left unfinished.
-const PENDING_WAKE: Duration = Duration::from_millis(1);
+/// How soon the run comes back to a round that a pass left unfinished, in nanoseconds.
+const PENDING_WAKE: u64 = 1_000_000;
 
 /// The streams of one topic that have a live publisher, by schema hash, type and MD5.
 type Published = Arc<[RecordedStream]>;
@@ -75,7 +75,8 @@ pub(crate) struct Registry {
 /// One refresh of every watched topic, a few reads per housekeeping pass.
 #[derive(Debug, Default)]
 struct Round {
-    started: Option<Instant>,
+    /// Host monotonic time, in nanoseconds, at which the last round started.
+    started: Option<u64>,
     /// The topics of the round not reached yet.
     queue: Vec<Arc<TopicStreams>>,
     scan: Option<Scan>,
@@ -117,30 +118,32 @@ impl Registry {
         self.graph_changed.store(true, Ordering::Relaxed);
     }
 
-    /// How soon the run must come back for the housekeeping at `now`: soon while a round is
-    /// unfinished, else when the next round is due; `None` with no watched topic.
-    pub(crate) fn next_wake(&self, now: Instant) -> Option<Duration> {
+    /// The host monotonic time, in nanoseconds, by which the run must come back for the
+    /// housekeeping, at `now`: soon while a round is unfinished, else when the next round is
+    /// due; `None` with no watched topic.
+    pub(crate) fn next_deadline(&self, now: u64) -> Option<i64> {
         let round = self.round.try_lock().ok()?;
-        if round.is_pending() {
-            return Some(PENDING_WAKE);
-        }
-        let watched = crate::locked(&self.topics).iter().any(|topic| topic.strong_count() > 0);
-        if !watched {
-            return None;
-        }
-        let since = round.started.map_or(BACKSTOP, |started| now.duration_since(started));
-        let wait = if self.graph_changed.load(Ordering::Relaxed) { SPACING } else { BACKSTOP };
-        Some(wait.saturating_sub(since))
+        let deadline = if round.is_pending() {
+            now.saturating_add(PENDING_WAKE)
+        } else {
+            let watched = crate::locked(&self.topics).iter().any(|topic| topic.strong_count() > 0);
+            if !watched {
+                return None;
+            }
+            let wait = if self.graph_changed.load(Ordering::Relaxed) { SPACING } else { BACKSTOP };
+            round.started.map_or(now, |started| started.saturating_add(wait))
+        };
+        i64::try_from(deadline).ok()
     }
 
     /// One housekeeping pass at `now`: start a round after a graph event (at most once per
     /// [`SPACING`]) or at the backstop, and do at most [`WORK_PER_PASS`] reads of it. A
     /// round ends when its queue is empty, so it never continues past the topics it began
     /// with.
-    pub(crate) fn housekeep(&self, transport: &Iox2Transport, now: Instant) {
+    pub(crate) fn housekeep(&self, transport: &Iox2Transport, now: u64) {
         let Ok(mut round) = self.round.try_lock() else { return };
         if !round.is_pending() {
-            let since = round.started.map(|started| now.duration_since(started));
+            let since = round.started.map(|started| now.saturating_sub(started));
             let backstop = since.is_none_or(|since| since >= BACKSTOP);
             let spaced = since.is_none_or(|since| since >= SPACING);
             let changed = spaced && self.graph_changed.swap(false, Ordering::Relaxed);
@@ -206,7 +209,6 @@ mod tests {
     use super::{Registry, TopicStreams, Watch};
     use hypha_iceoryx2::RecordedStream;
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
 
     fn stream(schema_hash: u64) -> RecordedStream {
         RecordedStream { schema_hash, data_type: "pkg/T".to_owned(), md5: String::new() }
@@ -239,9 +241,9 @@ mod tests {
     #[test]
     fn the_run_comes_back_for_a_watched_topic_and_not_without_one() {
         let registry = Registry::default();
-        let now = Instant::now();
-        assert_eq!(registry.next_wake(now), None, "nothing watched: no wake");
+        let now = 5_000_000_000;
+        assert_eq!(registry.next_deadline(now), None, "nothing watched: no wake");
         let _watch = registry.watch("/t", 1);
-        assert_eq!(registry.next_wake(now), Some(Duration::ZERO), "a first round is due");
+        assert_eq!(registry.next_deadline(now), Some(5_000_000_000), "a first round is due now");
     }
 }

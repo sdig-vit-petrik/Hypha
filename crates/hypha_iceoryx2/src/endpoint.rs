@@ -433,6 +433,38 @@ impl Iox2Subscriber {
         }
     }
 
+    /// The samples one publisher on each topic this subscriber follows can queue: its
+    /// [`Self::buffer_size`] for a single stream, the sum of each stream's for a set.
+    #[must_use]
+    pub fn topics_buffer_size(&self) -> usize {
+        match &self.inner {
+            SubscriberKind::Single(single) => single.subscriber.buffer_size(),
+            SubscriberKind::Set { subscribers, .. } => subscribers
+                .iter()
+                .map(|(subscriber, _, _)| subscriber.buffer_size())
+                .fold(0, usize::saturating_add),
+        }
+    }
+
+    /// The most samples this subscriber can hold queued: iceoryx2 gives each publisher
+    /// its own queue, so one queue of each topic's depth for each publisher the topic
+    /// admits.
+    #[must_use]
+    pub fn queue_capacity(&self) -> usize {
+        let capacity = |service: &DataPortFactory, depth: usize| {
+            service.static_config().max_publishers().saturating_mul(depth)
+        };
+        match &self.inner {
+            SubscriberKind::Single(single) => {
+                capacity(&single.service, single.subscriber.buffer_size())
+            }
+            SubscriberKind::Set { subscribers, .. } => subscribers
+                .iter()
+                .map(|(subscriber, _, service)| capacity(service, subscriber.buffer_size()))
+                .fold(0, usize::saturating_add),
+        }
+    }
+
     pub(crate) fn new(
         subscriber: Subscriber<Ipc, [u8], Iox2FrameHeader>,
         created_nanos: u64,
