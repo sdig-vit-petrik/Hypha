@@ -204,6 +204,65 @@ class TimerFailApp final : public hypha::ApplicationNode
     hypha::Timer timer_;
 };
 
+/// Reports a configuration fault found after start from a worker thread that the application
+/// owns. The stop is a hang guard that the run should never reach.
+class ThreadConfigFailApp final : public hypha::ApplicationNode
+{
+  public:
+    void setup(hypha::Node& node) override
+    {
+        this->worker_.start(std::thread(FailNow{this}));
+        this->stopper_.arm(node, std::chrono::seconds(5));
+    }
+
+  private:
+    struct FailNow
+    {
+        ThreadConfigFailApp* app;
+
+        void operator()() const
+        {
+            app->failRun(hypha::ConfigError("the first frame exceeds image_max_bytes"));
+        }
+    };
+
+    Stopper       stopper_;
+    JoinOnDestroy worker_;
+};
+
+/// Reports a configuration fault found after start from a timer callback on the run thread.
+class TimerConfigFailApp final : public hypha::ApplicationNode
+{
+  public:
+    void setup(hypha::Node& node) override
+    {
+        this->timer_ = node.timer(
+            hypha::Duration::fromMillis(10), hypha::bind<&TimerConfigFailApp::tick>(*this)
+        );
+        this->stopper_.arm(node);
+    }
+
+    void tick()
+    {
+        this->failRun(hypha::ConfigError("the pixel format is not offered"));
+    }
+
+  private:
+    Stopper      stopper_;
+    hypha::Timer timer_;
+};
+
+/// Reports a runtime failure, then a configuration fault: the first one decides the exit code.
+class RuntimeThenConfigFailApp final : public hypha::ApplicationNode
+{
+  public:
+    void setup(hypha::Node&) override
+    {
+        this->failRun("the device is gone");
+        this->failRun(hypha::ConfigError("the pixel format is not offered"));
+    }
+};
+
 /// Refuses start-up from setup() of a cycle node. The commit must not run, so
 /// step() is never called. The stop is a hang guard that the run should never reach.
 class SetupRefusesCycleApp final : public hypha::CycleNode
@@ -643,6 +702,27 @@ TEST(RunNodeLifecycle, FailRunFromAnotherThreadReturnsTheRuntimeCode)
 TEST(RunNodeLifecycle, FailRunFromATimerReturnsTheRuntimeCode)
 {
     EXPECT_EQ(runWithoutArguments(&hypha::runNode<TimerFailApp>), hypha::kExitRuntime);
+}
+
+TEST(RunNodeLifecycle, FailRunWithAConfigErrorFromAWorkerReturnsTheConfigurationCode)
+{
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithoutArguments(&hypha::runNode<ThreadConfigFailApp>);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    EXPECT_EQ(exitCode, hypha::kExitConfiguration);
+    EXPECT_EQ(
+        countOccurrences(output, "application failed: the first frame exceeds image_max_bytes"), 1
+    );
+}
+
+TEST(RunNodeLifecycle, FailRunWithAConfigErrorFromATimerReturnsTheConfigurationCode)
+{
+    EXPECT_EQ(runWithoutArguments(&hypha::runNode<TimerConfigFailApp>), hypha::kExitConfiguration);
+}
+
+TEST(RunNodeLifecycle, TheFirstFailureDecidesWhetherItIsAConfigurationFault)
+{
+    EXPECT_EQ(runWithoutArguments(&hypha::runNode<RuntimeThenConfigFailApp>), hypha::kExitRuntime);
 }
 
 TEST(RunNodeLifecycle, FailRunFromSetupOfACycleNodeSkipsTheCommit)

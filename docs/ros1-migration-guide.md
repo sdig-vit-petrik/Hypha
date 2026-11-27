@@ -430,7 +430,7 @@ What changed and why:
   (manifest, `~/introspection`, `~/state`) and runs until a stop. It names the phase in the
   error line `node failed in <phase>: <what>`. It returns 78 when the configuration is refused
   before the run (the file, an unread key, a `hypha::ParameterError` or a QoS mismatch), 70
-  when the run fails or `failRun()` is called, and 2 for more than one argument. Without the
+  when the run fails or `failRun(reason)` is called (`failRun(ConfigError)`: 78), and 2 for more than one argument. Without the
   file the node starts with no parameters and no `[log]` table, so the first required key
   stops it.
 - `[node].name` overrides the name in code.
@@ -994,9 +994,9 @@ failed run with `node run failed`. It returns an exit code that a supervisor rea
 |---|---|---|---|
 | 0 | `kExitClean` | the run stopped as requested | the unit's restart policy |
 | 2 | `kExitUsage` | more than one argument | the unit's restart policy |
-| 78 | `kExitConfiguration` | the parameter file, a parameter or an endpoint policy is refused; an unread key | never restarts |
+| 78 | `kExitConfiguration` | the parameter file, a parameter or an endpoint policy is refused; an unread key; `failRun(ConfigError)` | never restarts |
 | 75 | `kExitRewind` | simulated time went back (`Status::ClockRewound`) | always restarts |
-| 70 | `kExitRuntime` | anything else, and `failRun()` | the unit's restart policy |
+| 70 | `kExitRuntime` | anything else, and `failRun(reason)` | the unit's restart policy |
 
 - The constructor and `setup()` throw `hypha::ConfigError` or `hypha::ParameterError` for
   a refused configuration (78); any other exception is 70. `subscribe` and `advertise` throw
@@ -1004,7 +1004,10 @@ failed run with `node run failed`. It returns an exit code that a supervisor rea
   `[ports.inputs.<name>]` exits 78.
 - `started(hypha::Node&)` runs after every check, just before the run. Start worker
   threads and send latched messages there. Throw to refuse the run (70).
-- `failRun("reason")` ends the run as failed from any thread (70).
+- `failRun("reason")` ends the run as failed from any thread (70). `failRun(hypha::ConfigError("reason"))`
+  does the same for a configuration fault found after start, such as a first frame larger than
+  the configured limit, and returns 78, which `hypha launch` does not restart. The first report
+  decides the code.
 - The destructor runs on every way out: its body first, then the members (the endpoints),
   then the node. Stop and join every thread of the class in the body.
 - A callback runs in the run, on one thread. It must not block.
