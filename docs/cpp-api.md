@@ -162,6 +162,22 @@ application drops `hypha_msgs/` from each message include line
 (`<hypha_msgs/hypha_msgs/NodeState.h>` becomes `<hypha_msgs/NodeState.h>`) and removes
 any include directory it added to reach `<package>/<Name>.h` without the prefix.
 
+The SDK also installs the header-only companions of `sensor_msgs` that ROS 1 ships beside
+the messages, in the same directory, so a port includes them as it did:
+`<sensor_msgs/point_cloud2_iterator.h>` (`PointCloud2Modifier`, `PointCloud2Iterator<T>`,
+`PointCloud2ConstIterator<T>`), `<sensor_msgs/point_field_conversion.h>`
+(`readPointCloud2BufferValue`, `writePointCloud2BufferValue`, `pointFieldTypeAsType`,
+`typeAsPointFieldType`), `<sensor_msgs/image_encodings.h>` (the encoding names and
+`bitDepth`, `numChannels`, `isColor`, `isMono`, `isBayer`, `hasAlpha`) and
+`<sensor_msgs/distortion_models.h>`. They are the files of ROS 1 `ros/common_msgs` tag
+1.13.2 (BSD 3-Clause), unchanged, in `crates/hypha-cxx/upstream/common_msgs` with their
+licence headers and the SHA-256 of each in `vendor.toml`; `python3 -I
+examples/autoware/tools/port.py verify` (run by `./check.sh`) checks them.
+`point_field_conversion.h` needs `<sensor_msgs/PointField.h>` (or `PointCloud2.h`) before
+it, as upstream does. Left out: `fill_image.h` and `point_cloud_conversion.h` (the second
+needs the deprecated `sensor_msgs/PointCloud`, which hypha does not ship).
+`crates/hypha-cxx/test/test_sensor_msgs_companions.cpp` runs them.
+
 An application generates its own `.msg` and
 `.srv` files with one `hypha_generate_messages()` call per package, an INTERFACE library
 of the package name; link it, and the include path and build order follow
@@ -203,6 +219,16 @@ as in ROS 2. The type is the ROS 1 type: its fields keep their ROS 1 names and t
 (`header.seq`, and `stamp.secs`, not ROS 2's `stamp.sec`), so code that reads a ROS 2 field
 name fails to compile rather than read another value.
 `test/package_consumer/ros2_style.cpp` compiles against these names alone.
+
+The ROS 2 spellings of the companion headers, `<sensor_msgs/point_cloud2_iterator.hpp>`,
+`<sensor_msgs/point_field_conversion.hpp>`, `<sensor_msgs/image_encodings.hpp>` and
+`<sensor_msgs/distortion_models.hpp>`, are installed by hypha-cxx: each includes the `.h`
+file above, and the first two also the ROS 2 message headers
+(`<sensor_msgs/msg/point_cloud2.hpp>`, `point_field.hpp`) when the application has
+generated them as above. The classes and functions are in `sensor_msgs` in ROS 2 as in
+ROS 1 (`sensor_msgs::PointCloud2Iterator<float>`, `sensor_msgs::image_encodings::BGR8`),
+and `sensor_msgs::msg::PointCloud2` is the type they take, so ROS 2 code compiles
+unchanged. `test_sensor_msgs_ros2_names.cpp` compiles that.
 
 ---
 
