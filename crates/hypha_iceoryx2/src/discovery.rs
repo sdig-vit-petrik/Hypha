@@ -93,7 +93,7 @@ pub fn list_nodes() -> Result<Vec<DiscoveredNode>, PortError> {
 }
 
 /// One registry entry, or `None` when its process id cannot be read.
-fn discovered_node(view: &impl NodeView, is_alive: bool) -> Option<DiscoveredNode> {
+pub(crate) fn discovered_node(view: &impl NodeView, is_alive: bool) -> Option<DiscoveredNode> {
     let pid = view.id().pid::<Ipc>().ok()?.value();
     let name = view.details().as_ref().map_or_default(|d| d.name().as_str().to_string());
     let executable = view

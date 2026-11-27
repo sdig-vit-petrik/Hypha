@@ -264,7 +264,7 @@ struct DataService {
 }
 
 /// How long a starting node waits for another process reclaiming the same dead node.
-const RECLAIM_TIMEOUT: StdDuration = StdDuration::from_secs(1);
+pub(crate) const RECLAIM_TIMEOUT: StdDuration = StdDuration::from_secs(1);
 
 /// Remove the resources of the dead nodes a node called `node_name` reclaims
 /// when it starts: its own crashed runs and every dead CLI tool node
@@ -548,7 +548,7 @@ impl Iox2Transport {
         }
     }
 
-    fn notify_graph_change(&self) -> Result<(), PortError> {
+    pub(crate) fn notify_graph_change(&self) -> Result<(), PortError> {
         let cached = {
             let guard = crate::locked(&self.graph_notifier);
             guard.as_ref().map(Arc::clone)

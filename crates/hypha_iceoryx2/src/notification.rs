@@ -61,7 +61,7 @@ impl EventLimits {
 /// without them, the limits of the domain `Config`.
 ///
 /// `owner` names the caller in the diagnostic written when the open fails.
-fn open_event_service(
+pub(crate) fn open_event_service(
     node: &SharedNode,
     service_name: &ServiceName,
     limits: Option<EventLimits>,

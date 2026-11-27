@@ -3,8 +3,10 @@
 Design for #132: typed request and response between nodes, from a ROS 1 `.srv`.
 
 Status: accepted design, after an independent review whose seventeen changes are folded
-in. Not implemented yet; stage 1a (the transport) is next. Each decision gives its reason. Where the author checked a change against the code
-and kept a different mechanism, an **author's note** says so, with the evidence.
+in. Stage 1a (the transport) is implemented in `crates/hypha_iceoryx2/src/service/`; the
+stages above it are not. Each decision gives its reason. Where the author checked a change
+against the code and kept a different mechanism, an **author's note** says so, with the
+evidence.
 
 Readers: the owner, who decides, and whoever implements the stages of section 11.
 
@@ -381,7 +383,7 @@ Every hypha service therefore sets these explicitly:
 |---|---|
 | backpressure, client and server | `DiscardData` |
 | `max_servers` | 1 |
-| `max_nodes` | `clients + observers + 1` |
+| `max_nodes` | `clients + observers + 2` |
 | `max_response_buffer_size` | 1 |
 | `max_borrowed_responses_per_pending_response` | 1 |
 | server `max_loaned_responses_per_request` | 1 |
@@ -423,13 +425,21 @@ today. A typed loan follows the typed loan of topics (PR #261).
 
 ## 7. Transport
 
-**Decision: iceoryx2 request-response.** It uses three iceoryx2 services per stream:
+**Decision: iceoryx2 request-response.** A stream uses three iceoryx2 services, and a name
+one more:
 
 | iceoryx2 service | Pattern | Who | Purpose |
 |---|---|---|---|
-| `hypha/srv/<name>@<md5 16 hex>` | request-response, `[u8]` payloads, the frame header as the user header of both directions | the server and its clients | the calls |
-| `hypha/srv/<name>/request` | event, one listener | the server listens, clients notify | wakes the server; its single listener slot is the name's server lock |
-| `hypha/srv/<name>@<md5 16 hex>/response` | event | clients listen, the server notifies | wakes the clients |
+| `hypha/srv/<name>@<hash 16 hex>` | request-response, `[u8]` payloads, the frame header as the user header of both directions | the server and its clients | the calls |
+| `hypha/srv/<name>@<hash 16 hex>/request` | event | clients notify, the server listens | wakes the server |
+| `hypha/srv/<name>@<hash 16 hex>/response` | event | the server notifies, clients listen | wakes the clients |
+| `hypha/srv/<name>` | event, one notifier slot | the server holds the notifier | the name's server lock, across versions |
+
+The hash is the frame's schema hash of the `.srv` MD5 (`hypha_wire::schema_hash_from_md5`),
+as the topic streams of PR #266 key theirs. PR #266 is not on `develop` yet, so the key is
+spelled in one place (`service/key.rs`) to be unified with it. A service name may not
+contain `@` (the key's separator) or `#`: a topic named `/a#request` would otherwise seal
+its frames with the code of the requests of service `/a`.
 
 The `hypha/` namespace is already the framework's (`hypha/hk/graph/v1`), so none of these
 names can collide with a topic.
@@ -438,13 +448,23 @@ names can collide with a topic.
 streams `hypha/srv/<name>@*`, refuses when one has a live server, and tolerates a race of
 two servers created at once, logging it at the next graph event.
 
-*Author's note (change 7).* The rule is kept. It is enforced by the single listener slot
-of the name-level request event instead. A server takes that slot before it creates its
-stream's server port. iceoryx2 refuses a second listener atomically
-(`ExceedsMaxSupportedListeners`), whatever the version, so two servers created at once
-cannot both succeed, and nothing needs logging later. The sibling listing remains, only on
-the refusal path, to name the type that the holder serves. Stage 1a tests the race with
-several processes.
+*Author's note (change 7).* The rule is kept. It is enforced by the single notifier slot
+of the name-level event `hypha/srv/<name>` instead, which the server holds for its
+lifetime. A server opens its stream, then takes that slot, then creates its stream's server
+port. iceoryx2 refuses a second notifier atomically (`ExceedsMaxSupportedNotifiers`),
+whatever the version, so two servers created at once cannot both succeed, and nothing needs
+logging later. The sibling listing remains, only on the refusal path, to name the type the
+holder serves; it finds the holder's node at its stream, which the holder opened first.
+
+The lock is not the server's wake-up listener. A `WaitSet` takes a listener by value
+(`Iox2WaitSet::attach`), so a listener that served as the lock would stay locked in a
+`WaitSet` after its server was gone. Stage 1a tests the race with six processes over two
+versions: exactly one wins, and the five others are refused with the holder and its type.
+
+*Author's note (change 10).* `max_nodes` is `clients + observers + 2`, one more than the
+review's formula. `hypha service list` opens a stream for an instant to count its server
+and clients, which takes a node slot, the cost PR #266 found for its probes. The spare slot
+keeps a listing from refusing the last client.
 
 The alternative is two publish-subscribe streams with a correlation id, which is what all
 three ports do today.
@@ -1055,7 +1075,7 @@ cycle `Arrivals` path and the topic overloading PR. They are not measured.
 
 | Stage | Content | Tests | Size |
 |---|---|---|---|
-| **1a Transport** | `hypha_iceoryx2`: server and client ports with the settings of §6; the name lock, and the reclaim of a dead holder; the stream key; sealing with the role codes; answer kinds; the server's slot table with handles; `ServicePolicy` with its timeout; the 219-byte limit; the listing for the tools; the probe with its rate | the failure table in two processes, creation races, many clients, the measurements of §12 | 2,000 |
+| **1a Transport** (done) | `hypha_iceoryx2`: server and client ports with the settings of §6; the name lock, and the reclaim of a dead holder; the stream key; sealing with the role codes; answer kinds; the server's slot table with handles; `ServicePolicy` with its timeout; the 219-byte limit; the listing for the tools; the probe with its rate | the failure table in two processes, creation races, many clients, the measurements of §12 | 2,000 |
 | **1b Runtime, plain nodes, C ABI, C++, tools** | `hypha_node`: calls waiting for a server, timeouts in the `WaitSet`, outcomes and `CallStatus`, the dispatch-thread refusal, blocking clients; C ABI; `advertiseService`, `serviceClient`, `Request`, `Deferred`, `CallResult`; `std_srvs` in the SDK; tables; the call log; `hypha service list\|info\|call`; docs (`interface-specification.md`, `cpp-api.md` §8, `features.md`, `execution-model.md`, `communication-integrity.md`) | the failure table through C++; a `Deferred` answered from another thread, destroyed unanswered, and outliving its server; a call before its server; installed-SDK flow; a CLI test of `service call` | 3,000 |
 | **1c Cycle ports and lockstep** | First task, the lockstep tests: two identical runs; `--chunk 50` against `--chunk 200`; with and without `hypha topic echo`; `--loop`; a triggered client against a triggered server; a chain of deferred replies across three nodes; a client and its server in one `WaitSet`. Then `Requests<Srv>`, `Calls<Srv>`, answers and calls sent after the step, `NotSent`, requests a step never read staying queued, the strict cut and the two upstream edges, the §6.6 amendment, `StepHarness`, `hypha::Sequence` | the lockstep list; harness tests; `Sequence` tests | 2,500 |
 | **1d The first users** | the MRS host and the rclcpp shim move onto it; `mrs_bridge/Call` and `ServiceCall` are deleted; the EKF trigger starts on bus traffic | the five MRS scenarios; the Autoware EKF trigger | 1,500, of which about 600 deleted |
@@ -1095,8 +1115,8 @@ FSR-21 already covers `.srv` generation.
 
 ## 12. Evidence: the spike, then stage 1a
 
-**The spike** (`crates/hypha_iceoryx2/tests/service_spike.rs`, to be replaced by the tests
-of stage 1a) established, on macOS (aarch64) with iceoryx2 0.10.1, the following:
+**The spike** (removed; its tests are now `crates/hypha_iceoryx2/tests/service_transport.rs`)
+established, on macOS (aarch64) with iceoryx2 0.10.1, the following:
 
 - The frame header fits as the user header of both directions.
 - The server sleeps in its request event until a call comes.
@@ -1109,8 +1129,20 @@ of stage 1a) established, on macOS (aarch64) with iceoryx2 0.10.1, the following
 - A round trip of a `SetBool` call took a median of 51 to 160 µs and a p99 of 1.3 to
   4.8 ms, at load average 51 to 53.
 
-**Stage 1a measures** the pool memory under the default policy against the formula of §6,
-the descriptors per service, and the round trip with the load average.
+**Stage 1a** (`crates/hypha_iceoryx2/tests/service_transport.rs`, `--no-capture` prints
+these):
+
+| Measurement | macOS (aarch64), host | Linux 7.0 (linuxkit, aarch64), builder container |
+|---|---|---|
+| Round trip, 2,000 `SetBool` calls between two processes | median 53 to 92 µs, p99 0.19 to 15.9 ms, across six runs at load average 29 to 34 | median 268 µs, p99 3.1 ms, max 32.9 ms, at load average 8.3 |
+| Killed server found dead by the probe | 2.8 ms after the kill; one probe 1.0 ms at load 35; a probe within its second 2 µs | 2.7 ms after the kill; one probe 1.3 ms |
+| Memory of a server under `defaultService` | not measurable: no `/dev/shm` | 549 KiB with its stream and events, against 528 KiB for the formula of §6 (132 chunks of 4 KiB) |
+| Memory of a client | not measurable | 24 KiB |
+| Descriptors | server 18, client 20 | server 13, client 14 |
+
+The macOS spread is the loaded host (load average 29 to 71 during the work), not the
+transport. On Linux, a container under Docker's VM, these numbers say that the transport
+works there; they are not a benchmark of the RT target.
 
 ## 13. Not in scope, and why
 
@@ -1134,9 +1166,13 @@ the descriptors per service, and the round trip with the load average.
 ## 14. Open risks
 
 - **The maturity of iceoryx2's request-response in 0.10.1.** Stage 1a tests creation
-  races, crashes, many clients and bounds in two processes, on macOS and, where it ran, on
-  Linux (the PR says which). A vendored iceoryx2 (open PR, for another reason) would let a
-  fix land without waiting for a release.
+  races, crashes, many clients and bounds in two processes, on macOS and on Linux in the
+  builder container. They have not run on the RT target. A vendored iceoryx2 (open PR, for
+  another reason) would let a fix land without waiting for a release.
+- **A killed client.** A client that exits normally frees its held requests at the server's
+  next turn (`drop_abandoned`). A killed client stays connected, as a killed server does,
+  until its node is reclaimed, so its requests keep their slots until then. Stage 1a does
+  not test that case.
 - **The liveness probe's cost.** 0.55 to 1.8 ms per probe at load 51, on the run thread,
   at most once per service per second.
 - **Lockstep.** The strict cut is the rule every input already follows. The two upstream

@@ -73,6 +73,20 @@ fn apply_hypha_defaults(config: &mut Config) {
     // of bookkeeping.
     pubsub.publisher_allocation_strategy = AllocationStrategy::Static;
 
+    // Request-response (services): every hypha service sets these itself (`service/open.rs`);
+    // the defaults keep any other port from a send that spins on its caller's thread.
+    let services = &mut config.defaults.request_response;
+    services.client_backpressure_strategy = BackpressureStrategy::DiscardData;
+    services.server_backpressure_strategy = BackpressureStrategy::DiscardData;
+    services.enable_safe_overflow_for_requests = false;
+    services.enable_safe_overflow_for_responses = false;
+    services.enable_fire_and_forget_requests = false;
+    services.max_servers = 1;
+    services.max_response_buffer_size = 1;
+    services.max_borrowed_responses_per_pending_response = 1;
+    services.max_loaned_requests = 1;
+    services.server_max_loaned_responses_per_request = 1;
+
     let event = &mut config.defaults.event;
     event.max_notifiers = MAX_EVENT_PORTS;
     event.max_listeners = MAX_EVENT_PORTS;
@@ -188,7 +202,23 @@ pub fn bounded_memory() -> Result<bool, PortError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_DOMAIN_LENGTH, domain_prefix, is_domain_name, parse_bounded_memory};
+    use super::{
+        MAX_DOMAIN_LENGTH, config_of, domain_prefix, is_domain_name, parse_bounded_memory,
+    };
+
+    #[test]
+    #[expect(clippy::expect_used, reason = "the domain none always has a configuration")]
+    fn no_request_response_send_of_the_domain_retries_until_delivered() {
+        use iceoryx2::prelude::BackpressureStrategy;
+
+        let config = config_of("").expect("the domain none");
+        let services = &config.defaults.request_response;
+        assert_eq!(services.client_backpressure_strategy, BackpressureStrategy::DiscardData);
+        assert_eq!(services.server_backpressure_strategy, BackpressureStrategy::DiscardData);
+        assert!(!services.enable_fire_and_forget_requests);
+        assert!(!services.enable_safe_overflow_for_requests);
+        assert_eq!(services.max_servers, 1);
+    }
 
     #[test]
     fn bounded_memory_is_on_for_1_off_for_0_or_unset_and_refuses_the_rest() {
