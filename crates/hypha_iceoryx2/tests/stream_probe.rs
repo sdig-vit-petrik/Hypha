@@ -66,7 +66,7 @@ fn a_subscribed_only_version_is_not_reported_as_published() {
     let topic = format!("/{}", unique_name("probe_subonly"));
     let _reader = transport.subscribe(&v1(&topic)).expect("v1 reader");
     let _v2_reader = transport.subscribe(&vk(&topic, 2)).expect("v2 reader");
-    assert!(others(&transport, &topic).is_empty());
+    assert_eq!(others(&transport, &topic), Vec::<u64>::new());
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn a_version_that_left_leaves_nothing_on_disk() {
     let v2 = other.publish(&vk(&topic, 2)).expect("v2 publisher");
     assert_eq!(others(&transport, &topic).len(), 1);
     drop(v2);
-    assert!(others(&transport, &topic).is_empty());
+    assert_eq!(others(&transport, &topic), Vec::<u64>::new());
     assert_eq!(record_files(&topic), 1, "only version 1's record is left");
     drop(reader);
     assert_eq!(record_files(&topic), 0, "the files of a topic nobody uses go");
@@ -121,7 +121,7 @@ fn versions_that_come_and_go_leave_no_descriptor_and_no_record() {
         let publisher = other.publish(&vk(&topic, 100 + k)).expect("vk");
         assert_eq!(others(&transport, &topic).len(), 1);
         drop(publisher);
-        assert!(others(&transport, &topic).is_empty());
+        assert_eq!(others(&transport, &topic), Vec::<u64>::new());
     }
     let fds_after = open_fds();
     println!("descriptors {fds_before} -> {fds_after}; records {}", record_files(&topic));

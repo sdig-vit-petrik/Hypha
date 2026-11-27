@@ -126,6 +126,6 @@ fn latching_is_per_stream() {
     let (same, other, every) = (received(&same), received(&other), received(&every));
     println!("late v1 {same:?}, late v2 {other:?}, late every {every:?}");
     assert_eq!(same, [7]);
-    assert!(other.is_empty());
+    assert_eq!(other, Vec::<u8>::new());
     assert_eq!(every, [7]);
 }
