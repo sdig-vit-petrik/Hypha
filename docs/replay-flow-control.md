@@ -489,7 +489,11 @@ wait out.
   drained, the same held for samples split across two step turns. A deterministic replay needs one
   publisher per topic of a replay input, or publishers whose samples arrive in stamp order.
   `two_publishers_on_one_input_deliver_in_the_order_the_node_drained_them` in
-  `crates/hypha_ffi/tests/replay_fidelity.rs` shows it.
+  `crates/hypha_ffi/tests/replay_fidelity.rs` shows it. A node on simulated time says so: when
+  an input of a cycle has a second live publisher it logs, at most once a second and once for
+  each count, `<n> publishers on <topic> feed one replay input: the order of their samples ...
+  depends on when the node had a turn`. The line is a warning of the dependence, not a fix,
+  and it stands as long as the history is ordered by arrival.
 - **A forward jump of `/clock` costs one step per period.** It runs one step per period it covers (4.4),
   in slices of at most 1024 steps or 50 ms, so a jump across a long gap is slow, but a turn stays short.
 - **Simulated time is process-global.** With two sim-time nodes in one process, a backward seek can be
