@@ -4,7 +4,7 @@ use super::state::CycleId;
 use super::types::HyphaClockDriverOptions;
 use crate::status::Error;
 use crate::waitset::HyphaWaitSet;
-use hypha_runtime::clock_barrier::check_clock_start;
+use hypha_runtime::clock_barrier::check_clock_value;
 
 /// The driver settings of an uncommitted cycle.
 #[derive(Debug, Clone)]
@@ -28,7 +28,7 @@ pub fn cycle_set_clock_driver(
     let cycle = set.cycle(cycle)?;
     let mut registration = cycle.configurable(set)?;
     let factor = options.real_time_factor;
-    if let Err(reason) = check_clock_start(options.start_nanos) {
+    if let Err(reason) = check_clock_value(options.start_nanos) {
         return Err(crate::last_error::refuse(Error::InvalidArgument, &reason));
     }
     let refused = options.timeout_nanos == 0

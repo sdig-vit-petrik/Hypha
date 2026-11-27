@@ -419,14 +419,15 @@ fn new_refuses_a_start_outside_the_clock_range_naming_it() {
     let reason = refused(LAST_CLOCK_NANOS + 1).expect("2^32 s is refused");
     assert!(reason.contains("4294967296 s"), "{reason}");
     assert_eq!(refused(LAST_CLOCK_NANOS), None);
-    assert_eq!(check_clock_start(0), Ok(()));
+    assert_eq!(check_clock_value(0), Ok(()));
 }
 
 #[test]
 fn a_deadline_past_the_clock_range_fails_the_driver() {
     let now = Instant::now();
     let start = LAST_CLOCK_NANOS;
-    let options = DriverOptions { start_nanos: start, period_nanos: i64::MAX, ..options(&["a"]) };
+    let options =
+        DriverOptions { start_nanos: start, period_nanos: 1_000_000_000, ..options(&["a"]) };
     let mut schedule = DriverSchedule::new(options, now).unwrap();
     schedule.sent(start, 1, now);
     schedule.observe("a", u64::try_from(start).unwrap(), 1, now);

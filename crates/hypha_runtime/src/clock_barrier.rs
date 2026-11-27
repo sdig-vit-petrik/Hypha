@@ -24,11 +24,11 @@ const CLOCK_SECONDS_LIMIT: i64 = 1 << 32;
 /// node name and two `u64`.
 pub const PROGRESS_MAX_PAYLOAD_BYTES: usize = 4 + hypha_core::port::MAX_NODE_NAME_LENGTH + 16;
 
-/// Whether `/clock` can carry `nanos`, as a start value.
+/// Whether `/clock` can carry `nanos`: a driver's start value and every step after it.
 ///
 /// # Errors
 /// A message naming the range when `nanos` is negative or 2^32 seconds or more.
-pub fn check_clock_start(nanos: i64) -> Result<(), String> {
+pub fn check_clock_value(nanos: i64) -> Result<(), String> {
     const NANOS_PER_SECOND: i64 = 1_000_000_000;
     if (0..CLOCK_SECONDS_LIMIT * NANOS_PER_SECOND).contains(&nanos) {
         return Ok(());
@@ -299,7 +299,7 @@ impl DriverSchedule {
     /// A message naming the setting when the start is outside `/clock`, the period, timeout
     /// or factor is not positive, or no non-empty participant name is expected.
     pub fn new(options: DriverOptions, now: Instant) -> Result<Self, String> {
-        check_clock_start(options.start_nanos)?;
+        check_clock_value(options.start_nanos)?;
         if options.period_nanos <= 0 {
             return Err("the clock period must be positive".to_owned());
         }
@@ -393,7 +393,10 @@ impl DriverSchedule {
 
     /// The step after `value` once it is acknowledged, if the pace allows it at `now`.
     fn step_after(&self, value: i64, now: Instant) -> DriverAction {
-        let Some(deadline) = value.checked_add(self.options.period_nanos) else {
+        let Some(deadline) = value
+            .checked_add(self.options.period_nanos)
+            .filter(|&deadline| check_clock_value(deadline).is_ok())
+        else {
             return DriverAction::Exhausted;
         };
         let (Some(factor), Some(anchor)) = (self.options.real_time_factor, self.pace_anchor) else {
