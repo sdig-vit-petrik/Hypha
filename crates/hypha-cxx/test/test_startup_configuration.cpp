@@ -5,6 +5,7 @@
 #include "introspection_text.h"
 
 #include <gtest/gtest.h>
+#include <std_msgs/Float64.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -332,6 +333,213 @@ TEST(ApplicationReport, RunNodePublishesTheStateAndTheManifestOfTheNode)
     // started() sees the complete manifest; hypha logs no manifest text.
     EXPECT_EQ(ReportReaderApp::startedPublishers, publishers.size());
     EXPECT_EQ(log.find("node report_reader"), std::string::npos) << log;
+}
+
+/// Where the application under test reads one key of a port table.
+enum class ReadAt {
+    Never,
+    Constructor,
+    Setup,
+    Started,
+};
+
+/// The port table `ports.<direction>.speed`, the key the application reads from it, and
+/// where it reads it. Each test sets them before `runNode`.
+struct PortKeyRead
+{
+    ReadAt      at{ReadAt::Never};
+    std::string table;
+    std::string key{"priority"};
+    int64_t     value{0};
+
+    void whenAt(ReadAt phase)
+    {
+        if (this->at == phase) {
+            this->value = hypha::config(this->table).required<int64_t>(this->key);
+        }
+    }
+};
+
+PortKeyRead portKeyRead;
+
+/// A cycle node with one input, `speed`, that reads a key of its table.
+class CycleWithPortKey final : public hypha::CycleNode
+{
+  public:
+    CycleWithPortKey()
+    {
+        portKeyRead.whenAt(ReadAt::Constructor);
+    }
+
+    void setup(hypha::Node&) override
+    {
+        portKeyRead.whenAt(ReadAt::Setup);
+        this->setRate(hypha::Hz(10.0));
+        hypha::requestStop();
+    }
+
+    void started(hypha::Node&) override
+    {
+        portKeyRead.whenAt(ReadAt::Started);
+    }
+
+    void step(const hypha::CycleTime&) override
+    {
+    }
+
+  private:
+    Latest<std_msgs::Float64> speed{*this, "speed"};
+};
+
+/// An application node whose plain subscriber `speed` has a table with a key of its own.
+class SubscriberWithPortKey final : public hypha::ApplicationNode
+{
+  public:
+    SubscriberWithPortKey()
+    {
+        portKeyRead.whenAt(ReadAt::Constructor);
+    }
+
+    void setup(hypha::Node& node) override
+    {
+        portKeyRead.whenAt(ReadAt::Setup);
+        this->input_ = node.subscribe<std_msgs::Float64>("speed");
+        hypha::requestStop();
+    }
+
+  private:
+    hypha::Subscriber<std_msgs::Float64> input_;
+};
+
+/// An application node whose publisher `speed` has a table with a key of its own.
+class PublisherWithPortKey final : public hypha::ApplicationNode
+{
+  public:
+    PublisherWithPortKey()
+    {
+        portKeyRead.whenAt(ReadAt::Constructor);
+    }
+
+    void setup(hypha::Node& node) override
+    {
+        portKeyRead.whenAt(ReadAt::Setup);
+        this->output_ = node.advertise<std_msgs::Float64>("speed");
+        hypha::requestStop();
+    }
+
+  private:
+    hypha::Publisher<std_msgs::Float64> output_;
+};
+
+/// The result of one run, and what it logged.
+struct PortKeyRun
+{
+    int         exitCode;
+    std::string errors;
+};
+
+template <typename App>
+PortKeyRun runWithPortTable(
+    const std::string& direction, const std::string& tableKeys, ReadAt readAt, std::string key
+)
+{
+    const std::filesystem::path file =
+        configFile("[ports." + direction + ".speed]\ntopic = '/p220_speed'\n" + tableKeys);
+    portKeyRead = {readAt, "ports." + direction + ".speed", std::move(key), 0};
+    testing::internal::CaptureStderr();
+    const int         result = runWithConfig<App>(file, "port_table_keys");
+    const std::string errors = testing::internal::GetCapturedStderr();
+    std::filesystem::remove(file);
+    return {result, errors};
+}
+
+/// A required cycle input needs its limit; the rest of the table is the test's.
+const std::string kLimit = "silence_ms = 250\n";
+
+TEST(PortTableKeys, AKeyReadByTheApplicationIsAccepted)
+{
+    for (const ReadAt readAt : {ReadAt::Constructor, ReadAt::Setup}) {
+        const PortKeyRun run = runWithPortTable<CycleWithPortKey>(
+            "inputs", kLimit + "priority = 100\n", readAt, "priority"
+        );
+
+        EXPECT_EQ(run.exitCode, 0) << run.errors;
+        EXPECT_EQ(portKeyRead.value, 100);
+    }
+}
+
+TEST(PortTableKeys, AnUnreadExtraKeyIsStillRefused)
+{
+    const PortKeyRun run = runWithPortTable<CycleWithPortKey>(
+        "inputs", kLimit + "priority = 100\n", ReadAt::Never, "priority"
+    );
+
+    EXPECT_EQ(run.exitCode, hypha::kExitConfiguration);
+    EXPECT_NE(run.errors.find("input 'speed': unknown key 'priority'"), std::string::npos)
+        << run.errors;
+}
+
+TEST(PortTableKeys, AKeyReadAfterThePortWasBoundIsRefused)
+{
+    // The ports bind when the cycle starts, after setup(); started() comes after that.
+    const PortKeyRun run = runWithPortTable<CycleWithPortKey>(
+        "inputs", kLimit + "priority = 100\n", ReadAt::Started, "priority"
+    );
+
+    EXPECT_EQ(run.exitCode, hypha::kExitConfiguration);
+    EXPECT_NE(run.errors.find("unknown key 'priority'"), std::string::npos) << run.errors;
+}
+
+TEST(PortTableKeys, ATypoOfAFrameworkKeyIsRefusedBesideAKeyTheApplicationReads)
+{
+    const PortKeyRun run = runWithPortTable<CycleWithPortKey>(
+        "inputs", "silence_mss = 250\npriority = 100\n", ReadAt::Constructor, "priority"
+    );
+
+    EXPECT_EQ(run.exitCode, hypha::kExitConfiguration);
+    EXPECT_NE(run.errors.find("unknown key 'silence_mss'"), std::string::npos) << run.errors;
+}
+
+TEST(PortTableKeys, AFrameworkKeyThePortDoesNotDeclareIsRefusedWhoeverReadsIt)
+{
+    const PortKeyRun run = runWithPortTable<CycleWithPortKey>(
+        "inputs", kLimit + "stagnation_ms = 500\n", ReadAt::Constructor, "stagnation_ms"
+    );
+
+    EXPECT_EQ(run.exitCode, hypha::kExitConfiguration);
+    EXPECT_NE(run.errors.find("unknown key 'stagnation_ms'"), std::string::npos) << run.errors;
+}
+
+TEST(PortTableKeys, ASubscriberTableTakesTheKeyItsApplicationReadsAndRefusesAnUnreadOne)
+{
+    const PortKeyRun read = runWithPortTable<SubscriberWithPortKey>(
+        "inputs", "priority = 100\n", ReadAt::Setup, "priority"
+    );
+    EXPECT_EQ(read.exitCode, 0) << read.errors;
+    EXPECT_EQ(portKeyRead.value, 100);
+
+    const PortKeyRun unread = runWithPortTable<SubscriberWithPortKey>(
+        "inputs", "priority = 100\n", ReadAt::Never, "priority"
+    );
+    EXPECT_EQ(unread.exitCode, hypha::kExitConfiguration);
+    EXPECT_NE(unread.errors.find("ports.inputs.speed.priority"), std::string::npos)
+        << unread.errors;
+}
+
+TEST(PortTableKeys, AnOutputTableTakesTheKeyItsApplicationReadsAndRefusesAnUnreadOne)
+{
+    const PortKeyRun read = runWithPortTable<PublisherWithPortKey>(
+        "outputs", "priority = 100\n", ReadAt::Setup, "priority"
+    );
+    EXPECT_EQ(read.exitCode, 0) << read.errors;
+    EXPECT_EQ(portKeyRead.value, 100);
+
+    const PortKeyRun unread = runWithPortTable<PublisherWithPortKey>(
+        "outputs", "priority = 100\n", ReadAt::Never, "priority"
+    );
+    EXPECT_EQ(unread.exitCode, hypha::kExitConfiguration);
+    EXPECT_NE(unread.errors.find("ports.outputs.speed.priority"), std::string::npos)
+        << unread.errors;
 }
 
 }  // namespace

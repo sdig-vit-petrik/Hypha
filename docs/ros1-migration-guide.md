@@ -274,6 +274,12 @@ rotation_count = 3
 - A relative log path resolves against the directory of the TOML file.
 - `${NAME}` in any string, `[log]` and `include` included, expands from the
   environment. An unset or empty variable stops the node.
+- A value that belongs to one input, such as the priority of each input of a multiplexer
+  (`priority = 100` in `[ports.inputs.joystick]`), is a key of its table beside `topic` and
+  `silence_ms`. The node reads it with `hypha::config("ports.inputs.joystick")` in its
+  constructor or `setup()`, before the cycle starts; a key of an input table that nothing
+  has read by then fails `start()` as an unknown key, a typo of `silence_ms` included.
+  Do not repeat the input in a table of the node.
 - Port names are unique per direction. Each `[ports.inputs.<name>]` is one table, so two
   inputs cannot share a name, and the same holds for `[ports.outputs.<name>]`. When an
   upstream configuration uses one name for two inputs (a velocity input and a lock both
