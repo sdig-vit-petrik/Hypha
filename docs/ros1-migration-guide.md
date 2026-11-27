@@ -46,6 +46,10 @@ first yes:
 The sentence "use `hypha::Cycle` when ports are built at run time" of cpp-api.md §5.2 and
 §5.5 names the class that holds the ports, not a third target.
 
+A path that starts with `ports/` names a file of the playground repository
+(`Hypha-playground`), where the native ports that found these rows live; a port that is
+built against the installed SDK can read it as a worked example.
+
 ## Contents
 
 - [1. When to use this guide](#1-when-to-use-this-guide)
@@ -62,7 +66,10 @@ The sentence "use `hypha::Cycle` when ports are built at run time" of cpp-api.md
 - [5. Message types and the minimal logic edits](#5-message-types-and-the-minimal-logic-edits):
   time, third-party headers, logging
 - [6. Traps](#6-traps)
-- [7. Stop and ask](#7-stop-and-ask): what hypha has no answer for yet, with the issue
+- [7. Stop and ask](#7-stop-and-ask): what hypha has no answer for yet, with the issue:
+  [7.1 services](#71-services), [7.2 actions](#72-actions), [7.3 diagnostics](#73-diagnostics),
+  [7.4 waiting transform lookup](#74-a-transform-lookup-that-waits),
+  [7.5 run-time parameters](#75-a-parameter-that-changes-at-run-time)
 - [8. Report hypha gaps and blockers](#8-report-hypha-gaps-and-blockers)
 - [9. Production-ready checklist](#9-production-ready-checklist)
 - [10. Porting an event-driven node: an `ApplicationNode`](#10-porting-an-event-driven-node-an-applicationnode):
@@ -70,10 +77,12 @@ The sentence "use `hypha::Cycle` when ports are built at run time" of cpp-api.md
   [10.3 topic names](#103-literal-topic-or-port-name), [10.4 time and logging](#104-time-status-and-logging),
   [10.5 queue depth](#105-queue-depth), [10.6 threads](#106-threads), [10.7 TF](#107-tf-in-an-application),
   [10.8 lists](#108-a-list-of-scalars-in-the-parameter-file), [10.9 example](#109-a-runnable-sensor-node-and-its-replay-check),
-  [10.10 tests](#1010-test-an-application), [10.11 N inputs from a list](#1011-n-subscriptions-named-by-a-list),
-  [10.12 plugins](#1012-a-manager-that-hosts-plugins)
-- [11. Porting a ROS 2 node](#11-porting-a-ros-2-node)
-- [12. Large messages](#12-large-messages)
+  [10.10 tests](#1010-test-an-application), [10.11 N inputs from a list](#1011-n-subscriptions-named-by-a-list)
+- [11. Porting a ROS 2 node](#11-porting-a-ros-2-node): [11.1 message names](#111-the-message-names),
+  [11.2 the rows](#112-the-rows)
+- [12. Large messages](#12-large-messages): [12.1 sizing](#121-sizing-a-topic),
+  [12.2 size not known](#122-a-message-whose-size-the-node-cannot-state),
+  [12.3 copies and zero-copy](#123-copies-and-zero-copy-today)
 
 ---
 
@@ -307,11 +316,12 @@ one set of triggers, and no second timer. Issue #267 proposes a helper owned by 
 
 - A body that runs at a period longer than the step's (a 10 Hz timer in a 100 Hz step), or a
   one-shot timeout, is a deadline kept in a member and compared with the step's own time
-  `time.now`, never with a wall clock, so that a replay behaves as the live run. The body runs
+  `time.now`, and not with `hypha::steadyNow()` or a `std::chrono` clock, so that a replay
+  behaves as the live run (under simulated time `time.now` is the replay's time). The body runs
   once for each period that passed, as the thread of a `ros::Timer` would have, so the
   deadline counts periods and does not set a flag. The grid is anchored at the first call
   and gives no tick then. `Ticker` of `ports/mrs_trackers/inc/mrs_uav_managers/ticker.h`
-  (with `test_ticker.cpp`), 25 lines:
+  (with `test_ticker.cpp`), about 30 lines:
 
 ```cpp
 class Ticker
@@ -457,7 +467,15 @@ rotation_count = 3
 
 - A topic is absolute (`/odom_speed`) or private (`~/command`, which resolves
   to `/<node name>/command`). A relative ROS name (`odom_speed`) is refused:
-  apply the ROS namespace and remaps by hand and write the full result.
+  apply the ROS namespace and remaps by hand and write the full result. **What the name
+  rule refuses** (`hypha::validateTopicName`; `crates/hypha_core/tests/topic_spec.rs`,
+  `crates/hypha_ffi/tests/topic_name_validation_abi.rs`): a name without the leading `/`
+  (`cmd_vel`), the empty name, `/` alone, `/hypha` alone (the product name is reserved:
+  applications publish below it), a `*` (a wildcard belongs to a subscription pattern
+  only: `/a/*` for one segment, `/a/**` for the rest), a space, tab, newline or other
+  control character, an empty segment (`/a//b`, a trailing `/`), a `.` or `..` segment,
+  and `~` alone or `~x` (the form is `~/x`). `/a/b_c/D~9` is valid. A refused name is
+  `InvalidTopic`, a refused configuration (exit 78).
 - An input that the deployment does not wire has an empty `topic` in
   `[ports.inputs.setpoint]` (`topic = ""`), and the port is declared with
   `optionalTopic`: `Latest<Float64> setpoint{*this, "setpoint", optionalTopic}`. The
@@ -1081,6 +1099,17 @@ or 1.
   A `Latest` port keeps its value between steps (`*port`).
 - **No timer of your own beside the cycle for the same work.** One rate, one
   cycle.
+- **A port that nobody feeds yet logs a warning.** An input with no connected publisher
+  warns once for its topic after 5000 ms: `no publisher connected to topic '<t>' in domain
+  '<d>' after 5000 ms`. A command port that nobody has used (`switch_controller`,
+  `constraints`: a service in ROS, called when an operator wants) warns in a healthy node.
+  **No tag silences it**: `advisory` only keeps the node's `~/state` healthy
+  ([section 3, Step 3](#step-3-write-the-toml-file)), and `optionalTopic` removes the port.
+  A wildcard subscription never warns. Leave the line, say in the change description that
+  it is expected for those ports, and report the case as a documentation or gap item
+  (a service with an answer, #132, removes it).
+- **`started()` must return.** A node that blocks there publishes no `~/state` and does not
+  stop ([section 10.2](#102-the-application)).
 - **`INPUTS_USABLE` is not readiness.** It means only that the inputs are
   fresh. Publish an application readiness topic when the system needs one.
 - **One `[log]` table for each process.** A second node in the same process
@@ -1946,3 +1975,171 @@ target: it is a triggered `CycleNode` whose constructor builds one `Arrivals` po
 name and keeps them in a `std::list` (the order of the sentences in the introduction,
 `ports/twist_mux`). A name in the array whose table has no `topic` fails the start with a
 refused port table, and exits 78 ([section 10.3](#103-literal-topic-or-port-name)).
+
+---
+
+## 11. Porting a ROS 2 node
+
+The guide above is written for ROS 1. A ROS 2 (`rclcpp`) node follows the same steps, the
+same rules and the same target choice; this section maps what is different. The message
+names come first, because everything else compiles only with them. Evidence for each row is
+from `ports/autoware_voxel_downsample` (a ROS 2 node of Autoware 2.1.0) and from the
+vetting of the MRS and Autoware nodes.
+
+### 11.1 The message names
+
+ROS 2 code includes `<sensor_msgs/msg/point_cloud2.hpp>` and names
+`sensor_msgs::msg::PointCloud2`. hypha's generated headers keep the ROS 1 path
+(`<sensor_msgs/PointCloud2.h>`), and **the ROS 2 names are generated by the application**,
+with one CMake call after the packages are declared (the standard packages need no
+declaration):
+
+```cmake
+find_package(hypha CONFIG REQUIRED)
+# The ROS 2 names of the upstream core, as aliases of the SDK's sensor_msgs types.
+hypha_generate_ros2_headers(voxel_ros2_headers PACKAGES sensor_msgs std_msgs)
+target_link_libraries(voxel_filter PUBLIC voxel_ros2_headers hypha::sdk Eigen3::Eigen)
+```
+
+- Each message gets `<package>/msg/<name>.hpp` (`Vector3Stamped` is `vector3_stamped.hpp`) and
+  each service `<package>/srv/<name>.hpp`. A package of the node's own is declared with
+  `hypha_generate_messages` first and then named in `PACKAGES`; an undeclared package stops the
+  configure. The ROS 2 name is a **namespace alias of the ROS 1 type**, so
+  `sensor_msgs::msg::PointCloud2` and `sensor_msgs::PointCloud2` are one type
+  (`static_assert(std::is_same_v<...>)` compiles; nothing is copied when one is passed as the
+  other). The node file may spell it either way; keep the core's spelling in the core.
+- The type is the ROS 1 type, so its fields keep their ROS 1 names: `header.stamp.secs` and
+  `.nsecs` (ROS 2: `sec`, `nanosec`), and `header.seq` exists. Code that reads a ROS 2 field name
+  fails to compile; it does not read another value. A `builtin_interfaces::msg::Time` field of
+  a message is named as ROS 2 names it.
+- `<sensor_msgs/point_cloud2_iterator.hpp>`, `point_field_conversion.hpp`, `image_encodings.hpp`
+  and `distortion_models.hpp` are installed with the SDK: the include lines stay
+  ([cpp-api.md](cpp-api.md) §1.1).
+
+### 11.2 The rows
+
+| ROS 2 | hypha | The trap |
+|---|---|---|
+| `rclcpp_components`, `RCLCPP_COMPONENTS_REGISTER_NODE(Cls)`, `Cls(const rclcpp::NodeOptions&)` | A class derived from `hypha::CycleNode` (or `ApplicationNode`) with a default constructor, and a `main` that is `return hypha::runNode<Cls>(argc, argv, "name");`. The target is chosen as in the introduction. `NodeOptions`, `use_intra_process_comms` and `ComposableNode` are dropped: one process has one node | A container that loads several components is several processes, with one TOML file each (Step 8) |
+| `declare_parameter<T>("x", default)`, `get_parameter("x")`, `get_parameter_or` | `hypha::config().required<T>("x")`; `optional<T>("x", fallback)` only for a value whose fallback is safe in every deployment (rule 2.2). A parameter descriptor with a range is `hypha::constraints::range(a, b)`. A name with a dot (`a.b`) is the key `b` of the table `[a]` of the TOML file, read as `hypha::config("a").required<T>("b")`. The node reads each parameter once, in the constructor or `setup()` | A declared parameter that the file leaves out has no default: the first required key stops the node. A parameter that changes at run time (`add_on_set_parameters_callback`): [section 7.5](#75-a-parameter-that-changes-at-run-time) |
+| `create_subscription<M>(topic, rclcpp::QoS(n), cb)` and `QoS{n}`, `keep_last(n)` | A **callback that does work for each message**: an `Arrivals<M>` port declared with `hypha::perStep(n)`. **The newest value only**: a `Latest<M>` port, which takes the policy's depth and no number of yours. A plain `ApplicationNode` subscriber queues the `maxDepth` of its topic's policy (Step 4 "Queue sizing"). **A depth above 32** needs a policy of its own ([section 10.5](#105-queue-depth)) | In a rate cycle the number is the samples of one period, not the ROS depth (section 4, `queue_size`). Publishers set no depth: `create_publisher<M>(topic, QoS(n))` is `Output<M>` or `advertise`, and `n` is dropped |
+| `rclcpp::SensorDataQoS().keep_last(n)`, `.best_effort()`, `.reliable()` | **hypha has no reliability setting**: there is no best effort and no reliable. The depth becomes the input's depth, as in the row above (`ports/autoware_voxel_downsample`: `keep_last(3)` is `perStep(3)` and a policy with `maxDepth = 3`). A full queue drops its oldest samples and counts them (`lost()`, [communication-integrity.md](communication-integrity.md)); nothing waits for a slow reader | The loss policy is "oldest first, counted" for every port. A node that needs another one: stop and report |
+| `rclcpp::QoS(n).transient_local()` | `hypha::latched` on the `Output` (or on `advertise`). A late subscriber gets **the last** sample, whatever `n` is: the latch keeps one (`publisher_history_size` is 1, [interface-specification.md](interface-specification.md)) | A `keep_last(n)` history of `n > 1` for late joiners has no counterpart: report it |
+| `.durability_volatile()`, `.deadline(...)`, `.lifespan(...)`, `.liveliness(...)` | `volatile` is the default. The others have no row: an input age limit is `silence_ms` (Step 2); stop and ask for the rest | |
+| `MutuallyExclusiveCallbackGroup`, `ReentrantCallbackGroup`, `create_callback_group`, `SingleThreadedExecutor`, `MultiThreadedExecutor`, `rclcpp::spin`, `executor.add_node` | Delete them. Every callback, timer and cycle step of a node runs on one thread, one at a time ([execution-model.md](execution-model.md) §10.1), so there is nothing to separate. A `std::mutex` that only separated callback groups goes too (section 5). `rclcpp::spin(node)` is `runNode` | A callback that blocks until another callback has run (a client call that waits on a future) cannot work: [section 7.1](#71-services) |
+| `create_wall_timer(period, cb)`, `create_timer` | A rate cycle (`rate_hz`, Step 2), or `Node::timer` in an `ApplicationNode`. A second timer, or a timeout created in a callback: Step 2 and #267 | |
+| `this->now()`, `get_clock()->now()`, `rclcpp::Time(msg->header.stamp)`, `rclcpp::Duration` | In a step `time.now` and `time.stamp`; elsewhere `hypha::now()`. `rclcpp::Time(stamp)` is `hypha::fromRosTime(stamp)` (an `std::optional`); `Time::seconds()` and `Duration::seconds()` are the double nearest the exact value; arithmetic keeps its meaning (section 5). `toRosTime` throws for a time below zero, so `stamp - 1 s` of a stamp under one second is not a stamp: check it | |
+| `RCLCPP_INFO(get_logger(), "x {}", v)`, `RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, ...)` | `HYPHA_LOG_INFO("x {}", v)`; `HYPHA_LOG_WARN_THROTTLE(1.0, ...)` | **The ROS 2 throttle period is in milliseconds, hypha's is in seconds**: `1000` becomes `1.0`. `RCLCPP_*_ONCE` and `_COND`: the rows of section 4 |
+| `tf2_ros::Buffer`, `TransformListener`, `lookupTransform(target, source, tf2::TimePointZero)`, `ManagedTransformBuffer` | A `hypha::Transforms` port in a cycle, a `hypha::TransformBuffer` in an `ApplicationNode`. `TimePointZero` (the latest) is `lookupLatest(target, source)`; a lookup at a stamp is `lookup(target, source, stamp)`. Neither waits | `lookupTransform` with a timeout, and `canTransform` with one (a crop box that waits 1 s): [section 7.4](#74-a-transform-lookup-that-waits) |
+| `create_service`, `create_client`, `rclcpp_action` | [section 7.1](#71-services), [section 7.2](#72-actions) | |
+| `rclcpp::Publisher::borrow_loaned_message`, `LoanedMessage` | No typed loan on `develop`: [section 12](#12-large-messages) | |
+| `rclcpp_lifecycle` (`configure`, `activate`) | No counterpart: the lifecycle of a node is construction, `setup()`, `started()`, the run ([section 10.2](#102-the-application)). Stop and ask | |
+| `std::shared_ptr<const M>` callbacks, `M::SharedPtr`, `ConstSharedPtr`, `UniquePtr` | The generated message carries all of ROS 2's pointer typedefs ([cpp-api.md](cpp-api.md) §1.1). A cycle port gives a `const M&` valid for the step, not a pointer (section 5, `ConstPtr` row): a core that takes a shared pointer gets one copy per step (`std::make_shared<const M>(sample)`) | |
+| `autoware::agnocast_wrapper` macros, `rclcpp::Logger` passed as an argument | Not covered: stop and ask | |
+
+### 11.3 The logic edits that a ROS 2 file needs besides the rows
+
+The edits of [section 5](#5-message-types-and-the-minimal-logic-edits) apply as written:
+a third-party vocabulary type (`tl::expected`), an include that only brings Eigen (a
+`pcl_conversions` include in a file with no `pcl::` name), `tf2` and `angles` headers. Mark each
+logic line that you edit with a `// hypha port:` comment, and count them.
+
+---
+
+## 12. Large messages
+
+A message with a variable-size field (the `data` of an `Image` or a `PointCloud2`) is
+**growable** unless its publisher names its largest message. A growable topic reserves its
+pool at the first slot size and grows the segment when a message needs more, checks nothing
+against `/dev/shm`, and an undersized `/dev/shm` stops the process with SIGBUS
+([cpp-api.md](cpp-api.md) §4, [engineering-traps.md](engineering-traps.md)). The default
+policy, sized for small messages, would reserve 649 slots of the largest message.
+
+### 12.1 Sizing a topic
+
+1. **The largest serialized message.** The `data` bytes (`height * step` for an `Image`,
+   `width * height * point_step` for a `PointCloud2`) plus the fixed fields and the strings
+   (`frame_id`, `encoding`, field names): 53 bytes more for an `rgb8` image with frame id
+   `arena_camera`, and 156 for a PandarXT-32 cloud: 64,000 points of 26 bytes and 156 bytes
+   are 1,664,156 bytes, which `hypha topic bw <topic>` prints as `mean size`. There is no call
+   that gives the serialized size of a message, so add an allowance (the camera port adds 4096).
+   The point count of a lidar mode is not in the ROS source. **Take the bound from a key of
+   the TOML file** (`image_max_bytes`, `cloud_max_bytes`, `max_points_per_frame`), read with a
+   range, and give it to the publisher:
+
+```cpp
+this->image_raw_ = node.advertise<sensor_msgs::Image>(
+    "image_raw", hypha::maxPayloadDynamic(this->image_max_bytes_ + kImageOverheadBytes)
+);
+```
+
+   (`ports/arena_camera/src/arena_camera_node.cpp`; on an `Output` the same tag.) A message
+   above the bound is refused: `publish()` returns false with `lastPublishStatus()`
+   `TooLarge` (`ports/hesai_lidar`: `cloud_max_bytes = 1_000_000` gave `/lidar_points not
+   sent: TooLarge`). The refusal is a behaviour change from ROS, which sent any size: report it.
+2. **A policy for the topic** ([section 10.5](#105-queue-depth)): `publishers`, `subscribers`
+   (the readers you declare, not the default 16), `maxDepth` (the deepest queue a reader asks
+   for: 2 or 3 for a cloud or an image), mapped to the message type in a header that both ends
+   include. `QosOf<M>` is one policy for a message type in one translation unit: two lidar
+   drivers that each map `sensor_msgs::PointCloud2` cannot be built into one unit (#241); give a
+   port its own policy with the `hypha::Qos` option of the port instead of the map.
+3. **The pool** is the number of slots times the slot size:
+
+   `slots = (subscribers + 3) * (maxDepth + 2) + 1 + loans`
+
+   where `subscribers` and `maxDepth` are the policy's, the 3 are the slots reserved for tools
+   that observe the topic (`hypha topic`, `hypha record`), the 1 is the latched sample and
+   `loans` is the publisher's own (2 in the two figures below). A slot holds the bound plus 104
+   bytes of headers. The camera's `(2 + 3) * (2 + 2) + 1 + 2 = 23` slots of a 15 MB `rgb8`
+   image reserve 346 MB; the Hesai cloud with 2 subscribers and depth 3 has 28 slots and
+   reserves 50.4 MB; the `default` policy, 649 slots of 1.8 MB, would reserve 1.17 GB. A
+   bounded publisher reserves address space of `slots * bound` and only the samples that were
+   written are resident, but readers that drain at different rates have written every slot, so
+   **budget the whole pool**: `/dev/shm` must hold it, and a bounded publisher whose full pool
+   exceeds the free space logs `may need <n> bytes of shared memory` at creation. The formula
+   is `qos::pool_samples` and its derivation is in
+   [engineering-traps.md](engineering-traps.md) ("A growable publisher keeps bookkeeping ..." and
+   the `/dev/shm` entry). `hypha topic`, `hypha node` and `hypha top` print no pool size, so the
+   number is arithmetic.
+
+### 12.2 A message whose size the node cannot state
+
+A scan of a variable number of packets (`velodyne_driver` with `cut_angle`) has no maximum that
+the node can compute. Two answers, in this order:
+
+- **Ask the user for the largest message the deployment may produce**, put it in the TOML file
+  as above, and let the node refuse a larger one. This is what the camera, the Hesai and the
+  Livox ports did.
+- **If the user will not give a bound, leave the publisher growable**: it is supported, and
+  the start-up log says what it costs. Check `/dev/shm` of the target against
+  `slots * the largest message you measured` (`hypha topic bw`); no bound is checked for you.
+
+**The growable-payload INFO line.** `topic '<t>' has a growable payload; its later segments
+are not checked against /dev/shm, and an undersized /dev/shm can stop the process with SIGBUS`
+describes the **publisher** of the topic. A subscriber cannot name the largest message it
+accepts (no option exists), so the line for an input topic goes away only when its publisher
+names a bound with `maxPayloadDynamic`; when the publisher is another node, leave the line. The
+node's own `~/state` and `~/introspection` topics log the same line at every start; it is
+expected.
+
+### 12.3 Copies and zero-copy today
+
+What exists on `develop`, and nothing else:
+
+- **A typed `publish(const M&)` encodes the message into a slot of shared memory**, and an
+  `Output::send` into a loan of its step: one copy of the payload each, and a second one when
+  the node first builds the message from the device's buffer (`copyPixels` in `arena_camera`).
+  The measured cost at 30 Hz: 2.6 % of a core for a 5 MP `mono8` image and 5.5 % for a 15 MB
+  `rgb8` one (medians 0.13 and 0.44 ms for the two copies of the `mono8` image).
+- **A typed subscriber decodes into an owning message**, and a cycle port gives a
+  `std::span<const M>` of decoded messages: one copy per message, and one more when a core
+  wants a `std::shared_ptr<const M>`.
+- **Zero-copy exists only in the raw layer** (`rawPublisher` and its loan, `subscribeRaw`,
+  `examples/large_payload`), which needs the wire format written by hand. Raw endpoints are for
+  tools and examples; a new application use needs the owner's approval
+  ([features.md](features.md) §3.12). A port does not use them.
+- **A typed loan**, a message whose `data` is resized and filled in place in the slot, is **not
+  merged**: #255 and the pull request #261 are open. Write no code that assumes
+  `Publisher::loan()`. A port whose copies matter reports the measured cost against #255.
+- `nodelet` and in-process sharing between nodes have no counterpart ([section 7](#7-stop-and-ask)):
+  nodes are processes, and a subscriber reads from the shared memory of the publisher.
