@@ -562,7 +562,7 @@ fn live_publisher_count(service: &DataPortFactory) -> Result<usize, PortError> {
 }
 
 /// The ids of the nodes of the domain that iceoryx2 reports dead.
-pub(crate) fn dead_node_ids() -> Result<Vec<iceoryx2::identifiers::UniqueNodeId>, PortError> {
+fn dead_node_ids() -> Result<Vec<iceoryx2::identifiers::UniqueNodeId>, PortError> {
     use iceoryx2::node::{NodeState, NodeView as _};
 
     let config = crate::domain::config()?;
