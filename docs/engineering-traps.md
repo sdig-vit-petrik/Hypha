@@ -460,10 +460,11 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   in node creation, and the player sends its `/clock` only once `/clock_progress`
   has no publisher left (`replay-flow-control.md` §4.4).
 - **A replay step with a lost input fails.** A step with a sequence gap or an
-  evicted sample on a queued input, or a lost sample on a `Latest` input under replay
-  that was stamped at or after the oldest deadline still to run, fails its `WaitSet`
-  run with `SequenceGap`. Its signs are the `replay not faithful: N samples lost on <topic>`
-  log line and `overrun_total`. In host time, a latest input neither fails nor counts a loss,
+  evicted sample on a queued input, or on a `Latest` input under replay a sequence gap
+  or an unread eviction in a step that selects no retained sample, fails its `WaitSet`
+  run with `SequenceGap`. A retained sample the step selects is newer than every evicted
+  one and stamped before the deadline, so it supersedes them in data time. Its signs are
+  the `replay not faithful: N samples lost on <topic>` log line and `overrun_total`. In host time, a latest input neither fails nor counts a loss,
   because a value it did not read was superseded.
 - **Benchmarks: a green test run misses a slowdown.** A hot-path change (dispatch,
   publish, receive, cycle tick, wire codec) reports its benchmark numbers before and

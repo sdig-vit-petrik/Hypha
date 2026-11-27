@@ -199,12 +199,25 @@ pub(crate) fn a_latest_step_with_replay_loss_fails_the_run_and_is_counted() {
     }
 }
 
-/// What a `Latest` input on a 100 ms cycle sees when `hypha play --chunk 100` replays a
-/// 100 Hz topic whose chunk grid starts 10 ms past the deadline grid: the status of each
-/// run, the binding's losses and the steps.
-fn replay_a_latest_input_off_the_deadline_grid(queue: usize) -> (Vec<i32>, u64, Vec<Step>) {
+/// A `Latest` binding.
+const LATEST: HyphaCycleBindingOptions = HyphaCycleBindingOptions {
+    mode: HyphaCycleInputMode::Latest as u32,
+    max_samples_per_iteration: 1,
+    optional: 0,
+};
+
+/// What an input bound as `bind` with a queue of `queue` on a 100 ms cycle sees of a
+/// 100 Hz topic whose samples and `/clock` arrive as `chunks` gives them, from a first
+/// clock at `start` ms: each chunk is the stamps of its samples, in ms, then the `/clock`
+/// that closes it. The status of each run, the binding's health and the steps.
+fn replay_an_input(
+    bind: HyphaCycleBindingOptions,
+    queue: usize,
+    start: i64,
+    chunks: &[(Vec<i64>, i64)],
+) -> (Vec<i32>, HyphaCycleBindingHealth, Vec<Step>) {
     const CYCLE_PERIOD: i64 = 100 * MILLISECOND;
-    let _clock = SimulatedClock::start(10 * MILLISECOND);
+    let _clock = SimulatedClock::start(start * MILLISECOND);
     let node = create_node(&unique("replay_sizing_latest"));
     let waitset = unsafe { create_waitset(node) };
     let topic = format!("/{}", unique("replay_sizing_latest"));
@@ -232,11 +245,6 @@ fn replay_a_latest_input_off_the_deadline_grid(queue: usize) -> (Vec<i32>, u64, 
         },
         HyphaStatus::Ok
     );
-    let bind = HyphaCycleBindingOptions {
-        mode: HyphaCycleInputMode::Latest as u32,
-        max_samples_per_iteration: 1,
-        optional: 0,
-    };
     let mut index = 0_u32;
     assert_eq!(
         unsafe { hypha_cycle_bind_input(cycle, source, &raw const bind, &raw mut index) },
@@ -244,11 +252,9 @@ fn replay_a_latest_input_off_the_deadline_grid(queue: usize) -> (Vec<i32>, u64, 
     );
     assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
 
-    // The player's order: the start barrier's clock at 10 ms, then each chunk's samples,
-    // its own boundary included, before the clock that closes it.
     let mut statuses = Vec::new();
-    for close in [110, 210, 310, 410] {
-        for stamp in (close - 100..=close).step_by(10).filter(|stamp| *stamp >= 10) {
+    for (stamps, close) in chunks {
+        for stamp in stamps {
             let value = u8::try_from(stamp / 10).expect("a small value");
             unsafe { send_stamped(publisher, value, stamp * MILLISECOND) };
         }
@@ -265,19 +271,96 @@ fn replay_a_latest_input_off_the_deadline_grid(queue: usize) -> (Vec<i32>, u64, 
         hypha_publisher_destroy(publisher);
         hypha_node_destroy(node);
     }
-    (statuses, binding.health.overrun_total, steps)
+    (statuses, binding.health, steps)
+}
+
+/// The stamps from `first` through `last` ms, every 10 ms.
+fn every_10_ms(first: i64, last: i64) -> Vec<i64> {
+    (first..=last).step_by(10).collect()
+}
+
+/// The player's chunks of `hypha play --chunk 100` for a 100 Hz topic stamped on
+/// multiples of 10 ms, from `start` ms through the boundaries `closes`: each closed at
+/// `T` holds every sample stamped at or before `T`, the first one its start too.
+fn chunks_of_100_ms(start: i64, closes: &[i64]) -> Vec<(Vec<i64>, i64)> {
+    let mut first = start;
+    closes
+        .iter()
+        .map(|&close| {
+            let stamps = every_10_ms(first, close);
+            first = close + 10;
+            (stamps, close)
+        })
+        .collect()
+}
+
+/// Each step's deadline and the newest sample it took, in ms and as the sample's value.
+fn deadlines_and_values(steps: &[Step]) -> Vec<(i64, Option<u8>)> {
+    steps.iter().map(|step| (step.scheduled / MILLISECOND, step.newest)).collect()
 }
 
 #[test]
 pub(crate) fn a_latest_input_sized_for_a_chunk_and_a_period_keeps_up_off_the_deadline_grid() {
     // (100 ms chunk + 100 ms period) x 100 Hz: the documented size of a `Latest` input.
-    let (statuses, overruns, steps) = replay_a_latest_input_off_the_deadline_grid(20);
+    let chunks = chunks_of_100_ms(10, &[110, 210, 310, 410]);
+    let (statuses, health, steps) = replay_an_input(LATEST, 20, 10, &chunks);
     assert!(statuses.iter().all(|status| *status == HyphaStatus::Ok as i32), "{statuses:?}");
-    assert_eq!(overruns, 0, "no sample is lost");
-    let seen: Vec<(i64, Option<u8>)> =
-        steps.iter().map(|step| (step.scheduled / MILLISECOND, step.newest)).collect();
+    assert_eq!(health.overrun_total, 0, "no sample is lost: {health:?}");
     // Each step takes the newest sample before its deadline.
-    assert_eq!(seen, [(100, Some(9)), (200, Some(19)), (300, Some(29)), (400, Some(39))]);
+    assert_eq!(
+        deadlines_and_values(&steps),
+        [(100, Some(9)), (200, Some(19)), (300, Some(29)), (400, Some(39))]
+    );
+}
+
+#[test]
+pub(crate) fn a_latest_queue_of_one_chunk_drops_a_sample_off_the_deadline_grid() {
+    // A queue of 100 ms x 100 Hz: the player shortens the first chunk, of 11 samples, at
+    // 109 ms (4.3). The `/clock` at 110 runs no step, so nothing drains 110 before the
+    // step at 200, and the queue of 10 cannot hold 110..210. The capture loses nothing,
+    // and the step at 200 still takes 190, but the transport gap counts all the same.
+    let chunks = [
+        (every_10_ms(10, 100), 109),
+        (vec![110], 110),
+        (every_10_ms(120, 210), 210),
+        (every_10_ms(220, 310), 310),
+    ];
+    let (statuses, health, steps) = replay_an_input(LATEST, 10, 10, &chunks);
+    let ok = HyphaStatus::Ok as i32;
+    assert_eq!(statuses, [ok, ok, HyphaStatus::SequenceGap as i32, ok], "{health:?}");
+    assert_eq!(health.capture.lost_total, 0, "no eviction is a loss: {health:?}");
+    assert_eq!(health.overrun_total, 1, "one transport gap: {health:?}");
+    assert_eq!(deadlines_and_values(&steps), [(100, Some(9)), (200, Some(19)), (300, Some(29))]);
+}
+
+#[test]
+pub(crate) fn a_latest_queue_that_fits_each_drain_keeps_up_off_the_deadline_grid() {
+    // A queue of 11, the first chunk's samples, so no chunk is shortened and each drain,
+    // the samples from one step's `/clock` to the next, fits. The history of 12 then cannot hold 100..220: the drain at 220 ms evicts 100,
+    // which the step at 100 left unread and 190 supersedes at 200, and the one at 320 ms
+    // evicts 200, which 290 supersedes at 300. No step could take either, so nothing is
+    // lost.
+    let chunks = chunks_of_100_ms(20, &[120, 220, 320]);
+    let (statuses, health, steps) = replay_an_input(LATEST, 11, 20, &chunks);
+    let all_ok = statuses.iter().all(|status| *status == HyphaStatus::Ok as i32);
+    assert!(all_ok, "{statuses:?}, {health:?}");
+    assert_eq!(health.overrun_total, 0, "no sample is lost: {health:?}");
+    assert_eq!(deadlines_and_values(&steps), [(100, Some(9)), (200, Some(19)), (300, Some(29))]);
+}
+
+#[test]
+pub(crate) fn a_latest_input_that_lost_the_sample_a_step_is_due_fails_the_step() {
+    // A publisher that stamps ahead of the clock, which the player never does: the drain
+    // at 210 ms evicts 190, the newest sample before 200, and every retained sample is
+    // stamped at or after 200. Each drain fits the queue, so the transport loses nothing.
+    let mut early = vec![190];
+    early.extend(every_10_ms(200, 280));
+    let chunks = [(early, 109), (vec![290, 300], 210)];
+    let (statuses, health, steps) = replay_an_input(LATEST, 10, 10, &chunks);
+    assert_eq!(statuses, [HyphaStatus::Ok as i32, HyphaStatus::SequenceGap as i32]);
+    assert_eq!(health.capture.lost_total, 1, "{health:?}");
+    assert_eq!(health.overrun_total, 1, "no transport gap: {health:?}");
+    assert_eq!(deadlines_and_values(&steps), [(100, None), (200, None)]);
 }
 
 #[test]

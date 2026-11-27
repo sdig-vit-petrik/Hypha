@@ -886,12 +886,15 @@ input (queued or latest) fails, and the `WaitSet` run that holds it fails with
 and the run goes on. The node logs `replay not faithful: N samples lost on <topic>` at
 error level, at most once per topic per second, and a repeated loss is summed
 into the next line. The binding's losses also count in its `overrun_total`.
-While a latest binding in host time counts neither its transport gaps nor its history
-losses because an unread value was superseded in host time, under replay a sample dropped
-or evicted while stamped at or after the oldest deadline still to run was never superseded
-in data time: the newer value belongs to a later step. When samples have been accepted but none
-are admitted because all retained samples are stamped at or after the deadline, the input history
-is shorter than one replay chunk; the binding's verdict at the C ABI is `EMPTY` (not
+A latest binding in host time counts neither its transport gaps nor its history losses,
+because a value it did not read was superseded in host time. Under replay it counts every
+transport gap, and an eviction it had not read only when the step selects no retained sample:
+a selected one is newer than every evicted sample and stamped before the deadline, so this
+step and every later one take it or a newer one, and the evicted samples were superseded in
+data time. With nothing selected, the evicted samples may hold the value this step or a later
+one is due, and the step, which knows no later deadline, counts them all. When samples have
+been accepted but none are admitted because all retained samples are stamped at or after the
+deadline, the input history is shorter than one replay chunk; the binding's verdict at the C ABI is `EMPTY` (not
 `NEVER_ARRIVED`), or `STALE` for a queued binding past its silence limit. An Arrivals port shows
 `Usable` with no new sample, and a Latest port without a value shows `NeverArrived`. When the
 history evicted a sample stamped before D, so the value the step was due is gone, a latest

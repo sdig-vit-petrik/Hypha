@@ -483,17 +483,23 @@ impl BindingCapture {
     }
 
     fn capture_latest(&mut self, history: &CycleHistory, high_water: u64, clock: CaptureClock) {
-        if clock.is_replay()
-            && let Some(oldest) = history.samples().front().map(|sample| sample.sequence)
-        {
-            self.skip_evicted(oldest);
-        }
         let end = clock.admitted_end(history).unwrap_or(history.samples().len());
         let selected = history.samples().range(..end).rev().find(|sample| {
             before(sample.sequence, high_water)
                 && clock.admits(sample)
                 && !history.is_rejected(sample.sequence)
         });
+        // Under a replay cut an unread evicted sample is lost unless this step selects a
+        // retained sample: that one is newer than every evicted sample and stamped before
+        // the cut, so this step and every later one take it or a newer one. With nothing
+        // selected, the evicted samples may hold the one this step or a later one is due,
+        // and the capture, which knows no later deadline, counts them all.
+        if clock.is_replay()
+            && selected.is_none()
+            && let Some(oldest) = history.samples().front().map(|sample| sample.sequence)
+        {
+            self.skip_evicted(oldest);
+        }
         // The verdict judged the newest admitted sample, or the held value when none.
         let usable = self.verdict == InputVerdict::Usable;
         match selected {
