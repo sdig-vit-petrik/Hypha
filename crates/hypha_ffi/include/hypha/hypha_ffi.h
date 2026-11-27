@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 9
+#define HYPHA_ABI_REVISION 10
 
 #include <stdbool.h>
 #include <stddef.h>
