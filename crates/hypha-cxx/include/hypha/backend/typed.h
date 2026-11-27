@@ -11,6 +11,7 @@
 #include "hypha/qos.h"
 #include "hypha/raw.h"
 #include "hypha/status.h"
+#include "hypha/view.h"
 
 #include <atomic>
 #include <cstddef>
@@ -27,6 +28,13 @@ template <typename M>
 struct MessageTraits
 {
     using ConstPtr = std::shared_ptr<const M>;
+};
+
+/// A subscriber of views receives ViewPtr<M>, which reads the sample in place.
+template <typename M>
+struct MessageTraits<View<M>>
+{
+    using ConstPtr = ViewPtr<M>;
 };
 
 /// @brief The policy a typed endpoint of messages @p M declares: its Qos option, or
@@ -140,45 +148,21 @@ class PublisherHandle
     ///        send them, in one pass over the head. See Publisher<M>::publish(Loan<M>&&, size_t).
     [[nodiscard]] Status publish(Loan<M>&& loan, size_t used)
     {
-        using Element = typename Loan<M>::Element;
-        const M&    head = loan.head_;
-        const auto& field = head.*message_traits::LoanedField<M>::member;
-        const bool  refused = loan.owner_ != this || !field.empty() || used > loan.capacity_
-                           || used % sizeof(Element) != 0;
-        if (refused) {
+        if (loan.owner_ != this) {
             return HYPHA_STATUS_INVALID_ARGUMENT;
         }
-        const uint32_t* seq = nullptr;
-        if constexpr (requires { head.header.seq; }) {
-            seq = &head.header.seq;
+        // The sequence is taken only once nothing can refuse the frame but the send.
+        const std::expected<size_t, Status> total = loan.seal(used, [this] {
+            return this->seq_++;
+        });
+        if (!total.has_value()) {
+            return total.error();
         }
-        uint8_t* const                                out = loan.buffer_.data();
-        const size_t                                  total = loan.headLength_ + used;
-        detail::GapStream<detail::LoanedFieldType<M>> stream(
-            out,
-            loan.buffer_.size(),
-            &field,
-            static_cast<uint32_t>(used / sizeof(Element)),
-            used,
-            seq
-        );
-        ros::serialization::serialize(stream, head);
-        // The lengths of the head's strings and arrays must be those the slot was cut for.
-        const bool sameShape =
-            stream.complete() && stream.gapOffset() == loan.offset_ && stream.length() == total;
-        if (!sameShape) {
-            return HYPHA_STATUS_INVALID_ARGUMENT;
-        }
-        if (total < loan.buffer_.size()) {
-            const Status shrunk = loan.buffer_.shrink(total);
+        if (*total < loan.buffer_.size()) {
+            const Status shrunk = loan.buffer_.shrink(*total);
             if (shrunk != HYPHA_STATUS_OK) {
                 return shrunk;
             }
-        }
-        if (const std::optional<size_t> at = stream.seqOffset(); at.has_value()) {
-            // The sequence is taken only now, once nothing can refuse the frame but the send.
-            const uint32_t next = this->seq_++;
-            std::memcpy(out + *at, &next, sizeof(next));
         }
         return this->raw.publishLoan(std::move(loan.buffer_));
     }
@@ -233,6 +217,53 @@ struct TypedSampleHandler
             return;
         }
         this->callback(std::move(decoded), static_cast<uint64_t>(sample.transportSent.nanos()));
+    }
+};
+
+/// Views of the sample in place: the callback reads the slot, and copies it still holds at
+/// the return keep it within the subscriber's loan budget, or own a copy of its bytes.
+template <typename M>
+struct TypedSampleHandler<View<M>>
+{
+    std::function<void(const ViewPtr<M>&, uint64_t)> callback;
+    std::shared_ptr<hypha::detail::RecurringFault>   undecodable;
+    std::shared_ptr<hypha::detail::RecurringFault>   copied =
+        std::make_shared<hypha::detail::RecurringFault>();
+
+    void operator()(const hypha::RawSample& sample) const
+    {
+        ViewPtr<M> view =
+            hypha::detail::ViewAccess<M>::lend(sample.bytes.data(), sample.bytes.size());
+        if (!view) {
+            this->undecodable->note(
+                "dropping a sample on '" + std::string(sample.topic)
+                + "': payload failed to deserialize as " + codec::dataType<M>()
+            );
+            return;
+        }
+        try {
+            this->callback(view, static_cast<uint64_t>(sample.transportSent.nanos()));
+        } catch (...) {
+            this->settle(view, sample);
+            throw;
+        }
+        this->settle(view, sample);
+    }
+
+    void settle(ViewPtr<M>& view, const hypha::RawSample& sample) const
+    {
+        const bool copiedBytes =
+            hypha::detail::ViewAccess<M>::settle(view, [&sample](HyphaReceivedSample*& kept) {
+                return sample.delivery != nullptr
+                    && hypha_delivery_retain(sample.delivery, &kept) == HYPHA_STATUS_OK;
+            });
+        if (copiedBytes) {
+            this->copied->note(
+                "a view of '" + std::string(sample.topic)
+                + "' outlived its callback past the subscriber's loan budget; its bytes were "
+                  "copied"
+            );
+        }
     }
 };
 

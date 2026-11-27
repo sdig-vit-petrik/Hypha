@@ -21,10 +21,15 @@ namespace hypha {
 /// `*port` and `port->field` read the value while it is usable in this step, and throw
 /// InputNotUsable when the input is stale or has no sample yet; lastKnown() reads the
 /// newest value that was ever usable. setIgnored(true) does not make a stale value readable.
+///
+/// `Latest<View<M>>` reads the value in place (hypha/view.h): `*port` is a View<M> of the
+/// bytes the step's input holds, valid in the step. sample() gives its ViewPtr; one kept
+/// past the step owns a copy of its bytes from the step's end, which is logged.
 template <typename M>
 class Latest final : public Input<M>
 {
     using Base = Input<M>;
+    using Sample = typename detail::SampleOf<M>::type;
 
   public:
     /// @brief A port that reads `[ports.inputs.<name>]`: its topic and its limit keys.
@@ -104,6 +109,18 @@ class Latest final : public Input<M>
         if (!this->usable()) {
             this->throwNotUsable();
         }
+        return this->heldValue();
+    }
+
+    /// @brief The ViewPtr of the value of a Latest<View<M>>, usable in this step: to pass
+    ///        to code that takes a `ConstPtr`. @throws InputNotUsable unless usable().
+    const Sample& sample() const
+        requires(detail::IsView<M>::value)
+    {
+        if (!this->usable()) {
+            this->throwNotUsable();
+        }
+        static_cast<void>(this->heldValue());
         return this->held_;
     }
 
@@ -120,14 +137,14 @@ class Latest final : public Input<M>
         if (!this->hasHeld_) {
             throw std::logic_error("hypha: the input has no value yet");
         }
-        return this->held_;
+        return this->heldValue();
     }
 
     /// @brief The value when usable() in this step, else @p fallback. @p fallback is an
     ///        object that outlives the use of the result, never a temporary.
     const M& valueOr(const M& fallback) const
     {
-        return this->usable() ? this->held_ : fallback;
+        return this->usable() ? this->heldValue() : fallback;
     }
 
     const M& valueOr(M&&) const = delete;
@@ -169,6 +186,28 @@ class Latest final : public Input<M>
 
   private:
     friend class testing::StepHarness;
+
+    /// The held value; a view of one is read only in the step that captured it.
+    const M& heldValue() const
+    {
+        if constexpr (detail::IsView<M>::value) {
+            if (!this->held_) {
+                throw std::logic_error("hypha: a view of an input is read in its step only");
+            }
+        }
+        return detail::valueOf(this->held_);
+    }
+
+    /// The step's view gives up its bytes; one the step kept gets a copy of them.
+    void leaveStep() override
+    {
+        Base::leaveStep();
+        if (detail::leaveSample(this->held_)) {
+            this->viewCopies_.note(
+                "a view of " + this->portText() + " outlived its step; its bytes were copied"
+            );
+        }
+    }
 
     [[noreturn]] void throwNotUsable() const
     {
@@ -244,7 +283,7 @@ class Latest final : public Input<M>
             return HYPHA_STATUS_INVALID_STATE;
         }
         const std::optional<uint64_t> alive =
-            this->hasHeld_ ? this->aliveOf(this->held_) : std::nullopt;
+            this->hasHeld_ ? this->aliveOf(detail::valueOf(this->held_)) : std::nullopt;
         return this->captureSupervised(image, alive);
     }
 
@@ -254,7 +293,8 @@ class Latest final : public Input<M>
         this->fresh_ = false;
         this->hasHeld_ = report.has_held != 0;
         const bool sameHeld = this->decodedHeld_ && report.held_sequence == this->heldSequence_;
-        const bool needDecode = this->hasHeld_ && !sameHeld;
+        // A view is lent again each step: the library may move the bytes between steps.
+        const bool needDecode = this->hasHeld_ && (!sameHeld || detail::IsView<M>::value);
         if (!needDecode) {
             return HYPHA_STATUS_OK;
         }
@@ -272,18 +312,19 @@ class Latest final : public Input<M>
         this->heldStamp_ = detail::stampOf(view);
         this->heldSequence_ = report.held_sequence;
         this->decodedHeld_ = true;
-        this->fresh_ = true;
+        this->fresh_ = !sameHeld;
         return HYPHA_STATUS_OK;
     }
 
-    uint64_t            ageNanos_{0};
-    M                   held_{};
-    M                   candidate_{};
-    bool                hasHeld_{false};
-    bool                decodedHeld_{false};
-    uint64_t            heldSequence_{0};
-    bool                fresh_{false};
-    detail::SampleStamp heldStamp_{};
+    uint64_t               ageNanos_{0};
+    Sample                 held_{};
+    Sample                 candidate_{};
+    bool                   hasHeld_{false};
+    bool                   decodedHeld_{false};
+    uint64_t               heldSequence_{0};
+    bool                   fresh_{false};
+    detail::SampleStamp    heldStamp_{};
+    detail::RecurringFault viewCopies_;
 };
 
 }  // namespace hypha

@@ -254,6 +254,17 @@ PointCloud2IteratorBase<T, TT, U, C, V>::PointCloud2IteratorBase(C &cloud_msg, c
   data_end_ = reinterpret_cast<TT*>(data_char_ + cloud_msg.data.size());
 }
 
+// hypha port: a received cloud read in place (hypha/view.h), its data a span of the slot.
+template<typename T, typename TT, typename U, typename C, template <typename> class V>
+PointCloud2IteratorBase<T, TT, U, C, V>::PointCloud2IteratorBase(const hypha::View<sensor_msgs::PointCloud2> &cloud_msg, const std::string &field_name)
+{
+  int offset = set_field(cloud_msg, field_name);
+
+  data_char_ = cloud_msg.data.data() + offset;
+  data_ = reinterpret_cast<TT*>(data_char_);
+  data_end_ = reinterpret_cast<TT*>(data_char_ + cloud_msg.data.size());
+}
+
 /** Assignment operator
  * @param iter the iterator to copy data from
  * @return a reference to *this
@@ -355,8 +366,10 @@ V<T> PointCloud2IteratorBase<T, TT, U, C, V>::end() const
   * @param field_name the name of the field to iterate upon
   * @return the offset at which the field is found
   */
+// hypha port: of a message or of its view, which have the same fields.
 template<typename T, typename TT, typename U, typename C, template <typename> class V>
-int PointCloud2IteratorBase<T, TT, U, C, V>::set_field(const sensor_msgs::PointCloud2 &cloud_msg, const std::string &field_name)
+template<typename Cloud>
+int PointCloud2IteratorBase<T, TT, U, C, V>::set_field(const Cloud &cloud_msg, const std::string &field_name)
 {
   is_bigendian_ = cloud_msg.is_bigendian;
   point_step_ = cloud_msg.point_step;

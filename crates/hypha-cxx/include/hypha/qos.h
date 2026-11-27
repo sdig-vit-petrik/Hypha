@@ -23,6 +23,8 @@
 
 #include "hypha/hypha_ffi.h"
 
+#include <ros/message_traits.h>
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -80,6 +82,12 @@ template <typename M>
 struct QosOf
 {
     static constexpr Qos value = defaultQos;
+};
+
+/// @brief A view (hypha/view.h) has the policy of its message.
+template <typename M>
+struct QosOf<View<M>> : QosOf<M>
+{
 };
 
 /// @brief A policy hypha maps itself.

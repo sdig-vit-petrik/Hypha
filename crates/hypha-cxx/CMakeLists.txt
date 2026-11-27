@@ -325,6 +325,8 @@ if(HYPHA_BUILD_TESTS)
     test/wall_clock_listener.cpp
     test/test_publisher.cpp
     test/test_typed_loan.cpp
+    test/test_typed_view.cpp
+    test/test_cycle_view.cpp
     test/test_subscriber.cpp
     test/subscriber_latest_pair_is_consistent.cpp
     test/test_parameters.cpp
@@ -509,12 +511,14 @@ if(HYPHA_BUILD_TESTS)
   endforeach()
 endif()
 
-# The typed loan's tests under AddressSanitizer and UBSan, on request: a moved-from loan,
-# a loan that outlives its publisher or its node, a span past the publish.
+# The typed loan's and the views' tests under AddressSanitizer and UBSan, on request: a
+# moved-from loan, a loan that outlives its publisher, its node or its step, a span past
+# the publish, a view kept past its callback or its step.
 option(HYPHA_TYPED_LOAN_SANITIZE "Build test_typed_loan_sanitized with ASan and UBSan" OFF)
 if(HYPHA_BUILD_TESTS AND HYPHA_TYPED_LOAN_SANITIZE)
   add_executable(test_typed_loan_sanitized
-    test/test_main.cpp test/test_typed_loan.cpp test/test_typed_loan_contract.cpp)
+    test/test_main.cpp test/test_typed_loan.cpp test/test_typed_loan_contract.cpp
+    test/test_typed_view.cpp test/test_cycle_view.cpp)
   target_link_libraries(test_typed_loan_sanitized PRIVATE hypha GTest::gtest)
   target_compile_definitions(test_typed_loan_sanitized PRIVATE HYPHA_NO_LOGGING)
   target_compile_options(test_typed_loan_sanitized PRIVATE

@@ -126,6 +126,10 @@ struct RawSample
 
     /// 64-bit schema hash prefix derived from the message definition's MD5.
     uint64_t schemaHash{0};
+
+    /// The delivery of a WaitSet callback, which hypha_delivery_retain keeps; null
+    /// elsewhere. Valid only for the duration of the callback.
+    const HyphaDelivery* delivery{nullptr};
 };
 
 /// @brief Description of a published or subscribed topic endpoint on a node.

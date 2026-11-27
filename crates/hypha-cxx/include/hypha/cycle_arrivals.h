@@ -25,6 +25,10 @@ namespace hypha {
 
 /// @brief An input that delivers every usable sample of its topic, oldest first.
 ///
+/// `Arrivals<View<M>>` reads each sample in place (hypha/view.h): samples() gives a
+/// ViewPtr<M> per sample, the bytes the step's input holds, with no copy. A ViewPtr kept
+/// past the step owns a copy of its bytes from the step's end, which is logged.
+///
 /// A step examines at most perStep() samples (default HYPHA_DEFAULT_ARRIVALS_PER_STEP).
 /// A perStep() above the maxDepth of the port's policy is refused, at compile time when
 /// it can be, else by std::invalid_argument.
@@ -40,6 +44,9 @@ class Arrivals final : public Input<M>
         || HYPHA_DEFAULT_ARRIVALS_PER_STEP <= QosOf<M>::value.maxDepth;
 
   public:
+    /// @brief What samples() holds per sample: an M, or a ViewPtr for a View.
+    using Sample = typename detail::SampleOf<M>::type;
+
     /// @brief A port that reads `[ports.inputs.<name>]`: its topic and its limit keys.
     template <ArrivalsOption... Options>
     Arrivals(Cycle& owner, std::string name, Options... options)
@@ -121,9 +128,9 @@ class Arrivals final : public Input<M>
     }
 
     /// @brief The usable messages that arrived for this step, oldest first.
-    std::span<const M> samples() const
+    std::span<const Sample> samples() const
     {
-        return std::span<const M>(this->samples_.data(), this->sampleCount_);
+        return std::span<const Sample>(this->samples_.data(), this->sampleCount_);
     }
 
     /// @brief When sample @p index of samples() was sent, on the host monotonic clock.
@@ -239,12 +246,27 @@ class Arrivals final : public Input<M>
     /// Pushes the alive value of the newest sample, or the last one when this step has none.
     ::HyphaStatus captureSupervision(const HyphaCycleImage* image)
     {
-        const std::span<const M> batch = this->samples();
-        const bool               sawSample = !batch.empty();
+        const std::span<const Sample> batch = this->samples();
+        const bool                    sawSample = !batch.empty();
         if (sawSample) {
-            this->lastAlive_ = this->aliveOf(batch.back());
+            this->lastAlive_ = this->aliveOf(detail::valueOf(batch.back()));
         }
         return this->captureSupervised(image, this->lastAlive_);
+    }
+
+    /// The step's views give up its bytes; one the step kept gets a copy of them.
+    void leaveStep() override
+    {
+        Base::leaveStep();
+        for (Sample& sample : this->samples_) {
+            if (detail::leaveSample(sample)) {
+                this->viewCopies_.note(
+                    "a view of " + this->portText()
+                    + " outlived its step; its bytes were copied (copy it with hypha::toMessage "
+                      "to say so)"
+                );
+            }
+        }
     }
 
     const detail::SampleStamp& stampAt(size_t index) const
@@ -256,13 +278,14 @@ class Arrivals final : public Input<M>
         return this->stamps_[index];
     }
 
-    std::vector<M>                   samples_;
-    std::vector<M>                   decoded_;
+    std::vector<Sample>              samples_;
+    std::vector<Sample>              decoded_;
     std::vector<detail::SampleStamp> stamps_;
     std::vector<detail::SampleStamp> decodedStamps_;
     size_t                           sampleCount_{0};
     uint64_t                         lost_{0};
     std::optional<uint64_t>          lastAlive_;
+    detail::RecurringFault           viewCopies_;
 };
 
 }  // namespace hypha
