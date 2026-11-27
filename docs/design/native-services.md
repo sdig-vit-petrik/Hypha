@@ -4,7 +4,9 @@ Design for #132: typed request and response between nodes, from a ROS 1 `.srv`.
 
 Status: accepted design, after an independent review whose seventeen changes are folded
 in. Stage 1a (the transport) is implemented in `crates/hypha_iceoryx2/src/service/`; the
-stages above it are not. Each decision gives its reason. Where the author checked a change
+runtime, the C ABI and the C++ endpoints of stage 1b in `crates/hypha_node/src/service/`,
+`crates/hypha_ffi/src/service.rs` and `crates/hypha-cxx/include/hypha/service*.h`. The
+call log and `hypha service` (the rest of 1b) and the stages above are not. Each decision gives its reason. Where the author checked a change
 against the code and kept a different mechanism, an **author's note** says so, with the
 evidence.
 
@@ -1020,6 +1022,19 @@ void        hypha_deferred_destroy(HyphaDeferred*);              /* refuses an u
   These are outcomes, not statuses, so `HyphaStatus` 19 stays retired (as the issue says).
 - A reply to a slot whose server or client is gone returns `Disconnected`.
 - `abi.revision` goes up by one.
+
+*Stage 1b, as built.* The plain-node half of this sketch is coarser: ten functions
+(interface-specification.md, Services). A server's create attaches it to the node's
+`WaitSet` (no separate `hypha_waitset_attach_server`); a request is answered by one
+`hypha_request_answer` with a kind, reply or refuse, whether the handler's or a deferred
+one, and a deferred request is the same handle type, released by `hypha_request_destroy`;
+a client is one create whose `blocking` field decides whether its one
+`hypha_client_call` delivers the outcome at a later turn or before it returns, so
+`hypha_client_call_and_wait` and its response buffer, `hypha_waitset_attach_client` and
+a per-client callback go; the outcome reaches a per-call callback with its description
+and its `may_have_run`/`safe_to_retry` already decided; `ready` and `pending` are one
+`hypha_client_status`. A context's `release` runs exactly once, also on a refusal. The
+cycle functions stay for stage 1c.
 
 ### 8.8 Rust SDK
 

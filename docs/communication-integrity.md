@@ -54,6 +54,23 @@ it (0.39 ms), and that of a 64-byte message 18 ns. Linux aarch64 on the same mac
 takes the same path and, measured in a container under heavy load, about half the time of
 a `memcpy` of the payload. x86_64 is not measured.
 
+### 2.1 Service frames
+
+A service's request and its response carry the same header and checks, sealed for
+their role (`docs/design/native-services.md` §5): a request for
+`<service>␟request`, a response for `<service>␟response␟<client id>␟<request sequence>`,
+`␟` the unit separator U+001F that no name holds. A response therefore verifies only
+against the request it answers, never as a request, a topic frame or the answer to
+another call. A response carries the sequence of the request it answers, so neither
+direction counts a sequence gap. The response flags carry the answer's kind inside the
+CRC: an answer, a refusal or a failure.
+
+A response that does not verify ends its call `ServerLost` with `invalid response:
+<check>` (crc, schema, sequence, flags) and is counted; a request that does not verify,
+or is above its bound, is refused with `invalid request: <check>` and counted, never
+dropped as if the server had left. Each call ends in exactly one outcome (FSR-42): the
+table of cpp-api.md §8.2.
+
 ## 3. Faults and the check that covers each
 
 The fault list is the communication errors of IEC 61784-3. "Refused" means the frame never reaches the
