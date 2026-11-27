@@ -230,7 +230,8 @@ impl BindingCapture {
         self.supervision = supervision;
     }
 
-    /// Run the supervision checks at framework time `framework_now_nanos`.
+    /// Run the supervision checks at the step's scheduled deadline, `framework_now_nanos`:
+    /// a stagnation limit does not move with the host wall clock.
     /// Call after `capture`. A binding that is not supervised does nothing.
     pub fn supervise(&mut self, framework_now_nanos: i64) {
         let Some(supervision) = self.supervision.as_mut() else {

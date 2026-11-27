@@ -55,12 +55,22 @@ fn push(history: &Arc<Mutex<CycleHistory>>, payload: &[u8], sent_nanos: u64) {
 /// One iteration at framework time `scheduled` and host steady time `steady`. Staleness
 /// follows `steady`; stagnation follows `scheduled`.
 fn tick(runtime: &mut CycleRuntime, scheduled: i64, steady: i64) -> Result<(), i32> {
+    tick_on_wall(runtime, scheduled, steady, scheduled)
+}
+
+/// As [`tick`], with the host wall clock, the step's `callback_start_nanos`, at `wall`.
+fn tick_on_wall(
+    runtime: &mut CycleRuntime,
+    scheduled: i64,
+    steady: i64,
+    wall: i64,
+) -> Result<(), i32> {
     let time = CycleTime {
         scheduled_nanos: scheduled,
         capture_steady_nanos: steady,
         ..CycleTime::default()
     };
-    runtime.run_iteration(time, move || scheduled, Some(0), |_, _| Ok(Vec::new()), |_, _| Ok(()))
+    runtime.run_iteration(time, move || wall, Some(0), |_, _| Ok(Vec::new()), |_, _| Ok(()))
 }
 
 fn faults(runtime: &CycleRuntime, index: usize) -> u32 {
@@ -229,6 +239,25 @@ fn a_counter_that_does_not_change_makes_the_port_stagnant_after_the_limit() {
     // A counter wrap from u64::MAX to 0 is a change.
     runtime.apply_alive(0, 0);
     assert_eq!(faults(&runtime, 0), 0, "a wrap restarts the stagnation timer");
+}
+
+#[test]
+fn a_wall_clock_step_neither_brings_a_stagnation_forward_nor_holds_it_back() {
+    let history = new_history();
+    let mut runtime = runtime_with(&history, latest(0));
+    runtime.set_supervision(0, stagnation(100), false).expect("supervision");
+    push(&history, &[1], 10);
+    tick_on_wall(&mut runtime, 10, 10, 10).expect("iteration");
+    runtime.apply_alive(0, 7);
+
+    // The wall clock leaps a day ahead while the deadline moves 50 ns: not stagnant.
+    let day = 86_400_000_000_000;
+    tick_on_wall(&mut runtime, 60, 60, 10 + day).expect("iteration");
+    assert_eq!(faults(&runtime, 0), 0, "a forward wall step brings no stagnation forward");
+
+    // The wall clock sits a day behind while the deadline reaches the limit: stagnant.
+    tick_on_wall(&mut runtime, 110, 110, 10 - day).expect("iteration");
+    assert_eq!(faults(&runtime, 0), FAULT_STAGNANT, "a backward wall step holds none back");
 }
 
 #[test]

@@ -211,7 +211,7 @@ These measure different things. One duration never serves two of them.
 | Meaning | Reference event | How it is configured |
 |---|---|---|
 | Cycle input freshness (staleness) | the newest sample's send time, at each capture | `silence_ms` of the port (section 6.4) |
-| Input stagnation | the last change of the alive counter, in framework time | `stagnation_ms` of a port that declares an alive counter (section 6.4) |
+| Input stagnation | the last change of the alive counter, on the step's scheduled deadline | `stagnation_ms` of a port that declares an alive counter (section 6.4) |
 | Source age | the measurement timestamp | not validated in this release |
 
 Managed sources keep bounded shared history below the C ABI. A cycle captures
@@ -430,10 +430,11 @@ application decides what a stale or stagnant input means.
    change of the value restarts it, a wrap included. Stagnation is checked only
    while the port is not stale, so a port is never stale and stagnant at once.
    A port that has accepted no sample is stale, never stagnant. The timer runs on
-   framework time, the step's `CycleTime::now`: the wall clock in host mode, simulated
-   time in a replay. It is not the capture clock of rule 2, so a backward step of the
-   host wall clock holds a stagnation back for as long as the step was; a clock that
-   went back has not passed the limit, and a forward step brings the fault forward.
+   the step's scheduled deadline, `CycleTime::scheduled_nanos`: the deadline on the
+   monotonic clock of the timers in host mode (rule 2), simulated time in a replay. It
+   is not the wall clock `CycleTime::now`, so a step of the host wall clock, back or
+   forward, neither holds a stagnation back nor brings it forward: a supervision
+   limit does not move with the wall clock.
 7. Disabled and ignored are two facts. A disabled port (an `Optional` port whose
    `topic` is empty or unset) reads no topic and is neither stale nor stagnant.
    Ignoring (`setIgnored(true)`) hides the condition: `stale()` and `stagnant()`
@@ -834,7 +835,9 @@ timer never sees one: it is due on the monotonic clock.
 A simulator can drive `/clock` itself: a rate cycle marked with `Cycle::setClockDriver`
 publishes its start value with no step, then steps only after every participant
 acknowledged the previous value, as `hypha play` waits for its chunks. Its first step is
-one period after the start. `replay-flow-control.md` §4.5 gives its rules.
+one period after the start. The start is from zero up to, not including, 2^32 seconds, the
+range of a `/clock` message's seconds; `hypha_cycle_set_clock_driver` refuses another and
+names the range in `hypha_last_error`. `replay-flow-control.md` §4.5 gives its rules.
 
 A cycle on simulated time is a replay cycle. It runs every period in data
 time, so a result does not depend on how fast the clock is moved or on the

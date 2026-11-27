@@ -54,7 +54,7 @@ Usage below counts files outside tests in the first application built on hypha (
 | Undecodable input sample | What happens to a cycle input sample that does not decode? | It is counted (`RequiredInput.undecodable`), logged at most once per 10 s, and judged as never sent; the step and the run go on. `hypha_cycle_image_reject_sample`, `HyphaCycleSampleView.sequence` | all applications |
 | Node state counters | How is each cycle and input of a node doing, from outside the process? | `hypha_msgs/NodeState`: `cycles` (`hypha_msgs/CycleState`: `steps`, `missed_periods`, `last_step_nanos`, `max_step_nanos`, `overruns`, `output_drops`), `log_lines_dropped`, `log_write_failures`, `sim_time`; `hypha_msgs/RequiredInput`: `age_nanos`, `stagnant`, `ignored`, `dropped`, `rejected`, `undecodable`. `hypha top` shows them | all applications |
 | Stop and failure | How does code end the run? | `hypha::requestStop`, `failRun` (`failRun(ConfigError)` ends it with 78), `hypha_waitset_request_stop`, `hypha_waitset_request_failure` | mrs 3, ex 3 |
-| Refusal reason | Why did the library refuse a cycle? | `hypha_last_error` (thread-local, cleared by `hypha_cycle_create` and `hypha_cycle_commit`); the C++ `start()` error carries it | — |
+| Refusal reason | Why did the library refuse a cycle? | `hypha_last_error` (thread-local, cleared by `hypha_cycle_create` and `hypha_cycle_commit`; also set by a refused `hypha_cycle_set_clock_driver` start); the C++ `start()` error carries it | — |
 | Domain | Which whole system on the host is this? | `HYPHA_DOMAIN`; Rust: `hypha_node::sdk::domain` | all |
 | ABI revision | Was the SDK built for this library? | `hypha_abi_revision`, `abi.revision` | all |
 | Callback helper | How does a callback borrow its object? | `callback.h` | SDK |

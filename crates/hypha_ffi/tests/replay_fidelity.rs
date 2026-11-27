@@ -1026,6 +1026,74 @@ pub(crate) fn two_publishers_on_one_input_deliver_in_the_order_the_node_drained_
     }
 }
 
+/// The lines a node logged to `log_file` that hold `marker`.
+fn logged(log_file: &std::path::Path, marker: &str) -> Vec<String> {
+    let text = std::fs::read_to_string(log_file).unwrap_or_default();
+    text.lines().filter(|line| line.contains(marker)).map(str::to_owned).collect()
+}
+
+#[test]
+pub(crate) fn a_second_publisher_on_a_replay_input_is_warned_of_once_naming_topic_and_count() {
+    // The order a step takes two publishers' samples in depends on turn timing (the test
+    // above), so the node says so, once, when a second live publisher shows up.
+    let _clock = SimulatedClock::start(10 * MILLISECOND);
+    let dir = std::env::temp_dir().join(unique("two_publishers_warning"));
+    std::fs::create_dir_all(&dir).expect("create the log directory");
+    let parameters = dir.join("params.toml");
+    let table =
+        "[log]\nconsole = false\n[log.sink.main]\npath = \"warning.log\"\nlevel = \"info\"\n";
+    std::fs::write(&parameters, table).expect("write the parameter file");
+    let node =
+        crate::common::create_node_with_file(&unique("two_publishers_warning"), Some(&parameters));
+    let waitset = unsafe { create_waitset(node) };
+    let topic = format!("/{}", unique("two_publishers_warning"));
+    let (first, subscriber) = unsafe { create_pubsub(node, &topic, 10) };
+    let mut source = ptr::null_mut();
+    assert_eq!(
+        unsafe { hypha_input_source_create(waitset, subscriber, &raw mut source) },
+        HyphaStatus::Ok
+    );
+    let recorder = Box::new(Recorder::new(Duration::ZERO));
+    let cycle = unsafe { recorded_cycle(waitset, 100_000_000, &recorder) };
+    let bind = LATEST;
+    let mut index = 0_u32;
+    assert_eq!(
+        unsafe { hypha_cycle_bind_input(cycle, source, &raw const bind, &raw mut index) },
+        HyphaStatus::Ok
+    );
+    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
+    let marker = "publishers on";
+    let log_file = dir.join("warning.log");
+
+    // One publisher is the supported case: no line.
+    unsafe { send_stamped(first, 1, 20 * MILLISECOND) };
+    run_for(waitset, 100_000_000);
+    assert_eq!(logged(&log_file, marker), Vec::<String>::new());
+
+    // A second publisher: one line, with the topic and the count, however many turns follow.
+    let second = unsafe {
+        open_publisher(node, &topic, "std_msgs/Counter", "d9d213e8c146065ec958333c617eb1a6", "")
+    };
+    // The count is read once a second: the run lasts longer than that.
+    run_for(waitset, 1_200_000_000);
+    for turn in 0..4 {
+        set_clock((30 + 10 * turn) * MILLISECOND);
+        run_for(waitset, 100_000_000);
+    }
+    let lines = logged(&log_file, marker);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let line = lines.first().expect("one warning");
+    assert!(line.contains("2 publishers on") && line.contains(&topic), "{line}");
+
+    unsafe {
+        assert_eq!(hypha_cycle_destroy(cycle), HyphaStatus::Ok);
+        assert_eq!(hypha_input_source_destroy(source), HyphaStatus::Ok);
+        hypha_publisher_destroy(first);
+        hypha_publisher_destroy(second);
+        hypha_node_destroy(node);
+    }
+}
+
 /// The player's chunks of a 100 Hz topic from 90 ms into a queue of 10: the first chunk,
 /// 90..190, is one sample past the queue and closes at 189. Every later chunk closes
 /// 10 ms before a deadline, so the `/clock` that runs a step brings 10 samples stamped

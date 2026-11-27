@@ -178,6 +178,36 @@ fn set_clock_driver_refuses_a_zero_timeout_and_a_negative_factor() {
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
 }
 
+/// The calling thread's `hypha_last_error`.
+fn last_error() -> String {
+    let mut text = [0_u8; 512];
+    let mut length = 0_usize;
+    let status = unsafe { hypha_last_error(text.as_mut_ptr().cast(), text.len(), &raw mut length) };
+    assert_eq!(status, HyphaStatus::Ok);
+    String::from_utf8(text.get(..length).expect("within the buffer").to_vec()).expect("UTF-8")
+}
+
+#[test]
+fn set_clock_driver_refuses_a_start_the_clock_message_cannot_carry() {
+    let host = Host::plain();
+    let cycle = host.cycle(PERIOD);
+    // `/clock` carries seconds in 32 bits: 2^32 s is the first value it cannot hold.
+    let too_late =
+        HyphaClockDriverOptions { start_nanos: (1_i64 << 32) * 1_000_000_000, ..driver_options() };
+    assert_eq!(
+        unsafe { hypha_cycle_set_clock_driver(cycle, &raw const too_late) },
+        HyphaStatus::InvalidArgument
+    );
+    let reason = last_error();
+    assert!(reason.contains("4294967296 s"), "the text names the limit: {reason}");
+    let largest = HyphaClockDriverOptions {
+        start_nanos: (1_i64 << 32) * 1_000_000_000 - 1,
+        ..driver_options()
+    };
+    assert_eq!(unsafe { hypha_cycle_set_clock_driver(cycle, &raw const largest) }, HyphaStatus::Ok);
+    assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
+}
+
 #[test]
 fn expect_participant_refuses_a_cycle_that_is_not_a_driver() {
     let host = Host::plain();
