@@ -46,7 +46,9 @@ class TypedLoanContract : public ::testing::Test
     {
         return hypha::subscribeRawOfType(
                    topic,
-                   hypha::codec::dataType<M>(),
+                   hypha::RawType{
+                       .dataType = hypha::codec::dataType<M>(), .md5 = hypha::codec::md5Sum<M>()
+                   },
                    [&into](const hypha::RawSample& sample) {
                        into.emplace_back(sample.bytes.begin(), sample.bytes.end());
                    },
