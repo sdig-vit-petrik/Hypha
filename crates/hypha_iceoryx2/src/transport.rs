@@ -145,6 +145,7 @@ impl Iox2Transport {
     pub fn publish(&self, spec: &TopicSpec) -> Result<Iox2Publisher, PortError> {
         crate::stream::refuse_overlong(spec)?;
         if !spec.has_valid_public_name() {
+            refuse_reserved(&spec.name);
             return Err(PortError::InvalidTopic);
         }
         if spec.loaned_samples == 0 {
@@ -313,6 +314,15 @@ pub(crate) fn node_port_name(
         .map_err(|_| PortError::InvalidTopic)
 }
 
+/// Log why a topic name under `/hypha/` is refused; other invalid names need no line.
+fn refuse_reserved(topic: &str) {
+    if hypha_core::port::is_reserved_topic_name(topic) {
+        log::error!(target: "hypha/transport",
+            "hypha: topic '{topic}': names under /hypha/ are reserved for the framework (its \
+             services live there); choose another namespace");
+    }
+}
+
 /// The publish-subscribe service of one topic.
 pub(crate) type DataPortFactory =
     iceoryx2::service::port_factory::publish_subscribe::PortFactory<Ipc, [u8], Iox2FrameHeader>;
@@ -323,7 +333,7 @@ struct DataService {
 }
 
 /// How long a starting node waits for another process reclaiming the same dead node.
-const RECLAIM_TIMEOUT: StdDuration = StdDuration::from_secs(1);
+pub(crate) const RECLAIM_TIMEOUT: StdDuration = StdDuration::from_secs(1);
 
 /// Remove the resources of the dead nodes a node called `node_name` reclaims
 /// when it starts: its own crashed runs and every dead CLI tool node
@@ -559,6 +569,7 @@ impl Iox2Transport {
             return Ok(subscriber);
         }
         if !spec.has_valid_public_name() {
+            refuse_reserved(&spec.name);
             return Err(PortError::InvalidTopic);
         }
         if !spec.definition.is_empty() && !spec.has_valid_schema_identity() {
@@ -609,12 +620,14 @@ impl Iox2Transport {
     ///
     /// A failed notification is logged; a latched sample then waits for the next graph event.
     fn announce_subscriber(&self) {
-        if let Err(cause) = self
-            .graph_notifier()
-            .and_then(|notifier| notifier.notify().map(drop).map_err(|_| PortError::Disconnected))
-        {
+        if let Err(cause) = self.notify_graph_change() {
             log::warn!(target: "hypha/transport", "hypha_iceoryx2: subscriber created but the graph event failed: {cause:?}");
         }
+    }
+
+    /// Notify the graph event: a subscriber or a service endpoint came or went.
+    pub(crate) fn notify_graph_change(&self) -> Result<(), PortError> {
+        self.graph_notifier()?.notify().map(drop).map_err(|_| PortError::Disconnected)
     }
 
     /// The notifier of the graph event, opened on first use.

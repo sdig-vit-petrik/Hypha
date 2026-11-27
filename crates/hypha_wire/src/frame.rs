@@ -33,6 +33,14 @@ impl TopicCode {
 /// after a sample was sent receives that sample only when this flag is set.
 pub const FLAG_LATCHED: u32 = 1;
 
+/// Flag set on a service response that refuses its request. The payload is the reason,
+/// UTF-8.
+pub const FLAG_REFUSED: u32 = 2;
+
+/// Flag set on a service response whose server failed while it handled the request (a
+/// handler that threw, a step that failed). The payload is the reason, UTF-8.
+pub const FLAG_FAILED: u32 = 4;
+
 /// Metadata stored in a frame header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameMetadata {

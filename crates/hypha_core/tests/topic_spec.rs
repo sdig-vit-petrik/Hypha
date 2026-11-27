@@ -34,7 +34,15 @@ fn builders_set_each_configurable_value() {
 
 #[test]
 fn valid_public_topic_names_are_accepted() {
-    for name in ["/cmd_vel", "/robot/left_arm/joint_states", "/sensor_1/scan_raw", "/hypha/node"] {
+    for name in [
+        "/cmd_vel",
+        "/robot/left_arm/joint_states",
+        "/sensor_1/scan_raw",
+        "/hyphae/node",
+        "/a#request",
+        "/a@0123456789abcdef",
+        "/hypha/intercept/bench/state",
+    ] {
         assert!(TopicSpec::new(name).has_valid_public_name(), "{name:?} must be accepted");
     }
 }
@@ -46,6 +54,10 @@ fn invalid_public_topic_names_are_rejected() {
         "/",
         "cmd_vel",
         "/hypha",
+        "/hypha/node",
+        "/hypha/srv/x",
+        "/hypha/srv/x@0123456789abcdef/request",
+        "/hypha/hk/graph/v1",
         "/*",
         "/robot/*",
         "//",

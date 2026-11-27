@@ -15,7 +15,7 @@ fn create_node(label: &str) -> BusNode {
 #[test]
 fn a_refused_frame_is_reported_and_not_read_as_an_empty_queue() {
     let node = create_node("refused_frame");
-    let topic = format!("/hypha/status/{}", unique_name("refused"));
+    let topic = format!("/test/status/{}", unique_name("refused"));
     let mut publisher =
         node.publish_raw(&topic, TYPE_NAME, MD5, "").expect("publisher creation succeeds");
     let mut subscriber = node.subscribe_raw(&topic, 1).expect("subscriber creation succeeds");
@@ -31,7 +31,7 @@ fn a_refused_frame_is_reported_and_not_read_as_an_empty_queue() {
 #[test]
 fn an_empty_queue_reports_no_fault() {
     let node = create_node("empty_queue");
-    let topic = format!("/hypha/status/{}", unique_name("empty"));
+    let topic = format!("/test/status/{}", unique_name("empty"));
     // The publisher opens the service; it stays alive so the subscriber finds it.
     let _publisher =
         node.publish_raw(&topic, TYPE_NAME, MD5, "").expect("publisher creation succeeds");
@@ -45,7 +45,7 @@ fn an_empty_queue_reports_no_fault() {
 #[test]
 fn accepted_traffic_reports_no_fault() {
     let node = create_node("accepted");
-    let topic = format!("/hypha/status/{}", unique_name("accepted"));
+    let topic = format!("/test/status/{}", unique_name("accepted"));
     let mut publisher =
         node.publish_raw(&topic, TYPE_NAME, MD5, "").expect("publisher creation succeeds");
     let mut subscriber = node

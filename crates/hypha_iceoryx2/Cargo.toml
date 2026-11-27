@@ -33,5 +33,10 @@ name = "hypha_iceoryx2_crash_node_helper"
 path = "tests/support/crash_node_helper.rs"
 test = false
 
+[[bin]]
+name = "hypha_iceoryx2_service_helper"
+path = "tests/support/service_helper.rs"
+test = false
+
 [lints]
 workspace = true

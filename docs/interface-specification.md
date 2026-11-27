@@ -29,7 +29,7 @@ Every call that can fail returns `HyphaStatus`:
 |---|---|---|
 | 0 | `Ok` | The call succeeded. |
 | 1 | `InvalidArgument` | A pointer was null, or a length made no sense. |
-| 2 | `InvalidTopic` | The topic name was empty or refused. |
+| 2 | `InvalidTopic` | The topic name was empty or refused, a name under the reserved `/hypha/` included (below). |
 | 3 | `PoolExhausted` | No buffer was free. A send or `hypha_publisher_loan_frame` drops this message, and subscribers count it lost; `hypha_publisher_reserve_frame` takes no sequence, and its caller may ask again. |
 | 4 | `TooLarge` | The requested buffer is larger than the transport carries. |
 | 5 | `Disconnected` | The endpoint is closed. |
@@ -152,6 +152,13 @@ process, not to one node:
   domain. `hypha clean --domain <prefix>` removes the domains named `<prefix>*` that
   no live node uses, `hypha clean` the domain of `HYPHA_DOMAIN`; `./clean-shm.sh` in
   the repository wipes every domain of the host.
+- **Topic names.** A public topic name begins with `/`. `/hypha` and every name under
+  `/hypha/` belong to the framework and are refused with `InvalidTopic`
+  (`hypha_topic_validate_public_name` too), except `/hypha/intercept/`, where `hypha
+  intercept` publishes its state. The transport keeps its own services under that
+  prefix (`hypha/srv/` for request-response services, `hypha/hk/` for housekeeping), and
+  a topic's bus name only drops the leading `/`: a topic `/hypha/srv/x` would otherwise
+  be the server lock of service `/x`.
 - **Restart when time goes back.** A timer or cycle of a `WaitSet` that sees simulated
   time go back, and a `WaitSet` of a node on simulated time (lockstep or follow, not a CLI
   tool) that reads a `/clock` lower than the node's last one, end the run with `ClockRewound`; the process exits 75 (C++ `runNode`)
@@ -326,6 +333,7 @@ reserve nothing.
 | `enable_safe_overflow`, `backpressure_strategy` | true, `DiscardData` | A full queue drops its oldest sample; a publisher never blocks |
 | `subscriber_expired_connection_buffer` | 8 | Connections of departed publishers that still hold undelivered samples; one per publisher of the `default` policy. A declared policy may admit more publishers than this, and this is a domain value that the builder does not set |
 | `publisher_allocation_strategy` | `Static` | A default only: a bounded publisher sets `Static` with its payload limit, a growable one `PowerOfTwo` |
+| request-response `client_backpressure_strategy`, `server_backpressure_strategy` | `DiscardData` | A service's send never waits for its peer. Every service stream also sets them itself, with `max_servers` 1, one response per request, one loan each way, no fire-and-forget and no safe overflow (`crates/hypha_iceoryx2/src/service/open.rs`; `docs/design/native-services.md` §6) |
 | event `max_notifiers` / `max_listeners` / `max_nodes` | 128 | The graph event, which every node of the domain joins. A topic's event service takes its data service's `max_publishers` / `max_subscribers` / `max_nodes` (the policy's own limits, `default` 8 / 16 / 26), and a `WaitSet` control service 1 / 1 / 1: a notifier keeps about 1.3 KB of heap for every listener its service allows |
 
 A framework topic (`/clock`, `/clock_progress`) holds at most 32 publishers,

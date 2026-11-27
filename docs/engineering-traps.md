@@ -73,7 +73,9 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   `InternalFailure`, which names no cause. The first use of the domain therefore
   raises the soft limit to the hard limit, at most 10240 (macOS `OPEN_MAX`), in
   `crates/hypha_iceoryx2/src/preflight.rs`. It warns when that fails. A hard limit
-  that is itself too low (`ulimit -n 256` in bash sets both) still fails. A tmux
+  that is itself too low (`ulimit -n 256` in bash sets both) still fails; a service's
+  server or client then reports `OutOfDescriptors` with the open count and the limit
+  (`service/mod.rs::explain_descriptors`), a topic still `InternalFailure`. A tmux
   server passes its own limits to every window.
 - **A domain prefix must not begin another.** iceoryx2 lists a domain's services by
   file-name prefix. With `iox2_<domain>_`, a default-domain tool (`iox2_`) listed every
@@ -91,6 +93,10 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   `transport.rs::reclaim_dead_nodes`). A dead application node of another name
   stays listed, so the tools show the crash, and keeps its ports: a topic whose
   slots it holds stays full until the node restarts or the domain is wiped.
+  A service is the exception: a dead node that holds a service's server or one of its
+  clients is reclaimed by the next server or client of that service
+  (`service/open.rs::reclaim_dead`), since the name's one server slot, or a client slot,
+  would otherwise stay taken for good.
   This does not remove the need for `hypha clean`: a segment whose owning
   process is still alive but wedged is not `Dead`, a node iceoryx2 reports as
   `Inaccessible` is left untouched, and a dead node whose name never returns is

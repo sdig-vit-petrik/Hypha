@@ -30,7 +30,7 @@ fn no_subscriber_reports_none() {
     let node = BusNode::new(&unique_name("min_none"));
     assert!(node.is_ok());
     let Ok(node) = node else { return };
-    let topic = format!("/hypha/raw/{}", unique_name("min_none_topic"));
+    let topic = format!("/test/raw/{}", unique_name("min_none_topic"));
     let publisher = node.publish_raw(&topic, TYPE_NAME, MD5, "uint8[] data");
     assert!(publisher.is_ok());
     let Ok(publisher) = publisher else { return };
@@ -43,7 +43,7 @@ fn one_subscriber_reports_its_depth() {
     let node = BusNode::new(&unique_name("min_one"));
     assert!(node.is_ok());
     let Ok(node) = node else { return };
-    let topic = format!("/hypha/raw/{}", unique_name("min_one_topic"));
+    let topic = format!("/test/raw/{}", unique_name("min_one_topic"));
     let publisher = node.publish_raw(&topic, TYPE_NAME, MD5, "uint8[] data");
     assert!(publisher.is_ok());
     let Ok(publisher) = publisher else { return };
@@ -59,7 +59,7 @@ fn smallest_of_two_subscribers_is_reported() {
     let node = BusNode::new(&unique_name("min_two"));
     assert!(node.is_ok());
     let Ok(node) = node else { return };
-    let topic = format!("/hypha/raw/{}", unique_name("min_two_topic"));
+    let topic = format!("/test/raw/{}", unique_name("min_two_topic"));
     let publisher = node.publish_raw(&topic, TYPE_NAME, MD5, "uint8[] data");
     assert!(publisher.is_ok());
     let Ok(publisher) = publisher else { return };
