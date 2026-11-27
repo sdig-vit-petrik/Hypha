@@ -87,9 +87,10 @@ impl BusNode {
 
     /// Subscribes to a literal topic or a wildcard pattern (`"**"`).
     ///
-    /// A `*` must be a whole segment, and `**` must be the last one. Without a message
-    /// type the subscription is refused for a topic nobody has opened yet. A `depth` of
-    /// zero keeps as many samples as the topic's service policy allows.
+    /// A `*` must be a whole segment, and `**` must be the last one. It names no schema, so
+    /// it reads every stream of each matching topic, one per schema, that exists when it is
+    /// created; it is refused for a topic nobody has opened yet. A `depth` of zero keeps as
+    /// many samples as the topic's service policy allows.
     /// # Errors
     /// Returns a message when the library refuses the subscription.
     pub fn subscribe_raw(
@@ -113,9 +114,9 @@ impl BusNode {
         subscribe_on(&self.node, topic_pattern, "", "", options)
     }
 
-    /// Subscribes to messages of `data_type` with MD5 `md5`, and makes the library drop
-    /// every frame whose schema hash is not `md5`'s. A topic that no publisher has opened
-    /// is `NotAvailable`, except a framework topic.
+    /// Subscribes to the stream of `md5` on the topic: messages of `data_type` with that
+    /// MD5, and no frame of another schema of the topic. A stream that no publisher has
+    /// opened is `NotAvailable`, except on a framework topic.
     ///
     /// # Errors
     /// Returns a message when the library refuses the subscription.

@@ -13,7 +13,7 @@ pub enum FrameRejection {
     InvalidFrame,
     /// The frame checksum does not match its bytes.
     CorruptPayload,
-    /// The frame schema differs from the subscription contract.
+    /// The frame names another schema than the stream it arrived on.
     SchemaMismatch,
     /// The send time is later than the current host time.
     Future,

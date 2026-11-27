@@ -790,7 +790,8 @@ typedef struct HyphaSubscriberCounters {
   uint64_t invalid_frame;
   // `integrity.corrupt_payload`: frames whose CRC-32C does not match.
   uint64_t corrupt_payload;
-  // `integrity.schema_mismatch`: frames of another schema than the subscriber expects.
+  // `integrity.schema_mismatch`: frames whose header names another schema than the
+  // stream they arrived on, a fault of their sender.
   uint64_t schema_mismatch;
   // `integrity.invalid_timestamp`: frames sent later than the host clock reads.
   uint64_t invalid_timestamp;
@@ -1699,7 +1700,10 @@ HyphaStatus hypha_schema_lookup(const struct HyphaNode *node,
                                 size_t *definition_len);
 
 // Subscribe to `topic` with `options` and record `data_type` (null: empty) in the node
-// introspection. `definition` (length 0: none) is the definition of `expected_md5`
+// introspection. A topic carries one stream for each schema: with `expected_md5` the
+// subscriber reads that schema's stream alone, and without one (length 0) every stream of
+// the topic that exists at creation, polled, creating none (`NotAvailable` when there is
+// none). `definition` (length 0: none) is the definition of `expected_md5`
 // (length 0: none); with one, a non-empty `data_type` and a valid `expected_md5` are
 // required (`InvalidSchema` otherwise). `InvalidArgument`: a null `node`, `options` or
 // `out`. `InvalidTopic`: a `~/` topic on a CLI tool node.

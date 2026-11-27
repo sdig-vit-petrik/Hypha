@@ -365,6 +365,25 @@ ported to an `ApplicationNode`:
 Reference: `hypha/subscriber.h` (type check, patterns, the no-publisher warning),
 `hypha/node.h` (`Node::subscribe`).
 
+**Several types on one topic name.** A topic carries one stream for each message type
+and each version of a type (its MD5), so `subscribe<A>("/x", ...)` and
+`subscribe<B>("/x", ...)`, a `Latest<A>` and an `Arrivals<B>` on one port name, or an
+`Output<A>` and an `Output<B>` on one name, are independent: each endpoint sends and reads
+its own type's stream, with its own verdict, `silence_ms`, queue and policy, and a frame
+of the other type is neither delivered nor counted. This is how a message is migrated:
+version 1 and version 2 of `pkg::Odometry` (one type name, two definitions) run on the
+same topic while the nodes are rebuilt one by one. A subscriber whose version nobody
+publishes receives nothing, keeps its verdict (`NeverArrived`, or `Stale` once its
+publisher left), and after the no-publisher delay of 5 s logs, once and again when the
+published versions change:
+
+```text
+hypha: topic '/odom' has publishers, none of type pkg/Odometry (581e4b1b): published are pkg/Odometry (f79835de)
+```
+
+The `~/state` row of an input names its `data_type` and `md5`: two types of one topic are
+two rows ([interface-specification.md](interface-specification.md#streams)).
+
 ### 5.1 Freshness and the latest value
 
 Every frame carries its publisher's host-monotonic send time. Freshness is judged
@@ -783,8 +802,11 @@ A recorder, a player, a bridge or a benchmark cannot name its message types at c
 time, so it sends a topic identity and bytes. `examples/large_payload/src/large_source.cpp`
 publishes loans of a `rawPublisher`, `examples/large_payload/src/large_sink.cpp` reads
 them with `subscribeRawOfType`, and `examples/bench/src/bench.cpp` uses `subscribeRaw`.
-A `RawType` needs a data type, and its md5 is 32 lower-case hexadecimal digits. A raw
-endpoint without a `hypha::Qos` adopts the topic's service (section 7). A raw callback's
+A `RawType` needs a data type, and its md5 is 32 lower-case hexadecimal digits; the md5
+names the endpoint's stream of the topic, so `subscribeRawOfType(topic, type, ...)` reads
+the messages of `type.md5` alone, and `subscribeRaw` (no type) every stream of each
+matching topic that exists at creation. A raw endpoint without a `hypha::Qos` adopts the
+stream's service (section 7). A raw callback's
 bytes are valid only during the callback; copy them to keep them. A wildcard
 subscription is read every 1 ms (execution model §8). Reference: `<hypha/raw_api.h>`,
 `<hypha/raw.h>`, `LoanedBuffer` in `<hypha/backend/raw_publisher.h>`.
@@ -792,7 +814,8 @@ subscription is read every 1 ms (execution model §8). Reference: `<hypha/raw_ap
 ## 7. Service limits and endpoint queues
 
 A topic's service limits (publishers, subscribers, deepest queue) size its shared
-memory, so they belong to the topic. A **policy** names them; the application keeps its
+memory, so they belong to the topic: to the stream of each type of the topic (section 5),
+so two types, or two versions of one type, on one name have their own limits. A **policy** names them; the application keeps its
 policies in one header that both ends of every topic include, as
 `examples/large_payload/inc/large_frame_qos.h` does:
 
@@ -820,8 +843,10 @@ struct hypha::QosOf<my_msgs::Image>
   (`~/introspection`) to `reportQos` (2 publishers, 2 subscribers, depth 1, 1 KiB
   first slot: only tools read them, from the observer slots). An application cannot
   remap them.
-- A later endpoint with another policy is refused with `QosMismatch`, and the log names
-  both policies: `advertise` and `subscribe` throw, a cycle fails `start()`.
+- A later endpoint of the same type (the same MD5) with another policy is refused with
+  `QosMismatch`, and the log names both policies: `advertise` and `subscribe` throw, a
+  cycle fails `start()`. An endpoint of another type on the same name is on its own
+  stream and is never refused for this.
 - A raw endpoint, a player or a bridge that opens a topic first creates it with
   `default`, and a typed endpoint with another policy is then refused. Start the
   application nodes first, or map the type to `default`.

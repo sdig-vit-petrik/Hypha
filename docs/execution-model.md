@@ -1038,12 +1038,14 @@ Check these in order.
    of scope, the registration goes with it.
 4. **Do the topic names match exactly?** There is no master to report a
    mismatch. A subscriber with no publisher logs one warning after five seconds. The warning names
-   the topic and the domain. A subscriber that once had a publisher never warns.
+   the topic and the domain, or, when the topic has publishers of other schemas, the
+   subscriber's type and MD5 and the published ones. It warns again when the published schemas
+   change, and five seconds after its own publisher left.
 5. **Is the input a callback or a cycle input?** A cycle input is read at its
    cycle's tick, never on arrival. See section 7.
-6. **Is the message type the same on both sides?** A frame of another
-   schema is refused before any callback and counted in
-   `sub.metrics().schemaMismatch` (`integrity.schema_mismatch`).
+6. **Is the message type the same on both sides?** A topic carries one stream
+   for each type and version (MD5): a subscriber of another MD5 than the publisher's
+   is on another stream and receives nothing. The warning of item 4 names both.
 7. **Did the run report a failure?** Check `RunResult::reason()` and
    `RunResult::status()`. A setup failure runs no callback at all, and names
    the attachment that refused.

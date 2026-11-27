@@ -273,7 +273,7 @@ because the budget was full.
 
 ## Service limits and wildcards
 
-A topic's service limits are its policy (`crates/hypha_iceoryx2/src/qos.rs`): the
+A stream's service limits are its policy (`crates/hypha_iceoryx2/src/qos.rs`): the
 publishers and subscribers it admits and its `max_depth`. The creator declares the
 policy (`HyphaQos`) or takes hypha's `default` policy, stamps it on the service, and an
 opener that declares a different one is refused with `QosMismatch`. No endpoint option
@@ -316,7 +316,9 @@ A framework topic (`/clock`, `/clock_progress`) holds at most 32 publishers,
 `/clock_progress` counts. Any other topic holds the limits of its policy. After a change of
 these values run `hypha clean` with the domain stopped: a stale segment keeps its old limits.
 
-A wildcard subscriber attaches only to a publish-subscribe service that already exists.
+A wildcard subscriber, and a subscriber that names no MD5, attaches only to streams that
+already exist: of each topic its pattern matches, the stream of its MD5, or every stream
+of the topic when it names none.
 It never creates one, it never follows a request-response service of the same name,
 and it resolves the pattern **once**, when the subscription is created. Matching a pattern
 enumerates every service on the machine, and the backend builds each service's
@@ -329,6 +331,44 @@ A node that must follow a topic created later lists topics itself and
 subscribes to them by name. The matching rule is `hypha_core::port::topic_matches_pattern`,
 which the Rust SDK re-exports as `hypha_node::sdk::topic_matches_pattern`, so both routes select
 the same set without a node repeating the rules; the C ABI carries no copy of it.
+
+## Streams
+
+A topic name carries one **stream** for each schema hash (topic name overloading, #209):
+the first eight bytes of the MD5, the `schema_hash` of the frame header. A stream is an
+iceoryx2 publish-subscribe service of its own, named `<topic without its leading
+/>@<schema hash in 16 lower-case hex digits>` (`crates/hypha_iceoryx2/src/stream.rs`),
+with a wake-up event service of the same name. So each stream has its own policy, its
+own subscriber queues and publisher slots, and wakes only its own subscribers.
+
+| Endpoint | Stream |
+|---|---|
+| Publisher | the stream of its MD5 |
+| Subscriber that names an MD5 (every typed C++ endpoint, `subscribeRawOfType`, `subscribe_raw_with_schema`) | the stream of its MD5: a frame of another schema of the topic never reaches it. Like any subscriber it creates the stream only when it declares a policy or reads a framework topic |
+| Subscriber that names no MD5 (`subscribeRaw`, `subscribe_raw`, the tools) | every stream of the topic that exists when it is created, polled every 1 ms like a wildcard; it creates none, and is `NotAvailable` when the topic has none |
+| Wildcard subscriber | of each matching topic, the stream of its MD5, or every stream when it names none |
+
+`hypha_list_service_ports` reports each stream with its `schema_hash`, so a topic of two
+schemas is two entries. A schema record lives as long as its stream. Two message types
+whose definitions give one MD5 (ROS 1 computes the MD5 from the definition, not the type
+name) share a stream, as their bytes are the same. A node of a hypha build before the
+streams opens another service name and does not see a stream: two release lines do not
+share a domain (release-policy.md §2).
+
+After its no-publisher delay a subscriber of one stream whose stream has no publisher
+warns once, and again when the published schemas of the topic change while it still has
+none, and after the delay again when a publisher it had leaves. It reads the topic's schema
+records (one directory) and the publisher counts of their streams, and names them by type
+and the first eight hex digits of the MD5:
+
+```text
+hypha: topic '/odom' has publishers, none of type nav_msgs/Odometry (cd5e73d1): published are nav_msgs/Odometry (9e1f0d3a)
+```
+
+With no other schema published the line is `no publisher connected to topic '<t>' in
+domain '<d>' after <n> ms; ...`. While the stream has a publisher a check is one atomic
+read a second. A stream whose publishers named no definition has no record and is not
+named.
 
 ## Wire frame
 

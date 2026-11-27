@@ -43,7 +43,7 @@ truecolor terminal and no special font. State is shown in form as well as colour
 ### `hypha topic` — what is being published
 
 ```text
-hypha topic list [--timeout <seconds>]    topics seen publishing (default: 1.0s)
+hypha topic list [--timeout <seconds>]    topics seen publishing, one line per type (default: 1.0s)
 hypha topic echo <topic> [-p] [--count <n>]    print each message, decoded
 hypha topic hz <topic> [--window <n>]     publish rate
 hypha topic bw <topic>                    bandwidth and mean message size
@@ -52,7 +52,11 @@ hypha topic bw <topic>                    bandwidth and mean message size
 `list` reports only topics that publish while it is watching, and `hz`/`bw`
 cannot measure a topic that is not currently publishing: there is no separate
 topic registry on this bus, only observed traffic. A topic that has never
-published will not appear.
+published will not appear. Each line names the type and the first eight hex digits of
+its MD5, `/odom  [nav_msgs/Odometry (cd5e73d1)]`: a topic that carries two types, or two
+versions of one type, is two lines (topic name overloading, cpp-api.md §5). `echo`,
+`hz`, `bw` and `hypha record` read every type of a topic together, and a recording keeps
+one type per channel; giving them one stream each is open (#209).
 
 `echo -p` prints one CSV row for each message, as `rostopic echo -p` does. The
 first line is the header: `%time` and the column names. `%time` is the frame's

@@ -568,7 +568,8 @@ pub struct HyphaSubscriberCounters {
     pub invalid_frame: u64,
     /// `integrity.corrupt_payload`: frames whose CRC-32C does not match.
     pub corrupt_payload: u64,
-    /// `integrity.schema_mismatch`: frames of another schema than the subscriber expects.
+    /// `integrity.schema_mismatch`: frames whose header names another schema than the
+    /// stream they arrived on, a fault of their sender.
     pub schema_mismatch: u64,
     /// `integrity.invalid_timestamp`: frames sent later than the host clock reads.
     pub invalid_timestamp: u64,
