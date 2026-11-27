@@ -19,5 +19,9 @@ proptest = { workspace = true }
 name = "codec"
 harness = false
 
+[[bench]]
+name = "integrity"
+harness = false
+
 [lints]
 workspace = true
