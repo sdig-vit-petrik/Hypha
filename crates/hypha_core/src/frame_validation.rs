@@ -114,7 +114,8 @@ impl FrameValidator {
     ) -> Result<ParsedFrame<'a>, FrameRejection> {
         let frame = match verify(topic, header, payload) {
             Ok(frame) => frame,
-            Err(ParseError::CrcMismatch) => {
+            // A payload_len past the slice cannot be checked: a corrupt frame, as a bad CRC.
+            Err(ParseError::CrcMismatch | ParseError::LengthMismatch) => {
                 self.counters.corrupt_payload.fetch_add(1, Ordering::Relaxed);
                 return Err(FrameRejection::CorruptPayload);
             }

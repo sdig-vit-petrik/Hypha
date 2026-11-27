@@ -452,11 +452,20 @@ alone, as ROS 1 serialized bytes, so a payload has no header in front of it.
 | `sequence` | 64 bits | Per-publisher send sequence. It wraps to zero after the maximum value |
 | `transport_sent_nanos` | 64 bits | Host monotonic send time |
 | `framework_sent_nanos` | 64 bits | Framework send time: simulated on a sim-time node, wall otherwise, or the value set on the loan |
-| `crc` | 32 bits | CRC-32C (Castagnoli) that starts from the topic code and runs over `magic`, `flags`, the five 64-bit fields above in order, then the payload |
-| payload | variable | ROS 1 serialized message bytes, the sample's user payload |
+| `crc` | 32 bits | CRC-32C (Castagnoli) that starts from the topic code and runs over `magic`, `flags`, the five 64-bit fields above in order, `payload_len`, then the payload |
+| `payload_len` | 32 bits | The message's bytes: the first `payload_len` bytes of the sample's slice |
+| payload | variable | ROS 1 serialized message bytes, the first `payload_len` bytes of the sample's user payload |
 
-The magic is `0x3658_4F49` (`IOX6`). It changes when the header layout changes,
-and a receiver refuses any other value. Release 0.2.0 introduced the topic-bound CRC.
+The header is 56 bytes with 8-byte alignment, `payload_len` in the four bytes after `crc`
+that were padding before. The transport's slice keeps the size the publisher loaned; a
+loan shrunk before its send (`hypha_loan_shrink`) sets a shorter `payload_len`, and every
+reader takes the first `payload_len` bytes. A frame whose `payload_len` exceeds its slice is
+refused as `CorruptPayload`. A payload is at most 4 GiB − 1 bytes; a longer loan is
+`TooLarge`.
+
+The magic is `0x3758_4F49` (`IOX7`, 0.4.0, which added `payload_len`). It changes when
+the header layout changes, and a receiver refuses any other value: a 0.3.0 frame
+(`IOX6`) is `InvalidFrame`. Release 0.2.0 introduced the topic-bound CRC.
 It kept the 0.1.0 layout and its magic, so a frame from 0.1.0 fails its CRC and is
 refused as `corrupt_payload`: the two release lines do not share a domain.
 
@@ -484,6 +493,7 @@ frame for these conditions:
 |---|---|
 | Unsupported magic | `InvalidFrame` |
 | CRC-32C mismatch: a header field or a payload byte changed, or the frame was sealed for another topic | `CorruptPayload` |
+| `payload_len` longer than the sample's slice | `CorruptPayload` |
 | Send time later than the host clock | `InvalidFrame` |
 | Sequence that is not newer than the last one from its publisher | `SequenceGap` |
 

@@ -54,8 +54,8 @@ fn metadata() -> impl Strategy<Value = FrameMetadata> {
     )
 }
 
-/// `header` with byte `index` of its covered fields (magic, flags, metadata, crc, in
-/// that order, little-endian) changed by `delta`.
+/// `header` with byte `index` of its covered fields (magic, flags, metadata, crc,
+/// `payload_len`, in that order, little-endian) changed by `delta`.
 fn corrupt_header(header: &FrameHeader, index: usize, delta: u8) -> FrameHeader {
     let m = header.metadata;
     let mut bytes = Vec::new();
@@ -67,6 +67,7 @@ fn corrupt_header(header: &FrameHeader, index: usize, delta: u8) -> FrameHeader 
         bytes.extend_from_slice(&field.to_le_bytes());
     }
     bytes.extend_from_slice(&header.crc.to_le_bytes());
+    bytes.extend_from_slice(&header.payload_len.to_le_bytes());
     if let Some(byte) = bytes.get_mut(index) {
         *byte = byte.wrapping_add(delta);
     }
@@ -85,6 +86,7 @@ fn corrupt_header(header: &FrameHeader, index: usize, delta: u8) -> FrameHeader 
             framework_sent_nanos: long(4),
         },
         crc: word(12),
+        payload_len: word(13),
     }
 }
 
@@ -120,8 +122,8 @@ proptest! {
     ) {
         let header = seal(topic(), metadata, flags, &payload);
         if in_header {
-            // 52 bytes: magic, flags, five metadata fields and the crc.
-            let corrupted = corrupt_header(&header, at % 52, delta);
+            // 56 bytes: magic, flags, five metadata fields, the crc and payload_len.
+            let corrupted = corrupt_header(&header, at % 56, delta);
             prop_assert!(verify(topic(), &corrupted, &payload).is_err());
         } else {
             let mut changed = payload.clone();
@@ -130,6 +132,41 @@ proptest! {
             }
             prop_assert!(verify(topic(), &header, &changed).is_err());
         }
+    }
+
+    /// A frame sealed over the first `used` bytes of a longer slice verifies against the
+    /// slice, and its payload is those bytes; it is the frame sealed over them alone.
+    #[test]
+    fn a_frame_is_the_first_payload_len_bytes_of_its_slice(
+        metadata in metadata(),
+        flags in any::<u32>(),
+        slice in vec(any::<u8>(), 0..64),
+        used in 0..64_usize,
+    ) {
+        let used = used.min(slice.len());
+        let message = slice.get(..used).unwrap_or_default();
+        let header = seal(topic(), metadata, flags, message);
+        prop_assert_eq!(header.payload_len as usize, used);
+        let parsed = verify(topic(), &header, &slice)
+            .map_err(|error| TestCaseError::fail(format!("shrunk frame refused: {error}")))?;
+        prop_assert_eq!(parsed.payload(), message);
+        prop_assert_eq!(hypha_wire::frame::message_bytes(&header, &slice), message);
+    }
+
+    /// A `payload_len` past the slice is refused as a length mismatch, whatever the CRC.
+    #[test]
+    fn a_payload_len_past_the_slice_is_refused(
+        metadata in metadata(),
+        flags in any::<u32>(),
+        payload in vec(any::<u8>(), 1..64),
+        cut in 1..64_usize,
+    ) {
+        let header = seal(topic(), metadata, flags, &payload);
+        let short = payload.get(..payload.len().saturating_sub(cut)).unwrap_or_default();
+        prop_assert_eq!(
+            verify(topic(), &header, short).err(),
+            Some(hypha_wire::frame::ParseError::LengthMismatch)
+        );
     }
 
     #[test]

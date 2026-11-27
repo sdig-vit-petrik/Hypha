@@ -20,8 +20,9 @@ pub(crate) struct Iox2FrameHeader {
     transport_sent_nanos: u64,
     framework_sent_nanos: u64,
     crc: u32,
-    /// Zero. It keeps the layout a whole number of eight-byte words.
-    reserved: u32,
+    /// The message bytes: the first `payload_len` of the slice. In what were four bytes of
+    /// padding before `IOX7`, so the layout stays 56 bytes, a whole number of 8-byte words.
+    payload_len: u32,
 }
 
 impl From<FrameHeader> for Iox2FrameHeader {
@@ -36,7 +37,7 @@ impl From<FrameHeader> for Iox2FrameHeader {
             transport_sent_nanos: m.transport_sent_nanos,
             framework_sent_nanos: m.framework_sent_nanos,
             crc: header.crc,
-            reserved: 0,
+            payload_len: header.payload_len,
         }
     }
 }
@@ -53,6 +54,7 @@ impl From<Iox2FrameHeader> for FrameHeader {
                 transport_sent_nanos: header.transport_sent_nanos,
                 framework_sent_nanos: header.framework_sent_nanos,
             },
+            payload_len: header.payload_len,
             crc: header.crc,
         }
     }
