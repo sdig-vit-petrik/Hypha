@@ -3,7 +3,8 @@
 //!
 //! A schema lives as long as its stream: the endpoint that drops the last port of a
 //! stream removes its file, and the topic's directory once it is empty
-//! ([`SchemaRelease`]). One lock file
+//! ([`SchemaRelease`]). The files of a topic are also the list of its schemas
+//! ([`topic_schemas`]). One lock file
 //! per domain orders that removal against writes, and every wait for it is bounded
 //! by [`SCHEMA_LOCK_TIMEOUT`] so a frozen holder blocks no node.
 
@@ -220,6 +221,48 @@ fn remove_empty_dir(dir: &Path) -> Result<(), String> {
         }
         Err(cause) => Err(format!("cannot remove {}: {cause}", dir.display())),
     }
+}
+
+/// One schema a topic carries, from its record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TopicSchema {
+    /// The schema hash of its stream.
+    pub(crate) schema_hash: u64,
+    /// The message type.
+    pub(crate) data_type: String,
+    /// The message MD5.
+    pub(crate) md5: String,
+}
+
+/// The schemas recorded for `topic`: one for each of its streams that an endpoint with a
+/// definition opened. A record that does not parse is counted as an invalid record and
+/// left out.
+///
+/// # Errors
+/// [`PortError`] when the domain configuration fails.
+pub(crate) fn topic_schemas(topic: &str) -> Result<Vec<TopicSchema>, PortError> {
+    let Ok(entries) = std::fs::read_dir(topic_dir(topic)?) else {
+        return Ok(Vec::new());
+    };
+    let mut schemas = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(schema_hash) = name.to_str().and_then(|text| u64::from_str_radix(text, 16).ok())
+        else {
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(entry.path()) else { continue };
+        let Ok(record) = parse_schema_record(&bytes) else {
+            INVALID_RECORDS.fetch_add(1, Ordering::Relaxed);
+            continue;
+        };
+        schemas.push(TopicSchema {
+            schema_hash,
+            data_type: record.data_type().to_owned(),
+            md5: record.md5().to_owned(),
+        });
+    }
+    Ok(schemas)
 }
 
 /// Builds the fixed schema record frame for `spec`.

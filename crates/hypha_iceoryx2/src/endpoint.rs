@@ -263,6 +263,8 @@ struct SingleSubscriber {
     created_nanos: u64,
     service: DataPortFactory,
     topic: Arc<str>,
+    /// The schema hash of the one stream it reads.
+    schema_hash: u64,
     event_source: EventSource,
     /// Last, so it drops after the port and the service handle.
     _schema_release: crate::schema::SchemaRelease,
@@ -392,6 +394,42 @@ impl Iox2Subscriber {
         }
     }
 
+    /// True while a publisher port is open on a stream this subscriber reads: one atomic
+    /// read per stream. A port of a dead node counts until a node reclaims it.
+    #[must_use]
+    pub fn has_publisher_ports(&self) -> bool {
+        self.port_factories().any(|service| service.dynamic_config().number_of_publishers() > 0)
+    }
+
+    /// The other schemas of this subscriber's topic that a live publisher sends: one read
+    /// of the topic's schema records, and the publisher count of each of their streams.
+    /// Empty for a set, which reads every stream it selected, and for a schema whose
+    /// endpoints named no definition, which has no record.
+    ///
+    /// # Errors
+    /// [`PortError`] when the domain or the node registry cannot be read.
+    pub fn published_schemas_beside(&self) -> Result<Vec<PublishedSchema>, PortError> {
+        let SubscriberKind::Single(single) = &self.inner else {
+            return Ok(Vec::new());
+        };
+        let mut published = Vec::new();
+        for schema in crate::schema::topic_schemas(&single.topic)? {
+            if schema.schema_hash == single.schema_hash {
+                continue;
+            }
+            let stream =
+                Stream { topic: single.topic.to_string(), schema_hash: schema.schema_hash };
+            let Some(service) = open_stream(&single.event_source.node, &stream)? else {
+                continue;
+            };
+            if live_publisher_count(&service)? > 0 {
+                published.push(PublishedSchema { data_type: schema.data_type, md5: schema.md5 });
+            }
+        }
+        published.sort_by(|a, b| (&a.data_type, &a.md5).cmp(&(&b.data_type, &b.md5)));
+        Ok(published)
+    }
+
     /// The service of every topic this subscriber reads.
     pub(crate) fn port_factories(&self) -> impl Iterator<Item = &DataPortFactory> {
         let (single, set) = match &self.inner {
@@ -436,6 +474,7 @@ impl Iox2Subscriber {
                 created_nanos,
                 service,
                 topic: Arc::from(stream.topic),
+                schema_hash: stream.schema_hash,
                 event_source,
                 _schema_release: schema_release,
             })),
@@ -486,6 +525,33 @@ impl Iox2Subscriber {
                 _schema_releases: schema_releases,
             },
         })
+    }
+}
+
+/// A schema of a topic that a live publisher sends, as its record names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedSchema {
+    /// The message type.
+    pub data_type: String,
+    /// The message MD5.
+    pub md5: String,
+}
+
+/// The data service of `stream`, or `None` when it does not exist.
+fn open_stream(
+    node: &crate::transport::SharedNode,
+    stream: &Stream,
+) -> Result<Option<DataPortFactory>, PortError> {
+    let service_name = iceoryx2::prelude::ServiceName::new(&stream.service_name())
+        .map_err(|_| PortError::InvalidTopic)?;
+    let locked_node = crate::locked(node);
+    let node_ref = locked_node.as_ref().ok_or(PortError::Backend(1))?;
+    match crate::transport::data_service_builder(node_ref, &service_name).open() {
+        Ok(service) => Ok(Some(service)),
+        Err(
+            iceoryx2::service::builder::publish_subscribe::PublishSubscribeOpenError::DoesNotExist,
+        ) => Ok(None),
+        Err(cause) => Err(crate::service_open::publish_subscribe_open_port_error(cause)),
     }
 }
 

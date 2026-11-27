@@ -65,6 +65,7 @@ fn create_framework_subscriber(
         owner_node: 0,
         topic: topic.to_owned(),
         data_type: data_type.to_owned(),
+        md5: md5.to_owned(),
         port,
         budget,
         // The node drains it itself; nothing else may claim it.

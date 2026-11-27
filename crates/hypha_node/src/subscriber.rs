@@ -41,17 +41,35 @@ pub(crate) const MODE_SOURCE: u8 = 3;
 /// The node drains this framework input (`/clock`, `/clock_progress`) itself.
 pub(crate) const MODE_FRAMEWORK: u8 = 4;
 
-/// The one no-publisher warning of a subscriber: due once no publisher has connected
-/// for `after` since the subscriber was created. A publisher that connects ends the watch.
+/// The no-publisher warning of a subscriber. Once its stream has had no publisher for
+/// `after`, it warns, naming the other schemas of its topic that are published; it warns
+/// again when those change while its stream still has none. A publisher of its own stream
+/// re-arms it: a later absence warns again after `after`.
 #[derive(Debug)]
 struct NoPublisherWatch {
     after: Duration,
-    since: std::time::Instant,
-    /// Set once the watch can no longer warn: it warned, a publisher connected, or it
-    /// is disabled.
-    done: AtomicBool,
-    /// Host time of the last publisher count; zero before the first.
+    /// Host time of the last check; zero before the first.
     checked_nanos: AtomicU64,
+    state: std::sync::Mutex<WatchState>,
+}
+
+/// What a [`NoPublisherWatch`] knows between two checks.
+#[derive(Debug)]
+struct WatchState {
+    /// Since when the stream has had no publisher; `None` while it has one.
+    absent_since: Option<std::time::Instant>,
+    /// The other schemas the last warning named; `None` when it has not warned since the
+    /// stream last had a publisher.
+    reported: Option<Vec<hypha_iceoryx2::PublishedSchema>>,
+}
+
+/// What a check of a [`NoPublisherWatch`] decided.
+#[derive(Debug, PartialEq, Eq)]
+enum WatchDecision {
+    /// Nothing to say now.
+    Quiet,
+    /// The stream had no publisher for the delay: read the other schemas of the topic.
+    Absent,
 }
 
 impl NoPublisherWatch {
@@ -59,22 +77,21 @@ impl NoPublisherWatch {
     fn new(after: Duration, since: std::time::Instant) -> Self {
         Self {
             after,
-            since,
-            done: AtomicBool::new(after.is_zero()),
             checked_nanos: AtomicU64::new(0),
+            state: std::sync::Mutex::new(WatchState { absent_since: Some(since), reported: None }),
         }
     }
 
-    /// How often the publisher count is read: once a second, or once per `after` when
-    /// that is shorter.
+    /// How often the stream is checked: once a second, or once per `after` when that is
+    /// shorter.
     fn check_nanos(&self) -> u64 {
         u64::try_from(self.after.as_nanos()).unwrap_or(u64::MAX).clamp(1, 1_000_000_000)
     }
 
-    /// True when the publisher count is due for a read at host time `now_nanos`. At most
-    /// one caller gets `true` per interval.
+    /// True when a check is due at host time `now_nanos`. At most one caller gets `true`
+    /// per interval; a disabled watch never does.
     fn due(&self, now_nanos: impl FnOnce() -> u64) -> bool {
-        if self.done.load(Ordering::Relaxed) {
+        if self.after.is_zero() {
             return false;
         }
         let now_nanos = now_nanos();
@@ -87,21 +104,43 @@ impl NoPublisherWatch {
             .is_ok()
     }
 
-    /// True when the warning is due now. A count above zero ends the watch without a warning.
-    fn observe(&self, publisher_count: usize, now: std::time::Instant) -> bool {
-        if self.done.load(Ordering::Relaxed) {
+    /// Whether the stream's publisher is there (`publisher` true) at `now`, and what that
+    /// means for the warning.
+    fn observe(&self, publisher: bool, now: std::time::Instant) -> WatchDecision {
+        let mut state = crate::locked(&self.state);
+        if publisher {
+            *state = WatchState { absent_since: None, reported: None };
+            return WatchDecision::Quiet;
+        }
+        let since = *state.absent_since.get_or_insert(now);
+        if now.duration_since(since) < self.after {
+            return WatchDecision::Quiet;
+        }
+        WatchDecision::Absent
+    }
+
+    /// True while the stream is known to have a publisher.
+    fn is_present(&self) -> bool {
+        crate::locked(&self.state).absent_since.is_none()
+    }
+
+    /// True when `published`, the other schemas of the topic, differ from the last
+    /// warning's; it then becomes the last warning's.
+    fn changed(&self, published: Vec<hypha_iceoryx2::PublishedSchema>) -> bool {
+        let mut state = crate::locked(&self.state);
+        if state.reported.as_ref() == Some(&published) {
             return false;
         }
-        if publisher_count > 0 {
-            self.done.store(true, Ordering::Relaxed);
-            return false;
-        }
-        if now.duration_since(self.since) < self.after {
-            return false;
-        }
-        self.done.store(true, Ordering::Relaxed);
+        state.reported = Some(published);
         true
     }
+}
+
+/// A schema as a line names it: its type and the first eight hex digits of its MD5.
+fn schema_label(data_type: &str, md5: &str) -> String {
+    let short = md5.get(..8).unwrap_or(md5);
+    let data_type = if data_type.is_empty() { "-" } else { data_type };
+    format!("{data_type} ({short})")
 }
 
 /// Rate limit of the refused-frame warning: one line per subscriber per second.
@@ -184,13 +223,15 @@ pub struct HyphaSubscriber {
     pub(crate) topic: String,
     /// The message type it was opened with, empty for none.
     pub(crate) data_type: String,
+    /// The MD5 it was opened with, empty for none.
+    pub(crate) md5: String,
     pub(crate) port: BackendSubscriber,
     budget: Arc<LoanBudget>,
     pub(crate) mode: AtomicU8,
     /// True while one `WaitSet` registration dispatches this subscriber.
     attached: AtomicBool,
     validator: FrameValidator,
-    /// The one warning when this subscriber has no connected publisher.
+    /// The warning when this subscriber's stream has no publisher.
     no_publisher_watch: NoPublisherWatch,
     /// Rate limit of the refused-frame warning.
     rejection_report: RejectionReport,
@@ -199,32 +240,78 @@ pub struct HyphaSubscriber {
 }
 
 impl HyphaSubscriber {
-    /// Warn once when no publisher has connected for the warning delay. Reads the
-    /// publisher count at most once per second.
+    /// Warn when the stream has had no publisher for the warning delay, and again when
+    /// the other schemas published on the topic change while it still has none. Checks at
+    /// most once per second; while the stream has a publisher a check is one atomic read.
     pub(crate) fn check_no_publisher_warning(&self) {
         let watch = &self.no_publisher_watch;
         if !watch.due(host_now_nanos) {
             return;
         }
-        let count = match self.port.publisher_count() {
-            Ok(count) => count,
+        let present = match self.has_publisher(watch.is_present()) {
+            Ok(present) => present,
             Err(cause) => {
                 // Read again at the next due check; the warning is not decided on a failed read.
                 log::warn!(target: "hypha/subscriber", "hypha: cannot count the publishers of topic '{}': {cause:?}", self.topic);
                 return;
             }
         };
-        if watch.observe(count, std::time::Instant::now()) {
+        if watch.observe(present, std::time::Instant::now()) == WatchDecision::Quiet {
+            return;
+        }
+        let published = match self.port.published_schemas_beside() {
+            Ok(published) => published,
+            Err(cause) => {
+                log::warn!(target: "hypha/subscriber", "hypha: cannot list the schemas of topic '{}': {cause:?}", self.topic);
+                return;
+            }
+        };
+        let line = self.no_publisher_line(&published, watch.after);
+        if watch.changed(published) {
+            log::warn!(target: "hypha/subscriber", "{line}");
+        }
+    }
+
+    /// True when the stream has a publisher. A port is one while the stream `was_present`;
+    /// otherwise the port's node must be alive too, so the port that a crashed publisher
+    /// left does not keep the first warning back.
+    fn has_publisher(&self, was_present: bool) -> Result<bool, hypha_core::port::PortError> {
+        if !self.port.has_publisher_ports() {
+            return Ok(false);
+        }
+        if was_present {
+            return Ok(true);
+        }
+        Ok(self.port.publisher_count()? > 0)
+    }
+
+    /// The warning of a stream without a publisher, beside the `published` other schemas
+    /// of its topic.
+    fn no_publisher_line(
+        &self,
+        published: &[hypha_iceoryx2::PublishedSchema],
+        after: Duration,
+    ) -> String {
+        if published.is_empty() {
             let domain = match hypha_iceoryx2::domain::domain() {
                 Ok("") => "<default>".to_owned(),
                 Ok(domain) => domain.to_owned(),
                 Err(cause) => format!("<unavailable: {cause:?}>"),
             };
-            log::warn!(target: "hypha/subscriber", "hypha: no publisher connected to topic '{}' in domain '{}' after {} ms; if the publisher runs in another container, check that both /dev/shm and /tmp/iceoryx2 are shared",
-                    self.topic,
-                    domain,
-                    watch.after.as_millis());
+            return format!(
+                "hypha: no publisher connected to topic '{}' in domain '{domain}' after {} ms; if the publisher runs in another container, check that both /dev/shm and /tmp/iceoryx2 are shared",
+                self.topic,
+                after.as_millis()
+            );
         }
+        let others: Vec<String> =
+            published.iter().map(|schema| schema_label(&schema.data_type, &schema.md5)).collect();
+        format!(
+            "hypha: topic '{}' has publishers, none of type {}: published are {}",
+            self.topic,
+            schema_label(&self.data_type, &self.md5),
+            others.join(", ")
+        )
     }
 
     /// The cumulative count of frames this subscriber lost before it read them. It only grows.
@@ -423,6 +510,7 @@ pub fn subscribe_typed(
         owner_node: std::ptr::from_ref(node) as usize,
         topic: name.to_owned(),
         data_type: data_type.to_owned(),
+        md5: expected_md5.unwrap_or_default().to_owned(),
         port,
         budget,
         mode: AtomicU8::new(MODE_UNSET),
@@ -561,35 +649,53 @@ pub fn subscriber_publisher_count(subscriber: &HyphaSubscriber) -> Result<usize,
 
 #[cfg(test)]
 mod no_publisher_watch_tests {
-    use super::NoPublisherWatch;
+    use super::{NoPublisherWatch, WatchDecision, schema_label};
+    use hypha_iceoryx2::PublishedSchema;
     use std::time::{Duration, Instant};
 
-    #[test]
-    fn warns_once_after_continuous_absence() {
-        let start = Instant::now();
-        let watch = NoPublisherWatch::new(Duration::from_secs(5), start);
-        assert!(!watch.observe(0, start + Duration::from_secs(4)));
-        assert!(!watch.observe(0, start + Duration::from_nanos(4_999_999_999)));
-        assert!(watch.observe(0, start + Duration::from_secs(5)));
-        assert!(!watch.due(|| 1), "a watch that warned needs no further count");
-        assert!(!watch.observe(0, start + Duration::from_secs(20)));
+    fn schema(data_type: &str, md5: &str) -> PublishedSchema {
+        PublishedSchema { data_type: data_type.to_owned(), md5: md5.to_owned() }
     }
 
     #[test]
-    fn a_connected_publisher_ends_the_watch_and_zero_disables_it() {
+    fn an_absence_is_reported_after_the_delay_then_only_when_the_others_change() {
         let start = Instant::now();
         let watch = NoPublisherWatch::new(Duration::from_secs(5), start);
-        assert!(!watch.observe(1, start + Duration::from_secs(1)));
-        assert!(!watch.due(|| 1), "a topic that had a publisher is not misspelled");
-        assert!(!watch.observe(0, start + Duration::from_secs(10)));
+        let at = |seconds| start + Duration::from_secs(seconds);
+        assert_eq!(watch.observe(false, at(4)), WatchDecision::Quiet);
+        assert_eq!(
+            watch.observe(false, start + Duration::from_nanos(4_999_999_999)),
+            WatchDecision::Quiet
+        );
+        assert_eq!(watch.observe(false, at(5)), WatchDecision::Absent);
+        assert!(watch.changed(Vec::new()), "the first report");
+        assert_eq!(watch.observe(false, at(20)), WatchDecision::Absent);
+        assert!(!watch.changed(Vec::new()), "the same absence is said once");
+        assert!(watch.changed(vec![schema("pkg/T", "581e4b1b")]), "another schema appeared");
+        assert!(!watch.changed(vec![schema("pkg/T", "581e4b1b")]));
+        assert!(watch.changed(Vec::new()), "the other schema left");
+    }
+
+    #[test]
+    fn a_publisher_rearms_the_watch_and_zero_disables_it() {
+        let start = Instant::now();
+        let watch = NoPublisherWatch::new(Duration::from_secs(5), start);
+        let at = |seconds| start + Duration::from_secs(seconds);
+        assert_eq!(watch.observe(false, at(6)), WatchDecision::Absent);
+        assert!(watch.changed(Vec::new()));
+        assert_eq!(watch.observe(true, at(7)), WatchDecision::Quiet);
+        assert!(watch.is_present());
+        assert_eq!(watch.observe(false, at(8)), WatchDecision::Quiet, "the delay starts again");
+        assert!(!watch.is_present());
+        assert_eq!(watch.observe(false, at(13)), WatchDecision::Absent);
+        assert!(watch.changed(Vec::new()), "a new absence is reported again");
 
         let disabled = NoPublisherWatch::new(Duration::ZERO, start);
         assert!(!disabled.due(|| 1));
-        assert!(!disabled.observe(0, start + Duration::from_secs(10)));
     }
 
     #[test]
-    fn the_count_is_read_once_per_second_or_once_per_shorter_delay() {
+    fn the_stream_is_checked_once_per_second_or_once_per_shorter_delay() {
         let second = 1_000_000_000;
         let watch = NoPublisherWatch::new(Duration::from_secs(5), Instant::now());
         assert!(watch.due(|| 7));
@@ -600,6 +706,15 @@ mod no_publisher_watch_tests {
         assert!(short.due(|| 7));
         assert!(!short.due(|| 7 + 99_000_000));
         assert!(short.due(|| 7 + 100_000_000));
+    }
+
+    #[test]
+    fn a_schema_is_named_by_its_type_and_the_start_of_its_md5() {
+        assert_eq!(
+            schema_label("overload_test/First", "d9d213e8c146065ec958333c617eb1a6"),
+            "overload_test/First (d9d213e8)"
+        );
+        assert_eq!(schema_label("", "d9d2"), "- (d9d2)");
     }
 }
 
