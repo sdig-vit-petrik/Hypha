@@ -505,16 +505,27 @@ the trigger that has no limit.
    counted transport loss of that port, as for any input. The arrivals limit, the
    cycle budget and the overflow discard do not apply to a trigger, which keeps each
    sample for its own step; they apply to the other `Arrivals` inputs.
-2. **What the step sees.** `CycleTime::now` is the framework send time T of the
-   trigger sample. The sample is delivered without a second age check: the schedule
+2. **What the step sees.** The step's time, `CycleTime::now`, is the framework send
+   stamp of every output the step sends, and it depends on the clock. Under simulated
+   time it is the framework send time T of the trigger sample (of a fallback, the
+   fallback's time), so the outputs carry T. In host time it is the wall time read when
+   the step starts, as for a rate step: later than the sample's own stamp by the wake-up
+   and the capture, so an output's stamp is its own send time, and a downstream
+   triggered cycle orders and ages it from the start of the step, not from the sample
+   that caused it. In host time the trigger sample's own stamp is therefore not carried
+   by the output; a node that needs it copies the `header.stamp` of the sample's
+   payload, or reads the sample's host-monotonic send time with `sentAt(index)` of the
+   trigger's `Arrivals` port. (`scheduled_nanos` of the C ABI is T under simulated
+   time; in host time it is the sample's send time on the monotonic clock, not a wall
+   stamp.) The sample is delivered without a second age check: the schedule
    judged it once (item 3), so a trigger step holds it even when the capture finds it
    past its limit, and is empty only when the sample does not decode. Every trigger
    port is judged at each step by its newest sample against its own limit: under
    simulated time the samples sent at or before T count, and the age is T − sent, so
    a sample exactly at its limit is usable; in host time every retained sample counts,
    as for a `Latest` input, one stamped after the step included. Under simulated time
-   every other input is cut strictly before T, as a grid step is cut at its deadline,
-   and the outputs carry T as their framework send stamp. In host time a queued
+   every other input is cut strictly before T, as a grid step is cut at its deadline.
+   In host time a queued
    (`Arrivals`) input that is no trigger takes its pending samples, in arrival order,
    up to the first one sent after the trigger sample, by the host send time of both. A
    sample sent with the trigger sample, by one step of one upstream cycle, has the same

@@ -56,8 +56,12 @@ published will not appear.
 
 `echo -p` prints one CSV row for each message, as `rostopic echo -p` does. The
 first line is the header: `%time` and the column names. `%time` is the frame's
-framework send stamp in nanoseconds: the time its publisher gave it (the step's time
-for a cycle output, the recorded time for a replayed message), UTC on host time. A nested field is `outer.inner`, an array element is
+framework send stamp in nanoseconds: the time its publisher gave it, UTC on host time.
+For a cycle output that is the step's time. On host time it is the wall time at the
+start of the step, so an output of a triggered step is stamped later than the trigger
+sample that caused it, and the sample's stamp is not carried by it. On simulated time
+it is the time the step ran at, which for a triggered step is the trigger sample's
+stamp T. For a replayed message it is the recorded time. A nested field is `outer.inner`, an array element is
 `field0`, `field1`, and a `time` is `field.secs` and `field.nsecs`. A `bool` is
 `1` or `0`. A float has its full precision. A string is written as it is, with
 no quoting, so a color escape code in a debug string reaches the terminal. A
@@ -265,8 +269,8 @@ node records every output.
 
 MCAP `log_time` and `publish_time` are both the frame's framework send stamp, in
 nanoseconds since 1970-01-01: the time its publisher gave it. On host time that is
-the sender's UTC (a cycle output carries its step's time, read when the step
-started); in a replay on simulated time it is the replayed timeline. A vehicle
+the sender's UTC (a cycle output carries its step's time, the wall time read when
+the step started, not the stamp of the trigger sample that caused it); in a replay on simulated time it is the replayed timeline. A vehicle
 recording replayed in simulation with its inputs, and recorded, therefore keeps the
 vehicle's times: the inputs carry them exactly, and a cycle output carries its
 simulated step time, which differs from the vehicle's by the vehicle step's wake-up

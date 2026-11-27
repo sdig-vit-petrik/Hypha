@@ -209,8 +209,10 @@ effect for each message (a counter, an integrator, a queue) must use an
   `usable()` of a trigger that did not fire says whether its last sample is still
   valid. A trigger that may be idle for long, such as a joystick, is `advisory`, so that
   its silence does not degrade `~/state`.
-- A step at the send time T of its trigger sample sees every other input cut before T
-  on simulated time, and its outputs carry T. The other subscriptions become `Latest` or
+- On simulated time a step runs at the send time T of its trigger sample, sees every other
+  input cut before T, and its outputs carry T. On host time its time, and the stamp of its
+  outputs, is the wall time at the start of the step, later than the sample's own stamp
+  (execution-model.md §6.6 item 2). The other subscriptions become `Latest` or
   `Arrivals` ports as in the table above, and a TF listener a `hypha::Transforms` port.
 
 A node with several inputs whose callbacks each publish is one triggered cycle with
