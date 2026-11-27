@@ -732,7 +732,7 @@ fn a_tie_runs_in_port_order_after_both_upstreams_report() {
     let output = two_trigger_output(3, true);
     assert_eq!(output.len(), 2 * usize::try_from(PERIODS).unwrap(), "{output:?}");
     let (pairs, rest) = output.as_chunks::<2>();
-    assert!(rest.is_empty());
+    assert_eq!(rest, []);
     for pair in pairs {
         let [(first, first_stamp), (second, second_stamp)] = pair;
         assert_eq!(first_stamp, second_stamp, "{pair:?}");

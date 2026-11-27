@@ -315,7 +315,7 @@ fn the_unrecorded_limit_needs_the_recorder() {
     let unrecorded = results.iter().find(|limit| limit.key == "max_unrecorded").expect("limit");
     assert_eq!((unrecorded.measured, unrecorded.pass), (Some(1), false));
     report.config.workload.limits.max_unrecorded = Some(1);
-    assert!(failed_of(&report).is_empty());
+    assert_eq!(failed_of(&report), []);
 }
 
 #[test]
