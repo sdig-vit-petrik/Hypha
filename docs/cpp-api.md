@@ -378,9 +378,10 @@ definitions) run on the same topic while the nodes are rebuilt one by one.
 Another version on the topic is shown, never hidden: `sub.metrics().otherSchemas` counts
 the other MD5s of the topic that a publisher whose process is alive sends, and the
 `~/state` row of a cycle input names them (`RequiredInput.other_schemas`, schema hash, type
-and MD5). The node's housekeeping refreshes them after a graph event and at least once a
-second while the node runs, so the fact is at most about a second old; before its first
-refresh `otherSchemas` is empty (`std::nullopt`) and `other_schemas_checked` false. A peer
+and MD5, one entry per live other version). The node's housekeeping refreshes them after a
+graph event and at least once a second while the node runs, finishing a round within
+milliseconds, so the fact is at most about a second old; before its first refresh
+`otherSchemas` is empty (`std::nullopt`) and `other_schemas_checked` false. A peer
 that is still on the old version therefore shows beside a current one, and one that was
 killed shows no more. The
 verdict says what the data says: an input whose version nobody publishes is `NeverArrived`
@@ -856,6 +857,11 @@ struct hypha::QosOf<my_msgs::Image>
   (`~/introspection`) to `reportQos` (2 publishers, 2 subscribers, depth 1, 1 KiB
   first slot: only tools read them, from the observer slots). An application cannot
   remap them.
+- A policy's node slots are exact (`max_publishers` plus the subscribers it admits), and a
+  node's refresh of the other versions of a topic opens the stream for a moment, taking a
+  slot: an endpoint that needs the last slot at that instant is refused with
+  `ResourceLimit`, and a full stream keeps its last refresh result
+  ([interface-specification.md](interface-specification.md#streams)).
 - A later endpoint of the same definition (the same MD5) with another policy is refused
   with `QosMismatch`, and the log names both policies: `advertise` and `subscribe` throw, a
   cycle fails `start()`. An endpoint of another MD5 on the same name is on its own stream

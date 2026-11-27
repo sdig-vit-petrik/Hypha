@@ -241,8 +241,8 @@ in the fixed order of the table below; `hypha_node_metrics` emits them through o
 `HyphaMetricCallback`. The header states the callback, null and partial-output rules.
 
 `hypha_subscriber_counters` writes the nine subscriber counters as one
-`HyphaSubscriberCounters` struct (one `uint64_t` per metric, owned by the caller); the
-metrics are emitted from that struct, so the C, C++ and Rust numbers cannot differ. Any
+`HyphaSubscriberCounters` struct (one `uint64_t` each, owned by the caller); the eight
+subscriber metrics are emitted from that struct, so the C, C++ and Rust numbers cannot differ. Any
 thread may read it, also during a run that dispatches the subscriber.
 `integrity.sequence_gap` counts refused duplicate or reordered frames; a lost frame is
 counted by `hypha_subscriber_missing_sequences`.
@@ -265,14 +265,14 @@ counted by `hypha_subscriber_missing_sequences`.
 | Transforms | `tf.refused`, `tf.undecodable` | `hypha_node_metrics` with a node: transforms that a transform buffer or TF input of the node refused, and messages on their topics that did not decode, since the node began |
 | Schema | `schema.invalid_records`, `schema.unavailable_lookups`, `schema.resource_limit_failures` | `hypha_node_metrics` with a node |
 | Log (process-wide) | `log.lines_written`, `log.write_failures`, `log.rejected_lines` | `hypha_node_metrics`, with or without a node |
-| Subscriber | `integrity.invalid_frame`, `integrity.corrupt_payload`, `integrity.schema_mismatch`, `integrity.sequence_gap`, `integrity.invalid_timestamp`, `loan.budget`, `loan.held`, `loan.refused`, `topic.other_schemas` | `RawSubscriber::metrics` (Rust SDK); `hypha_subscriber_counters` (C ABI, as a struct) |
+| Subscriber | `integrity.invalid_frame`, `integrity.corrupt_payload`, `integrity.schema_mismatch`, `integrity.sequence_gap`, `integrity.invalid_timestamp`, `loan.budget`, `loan.held`, `loan.refused` | `RawSubscriber::metrics` (Rust SDK); `hypha_subscriber_counters` (C ABI, as a struct) |
 
 `loan.budget` is the effective per-subscriber budget of owning samples; `loan.held`
 is the number of samples the subscriber holds; `loan.refused` counts receives refused
-because the budget was full. `topic.other_schemas` is the number of other schemas (MD5s)
-of the subscriber's topic that a live publisher sends, as the node's housekeeping last
-found them, or `HYPHA_NOT_CHECKED` before a check (see [Streams](#streams)): a fact about
-the topic, not a fault count.
+because the budget was full. The struct's ninth field, `other_schemas`, has no metric: it
+is the number of other schemas (MD5s) of the subscriber's topic that a live publisher
+sends, as the node's housekeeping last found them, or `HYPHA_NOT_CHECKED` before a check
+(see [Streams](#streams)): a fact about the topic, not a fault count.
 
 ## Service limits and wildcards
 
@@ -363,7 +363,8 @@ MD5 writes the record of its stream, `<hex(topic)>/<schema hash>`, after its por
 type, MD5 and definition, or an empty file when it has no definition. The records of a topic
 are the list of its streams. A record lives while its stream has a port: the endpoint whose
 drop leaves the stream with no publisher and no subscriber removes it, and the topic's
-directory once it is empty. Two message types whose definitions give one MD5 (ROS 1
+directory once it is empty. A record whose endpoints died stays until a node start in the
+domain reclaims a dead node: it then removes every record whose stream is gone. Two message types whose definitions give one MD5 (ROS 1
 computes the MD5 from the definition, not the type name) share a stream and its policy, as
 their bytes are the same. A node of a hypha build before the streams opens another service
 name and does not see a stream: two release lines do not share a domain
@@ -374,28 +375,44 @@ visible to this build`.
 
 **Other streams of a topic.** Each typed subscriber of one stream watches its topic in its
 node (`crates/hypha_node/src/topic_streams.rs`). The node's housekeeping refreshes the
-watched topics after each turn of its default `WaitSet`'s run, never inside a step or a
-cycle's capture, when the graph event fired (it fires when a subscriber is created and when
-a publisher is created or dropped) and at least once a second. A refresh of a topic reads
-its records, makes one open attempt per stream with no retry and no wait (a stream being
-created or removed is tried at the next refresh), reads its publisher ports and drops the
-handle; nothing stays open between refreshes. The stream that every subscriber of the topic
-on the node reads counts its ports, as those subscribers do; every other stream counts only
-publishers whose node is alive, which takes one read of the domain's nodes per round, and
-only when such a stream has a port. One housekeeping pass does at most four units of work
-(a topic's records, a stream's open, the read of the dead nodes) and goes on at the next
-turn; a topic keeps its last result until its refresh is complete. Measured on macOS under
-load: a topic's records 55 µs to 0.6 ms (0 to 32 other streams), one open about 0.4 ms, the
-read of the dead nodes 15 to 30 ms with 580 to 1000 node entries under the iceoryx2 root
-(it grows with them). A subscriber reads its topic's streams with one lock and one `Arc`
-clone, under 100 ns, and opens nothing.
+watched topics in rounds, after a turn of its default `WaitSet`'s run, never inside a step
+or a cycle's capture: after a graph event, at most once per 100 ms, and at least once a
+second. The graph event fires when a subscriber is created and when a publisher is created
+or dropped, and every node of the domain listens to it, so the start of a system of `p`
+publishers and `s` subscribers in `n` nodes wakes each node about `p + s` times, `n (p + s)`
+wakes in all; each node starts at most one round per 100 ms whatever their number. A refresh
+of a topic reads its records and, per stream, makes one open attempt with no retry and no
+wait, reads the nodes of its publisher ports and the states of the nodes registered at that
+one service (iceoryx2's `Service::details`), and drops the handle; nothing stays open
+between refreshes, and the cost does not grow with the nodes of the domain. A stream being
+created or removed counts as having no publisher until the next round. A read that fails
+(a full stream, a corrupted service, a missing session) leaves the topic's last result, or
+"not checked", and is logged. One pass does at most four reads (a topic's records, one
+stream's publishers) and the run comes back after 1 ms while the round is unfinished; a
+round ends when its topics are read, so an idle node wakes every 1 ms only during a round
+and once a second between rounds. Measured on macOS under load: a topic's records 40 µs to
+0.5 ms (0 to 32 other streams), one stream's publishers about 1 ms in a debug build (0.31 ms
+in release, the review's figure); an idle node with 1, 4, 10 and 30 watched topics knew
+every other version after 11, 15, 42 and 114 ms, and spent 0.72 s of CPU in 10 s with 30
+topics of two versions each (none with no watched topic). A 1 kHz callback's longest gap was
+the same with and without another version published, 6 to 21 ms on that loaded machine. A
+subscriber reads its topic's streams with one lock and one `Arc` clone, and opens nothing.
+
+Each open of a stream by a refresh takes one node slot of the stream while it lasts, as an
+endpoint does, and so does the check of the record release when an endpoint drops
+(`max_nodes` is the policy's `max_publishers` plus the subscribers it admits, with no
+spare). On a stream whose node slots are all taken the refresh is refused with
+`ResourceLimit` and keeps the topic's last result, and an endpoint that needs the last slot
+at the instant a refresh holds it is refused with `ResourceLimit`: a policy sized to the
+exact number of endpoints can see that under churn.
 
 The fact has three states: not checked (before the first refresh, for a subscriber of no
 single stream, and for a node whose default `WaitSet` does not run), none, or these. The
-subscriber counter `topic.other_schemas` is `HYPHA_NOT_CHECKED` (`UINT64_MAX`) or the count
-of other schemas with a live publisher; `RequiredInput` has `other_schemas_checked` and
-`other_schemas` (schema hash, type and MD5, the last two empty for a stream without a
-definition).
+subscriber counter `topic.other_schemas` (no metric carries it) is `HYPHA_NOT_CHECKED`
+(`UINT64_MAX`) or the count of other schemas with a live publisher, the Rust SDK's
+`RawSubscriber::other_schemas` an `Option`; `RequiredInput` has `other_schemas_checked` and
+`other_schemas`, one entry per live other version (schema hash, type and MD5, the last two
+empty for a stream without a definition).
 
 A subscriber of one stream checks its stream once a second, from the run that drives it:
 it warns after its no-publisher delay while its stream has no publisher, again when the
