@@ -227,8 +227,7 @@ impl TopicSpec {
         let Some(bare) = self.name.strip_prefix('/') else {
             return false;
         };
-        // Only the bare product name is reserved; applications publish below it.
-        let is_reserved = self.name == "/hypha";
+        let is_reserved = is_reserved_topic_name(&self.name);
         let has_invalid_content = bare.is_empty()
             || is_reserved
             || bare.contains('*')
@@ -331,6 +330,19 @@ pub fn is_valid_topic_pattern(pattern: &str) -> bool {
         !segment.contains('*') || segment == "*" || (segment == "**" && is_last)
     });
     has_segment && stars_are_well_placed
+}
+
+/// The topic namespaces under `/hypha/` that hypha's own tools publish in. Every other
+/// name under `/hypha/` is the framework's: the transport keeps its services there
+/// (`hypha/srv/...`, `hypha/hk/...`), and a topic's bus name drops only the leading `/`.
+pub const FRAMEWORK_TOPIC_NAMESPACES: [&str; 1] = ["/hypha/intercept/"];
+
+/// True when `name` is reserved for the framework: `/hypha` itself, and every name under
+/// `/hypha/` outside [`FRAMEWORK_TOPIC_NAMESPACES`].
+#[must_use]
+pub fn is_reserved_topic_name(name: &str) -> bool {
+    let under_product = name == "/hypha" || name.starts_with("/hypha/");
+    under_product && !FRAMEWORK_TOPIC_NAMESPACES.iter().any(|space| name.starts_with(space))
 }
 
 /// True when `name` is a valid public topic name, or a valid `~/` name that

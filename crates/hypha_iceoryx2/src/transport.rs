@@ -140,6 +140,7 @@ impl Iox2Transport {
     /// other [`PortError`] values that refuse a policy or a service.
     pub fn publish(&self, spec: &TopicSpec) -> Result<Iox2Publisher, PortError> {
         if !spec.has_valid_public_name() {
+            refuse_reserved(&spec.name);
             return Err(PortError::InvalidTopic);
         }
         if spec.loaned_samples == 0 {
@@ -252,6 +253,15 @@ pub(crate) fn node_port_name(
     let node_ref = locked_node.as_ref().ok_or(PortError::Backend(1))?;
     iceoryx2::port::port_name::PortName::new(node_ref.name().as_str())
         .map_err(|_| PortError::InvalidTopic)
+}
+
+/// Log why a topic name under `/hypha/` is refused; other invalid names need no line.
+fn refuse_reserved(topic: &str) {
+    if hypha_core::port::is_reserved_topic_name(topic) {
+        log::error!(target: "hypha/transport",
+            "hypha: topic '{topic}': names under /hypha/ are reserved for the framework (its \
+             services live there); choose another namespace");
+    }
 }
 
 /// The publish-subscribe service of one topic.
@@ -491,6 +501,7 @@ impl Iox2Transport {
             return Ok(subscriber);
         }
         if !spec.has_valid_public_name() {
+            refuse_reserved(&spec.name);
             return Err(PortError::InvalidTopic);
         }
         if !spec.definition.is_empty() && !spec.has_valid_schema_identity() {

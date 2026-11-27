@@ -14,7 +14,7 @@ fn metric(subscriber: &RawSubscriber, name: &str) -> Option<u64> {
 #[test]
 fn node_raw_pub_sub_and_registry_round_trip() {
     let node_name = unique("node");
-    let topic = format!("/hypha/coverage/{}", unique("topic"));
+    let topic = format!("/test/coverage/{}", unique("topic"));
     let node_result = BusNode::new(&node_name);
     assert!(node_result.is_ok());
     let Ok(node) = node_result else { return };
@@ -56,7 +56,7 @@ fn a_schema_filtered_subscription_passes_matching_frames() {
     let node_result = BusNode::new(&format!("{suffix}_node"));
     assert!(node_result.is_ok());
     let Ok(node) = node_result else { return };
-    let topic = format!("/hypha/coverage/{suffix}");
+    let topic = format!("/test/coverage/{suffix}");
     let valid_result = node.publish_raw(&topic, TYPE_NAME, MD5, "");
     assert!(valid_result.is_ok());
     let Ok(mut valid) = valid_result else { return };
@@ -82,7 +82,7 @@ fn a_schema_filtered_subscription_drops_version_skewed_frames() {
     let node_result = BusNode::new(&format!("{suffix}_node"));
     assert!(node_result.is_ok());
     let Ok(node) = node_result else { return };
-    let topic = format!("/hypha/coverage/{suffix}");
+    let topic = format!("/test/coverage/{suffix}");
     let skew_result = node.publish_raw(&topic, TYPE_NAME, "00000000000000000000000000000000", "");
     assert!(skew_result.is_ok());
     let Ok(mut skew) = skew_result else { return };
