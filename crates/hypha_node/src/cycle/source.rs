@@ -7,6 +7,15 @@ use crate::subscriber::HyphaSubscriber;
 use crate::waitset::{HyphaWaitSet, WaitSetShared};
 use hypha_cycle::ReplayFidelity;
 
+/// The clock a drain serves, which decides how much it takes and what it keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DrainClock {
+    /// A step on the host clock.
+    Host,
+    /// A step or a turn under simulated time.
+    Simulated,
+}
+
 /// What one receive of a bounded drain did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DrainStep {
@@ -90,8 +99,8 @@ impl CycleInputSource {
         }
     }
 
-    /// Drain this physical subscriber into its shared history.
-    pub(crate) fn drain(&self) -> Result<(), Error> {
+    /// Drain this physical subscriber into its shared history, for `clock`.
+    pub(crate) fn drain(&self, clock: DrainClock) -> Result<(), Error> {
         let Some(subscriber) = self.subscriber.as_deref() else {
             return if self.history.is_none() { Ok(()) } else { Err(Error::InvalidState) };
         };
@@ -101,7 +110,7 @@ impl CycleInputSource {
         let Some(history) = self.history.as_ref() else {
             return Err(Error::InvalidState);
         };
-        let sim = hypha_time::is_sim_time();
+        let sim = clock == DrainClock::Simulated;
         // One call takes everything queued when it starts: on host time one history depth;
         // under simulated time the queue of every publisher, so the progress reported
         // after a drain covers every sample sent before it (replay-flow-control.md §4.2).

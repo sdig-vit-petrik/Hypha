@@ -424,6 +424,8 @@ impl Dispatcher for CallbackDispatcher<'_> {
         if decision != Progression::Continue {
             return decision;
         }
+        // `sim` says the node reads `/clock`; a replay cycle also runs on simulated time
+        // set through the C ABI, which `on_sim_time` adds. Only then can one be attached.
         if self.node.on_sim_time() {
             let decision = self.drain_replay_inputs();
             if decision != Progression::Continue {

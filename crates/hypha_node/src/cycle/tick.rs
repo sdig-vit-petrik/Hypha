@@ -11,7 +11,7 @@ use hypha_cycle::{
 
 use super::image::{EmissionView, ImageView, SupervisionCopy, binding_report};
 use super::registration::{Cycle, CycleOutput, CycleStep};
-use super::source::CycleInputSource;
+use super::source::{CycleInputSource, DrainClock};
 use super::state::CycleStepHandler;
 use super::types::{
     HyphaCycleBindingHealth, HyphaCycleBindingView, HyphaCycleHealth, HyphaCycleHeldReport,
@@ -47,23 +47,23 @@ struct StepState<'a> {
     waitset: &'a crate::waitset::HyphaWaitSet,
 }
 
-/// Drain each physical source of `cycle` once into its history, for the dispatcher: before
-/// a step it cuts itself, and on every turn under simulated time. `InvalidState` inside a
-/// step.
-pub(crate) fn drain_inputs(cycle: &Cycle) -> Result<(), Error> {
-    drain_sources(&cycle.step_ref()?.inputs)
+/// Drain each physical source of `cycle` once into its history for `clock`, for the
+/// dispatcher: before a step it cuts itself, and on every turn under simulated time.
+/// `InvalidState` inside a step.
+pub(crate) fn drain_inputs(cycle: &Cycle, clock: DrainClock) -> Result<(), Error> {
+    drain_sources(&cycle.step_ref()?.inputs, clock)
 }
 
 /// Drain each physical source once into its history.
 ///
 /// Several bindings and cycles can share a source, whose history is their common snapshot.
-fn drain_sources(inputs: &[Arc<CycleInputSource>]) -> Result<(), Error> {
+fn drain_sources(inputs: &[Arc<CycleInputSource>], clock: DrainClock) -> Result<(), Error> {
     for (index, source) in inputs.iter().enumerate() {
         let already_drained = inputs
             .get(..index)
             .is_some_and(|previous| previous.iter().any(|item| Arc::ptr_eq(item, source)));
         if !already_drained {
-            source.drain()?;
+            source.drain(clock)?;
         }
     }
     Ok(())
@@ -91,7 +91,7 @@ pub(crate) fn cycle_timer_tick(
     let trigger_step = state.trigger_step.take();
     if replay_cut.is_none()
         && trigger_step.is_none()
-        && let Err(status) = drain_sources(&state.inputs)
+        && let Err(status) = drain_sources(&state.inputs, DrainClock::Host)
     {
         return HyphaCallbackResult::fail(status as i32);
     }
