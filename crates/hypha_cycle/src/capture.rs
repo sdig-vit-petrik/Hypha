@@ -620,19 +620,15 @@ impl BindingCapture {
         if superseded_for_good {
             self.passed_from = None;
         }
-        match selected {
-            Some(selected) => {
-                if self.passed_from.is_none() && before(self.cursor, selected) {
-                    self.passed_from = Some(self.cursor);
-                }
+        if let Some(selected) = selected {
+            if self.passed_from.is_none() && before(self.cursor, selected) {
+                self.passed_from = Some(self.cursor);
             }
-            None => {
-                let passed = self.passed_from.take().unwrap_or(self.cursor);
-                let after_held =
-                    self.held_for_good(history, oldest).map(|held| held.wrapping_add(1));
-                let from = after_held.filter(|after| before(passed, *after)).unwrap_or(passed);
-                self.count_evicted_from(from, oldest);
-            }
+        } else {
+            let passed = self.passed_from.take().unwrap_or(self.cursor);
+            let after_held = self.held_for_good(history, oldest).map(|held| held.wrapping_add(1));
+            let from = after_held.filter(|after| before(passed, *after)).unwrap_or(passed);
+            self.count_evicted_from(from, oldest);
         }
     }
 
