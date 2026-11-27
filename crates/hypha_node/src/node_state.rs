@@ -55,8 +55,8 @@ struct Judged {
     rejected: u64,
     /// The samples a port of its source could not decode.
     undecodable: u64,
-    /// The other schemas of its topic that are published.
-    other_schemas: Vec<TopicSchema>,
+    /// The other schemas of its topic that are published; `None` before they were checked.
+    other_schemas: Option<Vec<TopicSchema>>,
 }
 
 /// The state that the judged bindings imply for `node`. A stream's row takes the verdict
@@ -86,7 +86,8 @@ fn state_of(node: &str, judged: &[Judged]) -> NodeState {
                 known.dropped = known.dropped.wrapping_add(binding.dropped);
                 known.rejected = known.rejected.max(binding.rejected);
                 known.undecodable = known.undecodable.max(binding.undecodable);
-                for schema in &binding.other_schemas {
+                known.other_schemas_checked &= binding.other_schemas.is_some();
+                for schema in binding.other_schemas.iter().flatten() {
                     if !known.other_schemas.contains(schema) {
                         known.other_schemas.push(schema.clone());
                     }
@@ -104,7 +105,8 @@ fn state_of(node: &str, judged: &[Judged]) -> NodeState {
                     dropped: binding.dropped,
                     rejected: binding.rejected,
                     undecodable: binding.undecodable,
-                    other_schemas: binding.other_schemas.clone(),
+                    other_schemas_checked: binding.other_schemas.is_some(),
+                    other_schemas: binding.other_schemas.clone().unwrap_or_default(),
                 });
             }
         }
@@ -124,7 +126,7 @@ fn judged_from(
     subscriber: &EndpointRow,
     view: &HyphaCycleBindingView,
     counts: InputCounts,
-    other_schemas: Vec<TopicSchema>,
+    other_schemas: Option<Vec<TopicSchema>>,
 ) -> Judged {
     let faults = view.supervision.faults;
     let health = &view.health;
@@ -176,13 +178,21 @@ fn judge(
         let view = views.get(index)?;
         let counts = crate::locked(&cycle.snapshots.input_counts);
         let source = counts.get(index).copied().unwrap_or_default();
-        let others = crate::locked(&cycle.snapshots.other_schemas);
-        let published = others.get(index).and_then(Option::as_ref).map(|others| others.published());
-        let other_schemas = published
-            .into_iter()
-            .flatten()
-            .map(|schema| TopicSchema { data_type: schema.data_type, md5: schema.md5 })
-            .collect();
+        let watches = crate::locked(&cycle.snapshots.watches);
+        let others = watches
+            .get(index)
+            .and_then(Option::as_ref)
+            .and_then(crate::topic_streams::Watch::others);
+        let other_schemas = others.map(|others| {
+            others
+                .into_iter()
+                .map(|stream| TopicSchema {
+                    schema_hash: stream.schema_hash,
+                    data_type: stream.data_type,
+                    md5: stream.md5,
+                })
+                .collect()
+        });
         Some(judged_from(row, subscriber, view, source, other_schemas))
     };
     let mut judged = Vec::new();
@@ -332,7 +342,7 @@ mod tests {
             dropped: 2,
             rejected: 7,
             undecodable: 1,
-            other_schemas: Vec::new(),
+            other_schemas: None,
         };
         let stale = Judged {
             verdict: RequiredInput::STALE,

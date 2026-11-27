@@ -395,44 +395,70 @@ fn two_processes_publishing_two_types_on_one_name_are_read_by_type() {
 }
 
 /// A migration, each publisher in a process of its own: version 1 runs, version 2 joins
-/// on the same topic, each reader gets its own version alone and nothing is counted as a
-/// fault; then version 1's publisher goes away and its reader, which keeps running, has
-/// no publisher while version 2 still flows.
+/// on the same topic, each reader gets its own version alone, in order, and nothing is
+/// counted as a fault; each reader shows the other version as published. Then version 1's
+/// publisher is killed: its reader, which keeps running, gets nothing more, and version
+/// 2's reader shows no other version, since a dead node's port is no publisher.
 #[test]
 fn two_versions_of_one_type_share_a_topic_through_a_migration() {
     let bus = BusNode::new(&unique_name("overload_migration")).expect("node");
+    // The node's run does its housekeeping, which refreshes the other streams of a topic.
+    let mut run = hypha_node::sdk::WaitSet::new(&bus).expect("the node's WaitSet");
     let topic = format!("/overload/{}", unique_name("migration"));
     let mut v1_peer = start_peer(&topic, "version_1", 400);
     let mut v1_in = subscribe_once_published(&bus, &topic, &VERSION_1);
-    let v1_seen = drain_until(&mut v1_in, 3);
-
     let mut v2_peer = start_peer(&topic, "version_2", 400);
     let mut v2_in = subscribe_once_published(&bus, &topic, &VERSION_2);
-    let v2_seen = drain_until(&mut v2_in, 3);
-    let v1_beside = drain_until(&mut v1_in, 3);
-    for (seen, length) in [(&v1_seen, 4), (&v1_beside, 4), (&v2_seen, 16)] {
-        assert!(seen.payloads.iter().all(|payload| payload.len() == length), "{seen:?}");
+    let mut v1_seen = Drained::default();
+    let mut v2_seen = Drained::default();
+    let shown = |subscriber: &RawSubscriber| metric(subscriber, "topic.other_schemas");
+    let deadline = deadline_in(20);
+    while v1_seen.payloads.len() < 6
+        || v2_seen.payloads.len() < 6
+        || shown(&v1_in) != 1
+        || shown(&v2_in) != 1
+    {
+        assert!(Instant::now() < deadline, "{v1_seen:?} {v2_seen:?}");
+        let _ = run.run_for(Duration::from_millis(20));
+        add(&mut v1_seen, drain(&mut v1_in));
+        add(&mut v2_seen, drain(&mut v2_in));
+    }
+    for (seen, kind) in [(&v1_seen, &VERSION_1), (&v2_seen, &VERSION_2)] {
+        assert_in_order(seen, kind);
     }
 
     let _ = v1_peer.kill();
     let _ = v1_peer.wait();
     let deadline = deadline_in(20);
-    while v1_in.publisher_count().expect("count") > 0 {
-        assert!(Instant::now() < deadline, "version 1's publisher never went away");
-        std::thread::sleep(Duration::from_millis(10));
+    while shown(&v2_in) != 0 {
+        assert!(Instant::now() < deadline, "version 2's reader still shows the killed version");
+        let _ = run.run_for(Duration::from_millis(20));
+        add(&mut v2_seen, drain(&mut v2_in));
     }
     drain(&mut v1_in);
-    let v2_later = drain_until(&mut v2_in, 3);
-    std::thread::sleep(Duration::from_millis(100));
+    let _ = run.run_for(Duration::from_millis(100));
     let v1_later = drain(&mut v1_in);
     let _ = v2_peer.kill();
     let _ = v2_peer.wait();
 
     assert!(v1_later.payloads.is_empty(), "{v1_later:?}");
-    assert!(v2_later.payloads.iter().all(|payload| payload.len() == 16), "{v2_later:?}");
-    for (subscriber, seen) in [(&v1_in, &v1_beside), (&v2_in, &v2_later)] {
+    assert_in_order(&v2_seen, &VERSION_2);
+    for (subscriber, seen) in [(&v1_in, &v1_seen), (&v2_in, &v2_seen)] {
         assert_eq!(seen.refusals, 0);
         assert_eq!(metric(subscriber, "integrity.schema_mismatch"), 0);
     }
-    assert_eq!(v1_later.refusals, 0);
+}
+
+fn add(total: &mut Drained, more: Drained) {
+    total.payloads.extend(more.payloads);
+    total.refusals = total.refusals.saturating_add(more.refusals);
+}
+
+/// The payloads of `seen` are those of `kind`, each tagged one more than the one before.
+fn assert_in_order(seen: &Drained, kind: &Kind) {
+    let first = seen.payloads.first().and_then(|payload| payload.first()).copied().unwrap_or(0);
+    let expected: Vec<Vec<u8>> = (0..seen.payloads.len())
+        .map(|offset| payload_of(kind, first.wrapping_add(u8::try_from(offset).unwrap_or(0))))
+        .collect();
+    assert_eq!(seen.payloads, expected);
 }

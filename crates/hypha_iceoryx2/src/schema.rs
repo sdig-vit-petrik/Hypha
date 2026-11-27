@@ -1,11 +1,11 @@
 //! Content-addressed file store and synchronous resolution for schemas, at
 //! `<config.global.root_path()>/<config.global.prefix>_hypha_schemas/<hex(topic)>/<schema_hash:016x>`.
 //!
-//! Every stream also has a marker, `<schema_hash:016x>.stream`, that names its type and
-//! MD5, written by each endpoint of the stream whether or not it has a definition: the
-//! markers of a topic are the list of its streams ([`topic_streams`]). A record and a
-//! marker live as long as their stream: the endpoint that drops the last port of a stream
-//! removes both, and the topic's directory once it is empty ([`SchemaRelease`]). One lock file
+//! Every endpoint that names an MD5 writes the record of its stream, an empty file when it
+//! has no definition, so the records of a topic are the list of its streams
+//! ([`topic_records`]). A record lives while its stream has a port: the endpoint whose
+//! drop leaves the stream without publisher and subscriber removes it, and the topic's
+//! directory once it is empty ([`SchemaRelease`]). One lock file
 //! per domain orders that removal against writes, and every wait for it is bounded
 //! by [`SCHEMA_LOCK_TIMEOUT`] so a frozen holder blocks no node.
 
@@ -149,36 +149,44 @@ fn lock_schemas(mode: LockMode) -> Result<std::fs::File, String> {
     }
 }
 
-/// True while any port of the data service of `stream` is open in any process of the domain.
-fn stream_in_use(stream: &Stream) -> Result<bool, String> {
-    use iceoryx2::service::Service as _;
-    let config = crate::domain::config().map_err(|cause| format!("{cause:?}"))?;
+/// True while the data service of `stream` has a publisher or a subscriber, in any process
+/// of the domain: one open attempt through `node`, no retry. A service that is being
+/// created or removed counts as in use, so its record stays for a later release.
+fn stream_has_ports(node: &crate::transport::SharedNode, stream: &Stream) -> Result<bool, String> {
+    use iceoryx2::service::builder::publish_subscribe::PublishSubscribeOpenError as Open;
+    use iceoryx2::service::port_factory::PortFactory as _;
     let name = iceoryx2::prelude::ServiceName::new(&stream.service_name())
         .map_err(|cause| format!("{cause:?}"))?;
-    crate::transport::Ipc::does_exist(
-        &name,
-        config,
-        iceoryx2::prelude::MessagingPattern::PublishSubscribe,
-    )
-    .map_err(|cause| format!("cannot tell whether the topic is still open: {cause:?}"))
+    let locked_node = crate::locked(node);
+    let Some(node_ref) = locked_node.as_ref() else {
+        return Err("the session is gone".to_owned());
+    };
+    match crate::transport::data_service_builder(node_ref, &name).open() {
+        Ok(service) => {
+            let dynamic = service.dynamic_config();
+            Ok(dynamic.number_of_publishers() > 0 || dynamic.number_of_subscribers() > 0)
+        }
+        Err(Open::DoesNotExist) => Ok(false),
+        Err(_) => Ok(true),
+    }
 }
 
-/// Removes the schema of a stream when it drops, if no port of its data service is left
-/// in any process. An endpoint holds it as its last field.
-#[derive(Debug)]
+/// Removes the record of a stream when it drops, if the stream has no port left in any
+/// process. An endpoint holds it as its last field, so its own port is gone by then.
 pub(crate) struct SchemaRelease {
+    node: crate::transport::SharedNode,
     stream: Stream,
 }
 
 impl SchemaRelease {
-    pub(crate) fn new(stream: &Stream) -> Self {
-        Self { stream: stream.clone() }
+    pub(crate) fn new(node: &crate::transport::SharedNode, stream: &Stream) -> Self {
+        Self { node: node.clone(), stream: stream.clone() }
     }
 }
 
 impl Drop for SchemaRelease {
     fn drop(&mut self) {
-        if let Err(cause) = release_schema(&self.stream) {
+        if let Err(cause) = release_schema(&self.node, &self.stream) {
             log::warn!(target: "hypha/schema",
                 "hypha_iceoryx2: the schema {:016x} of topic '{}' stays on disk: {cause}",
                 self.stream.schema_hash, self.stream.topic);
@@ -186,26 +194,23 @@ impl Drop for SchemaRelease {
     }
 }
 
-/// Removes the schema file of `stream` when its data service is gone, then the topic's
-/// directory and the domain's when they are empty.
-fn release_schema(stream: &Stream) -> Result<(), String> {
+/// Removes the record of `stream` when the stream has no port, then the topic's directory
+/// and the domain's when they are empty.
+fn release_schema(node: &crate::transport::SharedNode, stream: &Stream) -> Result<(), String> {
     // No lock for the usual case: the last port to drop checks again under the lock.
-    if stream_in_use(stream)? {
+    if stream_has_ports(node, stream)? {
         return Ok(());
     }
     let _lock = lock_schemas(LockMode::Exclusive)?;
-    if stream_in_use(stream)? {
+    if stream_has_ports(node, stream)? {
         return Ok(());
     }
     let record = schema_file_path(&stream.topic, stream.schema_hash)
         .map_err(|cause| format!("{cause:?}"))?;
-    let marker = marker_path(stream).map_err(|cause| format!("{cause:?}"))?;
-    for file in [record, marker] {
-        match std::fs::remove_file(&file) {
-            Ok(()) => {}
-            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {}
-            Err(cause) => return Err(format!("cannot remove {}: {cause}", file.display())),
-        }
+    match std::fs::remove_file(&record) {
+        Ok(()) => {}
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {}
+        Err(cause) => return Err(format!("cannot remove {}: {cause}", record.display())),
     }
     remove_empty_dir(&topic_dir(&stream.topic).map_err(|cause| format!("{cause:?}"))?)?;
     remove_empty_dir(&schema_dir().map_err(|cause| format!("{cause:?}"))?)
@@ -227,98 +232,53 @@ fn remove_empty_dir(dir: &Path) -> Result<(), String> {
     }
 }
 
-/// The marker of `stream`: `<hex(topic)>/<schema_hash:016x>.stream`.
-fn marker_path(stream: &Stream) -> Result<PathBuf, PortError> {
-    Ok(topic_dir(&stream.topic)?.join(format!("{:016x}{MARKER_SUFFIX}", stream.schema_hash)))
-}
-
-/// The file name ending of a stream marker.
-const MARKER_SUFFIX: &str = ".stream";
-
-/// Writes the marker of `stream`, which names `data_type` and `md5`, unless it exists.
-///
-/// The caller has opened the stream's data service first, so a [`SchemaRelease`] that
-/// runs meanwhile keeps the file.
-pub(crate) fn write_stream_marker(
-    stream: &Stream,
-    data_type: &str,
-    md5: &str,
-) -> Result<(), PortError> {
-    let path = marker_path(stream)?;
-    let failed = |cause: String| {
-        log::error!(target: "hypha/schema",
-            "the stream marker of topic '{}' was not written to {}: {cause}",
-            stream.topic, path.display());
-        PortError::Backend(3)
-    };
-    let _lock = lock_schemas(LockMode::Shared).map_err(failed)?;
-    if path.exists() {
-        return Ok(());
-    }
-    atomic_write_file(&path, format!("{data_type}\n{md5}\n").as_bytes())
-        .map_err(|cause| failed(cause.to_string()))
-}
-
-/// One stream of a topic, as its marker names it.
+/// One stream of a topic, as its record names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MarkedStream {
+pub struct RecordedStream {
     /// The schema hash of the stream.
-    pub(crate) schema_hash: u64,
-    /// The message type its endpoints named; empty for none.
-    pub(crate) data_type: String,
-    /// The MD5 its endpoints named; empty for the stream of no schema.
-    pub(crate) md5: String,
+    pub schema_hash: u64,
+    /// The message type; empty when the stream's endpoints gave no definition.
+    pub data_type: String,
+    /// The message MD5; empty when the stream's endpoints gave no definition.
+    pub md5: String,
 }
 
-/// The time the stream list of `topic` last changed: the modification time of its
-/// directory, which adding or removing a marker sets. `None` when the topic has none.
+/// The streams of `topic` that have a record: one read of its directory and of each
+/// record. A record that does not parse is counted as an invalid record and left out.
 ///
 /// # Errors
 /// [`PortError`] when the domain configuration fails.
-pub(crate) fn topic_streams_changed(
-    topic: &str,
-) -> Result<Option<std::time::SystemTime>, PortError> {
-    Ok(std::fs::metadata(topic_dir(topic)?).and_then(|metadata| metadata.modified()).ok())
-}
-
-/// The schema hashes of the markers of `topic`: one read of its directory.
-///
-/// # Errors
-/// [`PortError`] when the domain configuration fails.
-pub(crate) fn topic_stream_hashes(topic: &str) -> Result<Vec<u64>, PortError> {
+pub fn topic_records(topic: &str) -> Result<Vec<RecordedStream>, PortError> {
     let Ok(entries) = std::fs::read_dir(topic_dir(topic)?) else {
         return Ok(Vec::new());
     };
-    let hashes = entries
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name();
-            let digits = name.to_str()?.strip_suffix(MARKER_SUFFIX)?;
-            u64::from_str_radix(digits, 16).ok()
-        })
-        .collect();
-    Ok(hashes)
-}
-
-/// The stream of `schema_hash` of `topic`, as its marker names it; `None` when the marker
-/// is gone or does not hold a type and an MD5 line.
-///
-/// # Errors
-/// [`PortError`] when the domain configuration fails.
-pub(crate) fn read_stream_marker(
-    topic: &str,
-    schema_hash: u64,
-) -> Result<Option<MarkedStream>, PortError> {
-    let stream = Stream { topic: topic.to_owned(), schema_hash };
-    let Ok(text) = std::fs::read_to_string(marker_path(&stream)?) else {
-        return Ok(None);
-    };
-    let mut lines = text.lines();
-    let (Some(data_type), Some(md5)) = (lines.next(), lines.next()) else {
-        INVALID_RECORDS.fetch_add(1, Ordering::Relaxed);
-        return Ok(None);
-    };
-    Ok(Some(MarkedStream { schema_hash, data_type: data_type.to_owned(), md5: md5.to_owned() }))
+    let mut streams = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(schema_hash) = name.to_str().and_then(|text| u64::from_str_radix(text, 16).ok())
+        else {
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(entry.path()) else { continue };
+        if bytes.is_empty() {
+            streams.push(RecordedStream {
+                schema_hash,
+                data_type: String::new(),
+                md5: String::new(),
+            });
+            continue;
+        }
+        let Ok(record) = parse_schema_record(&bytes) else {
+            INVALID_RECORDS.fetch_add(1, Ordering::Relaxed);
+            continue;
+        };
+        streams.push(RecordedStream {
+            schema_hash,
+            data_type: record.data_type().to_owned(),
+            md5: record.md5().to_owned(),
+        });
+    }
+    Ok(streams)
 }
 
 /// Builds the fixed schema record frame for `spec`.
@@ -347,13 +307,17 @@ fn build_schema_frame(spec: &TopicSpec) -> Result<Vec<u8>, PortError> {
     Ok(frame)
 }
 
-/// Writes the schema record file for `spec`.
+/// Writes the record of the stream of `spec`, an empty file when it has no definition;
+/// nothing for an endpoint that names no MD5.
 ///
-///
-/// The caller has opened the topic's data service first, so a [`SchemaRelease`]
-/// that runs meanwhile keeps the file. An existing file is not rewritten.
+/// The caller has created its port first, so a [`SchemaRelease`] that runs meanwhile
+/// either sees the port and keeps the file or removed it before this write. An existing
+/// record is not rewritten, except an empty one by a record with a definition.
 pub(crate) fn write_schema_file(spec: &TopicSpec) -> Result<(), PortError> {
-    let frame = build_schema_frame(spec)?;
+    if !spec.has_valid_schema_identity() {
+        return Ok(());
+    }
+    let frame = if spec.definition.is_empty() { Vec::new() } else { build_schema_frame(spec)? };
     let schema_hash = hypha_wire::schema_hash_from_md5(&spec.md5).ok_or(PortError::InvalidTopic)?;
     let path = schema_file_path(&spec.name, schema_hash)?;
     let fail = |err: std::io::Error| {
@@ -375,7 +339,9 @@ pub(crate) fn write_schema_file(spec: &TopicSpec) -> Result<(), PortError> {
         );
         PortError::Backend(3)
     })?;
-    if path.exists() {
+    // A record with a definition replaces one without; nothing else is rewritten.
+    let recorded = std::fs::metadata(&path).map(|metadata| metadata.len());
+    if recorded.is_ok_and(|length| length > 0 || frame.is_empty()) {
         return Ok(());
     }
     atomic_write_file(&path, &frame).map_err(&fail)
@@ -407,6 +373,8 @@ pub fn lookup_schema(
     loop {
         if path.exists() {
             match std::fs::read(&path) {
+                // A stream whose endpoints gave no definition: nothing to resolve yet.
+                Ok(bytes) if bytes.is_empty() => {}
                 Ok(bytes) => match parse_schema_record(&bytes) {
                     Ok(record) => {
                         let hash_matches =

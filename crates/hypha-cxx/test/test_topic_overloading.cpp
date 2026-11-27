@@ -691,6 +691,7 @@ TEST_F(OverloadingFixture, TwoVersionsOfOneTypeShareATopicAndAReaderOfTheMissing
     EXPECT_EQ(state->inputs[0].md5, "581e4b1bda6a172aa19e1038a38e01eb");
     EXPECT_EQ(state->inputs[0].verdict, hypha_msgs::RequiredInput::STALE);
     EXPECT_EQ(state->inputs[0].rejected, 0U);
+    EXPECT_TRUE(state->inputs[0].other_schemas_checked);
     ASSERT_EQ(state->inputs[0].other_schemas.size(), 1U) << "the row names the other version";
     EXPECT_EQ(state->inputs[0].other_schemas[0].data_type, "hypha_test/Reading");
     EXPECT_EQ(state->inputs[0].other_schemas[0].md5, "f79835def461350458ead76f07016dd7");
@@ -740,6 +741,7 @@ TEST_F(OverloadingFixture, APublisherReplacedByAnotherVersionIsShownBesideAnUnli
             plain.push_back(message->value);
         }
     );
+    EXPECT_FALSE(plainReader.metrics().otherSchemas.has_value()) << "not checked before a run";
     UnlimitedCycle cycle(unlimitedTopic);
     cycle.setRate(hypha::Hz(100.0));
     ASSERT_TRUE(cycle.start(*this->node).has_value());

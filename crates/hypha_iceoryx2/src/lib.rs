@@ -88,6 +88,7 @@ pub mod host_resources;
 mod latch;
 mod notification;
 mod preflight;
+mod probe;
 mod publisher_nodes;
 pub mod qos;
 mod refusal_episode;
@@ -101,10 +102,13 @@ pub mod waitset;
 
 pub use discovery::{DiscoveredNode, DiscoveredService, list_nodes, list_service_ports};
 pub use domain::MAX_BORROWED_SAMPLES;
-pub use endpoint::{Iox2Loan, Iox2Publisher, Iox2Sample, Iox2Subscriber, PublishedSchema};
+pub use endpoint::{Iox2Loan, Iox2Publisher, Iox2Sample, Iox2Subscriber};
 pub use notification::failed_notifications;
+pub use probe::{DeadNodes, PublisherPorts};
 pub use publisher_nodes::node_names;
-pub use schema::{invalid_record_count, lookup_schema, schema_file_path};
+pub use schema::{
+    RecordedStream, invalid_record_count, lookup_schema, schema_file_path, topic_records,
+};
 pub use stream::stream_service_name;
 pub use transport::{GRAPH_EVENT, Iox2Transport};
 pub use waitset::{

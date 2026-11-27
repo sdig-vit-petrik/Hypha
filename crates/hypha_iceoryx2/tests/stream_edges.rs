@@ -6,8 +6,6 @@
 mod support;
 use support::sealed_send;
 
-use std::time::Instant;
-
 use hypha_core::port::{PortError, QosPolicy, QosRequest, TopicSpec};
 use hypha_iceoryx2::Iox2Transport;
 use hypha_testkit::unique_name;
@@ -51,21 +49,23 @@ fn received(subscriber: &hypha_iceoryx2::Iox2Subscriber) -> Vec<u8> {
     bytes
 }
 
-/// The name check holds the real limit, so a name it accepts opens a stream with its
-/// schema: the topic's schema directory is the name in hex in a 255-byte file name, and
-/// the 17 bytes of `@<16 hex>` come out of iceoryx2's 255-byte service name.
+/// The name limits hold what a stream needs: 238 bytes after the `/` for its service name
+/// (the 17 bytes of `@<16 hex>` come out of iceoryx2's 255), and 126 for an endpoint with
+/// an MD5, which writes its record in a directory named by the topic in hex.
 #[test]
-fn the_name_check_holds_the_service_name_limit() {
+fn the_name_limits_are_those_of_the_service_and_of_the_record() {
     let transport = Iox2Transport::with_name(&unique_name("rv_long")).expect("transport");
-    let longest = format!("/{}", "a".repeat(hypha_core::port::MAX_TOPIC_NAME_BYTES));
-    let too_long = format!("/{}", "a".repeat(hypha_core::port::MAX_TOPIC_NAME_BYTES + 1));
-    assert!(TopicSpec::new(&longest).has_valid_public_name());
-    assert!(!TopicSpec::new(&too_long).has_valid_public_name());
-    assert!(!hypha_core::port::is_valid_topic_name(&too_long));
-    let opened = transport.publish(&first(&longest));
-    assert!(opened.is_ok(), "the longest name opens a stream: {:?}", opened.err());
-    let refused = transport.publish(&first(&too_long));
+    let name = |bytes: usize| format!("/{}", "a".repeat(bytes));
+    let recorded = hypha_core::port::MAX_RECORDED_TOPIC_NAME_BYTES;
+    let service = hypha_core::port::MAX_TOPIC_NAME_BYTES;
+    assert!(TopicSpec::new(&name(service)).has_valid_public_name());
+    assert!(!TopicSpec::new(&name(service + 1)).has_valid_public_name());
+    let typed = transport.publish(&first(&name(recorded)));
+    assert!(typed.is_ok(), "the longest typed name opens a stream: {:?}", typed.err());
+    let refused = transport.publish(&first(&name(recorded + 1)));
     assert!(matches!(refused, Err(PortError::InvalidTopic)));
+    let untyped = transport.publish(&TopicSpec::new(&name(service)));
+    assert!(untyped.is_ok(), "an untyped endpoint writes no record: {:?}", untyped.err());
 }
 
 /// Two type names with one definition have one MD5 and so one stream: the policy is
@@ -109,30 +109,6 @@ fn a_reader_of_every_schema_misses_a_version_that_joins_later() {
     assert_eq!(bytes, [1], "v2 is not read");
 }
 
-/// Every endpoint marks its stream with its type and MD5, so a publisher that gives no
-/// definition (the bench, `publish_raw(.., "")`) is named like any other.
-#[test]
-fn a_publisher_without_a_definition_is_named_too() {
-    let transport = Iox2Transport::with_name(&unique_name("rv_no_def")).expect("transport");
-    let observer = Iox2Transport::with_name(&unique_name("rv_no_def_obs")).expect("observer");
-    let topic = format!("/{}", unique_name("rv_no_def"));
-    let reader = transport.subscribe(&first(&topic).with_qos(declared())).expect("reader");
-    let bare = TopicSpec::new(&topic).with_type("overload_test/Kind").with_md5(SECOND_MD5);
-    let _v2 = transport.publish(&bare).expect("v2 without a definition");
-
-    let published_streams = observer
-        .list_service_ports()
-        .expect("listing")
-        .into_iter()
-        .filter(|service| service.name == topic && service.publishers > 0)
-        .count();
-    let beside = reader.other_published_schemas().expect("schemas");
-    assert_eq!(published_streams, 1);
-    let named: Vec<(&str, &str)> =
-        beside.iter().map(|schema| (schema.data_type.as_str(), schema.md5.as_str())).collect();
-    assert_eq!(named, [("overload_test/Kind", SECOND_MD5)]);
-}
-
 /// Latching per stream: a late reader of its own version gets the latched sample; a late
 /// reader of the other version gets nothing; a late reader of every schema gets it.
 #[test]
@@ -152,35 +128,4 @@ fn latching_is_per_stream() {
     assert_eq!(same, [7]);
     assert!(other.is_empty());
     assert_eq!(every, [7]);
-}
-
-/// What a due check of a subscriber costs while another version is published: it runs
-/// once a second for the subscriber's whole life, on the thread that runs the node.
-#[test]
-fn the_cost_of_one_absent_check() {
-    let transport = Iox2Transport::with_name(&unique_name("rv_cost")).expect("transport");
-    let topic = format!("/{}", unique_name("rv_cost"));
-    let reader = transport.subscribe(&first(&topic).with_qos(declared())).expect("reader");
-    let _v2 = transport.publish(&second(&topic)).expect("v2");
-    let rounds = 100_u32;
-    let start = Instant::now();
-    for _ in 0..rounds {
-        assert!(!reader.has_publisher_ports());
-    }
-    println!("has_publisher_ports while absent: {:?}", start.elapsed() / rounds);
-    let start = Instant::now();
-    for _ in 0..rounds {
-        let _ = reader.publisher_count().expect("count");
-    }
-    println!("publisher_count: {:?}", start.elapsed() / rounds);
-    let start = Instant::now();
-    for _ in 0..rounds {
-        assert_eq!(reader.other_published_schemas().expect("schemas").len(), 1);
-    }
-    println!("other_published_schemas (one other stream): {:?}", start.elapsed() / rounds);
-    let start = Instant::now();
-    for _ in 0..rounds {
-        let _ = reader.has_publisher_ports();
-    }
-    println!("one present check (ports only): {:?}", start.elapsed() / rounds);
 }

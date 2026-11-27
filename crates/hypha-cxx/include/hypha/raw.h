@@ -8,6 +8,7 @@
 #include "hypha_base/clock.h"
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -175,10 +176,12 @@ struct SubscriberMetrics
     uint64_t loanHeld{0};
     /// Owning receives refused because the budget was full.
     uint64_t loanRefused{0};
-    /// The other schemas (MD5s) of the topic that a publisher sends now, as the run last
-    /// checked, once a second: a fact about the topic, not a fault. Nonzero while the own
-    /// version is published too means a publisher of another version is on the topic.
-    uint64_t otherSchemas{0};
+    /// The other schemas (MD5s) of the topic that a live publisher sends, as the node's
+    /// housekeeping last found them, at most a second old while the node runs: a fact about
+    /// the topic, not a fault. Empty before the first check, and for a subscriber of no
+    /// single stream. Nonzero beside a publisher of the own version means a publisher of
+    /// another version is on the topic.
+    std::optional<uint64_t> otherSchemas;
 
     bool operator==(const SubscriberMetrics&) const = default;
 };

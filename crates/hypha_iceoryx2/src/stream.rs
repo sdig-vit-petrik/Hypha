@@ -6,23 +6,30 @@
 //! read from the right, so every topic name, one with an `@` too, has one service name,
 //! and a service name gives its topic and hash back.
 
-use hypha_core::port::{MAX_TOPIC_NAME_BYTES, PortError, TopicSpec};
+use hypha_core::port::{MAX_RECORDED_TOPIC_NAME_BYTES, MAX_TOPIC_NAME_BYTES, PortError, TopicSpec};
 
 /// The digits of the schema hash in a stream's service name.
 const HASH_DIGITS: usize = 16;
 
-/// Refuses, and logs, a topic name too long for a stream's service name.
+/// Refuses, and logs, a topic name of `spec` too long for its stream: for its service
+/// name, or for the schema directory of an endpoint that writes a record.
 ///
 /// # Errors
-/// [`PortError::InvalidTopic`] for a name longer than [`MAX_TOPIC_NAME_BYTES`] after its `/`.
-pub(crate) fn refuse_overlong(topic: &str) -> Result<(), PortError> {
-    let bare = topic.strip_prefix('/').unwrap_or(topic);
-    if bare.len() <= MAX_TOPIC_NAME_BYTES {
+/// [`PortError::InvalidTopic`] for a name longer than [`MAX_TOPIC_NAME_BYTES`] after its
+/// `/`, or than [`MAX_RECORDED_TOPIC_NAME_BYTES`] for an endpoint that names an MD5.
+pub(crate) fn refuse_overlong(spec: &TopicSpec) -> Result<(), PortError> {
+    let bare = spec.name.strip_prefix('/').unwrap_or(&spec.name);
+    let (limit, what) = if spec.has_valid_schema_identity() {
+        (MAX_RECORDED_TOPIC_NAME_BYTES, "the schema directory of an endpoint with an MD5 leaves")
+    } else {
+        (MAX_TOPIC_NAME_BYTES, "a stream's service name leaves")
+    };
+    if bare.len() <= limit {
         return Ok(());
     }
     log::error!(target: "hypha/transport",
-        "hypha_iceoryx2: topic '{topic}' is refused: {} bytes after its '/', more than the {MAX_TOPIC_NAME_BYTES} \
-         a topic's schema directory and its streams' service names leave", bare.len());
+        "hypha_iceoryx2: topic '{}' is refused: {} bytes after its '/', more than the {limit} {what}",
+        spec.name, bare.len());
     Err(PortError::InvalidTopic)
 }
 

@@ -9,11 +9,14 @@ use crate::port::error::PortError;
 /// The transport sets it on every publisher it creates.
 pub const PUBLISHER_LOANED_SAMPLES: usize = 2;
 
-/// The longest topic name, in bytes without its leading `/`. The schema store names the
-/// directory of a topic by the whole name in hex, two characters a byte, and a file name
-/// holds 255 bytes: 2 × (1 + 126) = 254. A stream's service name, the topic with `@` and
-/// 16 hex digits of the schema hash in iceoryx2's 255 bytes, would allow 238.
-pub const MAX_TOPIC_NAME_BYTES: usize = 126;
+/// The longest topic name, in bytes without its leading `/`: a stream's service name is
+/// the name with `@` and 16 hex digits of the schema hash, in iceoryx2's 255 bytes.
+pub const MAX_TOPIC_NAME_BYTES: usize = 238;
+
+/// The longest topic name, in bytes without its leading `/`, of an endpoint that names an
+/// MD5 and so writes its stream's record: the schema store names the directory of a topic
+/// by the whole name in hex, two characters a byte, in a 255-byte file name.
+pub const MAX_RECORDED_TOPIC_NAME_BYTES: usize = 126;
 
 /// The largest publisher count a declared policy may name.
 pub const MAX_POLICY_PUBLISHERS: usize = 256;

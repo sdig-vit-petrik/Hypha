@@ -335,8 +335,10 @@ impl Dispatcher for CallbackDispatcher<'_> {
                     (subscriber, callback)
                 }
                 Target::LatchReplay => {
-                    // Replay latched topics after a subscriber was created.
+                    // An endpoint came or went: replay latched topics to a new subscriber,
+                    // and refresh the streams of the watched topics.
                     self.node.transport.replay_latched();
+                    self.node.topic_streams.graph_changed();
                     return EventOutcome::Drained;
                 }
                 // These are time-driven. A trigger wake only wakes the turn.
@@ -438,6 +440,8 @@ impl Dispatcher for CallbackDispatcher<'_> {
                 subscriber.check_no_publisher_warning(now_nanos);
             }
         }
+        // The node's housekeeping, after the turn and outside every step.
+        self.node.topic_streams.housekeep(&self.node.transport, std::time::Instant::now());
         // Every dispatch sweep ends here, so an unbounded run is observed too.
         self.health.record_sweep_end();
         Progression::Continue

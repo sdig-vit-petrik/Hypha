@@ -7,7 +7,7 @@ mod support;
 use support::sealed_send;
 
 use hypha_core::port::{PortError, QosPolicy, QosRequest, TopicSpec};
-use hypha_iceoryx2::{Iox2Transport, PublishedSchema};
+use hypha_iceoryx2::Iox2Transport;
 use hypha_testkit::unique_name;
 
 const FIRST_MD5: &str = "d9d213e8c146065ec958333c617eb1a6";
@@ -142,32 +142,6 @@ fn two_schemas_of_a_name_keep_their_own_policies() {
 
     let refused = transport.publish(&first(&topic).with_qos(declared()));
     assert!(matches!(refused, Err(PortError::QosMismatch)), "a stream keeps its own policy");
-}
-
-#[test]
-fn a_subscriber_learns_which_other_schemas_of_its_topic_are_published() {
-    let transport = Iox2Transport::with_name(&unique_name("overload_beside")).expect("transport");
-    let topic = format!("/{}", unique_name("overload_beside"));
-    let reader = transport.subscribe(&first(&topic).with_qos(declared())).expect("reader");
-    assert!(!reader.has_publisher_ports());
-    assert_eq!(reader.other_published_schemas().expect("schemas"), []);
-
-    let second_out = transport.publish(&second(&topic)).expect("second publisher");
-    assert!(!reader.has_publisher_ports(), "the other stream's publisher is not its own");
-    assert_eq!(
-        reader.other_published_schemas().expect("schemas"),
-        [PublishedSchema {
-            schema_hash: hypha_wire::schema_hash_from_md5(SECOND_MD5).expect("hash"),
-            data_type: "overload_test/Kind".to_owned(),
-            md5: SECOND_MD5.to_owned()
-        }]
-    );
-
-    let first_out = transport.publish(&first(&topic).with_qos(declared())).expect("first");
-    assert!(reader.has_publisher_ports());
-    drop(second_out);
-    assert_eq!(reader.other_published_schemas().expect("schemas"), []);
-    drop(first_out);
 }
 
 fn declared() -> QosRequest {

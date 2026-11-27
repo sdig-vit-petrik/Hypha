@@ -171,8 +171,10 @@ pub struct Iox2Publisher {
     pub(crate) pool_refusals: std::sync::Mutex<crate::refusal_episode::RefusalEpisode>,
     /// True while a refusal run is open, so a granted loan outside one takes no lock.
     pub(crate) pool_refusing: std::sync::atomic::AtomicBool,
-    /// Last, so it drops after the port and the service handle.
+    /// After the port and the service handle, so the record goes when no port is left.
     pub(crate) _schema_release: crate::schema::SchemaRelease,
+    /// Last: the graph event of its drop follows the port's.
+    pub(crate) _graph: crate::transport::GraphAnnouncement,
 }
 
 impl Iox2Publisher {
@@ -263,22 +265,9 @@ struct SingleSubscriber {
     created_nanos: u64,
     service: DataPortFactory,
     topic: Arc<str>,
-    /// The schema hash of the one stream it reads.
-    schema_hash: u64,
-    /// The other streams of its topic, once seen.
-    siblings: std::sync::Mutex<Siblings>,
     event_source: EventSource,
     /// Last, so it drops after the port and the service handle.
     _schema_release: crate::schema::SchemaRelease,
-}
-
-/// The other streams of a subscriber's topic that it has opened, so that a check of their
-/// publishers is one atomic read each; their list is read again only when it changed.
-#[derive(Default)]
-struct Siblings {
-    /// When the topic's stream list last changed, as it read it.
-    listed: Option<std::time::SystemTime>,
-    streams: Vec<(crate::schema::MarkedStream, DataPortFactory)>,
 }
 
 struct EventSource {
@@ -415,53 +404,6 @@ impl Iox2Subscriber {
         self.port_factories().any(|service| service.dynamic_config().number_of_publishers() > 0)
     }
 
-    /// The other schemas of this subscriber's topic that a publisher sends now. A check
-    /// reads the modification time of the topic's stream list and the publisher count of
-    /// each stream it has opened; it reads the list again, and opens a stream that is new
-    /// in it, only when the list changed. It keeps the streams it opened open. A port of a
-    /// dead node counts until a node reclaims it. Empty for a set, which reads every stream
-    /// it selected.
-    ///
-    /// # Errors
-    /// [`PortError`] when the domain cannot be read or a stream cannot be opened.
-    pub fn other_published_schemas(&self) -> Result<Vec<PublishedSchema>, PortError> {
-        let SubscriberKind::Single(single) = &self.inner else {
-            return Ok(Vec::new());
-        };
-        let mut siblings = crate::locked(&single.siblings);
-        let changed = crate::schema::topic_streams_changed(&single.topic)?;
-        if changed.is_none() || changed != siblings.listed {
-            let hashes = crate::schema::topic_stream_hashes(&single.topic)?;
-            siblings.streams.retain(|(marked, _)| hashes.contains(&marked.schema_hash));
-            for hash in hashes {
-                let known = siblings.streams.iter().any(|(marked, _)| marked.schema_hash == hash);
-                if hash == single.schema_hash || known {
-                    continue;
-                }
-                let Some(marked) = crate::schema::read_stream_marker(&single.topic, hash)? else {
-                    continue;
-                };
-                let stream = Stream { topic: single.topic.to_string(), schema_hash: hash };
-                if let Some(service) = open_stream(&single.event_source.node, &stream)? {
-                    siblings.streams.push((marked, service));
-                }
-            }
-            siblings.listed = changed;
-        }
-        let mut published: Vec<PublishedSchema> = siblings
-            .streams
-            .iter()
-            .filter(|(_, service)| service.dynamic_config().number_of_publishers() > 0)
-            .map(|(marked, _)| PublishedSchema {
-                schema_hash: marked.schema_hash,
-                data_type: marked.data_type.clone(),
-                md5: marked.md5.clone(),
-            })
-            .collect();
-        published.sort_by(|a, b| (&a.data_type, &a.md5).cmp(&(&b.data_type, &b.md5)));
-        Ok(published)
-    }
-
     /// The service of every topic this subscriber reads.
     pub(crate) fn port_factories(&self) -> impl Iterator<Item = &DataPortFactory> {
         let (single, set) = match &self.inner {
@@ -506,8 +448,6 @@ impl Iox2Subscriber {
                 created_nanos,
                 service,
                 topic: Arc::from(stream.topic),
-                schema_hash: stream.schema_hash,
-                siblings: std::sync::Mutex::new(Siblings::default()),
                 event_source,
                 _schema_release: schema_release,
             })),
@@ -557,7 +497,8 @@ impl Iox2Subscriber {
         if is_topic && subscribers.is_empty() {
             return Err(PortError::NotAvailable);
         }
-        let schema_releases = streams.iter().map(crate::schema::SchemaRelease::new).collect();
+        let schema_releases =
+            streams.iter().map(|stream| crate::schema::SchemaRelease::new(node, stream)).collect();
         Ok(Self {
             inner: SubscriberKind::Set {
                 topic_pattern: spec.name.clone(),
@@ -571,61 +512,25 @@ impl Iox2Subscriber {
     }
 }
 
-/// A schema of a topic that a publisher sends, as its stream's marker names it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PublishedSchema {
-    /// The schema hash of its stream.
-    pub schema_hash: u64,
-    /// The message type.
-    pub data_type: String,
-    /// The message MD5.
-    pub md5: String,
-}
-
-/// The data service of `stream`, opened within the bounded service-open window, or
-/// `None` when it does not exist.
-fn open_stream(
-    node: &crate::transport::SharedNode,
-    stream: &Stream,
-) -> Result<Option<DataPortFactory>, PortError> {
-    use iceoryx2::service::builder::publish_subscribe::PublishSubscribeOpenError as Open;
-    let service_name = iceoryx2::prelude::ServiceName::new(&stream.service_name())
-        .map_err(|_| PortError::InvalidTopic)?;
-    let opened = crate::service_open::open_within_window(
-        "another stream of the topic",
-        node,
-        PortError::Backend(1),
-        |node_ref| crate::transport::data_service_builder(node_ref, &service_name).open(),
-        crate::service_open::publish_subscribe_open_is_transient,
-    )?;
-    match opened {
-        Ok(service) => Ok(Some(service)),
-        Err(Open::DoesNotExist | Open::IncompatibleMessagingPattern) => Ok(None),
-        Err(cause) => Err(crate::service_open::publish_subscribe_open_port_error(cause)),
-    }
-}
-
 /// The publishers of `service` whose node iceoryx2 does not report dead.
 fn live_publisher_count(service: &DataPortFactory) -> Result<usize, PortError> {
     let dynamic = service.dynamic_config();
     if dynamic.number_of_publishers() == 0 {
         return Ok(0);
     }
-    let mut owners: Vec<iceoryx2::identifiers::UniqueNodeId> = Vec::new();
+    let dead = dead_node_ids()?;
+    let mut live = 0_usize;
     dynamic.list_publishers(|details| {
-        owners.push(details.node_id);
+        if !dead.contains(&details.node_id) {
+            live = live.saturating_add(1);
+        }
         CallbackProgression::Continue
     });
-    if owners.is_empty() {
-        return Ok(0);
-    }
-    let dead = dead_node_ids()?;
-    let live = owners.iter().filter(|owner| !dead.contains(owner)).count();
     Ok(live)
 }
 
 /// The ids of the nodes of the domain that iceoryx2 reports dead.
-fn dead_node_ids() -> Result<Vec<iceoryx2::identifiers::UniqueNodeId>, PortError> {
+pub(crate) fn dead_node_ids() -> Result<Vec<iceoryx2::identifiers::UniqueNodeId>, PortError> {
     use iceoryx2::node::{NodeState, NodeView as _};
 
     let config = crate::domain::config()?;

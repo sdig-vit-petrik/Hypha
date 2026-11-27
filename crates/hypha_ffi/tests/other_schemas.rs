@@ -183,8 +183,8 @@ fn a_stale_publisher_beside_a_current_one_is_shown_in_the_counters() {
     }
 }
 
-/// Another version that is published without a definition still marks its stream, so the
-/// warning names it, not the container hint.
+/// Another version that is published without a definition still records its stream, so
+/// the warning names it by the start of its hash, not the container hint.
 #[test]
 fn a_version_published_without_a_definition_is_named() {
     let fixture = fixture("no_definition", 100_000_000);
@@ -196,9 +196,8 @@ fn a_version_published_without_a_definition_is_named() {
     assert!(plain.is_empty(), "{plain:?}");
     assert_eq!(named.len(), 1, "{named:?}");
     assert!(
-        named
-            .first()
-            .is_some_and(|line| line.contains("published are std_msgs/Counter (f79835de)"))
+        named.first().is_some_and(|line| line.contains("published are - (f79835de)")),
+        "{named:?}"
     );
     assert_eq!(other_schemas(&fixture), 1);
     unsafe {
@@ -262,7 +261,7 @@ fn the_warning_names_a_version_published_by_another_process() {
     let mut peer = std::process::Command::new(exe)
         .args(["--ignored", "--exact", "review_peer_publishes_version_2"])
         .env("HYPHA_REVIEW_TOPIC", &fixture.topic)
-        .env("HYPHA_REVIEW_MILLIS", "4000")
+        .env("HYPHA_REVIEW_MILLIS", "30000")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()

@@ -6,6 +6,7 @@
 #include "hypha/hypha_ffi.h"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -83,6 +84,8 @@ class SubscriberHandle
         if (subscriber == nullptr) {
             return metrics;
         }
+        // A library of another counter layout must not build against this header.
+        static_assert(sizeof(HyphaSubscriberCounters) == 9 * sizeof(uint64_t));
         HyphaSubscriberCounters raw{};
         require(Status(hypha_subscriber_counters(subscriber, &raw)), "subscriber counters");
         metrics.sequenceGap = raw.sequence_gap;
@@ -93,7 +96,9 @@ class SubscriberHandle
         metrics.loanBudget = raw.loan_budget;
         metrics.loanHeld = raw.loan_held;
         metrics.loanRefused = raw.loan_refused;
-        metrics.otherSchemas = raw.other_schemas;
+        if (raw.other_schemas != HYPHA_NOT_CHECKED) {
+            metrics.otherSchemas = raw.other_schemas;
+        }
         return metrics;
     }
 

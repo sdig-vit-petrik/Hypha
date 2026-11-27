@@ -96,6 +96,10 @@
 // ABI value zero disables the warning.
 #define HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS 5000000000
 
+// `HyphaSubscriberCounters.other_schemas` before the other streams of the subscriber's
+// topic were checked, and for a subscriber of no single stream.
+#define HYPHA_NOT_CHECKED UINT64_MAX
+
 // What the callback asks the run loop to do next.
 #define HYPHA_ACTION_CONTINUE 0
 
@@ -802,8 +806,10 @@ typedef struct HyphaSubscriberCounters {
   // `loan.refused`: owning receives refused because the budget was full.
   uint64_t loan_refused;
   // `topic.other_schemas`: the other schemas (MD5s) of the subscriber's topic that a
-  // publisher sends now, as the last check of the run that drives the subscriber found
-  // them. A fact about the topic, not a fault count: a migration has two versions on it.
+  // live publisher sends, as the node's housekeeping last found them, at most a second
+  // old while its default `WaitSet` runs. [`HYPHA_NOT_CHECKED`] before the first check,
+  // and for a subscriber of no single stream. A fact about the topic, not a fault count:
+  // a migration has two versions on it.
   uint64_t other_schemas;
 } HyphaSubscriberCounters;
 
