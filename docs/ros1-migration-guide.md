@@ -473,12 +473,46 @@ TEST(SpeedControllerStep, CommandsAfterAUsableSpeedArrived)
 
   The harness setters (`set`, `setStale`, `setNeverArrived`, `setStagnant`) give a
   port what a capture would give, for `Latest` and `Arrivals` ports alike; see
-  `docs/cpp-api.md`, "Test a step without a bus". The harness moves no clock: the
+  `docs/cpp-api.md`, "Test a step without a bus". An `optionalTopic` input or output is
+  enabled in the harness only when the test's TOML gives its table a non-empty `topic`
+  (below); with no table, no `topic` or `topic = ""` it is disabled, and `deliver()`,
+  `set()`, `setStale()` and `setStagnant()` on a disabled input throw. The harness moves
+  no clock: the
   step reads the `CycleTime` it is given, for its decisions and for the stamps it
   writes. Ported code that still calls `hypha::now()` gets the process clock in a
   harness step; until it is changed, the test sets simulated time to the step's time
   (`hypha::enableSimTime`, `hypha::setSimTime`). `steadyNow()` measures real elapsed
   time and is never set.
+
+  To test the branch behind an optional input, wire it in the TOML of the test. The wired
+  input needs a `silence_ms` as well, which `deliver()` reads:
+
+```toml
+[ports.inputs.mag]
+topic = "/test/mag"
+silence_ms = 100
+[ports.outputs.debug]
+topic = "/test/debug"
+```
+
+```cpp
+TEST(ImuFilterStep, ReadsTheMagnetometerWhenItIsUsable)
+{
+    hypha::ConfigContext        ctx{"test/with_mag.toml"};  // before the harness
+    ImuFilterNode               node;
+    hypha::testing::StepHarness harness{node};
+    harness.deliver(node.mag, sensor_msgs::MagneticField{}, hypha::Time::fromNanos(1'000'000'000));
+    hypha::CycleTime time;
+    time.now = hypha::Time::fromNanos(1'050'000'000);
+    harness.step(node, time);
+    EXPECT_EQ(node.mag.verdict(), hypha::InputVerdict::Usable);
+}
+```
+
+  The `ConfigContext` (or a `Node` that holds the file) exists before the harness is
+  built, because the harness reads the `topic` then. Only one exists at a time, so the
+  branch for a port that is left out (`topic = ""` or no table) is a second fixture with
+  its own file and its own `ConfigContext`.
 - **Recorded regression tests** (golden fixtures of a ROS bag and the outputs of
   the ROS node): convert each bag with `mcap convert`. Replay it through
   `StepHarness` and through the bus (`hypha play --clock` with `hypha record

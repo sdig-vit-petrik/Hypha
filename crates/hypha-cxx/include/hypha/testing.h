@@ -10,8 +10,31 @@
 ///     harness.step(controller);
 ///     ASSERT_EQ(harness.sent(controller.command).size(), 1U);
 ///
-/// deliver() reads `silence_ms` of `[ports.inputs.<name>]`, so a Node or a ConfigContext
-/// must hold the parameter file.
+/// What a harness step shares with a started cycle:
+///  - which optionalTopic ports are enabled, predicted from the parameter file as a start
+///    decides it: a port is enabled when its table sets a non-empty `topic`; a missing
+///    table, a missing `topic` and `topic = ""` leave it disabled. The constructor throws
+///    ConfigError for a name a start would refuse, or for an entry that is a plain string
+///    where a start requires a table;
+///  - the verdict of a delivered input, by the rule of the capture, from `silence_ms`;
+///  - the bound of perStep() on the sends of a step;
+///  - what a disabled port does: deliver(), set(), setStale() and setStagnant() on a
+///    disabled input are refused, since a started cycle gives it no sample and never judges
+///    it (setNeverArrived() is true of it and stays allowed); a disabled output counts the
+///    sends of a step and keeps none.
+/// What it leaves out:
+///  - a port that requires its topic, or sits on a Topic literal, is enabled without a
+///    check of its table or name, where a start refuses a missing, empty or invalid one;
+///  - an enabled output reports a subscriber (hasSubscribers() is true), since no
+///    transport counts one;
+///  - the node, the transport (no subscriber or publisher is opened, no sample crosses a
+///    bus), the clock, and every key of a table but `topic` and `silence_ms`. A `topic`
+///    that is not text throws ParameterError, where a start refuses it with
+///    InvalidArgument; a start reads an array `topic` as a disabled port.
+///
+/// The parameter file is read when the harness is built, for `topic`, and in deliver(),
+/// for `silence_ms`, so a Node or a ConfigContext must hold it before the harness exists.
+/// Without a file every optionalTopic port is disabled.
 ///
 /// step() moves no clock: in a harness step hypha::now() returns the process clock, so a
 /// test of code that calls it sets simulated time itself.
@@ -45,6 +68,9 @@ class StepHarness final : private detail::CaptureStore
 {
   public:
     /// @throws std::logic_error when @p cycle has started or another harness holds it.
+    /// @throws ConfigError when an optional port's table is a plain string, or its `topic`
+    ///         is a name a start would refuse.
+    /// @throws ParameterError when that `topic` is not text.
     explicit StepHarness(Cycle& cycle) : cycle_(cycle)
     {
         const bool taken = cycle.started_ || cycle.harnessLive_;
@@ -54,6 +80,7 @@ class StepHarness final : private detail::CaptureStore
                 + "': a StepHarness needs a cycle that was not started"
             );
         }
+        this->wirePorts();
         cycle.harnessLive_ = true;
     }
 
@@ -67,17 +94,22 @@ class StepHarness final : private detail::CaptureStore
         for (Store& store : this->stores_) {
             store.destroy(store.sent);
         }
+        for (Port* port : this->cycle_.ports_) {
+            port->enabledByHarness_ = false;
+        }
         this->cycle_.harnessLive_ = false;
     }
 
     /// @brief The port receives @p value, sent at @p sentAt. Each later step() judges it as
     ///        a capture does: usable while (step time - sentAt) <= silence_ms, stale after.
-    /// @throws std::logic_error when the port reads a table and no configuration is loaded.
+    /// @throws std::logic_error when the port is disabled, or reads a table and no
+    ///         configuration is loaded.
     /// @throws ParameterError when `silence_ms` is not a whole number of milliseconds
     ///         from 1 to the limitMax() of the port.
     template <typename M>
     void deliver(Latest<M>& port, M value, Time sentAt)
     {
+        StepHarness::requireEnabled(port, "deliver()");
         const int64_t silenceNanos = StepHarness::silenceOf(port);
         this->forget(port);
         port.candidate_ = std::move(value);
@@ -92,6 +124,7 @@ class StepHarness final : private detail::CaptureStore
     template <typename M>
     void deliver(Arrivals<M>& port, std::vector<M> samples, Time newestSentAt)
     {
+        StepHarness::requireEnabled(port, "deliver()");
         const int64_t silenceNanos = StepHarness::silenceOf(port);
         this->forget(port);
         port.sampleCount_ = samples.size();
@@ -105,9 +138,11 @@ class StepHarness final : private detail::CaptureStore
     }
 
     /// @brief The port holds @p value: usable, and fresh in the next step only.
+    /// @throws std::logic_error when the port is disabled.
     template <typename M>
     void set(Latest<M>& port, M value)
     {
+        StepHarness::requireEnabled(port, "set()");
         this->forget(port);
         port.held_ = std::move(value);
         port.heldStamp_ = detail::SampleStamp{};
@@ -119,9 +154,11 @@ class StepHarness final : private detail::CaptureStore
     }
 
     /// @brief The port is stale; lastKnown() keeps the value last set.
+    /// @throws std::logic_error when the port is disabled.
     template <typename M>
     void setStale(Latest<M>& port)
     {
+        StepHarness::requireEnabled(port, "setStale()");
         this->forget(port);
         port.fresh_ = false;
         port.verdict_ = InputVerdict::Stale;
@@ -140,9 +177,11 @@ class StepHarness final : private detail::CaptureStore
     }
 
     /// @brief The port delivers @p samples, oldest first, to the next step only.
+    /// @throws std::logic_error when the port is disabled.
     template <typename M>
     void set(Arrivals<M>& port, std::vector<M> samples)
     {
+        StepHarness::requireEnabled(port, "set()");
         this->forget(port);
         port.sampleCount_ = samples.size();
         port.stamps_.assign(samples.size(), detail::SampleStamp{});
@@ -153,9 +192,11 @@ class StepHarness final : private detail::CaptureStore
     }
 
     /// @brief The port has no sample and is stale.
+    /// @throws std::logic_error when the port is disabled.
     template <typename M>
     void setStale(Arrivals<M>& port)
     {
+        StepHarness::requireEnabled(port, "setStale()");
         this->forget(port);
         port.sampleCount_ = 0;
         port.verdict_ = InputVerdict::Stale;
@@ -173,9 +214,11 @@ class StepHarness final : private detail::CaptureStore
     }
 
     /// @brief The port's alive value has (or has not) stopped changing.
+    /// @throws std::logic_error when the port is disabled.
     template <typename M>
     void setStagnant(Input<M>& port, bool stagnant)
     {
+        StepHarness::requireEnabled(port, "setStagnant()");
         HyphaSupervisionReport& report = port.facts_.supervision;
         const uint8_t           others = report.faults & ~HYPHA_FAULT_STAGNANT;
         report.faults = static_cast<uint8_t>(others | (stagnant ? HYPHA_FAULT_STAGNANT : 0U));
@@ -266,7 +309,11 @@ class StepHarness final : private detail::CaptureStore
     };
 
     // Defined in hypha/testing/step_harness_impl.h.
-    void* storeFor(const Port& port, void* (*make)(), void (*destroy)(void*)) override;
+    void        wirePorts();
+    static bool startWouldEnable(const detail::TopicSource& topic);
+    void*       storeFor(const Port& port, void* (*make)(), void (*destroy)(void*)) override;
+    template <typename M>
+    static void requireEnabled(const Input<M>& port, const char* call);
     template <typename M>
     static int64_t  silenceOf(const Input<M>& port);
     static bool     withinSilence(int64_t silenceNanos, int64_t sentNanos, int64_t nowNanos);

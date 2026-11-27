@@ -125,10 +125,11 @@ class Input : public Port
     }
 
     /// @brief True when the port reads a topic. False before start(), and for a disabled
-    ///        port, which never has a value.
+    ///        port, which never has a value. In a testing::StepHarness it is true for a
+    ///        port that the parameter file wires, as a start would.
     bool enabled() const
     {
-        return this->slot_->source.enabled();
+        return this->slot_->source.enabled() || this->enabledByHarness();
     }
 
     /// @brief The cumulative health of this binding with its supervision report: of this
@@ -251,6 +252,11 @@ class Input : public Port
     bool bindRefusedByConfiguration() const override
     {
         return this->tableRefused_;
+    }
+
+    const detail::TopicSource* topicSource() const override
+    {
+        return &this->slot_->topic;
     }
 
     std::optional<uint64_t> aliveOf(const M& message) const

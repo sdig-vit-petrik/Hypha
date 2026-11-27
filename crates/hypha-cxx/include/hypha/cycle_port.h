@@ -101,6 +101,21 @@ class Port
         return false;
     }
 
+    /// @brief The topic this port reads or publishes; nullptr for a port that has none.
+    ///        A testing::StepHarness decides enabled() from it. Default: none.
+    virtual const detail::TopicSource* topicSource() const
+    {
+        return nullptr;
+    }
+
+    /// @brief True while a testing::StepHarness holds the cycle and predicts that a start
+    ///        would enable this port. The harness opens no source and binds no publisher,
+    ///        so enabled() answers `real || enabledByHarness()`.
+    bool enabledByHarness() const
+    {
+        return this->enabledByHarness_;
+    }
+
     /// @brief The binding index of a port that can trigger its cycle, once bound.
     ///        Default: none.
     virtual std::optional<uint32_t> triggerIndex() const
@@ -168,6 +183,7 @@ class Port
     Cycle&                       owner_;
     HyphaCycleEmission*          emission_{nullptr};
     detail::CaptureStore*        harness_{nullptr};
+    bool                         enabledByHarness_{false};
     std::optional<::HyphaStatus> stepFailure_;
 };
 

@@ -608,7 +608,7 @@ setpoint `optionalTopic, advisory` and falls back when the port is switched off.
 - A disabled port has no subscriber and never a value. The node introspection lists it
   with an empty topic, and the node state does not judge it.
 - A disabled port reports `NeverArrived`, as an enabled port that has received nothing
-  yet. Tell the two apart with `enabled()`, after `start()`.
+  yet. Tell the two apart with `enabled()`, after `start()` or in a `StepHarness`.
 - An output port follows the same rules; a disabled output has no publisher.
 - A failed `start()` reads `hypha: cycle 'control': input 'speed': NotAvailable`, or,
   when the library gave a reason, `hypha: cycle '<name>': <StatusName>: <reason>`.
@@ -641,12 +641,14 @@ Reference: `<hypha/cycle_latest.h>`, `<hypha/cycle_arrivals.h>`,
 #### Test a step without a bus
 
 `hypha::testing::StepHarness` (`<hypha/testing.h>`, not in `hypha/hypha.h`) runs the
-step of a cycle that was not started: no node and no shared memory; a parameter file only
-for `deliver()`, below.
+step of a cycle that was not started: no node and no shared memory; a parameter file for
+the optional ports and for `deliver()`, below.
 `crates/hypha-cxx/test/test_cycle_doc_examples.cpp` tests the controller of section 5.4
 with it; the header gives the setters and the rules. `send()` outside a step throws
 `std::logic_error("hypha: output '<port>': send() outside a step")`: a `setup()` that
 sends fails start-up, so send an initial message from the first step.
+
+A harness predicts which ports a start would enable, from the parameter file that a `Node` or a `ConfigContext` holds when the harness is built. An `optionalTopic` port is enabled when its table, `[ports.inputs.<name>]` or `[ports.outputs.<name>]`, sets a non-empty `topic`; a missing table, a missing `topic`, `topic = ""` and a harness without a file leave it disabled, so a step under test takes the branch for a port that is not wired. The constructor throws `ConfigError` for such an optional port whose `topic` is a name a start would refuse, or whose entry is a plain string (`mag = "/x"`) where a start needs a table, and `ParameterError` for a `topic` that is not text. A port that requires its topic, or sits on a `hypha::Topic{...}` literal, is enabled without a check of its table or name: a start refuses a missing, empty or invalid one, the harness does not. Wire an optional port in the test's file to test the branch behind it: `deliver()` to the input and the step reads its three verdicts (usable, stale, never arrived), and `sent()` keeps what the step sends on the output. An enabled output reports a subscriber (`hasSubscribers()` is true), since no transport counts one. On a disabled input `deliver()`, `set()`, `setStale()` and `setStagnant()` throw `std::logic_error` and name the table that lacks a `topic`: a started cycle gives it no sample and never judges it; `setNeverArrived()` stays allowed, because it is true of a disabled port. A disabled output counts the sends of the step and keeps none, as in a started cycle, so `sent()` of it is empty. The harness opens no subscriber and no publisher and checks no key of a table other than `topic` and `silence_ms`. `testing.h` lists what a harness step shares with a started cycle and what it leaves out.
 
 `harness.deliver(port, value, sentAt)` hands a `Latest` port a value sent at `sentAt`. Each later `step(time)` judges it as a capture does: usable while `time.now - sentAt <= silence_ms` of `[ports.inputs.<name>]` (read when `deliver()` is called, so a `Node` or `ConfigContext` must hold the file), stale after; a port without `silence_ms`, without a table, or tagged `unsupervised` never goes stale. `fresh()` is true in the first step that finds the value usable. `lastKnown()` keeps a value that was usable once. A value that is stale in its first judged step is never held, as in a capture. A `sentAt` after the step time is stale with age 0 until that time; a real cycle under simulated time does not admit such a sample at all. `set()`, `setStale()` and `setNeverArrived()` state a verdict directly; a later `set()` or `deliver()` on the same port replaces the earlier state.
 

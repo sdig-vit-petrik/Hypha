@@ -75,10 +75,11 @@ class Output final : public Port
         return this->sent_;
     }
 
-    /// @brief True when start() bound a publisher.
+    /// @brief True when start() bound a publisher. In a testing::StepHarness it is true for
+    ///        a port that the parameter file wires, as a start would.
     bool enabled() const
     {
-        return this->enabled_;
+        return this->enabled_ || this->enabledByHarness();
     }
 
     /// @brief The sends accepted across steps, those of a disabled output included. It wraps.
@@ -103,7 +104,7 @@ class Output final : public Port
     ///        building a message nobody reads.
     bool hasSubscribers() const
     {
-        return this->enabled_ && this->subscriberCount().value_or(1U) > 0U;
+        return this->enabled() && this->subscriberCount().value_or(1U) > 0U;
     }
 
   private:
@@ -127,8 +128,11 @@ class Output final : public Port
                 HYPHA_STATUS_RESOURCE_LIMIT, "hypha: output exceeded its perStep() bound"
             );
         }
-        void* store = harness.storeFor(*this, &Output::newSent, &Output::deleteSent);
-        static_cast<std::vector<M>*>(store)->push_back(message);
+        // A disabled output counts the send and keeps nothing, as in a started cycle.
+        if (this->enabled()) {
+            void* store = harness.storeFor(*this, &Output::newSent, &Output::deleteSent);
+            static_cast<std::vector<M>*>(store)->push_back(message);
+        }
         this->messagesSentThisStep_ += 1;
         this->sent_ = true;
         this->sentCount_ += 1;
@@ -185,6 +189,11 @@ class Output final : public Port
     bool bindRefusedByConfiguration() const override
     {
         return this->tableRefused_;
+    }
+
+    const detail::TopicSource* topicSource() const override
+    {
+        return &this->topic_;
     }
 
     ::HyphaStatus capture(const HyphaCycleImage*) override
