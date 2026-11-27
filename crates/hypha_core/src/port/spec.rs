@@ -93,7 +93,7 @@ impl core::fmt::Display for QosPolicy {
 
 /// True for a policy name: 1 to [`MAX_POLICY_NAME_LENGTH`] characters, starting with
 /// an ASCII letter or digit, then ASCII letters, digits, `_`, `-` or `.`.
-fn is_policy_name(name: &str) -> bool {
+pub(crate) fn is_policy_name(name: &str) -> bool {
     let starts_with_alphanumeric = name.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
     let within_length = !name.is_empty() && name.len() <= MAX_POLICY_NAME_LENGTH;
     let only_name_characters =
@@ -102,7 +102,7 @@ fn is_policy_name(name: &str) -> bool {
 }
 
 /// Checks one count of a declared policy: at least one, and at most `max`.
-fn check_policy_count(field: &str, value: usize, max: usize) -> Result<(), String> {
+pub(crate) fn check_policy_count(field: &str, value: usize, max: usize) -> Result<(), String> {
     if value == 0 {
         return Err(format!("QoS policy {field} must be at least 1"));
     }
