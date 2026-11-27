@@ -23,7 +23,7 @@ Readers: an assessor, and the engineer who updates a dependency.
 | iceoryx2 0.10.1 | 28 (`iceoryx2`, `iceoryx2-cal` vendored with a patch, `iceoryx2-bb-*`, `iceoryx2-pal-*`, `iceoryx2-log*`) | Yes, always | The transport: shared-memory segments, lock-free queues, discovery, events, cleanup of dead processes |
 | Pulled in by iceoryx2 | `flatbuffers`, `postcard`, `cobs`, `sha1_smol`, `tiny-fn`, `enum-iterator` | Yes | Its service configuration files and naming |
 | Operating-system calls | `libc`, `rustix`, `linux-raw-sys`, `bitflags` | Yes | System calls and memory mapping |
-| Checksum | `crc32c` 0.6.8 | Yes, on every send and receive | The CRC-32C of the frame |
+| Checksum | `crc-fast` 1.10.0; `spin`, and `digest`, `crypto-common`, `generic-array`, `typenum`, which its `std` feature pulls in and hypha does not call | Yes, on every send and receive | The CRC-32C of the frame |
 | Configuration | `toml` 0.9.12 with `toml_parser`, `toml_datetime`, `toml_writer`, `serde_spanned`, `winnow`; `serde`, `serde_core` | At start-up | Parsing the node's parameter file |
 | Transforms | `transforms` 2.3.0, `approx`, `num-traits`, `libm` | When a node uses the transform buffer | Interpolation of coordinate transforms |
 | Containers and errors | `hashbrown`, `foldhash`, `equivalent`, `allocator-api2`, `thiserror`, `log` | Yes | Maps, error types, the log facade |
@@ -67,7 +67,7 @@ changes no algorithm.
 
 | Part | hypha requires | Shown by | Not shown |
 |---|---|---|---|
-| `crc32c` | The CRC-32C (Castagnoli) of a byte sequence, the same on every platform | `hypha_wire/crc32c_check_value` (the published check value), `hypha_wire/frame` | The hardware and software paths of the crate are not tested separately |
+| `crc-fast` | The CRC-32C (Castagnoli) of a byte sequence, the same on every platform | `hypha_wire/crc32c_check_value` (the published and RFC 3720 check values, and equality with `crc32c` 0.6.8, the earlier implementation, over every length to 1 KiB at every alignment in a word and over arbitrary frames), `hypha_wire/frame` | Only the path the test machine selects is tested: aarch64 with PMULL and SHA3 (macOS, Linux); the x86_64 paths and the table fallback are not run here |
 | `toml`, `serde` | A parameter file parses to its values or to an error; no input aborts the process | `hypha_core/parameters`, the fuzz target `config_load` | |
 | Operating-system crates | Each call hypha makes behaves as the Linux manual states | The tests that exercise the calls | No list of the calls in use |
 | `transforms` | Interpolation between two stamped transforms | `hypha_ffi/transform_buffer`, `cxx:test_transform_buffer` | Numerical limits |
