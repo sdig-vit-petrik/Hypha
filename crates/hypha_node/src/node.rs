@@ -53,6 +53,8 @@ pub struct HyphaNode {
     /// Set once by [`node_destroy`]: the node has left the bus. Every publisher of the node
     /// holds a share and sends nothing afterwards (#97).
     pub(crate) left: std::sync::Arc<AtomicBool>,
+    /// The streams of the topics this node subscribes to, refreshed by its housekeeping.
+    pub(crate) topic_streams: crate::topic_streams::Registry,
     /// Declared last so every port owned by `HyphaNode` drops before the iceoryx2 node.
     pub(crate) transport: hypha_iceoryx2::Iox2Transport,
 }
@@ -396,6 +398,7 @@ pub fn node_create(
         health: std::sync::Arc::default(),
         introspection,
         left: std::sync::Arc::default(),
+        topic_streams: crate::topic_streams::Registry::default(),
         transport,
     };
     // A process that a backward seek restarted waits here, before any port of its own.

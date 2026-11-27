@@ -8,6 +8,7 @@
 #include "hypha_base/clock.h"
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -154,7 +155,7 @@ struct Metric
 };
 
 /// @brief The counters of one subscriber, read one by one, not at one instant. Each but
-///        `loanBudget` and `loanHeld` only grows, and wraps.
+///        `loanBudget`, `loanHeld` and `otherSchemas` only grows, and wraps.
 struct SubscriberMetrics
 {
     /// Frames refused because their sequence was not newer than the last accepted one of
@@ -164,7 +165,8 @@ struct SubscriberMetrics
     uint64_t invalidFrame{0};
     /// Frames whose CRC-32C does not match.
     uint64_t corruptPayload{0};
-    /// Frames of another schema than the subscriber expects.
+    /// Frames whose header names another schema than the stream they arrived on: a fault
+    /// of their sender. A frame of another type of the topic is on another stream.
     uint64_t schemaMismatch{0};
     /// Frames sent later than the host clock reads.
     uint64_t invalidTimestamp{0};
@@ -174,6 +176,12 @@ struct SubscriberMetrics
     uint64_t loanHeld{0};
     /// Owning receives refused because the budget was full.
     uint64_t loanRefused{0};
+    /// The other schemas (MD5s) of the topic that a live publisher sends, as the node's
+    /// housekeeping last found them, at most a second old while the node runs: a fact about
+    /// the topic, not a fault. Empty before the first check, and for a subscriber of no
+    /// single stream. Nonzero beside a publisher of the own version means a publisher of
+    /// another version is on the topic.
+    std::optional<uint64_t> otherSchemas;
 
     bool operator==(const SubscriberMetrics&) const = default;
 };

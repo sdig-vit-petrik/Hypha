@@ -166,6 +166,7 @@ pub(crate) fn open_publisher(
             &node.introspection,
             crate::introspection::Row::Publisher(hypha_core::introspection::EndpointRow {
                 latched: settings.latch,
+                md5: md5.to_owned(),
                 ..hypha_core::introspection::EndpointRow::new(name, data_type)
             }),
         ),

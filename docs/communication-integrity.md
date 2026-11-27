@@ -28,7 +28,7 @@ its check.
 | Field | Set by | Purpose |
 |---|---|---|
 | `magic` | library | Frame format version. Another value is refused. |
-| `schema_hash` | library, from the message MD5 | The message definition the sender used. |
+| `schema_hash` | library, from the message MD5 | The message definition the sender used. It also names the frame's stream (section 3). |
 | `publisher_id` | library, per publisher instance | Which sender the sequence belongs to. |
 | `sequence` | library, at each send | Order of the sender's frames. Wraps to zero. |
 | `transport_sent_nanos` | library, host monotonic clock | When the frame was sent. |
@@ -36,6 +36,23 @@ its check.
 | `crc` | library | CRC-32C over every field above and the payload, started from the code of the topic. The topic name is not sent. |
 
 The payload is the ROS 1 serialized message. The library never decodes it.
+
+The CRC-32C is computed by the `crc-fast` crate: the CPU's CRC-32C instructions fused
+with carry-less multiplication (PMULL on aarch64, PCLMULQDQ on x86_64), chosen at run
+time, and a table on a CPU with neither. Every path gives the standard CRC-32C:
+`hypha_wire/crc32c_check_value` pins it to the published check values and to
+`crc32c` 0.6.8, the implementation before, so frames of either build verify in the other.
+
+The code costs one read of the payload at each end: the publisher's at each send, and
+each subscriber endpoint's at each frame it takes. Two subscribers of one topic in one
+process each verify the frame. A cycle input verifies a frame when it drains it and
+decodes it later from its history with no second pass.
+
+On an Apple M1 Pro (macOS, release build, `cargo bench -p hypha_wire --bench integrity`)
+the code of a 15 MiB payload read from memory takes 0.33 ms, less than a `memcpy` of
+it (0.39 ms), and that of a 64-byte message 18 ns. Linux aarch64 on the same machine
+takes the same path and, measured in a container under heavy load, about half the time of
+a `memcpy` of the payload. x86_64 is not measured.
 
 ## 3. Faults and the check that covers each
 
@@ -48,7 +65,7 @@ application and a counter of the subscriber grows. The counters are the
 |---|---|---|---|
 | Corruption | CRC-32C over header and payload | Refused | `corrupt_payload` |
 | Unknown or truncated frame | `magic`, sizes | Refused | `invalid_frame` |
-| Wrong message definition | `schema_hash` against the subscription | Refused | `schema_mismatch` |
+| Wrong message definition: a frame whose `schema_hash` is not its stream's | `schema_hash` against the subscription | Refused | `schema_mismatch` |
 | Repetition | `sequence` equal to the last accepted of that publisher | Refused | `sequence_gap` |
 | Re-sequencing | `sequence` older than the last accepted | Refused | `sequence_gap` |
 | Deletion | `sequence` jumps forward | Accepted; the skipped values are counted | `missingSequences()` |
@@ -61,6 +78,18 @@ application and a counter of the subscriber grows. The counters are the
 
 Notes:
 
+- A topic name carries one **stream** for each schema (topic name overloading): the
+  publishers of one MD5 send on the stream of that MD5, and a subscriber that names an
+  MD5 reads that stream alone ([interface-specification.md](interface-specification.md#streams)).
+  A frame of another message type, or of another version of the same type, is on another
+  stream: it never reaches the subscriber, so it is no fault and no counter grows. A
+  frame that does reach it with another `schema_hash` came from a sender that stamped a
+  schema other than its stream's, and is a `schema_mismatch`. A publisher of another
+  definition is detected all the same: the subscriber counts the other definitions of its
+  topic that a live publisher sends (`topic.other_schemas`) and its `~/state` row names
+  them (`RequiredInput.other_schemas`), also while its own definition is published too,
+  within a second while the node runs and "not checked" before; while its own stream has
+  no publisher it also logs them after its no-publisher delay (cpp-api.md §5).
 - Each check covers its own faults, and none stands in for another. The CRC says
   nothing about order, the sequence nothing about age, and the send time nothing
   about content.

@@ -80,7 +80,10 @@ pub use introspection_abi::{
     hypha_config_record_config, hypha_node_introspect, hypha_node_record_config,
 };
 pub use last_error::hypha_last_error;
-pub use loan::{hypha_loan_drop, hypha_loan_send, hypha_publisher_loan_frame};
+pub use loan::{
+    hypha_loan_drop, hypha_loan_send, hypha_loan_shrink, hypha_publisher_loan_frame,
+    hypha_publisher_reserve_frame,
+};
 pub use log::{hypha_log_enabled, hypha_log_module_register, hypha_log_write};
 pub use metrics::hypha_node_metrics;
 pub use node::{
@@ -99,8 +102,8 @@ pub use abi_constants::{
     HYPHA_CONFIG_VALUE_FLOAT, HYPHA_CONFIG_VALUE_INT, HYPHA_CONFIG_VALUE_TEXT,
     HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, HYPHA_CYCLE_VERDICT_STALE, HYPHA_CYCLE_VERDICT_USABLE,
     HYPHA_DEFAULT_ARRIVALS_PER_STEP, HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS,
-    HYPHA_DEFAULT_TF_CACHE_NANOS, HYPHA_FAULT_STAGNANT, HYPHA_FAULT_STALE, HYPHA_PORT_INPUT,
-    HYPHA_PORT_OUTPUT, HYPHA_PORT_TOPIC_OPTIONAL, HYPHA_PORT_TOPIC_REQUIRED,
+    HYPHA_DEFAULT_TF_CACHE_NANOS, HYPHA_FAULT_STAGNANT, HYPHA_FAULT_STALE, HYPHA_NOT_CHECKED,
+    HYPHA_PORT_INPUT, HYPHA_PORT_OUTPUT, HYPHA_PORT_TOPIC_OPTIONAL, HYPHA_PORT_TOPIC_REQUIRED,
     HYPHA_RUN_REASON_DEADLINE, HYPHA_RUN_REASON_RUNTIME_FAILED, HYPHA_RUN_REASON_SETUP_FAILED,
     HYPHA_RUN_REASON_STOPPED, HYPHA_TF_AFTER_BUFFER, HYPHA_TF_BEFORE_BUFFER, HYPHA_TF_FOUND,
     HYPHA_TF_INVALID_FRAME, HYPHA_TF_NOT_CONNECTED, HYPHA_TF_REFUSED, HYPHA_TF_UNKNOWN_FRAME,

@@ -268,8 +268,8 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
 
     let result = run_play_session(&bus, &player, config, &stop_signal);
 
-    for (topic, messages) in &result.counters {
-        println!("hypha play: '{topic}' published {messages} messages");
+    for (stream, messages) in &result.counters {
+        println!("hypha play: {stream} published {messages} messages");
     }
     if let Some(rate) = &result.rate {
         println!("hypha play: {rate}");

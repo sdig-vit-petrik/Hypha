@@ -3,6 +3,7 @@
 use crate::approx_f64;
 use crate::recorder::MD5_METADATA_KEY;
 use crate::utc_time::UtcRange;
+use hypha_node::sdk::StreamKey;
 use hypha_node::sdk::md5::md5_from_definition;
 use mcap::MessageStream;
 use mcap::sans_io::indexed_reader::{IndexedReadEvent, IndexedReader, IndexedReaderOptions};
@@ -25,6 +26,9 @@ fn read_failure(source: &str, chunk_offset: Option<u64>, error: impl Display) ->
 pub struct ChannelResolution {
     /// Topic name.
     pub topic: String,
+    /// The stream the channel replays on: its topic and the schema hash of its MD5, 0 when
+    /// the channel has none. Two channels of one topic with two MD5s are two streams.
+    pub stream: StreamKey,
     /// Data type name.
     pub data_type: String,
     /// 32-hex MD5 digest (empty if unresolved).
@@ -43,8 +47,8 @@ type CandidateMessage<'a> = (u64, &'a ChannelResolution, Vec<u8>);
 /// recording; the channel's identity is in [`Player::channels`].
 #[derive(Debug, Clone, Copy)]
 pub struct PlaybackItem<'a> {
-    /// Topic name.
-    pub topic: &'a str,
+    /// The stream the message is published on.
+    pub stream: &'a StreamKey,
     /// Payload bytes.
     pub bytes: &'a [u8],
     /// Delay in nanoseconds relative to previous delivered message.
@@ -196,8 +200,10 @@ impl Player {
             }
 
             let max_payload = max_payloads.get(&ch.id).copied();
+            let schema_hash = hypha_node::sdk::schema_hash_from_md5(&md5).unwrap_or(0);
             let resolution = ChannelResolution {
                 topic: ch.topic.clone(),
+                stream: StreamKey { topic: ch.topic.clone(), schema_hash },
                 data_type,
                 md5,
                 definition,
@@ -323,7 +329,7 @@ impl Player {
                     first = false;
 
                     let item = PlaybackItem {
-                        topic: &channel.topic,
+                        stream: &channel.stream,
                         bytes: data,
                         delay_nanos,
                         log_time_nanos: header.log_time,
@@ -400,7 +406,7 @@ impl Player {
             first = false;
 
             let item = PlaybackItem {
-                topic: &channel.topic,
+                stream: &channel.stream,
                 bytes: &bytes,
                 delay_nanos,
                 log_time_nanos: log_time,

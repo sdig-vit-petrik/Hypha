@@ -32,6 +32,9 @@ pub struct SequenceValidator {
     calls: u64,
     /// Missing sequence values between accepted forward frames.
     missing_sequences: u64,
+    /// Frames the publishers sent before the first one accepted from each: a publisher's first
+    /// frame has sequence 1, so the first sequence accepted, less one, is the count before it.
+    sent_before_first: u64,
 }
 
 impl Default for SequenceValidator {
@@ -51,7 +54,13 @@ impl SequenceValidator {
     /// Create an empty validator that tracks at most `capacity` publishers.
     #[must_use]
     pub const fn with_capacity(capacity: NonZeroUsize) -> Self {
-        Self { publishers: BTreeMap::new(), capacity, calls: 0, missing_sequences: 0 }
+        Self {
+            publishers: BTreeMap::new(),
+            capacity,
+            calls: 0,
+            missing_sequences: 0,
+            sent_before_first: 0,
+        }
     }
 
     /// Accept the first sequence of a publisher, or one after the last one
@@ -60,6 +69,13 @@ impl SequenceValidator {
     /// Measured modulo the sequence range: a sequence less than half the range ahead of
     /// the last accepted one is newer, gaps included. Anything else is refused.
     pub fn accept(&mut self, publisher_id: u64, sequence: u64) -> bool {
+        self.accept_as(publisher_id, sequence, true)
+    }
+
+    /// As [`SequenceValidator::accept`], saying whether the first sequence of a publisher
+    /// counts as frames sent before the first one accepted. It does not for a frame that a
+    /// latched publisher hands to a late subscriber: the last sample is all that is wanted.
+    pub fn accept_as(&mut self, publisher_id: u64, sequence: u64, counts_first: bool) -> bool {
         self.calls = self.calls.wrapping_add(1);
         let now = self.calls;
         let Some(tracked) = self.publishers.get_mut(&publisher_id) else {
@@ -67,6 +83,11 @@ impl SequenceValidator {
                 self.forget_least_recent();
             }
             self.publishers.insert(publisher_id, Tracked { sequence, accepted_at: now });
+            if counts_first {
+                // A publisher's first frame has sequence 1.
+                self.sent_before_first =
+                    self.sent_before_first.saturating_add(sequence.saturating_sub(1));
+            }
             return true;
         };
         let distance = sequence.wrapping_sub(tracked.sequence);
@@ -84,6 +105,14 @@ impl SequenceValidator {
     #[must_use]
     pub const fn missing_sequences(&self) -> u64 {
         self.missing_sequences
+    }
+
+    /// Frames the publishers sent before the first one accepted from each, a latched replay
+    /// not counted. A publisher that existed before the subscription is among them: whether
+    /// they are a loss is for the reader to say.
+    #[must_use]
+    pub const fn sent_before_first(&self) -> u64 {
+        self.sent_before_first
     }
 
     /// Forget the publisher whose last accepted frame is the oldest.

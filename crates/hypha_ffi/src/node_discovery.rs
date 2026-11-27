@@ -53,9 +53,9 @@ pub unsafe extern "C" fn hypha_topic_validate_public_name(
     })
 }
 
-/// List every data service and its active endpoint counts. A topic is reported without
-/// its leading `/`. `InvalidFrame`: a service name could not be reported, so the listing
-/// is incomplete.
+/// List every stream (one topic and one schema) and its active endpoint counts: a topic
+/// of two schemas is reported twice, once with each `schema_hash`. `InvalidFrame`: a
+/// topic name could not be reported, so the listing is incomplete.
 ///
 /// # Safety
 /// `node` must remain valid for the call. `user_data` is passed through to `callback`
@@ -72,6 +72,7 @@ pub unsafe extern "C" fn hypha_list_service_ports(
         let mut report = |service: &ListedServicePort<'_>| {
             let info = HyphaServicePortInfo {
                 name: service.name.as_ptr(),
+                schema_hash: service.schema_hash,
                 publishers: service.publishers,
                 subscribers: service.subscribers,
             };

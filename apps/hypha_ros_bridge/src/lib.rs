@@ -8,6 +8,7 @@
 
 pub mod automatic;
 mod automatic_runtime;
+mod bridged_streams;
 pub mod handoff;
 pub mod manifest;
 mod message;

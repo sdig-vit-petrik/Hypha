@@ -6,6 +6,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::static_config::messaging_pattern::MessagingPattern as StaticPattern;
 
 use crate::header::FRAME_HEADER_TYPE_NAME;
+use crate::stream::Stream;
 use crate::transport::{Ipc, SharedNode};
 
 /// True for a data topic: a publish-subscribe service whose user header is the
@@ -19,13 +20,20 @@ fn is_topic(pattern: &StaticPattern) -> bool {
     }
 }
 
-/// The bus names of every data topic.
-pub(crate) fn topic_bus_names() -> Result<Vec<String>, PortError> {
+/// Every stream of the domain, with the name of its data service. A data service with the
+/// hypha frame header whose name is no stream's was made by a hypha build before the
+/// streams: it is left out, and the first listing of the process that meets one warns.
+pub(crate) fn topic_streams() -> Result<Vec<(String, Stream)>, PortError> {
     let config = crate::domain::config()?;
-    let mut names = Vec::new();
+    let mut streams = Vec::new();
+    let mut foreign = 0_usize;
     Ipc::list(config, |details| {
         if is_topic(details.static_details.messaging_pattern()) {
-            names.push(details.static_details.name().to_string());
+            let name = details.static_details.name().to_string();
+            match Stream::of_service(&name) {
+                Some(stream) => streams.push((name, stream)),
+                None => foreign = foreign.saturating_add(1),
+            }
         }
         CallbackProgression::Continue
     })
@@ -33,7 +41,19 @@ pub(crate) fn topic_bus_names() -> Result<Vec<String>, PortError> {
         log::error!(target: "hypha/transport", "hypha_iceoryx2: cannot list the services of the domain: {cause:?}");
         PortError::Backend(5)
     })?;
-    Ok(names)
+    warn_of_another_build(foreign);
+    Ok(streams)
+}
+
+/// Warns once per process that `foreign` topics of another hypha build are in the domain.
+fn warn_of_another_build(foreign: usize) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if foreign == 0 || WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    log::warn!(target: "hypha/transport",
+        "hypha: {foreign} topics of another hypha build are in this domain: they are not visible \
+         to this build; run one hypha build per domain");
 }
 
 /// Discovered node metadata from iceoryx2 registry.
@@ -49,12 +69,14 @@ pub struct DiscoveredNode {
     pub is_alive: bool,
 }
 
-/// Endpoint counts for one data service.
+/// Endpoint counts for one stream: one topic and one schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredService {
-    /// Public topic service name.
+    /// The public topic name.
     pub name: String,
-    /// Number of active publisher ports.
+    /// The schema hash of the stream's frames; 0 for the stream of no schema.
+    pub schema_hash: u64,
+    /// Number of active publisher ports, a dead node's included until it is reclaimed.
     pub publishers: usize,
     /// Number of active subscriber ports.
     pub subscribers: usize,
@@ -103,14 +125,15 @@ pub(crate) fn discovered_node(view: &impl NodeView, is_alive: bool) -> Option<Di
     Some(DiscoveredNode { name, executable, pid, is_alive })
 }
 
-/// Lists data topics and their active endpoint counts, through the caller's node.
+/// Lists the streams of the domain and their active endpoint counts, through the caller's
+/// node: a topic of two schemas is two entries.
 /// # Errors
 /// Returns a backend error when the service registry cannot be read.
 pub fn list_service_ports(node: &SharedNode) -> Result<Vec<DiscoveredService>, PortError> {
-    let names = topic_bus_names()?;
-    let mut services = Vec::with_capacity(names.len());
-    for name in names {
-        let Some(counted) = count_service_ports(node, &name)? else {
+    let streams = topic_streams()?;
+    let mut services = Vec::with_capacity(streams.len());
+    for (name, stream) in streams {
+        let Some(counted) = count_service_ports(node, &name, stream)? else {
             continue;
         };
         services.push(counted);
@@ -118,12 +141,14 @@ pub fn list_service_ports(node: &SharedNode) -> Result<Vec<DiscoveredService>, P
     Ok(services)
 }
 
-/// Counts the endpoints of one service, excluding the calling node's own ports.
+/// Counts the endpoints of the data service `name` of `stream`, excluding the calling
+/// node's own ports.
 ///
 /// `Ok(None)` when the service disappeared since the registry scan.
 fn count_service_ports(
     node: &SharedNode,
     name: &str,
+    stream: Stream,
 ) -> Result<Option<DiscoveredService>, PortError> {
     let Ok(service_name) = name.try_into() else {
         return Ok(None);
@@ -155,13 +180,10 @@ fn count_service_ports(
         }
         CallbackProgression::Continue
     });
-    Ok(Some(DiscoveredService { name: public_topic_name(name), publishers, subscribers }))
-}
-
-/// Converts a data-service name into its public topic name.
-pub(crate) fn public_topic_name(service_name: &str) -> String {
-    if service_name.starts_with('/') {
-        return service_name.to_owned();
-    }
-    format!("/{service_name}")
+    Ok(Some(DiscoveredService {
+        name: stream.topic,
+        schema_hash: stream.schema_hash,
+        publishers,
+        subscribers,
+    }))
 }

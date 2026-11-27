@@ -200,7 +200,7 @@ pub fn emission_reserve<'view>(
             let staged = view.emissions.last_mut().and_then(|message| message.value.as_mut());
             Ok(staged.and_then(HyphaLoan::payload_mut))
         }
-        Err(Error::PoolExhausted) => {
+        Err(Error::PoolExhausted | Error::LoanLimit) => {
             // No loan is free: the output's policy decides at dispatch.
             view.emissions.push(StagedMessage { output: output_index, len, value: None });
             Ok(None)

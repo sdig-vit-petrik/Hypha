@@ -638,7 +638,7 @@ struct RawHeader {
     transport_sent_nanos: u64,
     framework_sent_nanos: u64,
     crc: u32,
-    reserved: u32,
+    payload_len: u32,
 }
 
 trait FromRawForTest {
@@ -658,6 +658,7 @@ impl FromRawForTest for hypha_wire::frame::FrameHeader {
                 framework_sent_nanos: raw.framework_sent_nanos,
             },
             crc: raw.crc,
+            payload_len: raw.payload_len,
         }
     }
 }
@@ -674,7 +675,7 @@ impl RawHeader {
             transport_sent_nanos: m.transport_sent_nanos,
             framework_sent_nanos: m.framework_sent_nanos,
             crc: frame.crc,
-            reserved: 0,
+            payload_len: frame.payload_len,
         }
     }
 }

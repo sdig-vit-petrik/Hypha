@@ -54,6 +54,16 @@ pub(crate) fn drain_inputs(cycle: &Cycle, clock: DrainClock) -> Result<(), Error
     drain_sources(&cycle.step_ref()?.inputs, clock)
 }
 
+/// Check the stream of each input of `cycle` that has a subscriber, at host time
+/// `now_nanos`, from the housekeeping of a turn: never inside its step. A cycle whose step
+/// runs is skipped.
+pub(crate) fn check_input_publishers(cycle: &Cycle, now_nanos: u64) {
+    let Ok(step) = cycle.step_ref() else { return };
+    for subscriber in step.inputs.iter().filter_map(|source| source.subscriber.as_deref()) {
+        subscriber.check_no_publisher_warning(now_nanos);
+    }
+}
+
 /// Drain each physical source once into its history.
 ///
 /// Several bindings and cycles can share a source, whose history is their common snapshot.
@@ -554,6 +564,14 @@ fn store_health(
         });
     }
     drop(counts);
+    let mut watches = crate::locked(&cycle.snapshots.watches);
+    if watches.len() != inputs.len() {
+        watches.clear();
+        watches.extend(inputs.iter().map(|input| {
+            input.subscriber.as_deref().and_then(|subscriber| subscriber.watch.clone())
+        }));
+    }
+    drop(watches);
     let mut bindings = crate::locked(&cycle.snapshots.bindings);
     for (index, item) in bindings.iter_mut().enumerate() {
         let Some(capture) = runtime.binding_capture(index) else {

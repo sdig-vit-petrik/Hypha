@@ -18,11 +18,50 @@ pub struct ListedNode<'a> {
     pub alive: bool,
 }
 
-/// One data service, as `list_service_ports` reports it.
+/// A watch of the domain's graph: it tells a reader on its own thread that an endpoint came
+/// or went since it last asked. See [`graph_watch`].
+pub struct GraphWatch(hypha_iceoryx2::GraphWatch);
+
+impl GraphWatch {
+    /// Whether an endpoint of the domain came or went since the last call: one
+    /// non-blocking read that takes every pending notification.
+    ///
+    /// # Errors
+    /// [`Error::Disconnected`] when the notification service cannot be read.
+    pub fn changed(&self) -> Result<bool, Error> {
+        self.0.changed().map_err(Error::from)
+    }
+}
+
+impl GraphWatch {
+    /// Waits up to `timeout` for an endpoint of the domain to come or go, and takes the
+    /// notifications; true when one came. The calling thread sleeps meanwhile.
+    ///
+    /// # Errors
+    /// [`Error::Disconnected`] when the notification service cannot be read.
+    pub fn wait(&self, timeout: std::time::Duration) -> Result<bool, Error> {
+        self.0.wait(timeout).map_err(Error::from)
+    }
+}
+
+/// Open a watch of the domain's graph event, the event a node's own housekeeping hears.
+/// A reader that lists the streams once, opens this watch before it lists, and lists again
+/// whenever the watch says the graph changed, misses no stream.
+///
+/// # Errors
+/// The transport's error when the event service cannot be opened.
+pub fn graph_watch(node: &HyphaNode) -> Result<GraphWatch, Error> {
+    node.transport.graph_watch().map(GraphWatch).map_err(Error::from)
+}
+
+/// One stream, a topic and a schema, as `list_service_ports` reports it.
 #[derive(Debug, Clone, Copy)]
 pub struct ListedServicePort<'a> {
-    /// Topic service name.
+    /// The topic name.
     pub name: &'a CStr,
+    /// The schema hash of the stream's frames: the first eight bytes of the MD5, 0 for
+    /// the stream of no schema.
+    pub schema_hash: u64,
     /// Active publisher count.
     pub publishers: usize,
     /// Active subscriber count.
@@ -53,7 +92,8 @@ pub fn list_nodes(emit: &mut dyn FnMut(&ListedNode<'_>)) -> Result<(), Error> {
     Ok(())
 }
 
-/// Report every data service of the domain and its active endpoint counts to `emit`.
+/// Report every stream of the domain and its active endpoint counts to `emit`: a topic of
+/// two schemas is reported twice, once with each schema hash.
 ///
 /// # Errors
 /// [`Error::Backend`] when the services cannot be read. [`Error::InvalidFrame`] after
@@ -71,6 +111,7 @@ pub fn list_service_ports(
         };
         emit(&ListedServicePort {
             name: &name,
+            schema_hash: service.schema_hash,
             publishers: service.publishers,
             subscribers: service.subscribers,
         });
@@ -98,11 +139,14 @@ pub struct HyphaNodeInfo {
 pub type HyphaNodeCallback =
     Option<extern "C" fn(info: *const HyphaNodeInfo, user_data: *mut std::os::raw::c_void)>;
 
-/// Endpoint counts for one data service.
+/// Endpoint counts for one stream: one topic and one schema.
 #[repr(C)]
 pub struct HyphaServicePortInfo {
-    /// Topic service name.
+    /// The topic name, NUL-terminated, borrowed for the callback only.
     pub name: *const std::os::raw::c_char,
+    /// The schema hash of the stream's frames: the first eight bytes of the MD5, as
+    /// `HyphaSampleIdentity.schema_hash`; 0 for the stream of no schema.
+    pub schema_hash: u64,
     /// Active publisher count.
     pub publishers: usize,
     /// Active subscriber count.

@@ -1,6 +1,6 @@
 //! The two endpoints, and the buffers they hand out.
 //!
-//! `new_wildcard` resolves its pattern once: matching costs O(services x nodes)
+//! `new_set` resolves its streams once: matching costs O(services x nodes)
 //! file-lock probes (175 ms with 120 publishers), so it is paid at open.
 
 use std::sync::Arc;
@@ -9,8 +9,10 @@ use iceoryx2::port::{LoanError, SendError};
 use iceoryx2::prelude::CallbackProgression;
 use iceoryx2::service::port_factory::PortFactory;
 
-use hypha_core::port::{PortError, QosRequest, topic_matches_pattern};
-use hypha_wire::frame::{FLAG_LATCHED, FrameHeader, FrameMetadata, TopicCode, seal};
+use hypha_core::port::{PortError, QosRequest, SchemaScope, topic_matches_pattern};
+use hypha_wire::frame::{
+    FLAG_LATCHED, FrameHeader, FrameMetadata, MAX_PAYLOAD_LEN, TopicCode, message_bytes, seal,
+};
 use iceoryx2::port::ReceiveError;
 use iceoryx2::port::listener::Listener;
 use iceoryx2::port::notifier::Notifier;
@@ -22,6 +24,7 @@ use iceoryx2::sample_mut::SampleMut;
 
 use crate::header::Iox2FrameHeader;
 use crate::latch::is_unlatched_history;
+use crate::stream::Stream;
 use crate::transport::{DataPortFactory, Ipc};
 
 /// Backend code of a loan that failed inside iceoryx2 (`LoanError::InternalFailure`),
@@ -36,15 +39,16 @@ pub(crate) const BACKEND_SEND_UNDELIVERED: u32 = 39;
 /// Backend code of a send that failed inside iceoryx2.
 pub(crate) const BACKEND_SEND_INTERNAL: u32 = 40;
 
-/// The status of a refused loan. A full pool and the publisher's loan budget are
-/// [`PortError::PoolExhausted`]; every other refusal names its cause.
+/// The status of a refused loan: a full pool is [`PortError::PoolExhausted`], the
+/// publisher's own loan budget [`PortError::LoanLimit`]; every other refusal names its cause.
 pub(crate) fn loan_port_error(
     cause: LoanError,
     requested: usize,
     max_payload: Option<usize>,
 ) -> PortError {
     match cause {
-        LoanError::OutOfMemory | LoanError::ExceedsMaxLoans => PortError::PoolExhausted,
+        LoanError::OutOfMemory => PortError::PoolExhausted,
+        LoanError::ExceedsMaxLoans => PortError::LoanLimit,
         LoanError::ExceedsMaxLoanSize => match max_payload {
             Some(limit) => PortError::TooLarge { requested, limit },
             None => PortError::Backend(BACKEND_LOAN_INTERNAL),
@@ -69,6 +73,9 @@ pub(crate) fn send_port_error(cause: SendError) -> PortError {
 /// message payload alone; its frame header is written when the loan is sent.
 pub struct Iox2Loan {
     sample: SampleMut<Ipc, [u8], Iox2FrameHeader>,
+    /// The bytes of the message: the slice's length, or less after [`Self::shrink`]. The
+    /// frame header carries it as `payload_len`; the slice keeps the loaned size.
+    used: usize,
     /// The code of the publisher's topic, which the frame is sealed for.
     topic_code: TopicCode,
     notifier: Arc<Notifier<Ipc>>,
@@ -77,27 +84,44 @@ pub struct Iox2Loan {
 }
 
 impl Iox2Loan {
-    /// The bytes currently in the buffer.
+    /// The bytes of the message currently in the buffer.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        self.sample.payload()
+        let payload = self.sample.payload();
+        payload.get(..self.used).unwrap_or(payload)
     }
 
     /// The bytes to write the message into.
     pub fn as_mut_bytes(&mut self) -> &mut [u8] {
-        self.sample.payload_mut()
+        let used = self.used;
+        let payload = self.sample.payload_mut();
+        let whole = payload.len();
+        payload.get_mut(..used.min(whole)).unwrap_or_default()
     }
 
-    /// How many bytes the buffer holds.
+    /// How many bytes the message holds.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.sample.payload().len()
+        self.used
     }
 
     /// True when the buffer holds nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Shorten the message to its first `len` bytes before the send. The slot keeps
+    /// its size; the frame's `payload_len` says `len`, and subscribers see `len` bytes.
+    ///
+    /// # Errors
+    /// [`PortError::TooLarge`] when `len` is longer than the message, which is unchanged.
+    pub fn shrink(&mut self, len: usize) -> Result<(), PortError> {
+        if len > self.used {
+            return Err(PortError::TooLarge { requested: len, limit: self.used });
+        }
+        self.used = len;
+        Ok(())
     }
 
     /// Seal the payload with `metadata` and `flags`, then send it, consuming the
@@ -109,7 +133,7 @@ impl Iox2Loan {
     /// The error of the failed send, see [`send_port_error`].
     pub fn send_frame(mut self, metadata: FrameMetadata, flags: u32) -> Result<(), PortError> {
         let flags = if self.latched { flags | FLAG_LATCHED } else { flags };
-        let header = seal(self.topic_code, metadata, flags, self.sample.payload());
+        let header = seal(self.topic_code, metadata, flags, self.as_bytes());
         *self.sample.user_header_mut() = Iox2FrameHeader::from(header);
         self.sample.send().map_err(send_port_error)?;
         if !crate::notification::notified(&self.notifier.notify()) {
@@ -145,10 +169,12 @@ impl Iox2Sample {
         FrameHeader::from(*self.sample.user_header())
     }
 
-    /// The message bytes, read where the publisher wrote them.
+    /// The message bytes, read where the publisher wrote them: the first `payload_len`
+    /// bytes of the slice. A header that claims more gives the whole slice, which
+    /// [`hypha_wire::frame::verify`] refuses.
     #[must_use]
     pub fn payload(&self) -> &[u8] {
-        self.sample.payload()
+        message_bytes(&self.header(), self.sample.payload())
     }
 }
 
@@ -170,8 +196,10 @@ pub struct Iox2Publisher {
     pub(crate) pool_refusals: std::sync::Mutex<crate::refusal_episode::RefusalEpisode>,
     /// True while a refusal run is open, so a granted loan outside one takes no lock.
     pub(crate) pool_refusing: std::sync::atomic::AtomicBool,
-    /// Last, so it drops after the port and the service handle.
+    /// After the port and the service handle, so the record goes when no port is left.
     pub(crate) _schema_release: crate::schema::SchemaRelease,
+    /// Last: the graph event of its drop follows the port's.
+    pub(crate) _graph: crate::transport::GraphAnnouncement,
 }
 
 impl Iox2Publisher {
@@ -184,11 +212,14 @@ impl Iox2Publisher {
     /// Borrow a buffer of `size` bytes to write a message into.
     ///
     /// # Errors
-    /// [`PortError::TooLarge`] when `size` exceeds the payload capacity,
-    /// [`PortError::PoolExhausted`] when no buffer is free; any other refusal names
-    /// its cause. A publisher never waits for a slow subscriber.
+    /// [`PortError::TooLarge`] when `size` exceeds the payload capacity or what a frame's
+    /// `payload_len` can say ([`MAX_PAYLOAD_LEN`], 4 GiB − 1 bytes),
+    /// [`PortError::PoolExhausted`] when no buffer is free, [`PortError::LoanLimit`] when
+    /// this publisher's callers hold all its loans; any other refusal names its cause. A
+    /// publisher never waits for a slow subscriber.
     pub fn loan(&self, size: usize) -> Result<Iox2Loan, PortError> {
-        if let Some(limit) = self.max_payload.filter(|limit| size > *limit) {
+        let limit = self.max_payload.map_or(MAX_PAYLOAD_LEN, |limit| limit.min(MAX_PAYLOAD_LEN));
+        if size > limit {
             return Err(PortError::TooLarge { requested: size, limit });
         }
         let loaned = self.publisher.loan_slice(size);
@@ -208,6 +239,7 @@ impl Iox2Publisher {
         loaned
             .map(|sample| Iox2Loan {
                 sample,
+                used: size,
                 topic_code: self.topic_code,
                 notifier: self.notifier.clone(),
                 latched: self.latched,
@@ -273,9 +305,14 @@ struct EventSource {
 }
 
 enum SubscriberKind {
+    /// The stream of one topic and schema.
     Single(Box<SingleSubscriber>),
-    Wildcard {
+    /// Every stream of a pattern, or of every schema of a topic, that existed at creation.
+    Set {
         topic_pattern: String,
+        /// The node that listens to the set's streams; `None` for a pattern, which is
+        /// polled.
+        events: Option<crate::transport::SharedNode>,
         subscribers: Vec<NamedSubscriber>,
         current_idx: std::sync::atomic::AtomicUsize,
         created_nanos: u64,
@@ -326,7 +363,7 @@ impl Iox2Subscriber {
                         .map_err(receive_port_error)?;
                 Ok(received.map(|sample| Iox2Sample { sample, topic: Arc::clone(&single.topic) }))
             }
-            SubscriberKind::Wildcard { subscribers, current_idx, created_nanos, .. } => {
+            SubscriberKind::Set { subscribers, current_idx, created_nanos, .. } => {
                 if subscribers.is_empty() {
                     return Ok(None);
                 }
@@ -378,7 +415,7 @@ impl Iox2Subscriber {
     pub fn publisher_count(&self) -> Result<usize, PortError> {
         match &self.inner {
             SubscriberKind::Single(single) => live_publisher_count(&single.service),
-            SubscriberKind::Wildcard { subscribers, .. } => {
+            SubscriberKind::Set { subscribers, .. } => {
                 let mut total = 0_usize;
                 for (_, _, service) in subscribers {
                     let live = live_publisher_count(service)?;
@@ -389,21 +426,28 @@ impl Iox2Subscriber {
         }
     }
 
-    /// The service of every topic this subscriber reads.
-    pub(crate) fn port_factories(&self) -> impl Iterator<Item = &DataPortFactory> {
-        let (single, wildcard) = match &self.inner {
-            SubscriberKind::Single(single) => (Some(&single.service), None),
-            SubscriberKind::Wildcard { subscribers, .. } => (None, Some(subscribers)),
-        };
-        single.into_iter().chain(wildcard.into_iter().flatten().map(|(_, _, service)| service))
+    /// True while a publisher port is open on a stream this subscriber reads: one atomic
+    /// read per stream. A port of a dead node counts until a node reclaims it.
+    #[must_use]
+    pub fn has_publisher_ports(&self) -> bool {
+        self.port_factories().any(|service| service.dynamic_config().number_of_publishers() > 0)
     }
 
-    /// The topic this subscriber reads. A wildcard subscriber reports its pattern.
+    /// The service of every topic this subscriber reads.
+    pub(crate) fn port_factories(&self) -> impl Iterator<Item = &DataPortFactory> {
+        let (single, set) = match &self.inner {
+            SubscriberKind::Single(single) => (Some(&single.service), None),
+            SubscriberKind::Set { subscribers, .. } => (None, Some(subscribers)),
+        };
+        single.into_iter().chain(set.into_iter().flatten().map(|(_, _, service)| service))
+    }
+
+    /// The topic this subscriber reads. A set reports its pattern or topic.
     #[must_use]
     pub fn topic(&self) -> &str {
         match &self.inner {
             SubscriberKind::Single(single) => &single.topic,
-            SubscriberKind::Wildcard { topic_pattern, .. } => topic_pattern,
+            SubscriberKind::Set { topic_pattern, .. } => topic_pattern,
         }
     }
 
@@ -412,19 +456,19 @@ impl Iox2Subscriber {
     pub fn buffer_size(&self) -> usize {
         match &self.inner {
             SubscriberKind::Single(single) => single.subscriber.buffer_size(),
-            SubscriberKind::Wildcard { subscribers, .. } => subscribers
+            SubscriberKind::Set { subscribers, .. } => subscribers
                 .first()
                 .map_or(crate::qos::DEFAULT_MAX_DEPTH, |(s, _, _)| s.buffer_size()),
         }
     }
 
     /// The samples one publisher on each topic this subscriber follows can queue: its
-    /// [`Self::buffer_size`] for a single topic, the sum of each topic's for a wildcard.
+    /// [`Self::buffer_size`] for a single stream, the sum of each stream's for a set.
     #[must_use]
     pub fn topics_buffer_size(&self) -> usize {
         match &self.inner {
             SubscriberKind::Single(single) => single.subscriber.buffer_size(),
-            SubscriberKind::Wildcard { subscribers, .. } => subscribers
+            SubscriberKind::Set { subscribers, .. } => subscribers
                 .iter()
                 .map(|(subscriber, _, _)| subscriber.buffer_size())
                 .fold(0, usize::saturating_add),
@@ -443,7 +487,7 @@ impl Iox2Subscriber {
             SubscriberKind::Single(single) => {
                 capacity(&single.service, single.subscriber.buffer_size())
             }
-            SubscriberKind::Wildcard { subscribers, .. } => subscribers
+            SubscriberKind::Set { subscribers, .. } => subscribers
                 .iter()
                 .map(|(subscriber, _, service)| capacity(service, subscriber.buffer_size()))
                 .fold(0, usize::saturating_add),
@@ -454,58 +498,72 @@ impl Iox2Subscriber {
         subscriber: Subscriber<Ipc, [u8], Iox2FrameHeader>,
         created_nanos: u64,
         service: DataPortFactory,
-        topic: &str,
+        stream: Stream,
         node: crate::transport::SharedNode,
         schema_release: crate::schema::SchemaRelease,
     ) -> Self {
-        let event_source =
-            EventSource { node, service_name: crate::transport::service_name_for(topic) };
+        let event_source = EventSource { node, service_name: stream.service_name() };
         Self {
             inner: SubscriberKind::Single(Box::new(SingleSubscriber {
                 subscriber,
                 created_nanos,
                 service,
-                topic: Arc::from(topic),
+                topic: Arc::from(stream.topic),
                 event_source,
                 _schema_release: schema_release,
             })),
         }
     }
 
-    /// Open a listener on this subscriber's event service; `Ok(None)` for a wildcard
-    /// subscriber, which is polled.
+    /// Open a listener on the event service of each stream this subscriber reads: one for
+    /// a single stream, one per stream for every schema of a topic. Empty for a wildcard
+    /// pattern, which is polled.
     /// # Errors
-    /// Returns [`PortError`] when the node is gone or the event service has no
+    /// Returns [`PortError`] when the node is gone or an event service has no
     /// room for another listener.
-    pub fn open_listener(&self) -> Result<Option<Listener<Ipc>>, PortError> {
-        let SubscriberKind::Single(single) = &self.inner else {
-            return Ok(None);
+    pub fn open_listeners(&self) -> Result<Vec<Listener<Ipc>>, PortError> {
+        let listen = |node: &crate::transport::SharedNode, name: &str, service| {
+            let limits = crate::notification::EventLimits::of_topic(service);
+            crate::notification::create_listener(node, name, Some(limits))
         };
-        let source = &single.event_source;
-        let limits = crate::notification::EventLimits::of_topic(&single.service);
-        crate::notification::create_listener(&source.node, &source.service_name, Some(limits))
-            .map(Some)
+        match &self.inner {
+            SubscriberKind::Single(single) => {
+                let source = &single.event_source;
+                Ok(vec![listen(&source.node, &source.service_name, &single.service)?])
+            }
+            SubscriberKind::Set { events: None, .. } => Ok(Vec::new()),
+            SubscriberKind::Set { events: Some(node), subscribers, .. } => subscribers
+                .iter()
+                .map(|(_, _, service)| listen(node, service.name().as_str(), service))
+                .collect(),
+        }
     }
 
-    /// Resolves `topic_pattern` once and follows every topic it matched.
+    /// Resolves the streams of `spec` once and follows every one it matched: of each
+    /// topic its pattern matches, the stream of its schema, or every stream when it reads
+    /// every schema.
     ///
     /// # Errors
     ///
     /// Returns an error when enumeration fails or a matching data service
     /// refuses the subscriber. A partial subscription is never returned.
-    pub(crate) fn new_wildcard(
+    /// [`PortError::NotAvailable`] for a topic, not a pattern, with no stream.
+    pub(crate) fn new_set(
         node: &crate::transport::SharedNode,
         spec: &hypha_core::port::TopicSpec,
     ) -> Result<Self, PortError> {
         let created_nanos = steady_nanos()?;
-        let subscribers = open_matching_topics(node, spec)?;
-        let schema_releases = subscribers
-            .iter()
-            .map(|(_, topic, _)| crate::schema::SchemaRelease::new(topic))
-            .collect();
+        let (subscribers, streams) = open_matching_streams(node, spec)?;
+        let is_topic = !spec.name.contains('*');
+        if is_topic && subscribers.is_empty() {
+            return Err(PortError::NotAvailable);
+        }
+        let schema_releases =
+            streams.iter().map(|stream| crate::schema::SchemaRelease::new(node, stream)).collect();
         Ok(Self {
-            inner: SubscriberKind::Wildcard {
+            inner: SubscriberKind::Set {
                 topic_pattern: spec.name.clone(),
+                events: is_topic.then(|| node.clone()),
                 subscribers,
                 current_idx: std::sync::atomic::AtomicUsize::new(0),
                 created_nanos,
@@ -521,16 +579,14 @@ fn live_publisher_count(service: &DataPortFactory) -> Result<usize, PortError> {
     if dynamic.number_of_publishers() == 0 {
         return Ok(0);
     }
-    let mut owners: Vec<iceoryx2::identifiers::UniqueNodeId> = Vec::new();
+    let dead = dead_node_ids()?;
+    let mut live = 0_usize;
     dynamic.list_publishers(|details| {
-        owners.push(details.node_id);
+        if !dead.contains(&details.node_id) {
+            live = live.saturating_add(1);
+        }
         CallbackProgression::Continue
     });
-    if owners.is_empty() {
-        return Ok(0);
-    }
-    let dead = dead_node_ids()?;
-    let live = owners.iter().filter(|owner| !dead.contains(owner)).count();
     Ok(live)
 }
 
@@ -554,21 +610,47 @@ pub(crate) fn steady_nanos() -> Result<u64, PortError> {
     u64::try_from(hypha_time::steady_now().nanos()).map_err(|_| PortError::Backend(3))
 }
 
-fn open_matching_topics(
+/// The streams `spec` may select, with their service names. The one stream of a literal topic
+/// that a subscription names by its hash is known without a listing, which reads every
+/// service of the domain; any other selection looks through the listing.
+fn candidate_streams(
+    spec: &hypha_core::port::TopicSpec,
+) -> Result<Vec<(String, Stream)>, PortError> {
+    match spec.schemas {
+        SchemaScope::Stream(schema_hash) if !spec.name.contains('*') => {
+            let stream = Stream { topic: spec.name.clone(), schema_hash };
+            Ok(vec![(stream.service_name(), stream)])
+        }
+        SchemaScope::Own | SchemaScope::Every | SchemaScope::Stream(_) => {
+            crate::discovery::topic_streams()
+        }
+    }
+}
+
+/// The subscribers of every stream that `spec` selects, and the streams in the same order.
+fn open_matching_streams(
     node: &crate::transport::SharedNode,
     spec: &hypha_core::port::TopicSpec,
-) -> Result<Vec<NamedSubscriber>, PortError> {
+) -> Result<(Vec<NamedSubscriber>, Vec<Stream>), PortError> {
+    let own_schema = match spec.schemas {
+        SchemaScope::Own => Some(spec.stream_schema_hash().ok_or(PortError::InvalidTopic)?),
+        SchemaScope::Every => None,
+        SchemaScope::Stream(hash) => Some(hash),
+    };
     let mut subscribers = Vec::new();
+    let mut streams = Vec::new();
     let port_name = crate::transport::node_port_name(node)?;
-    for name in crate::discovery::topic_bus_names()? {
-        let full_topic = crate::discovery::public_topic_name(&name);
-        if !topic_matches_pattern(&spec.name, &full_topic) {
+    for (name, stream) in candidate_streams(spec)? {
+        let selected = topic_matches_pattern(&spec.name, &stream.topic)
+            && own_schema.is_none_or(|hash| hash == stream.schema_hash);
+        if !selected {
             continue;
         }
+        let full_topic = stream.topic.clone();
         let service_name = iceoryx2::prelude::ServiceName::new(&name)
             .map_err(|_| PortError::Backend(crate::service_open::BACKEND_SERVICE_CORRUPTED))?;
         let opened = crate::service_open::open_within_window(
-            "the wildcard data service",
+            "the data service of a stream set",
             node,
             PortError::Backend(0),
             |node_ref| crate::transport::data_service_builder(node_ref, &service_name).open(),
@@ -588,7 +670,7 @@ fn open_matching_topics(
                 return Err(crate::service_open::publish_subscribe_open_port_error(cause));
             }
         };
-        // A wildcard that declares a policy accepts only services that carry it.
+        // A set that declares a policy accepts only services that carry it.
         crate::qos::check_declared_service(&full_topic, &spec.qos, service.attributes())?;
         let slots = match &spec.qos {
             QosRequest::Declared(_) => {
@@ -605,8 +687,9 @@ fn open_matching_topics(
             slots,
         )?;
         subscribers.push((subscriber, Arc::from(full_topic), service));
+        streams.push(stream);
     }
-    Ok(subscribers)
+    Ok((subscribers, streams))
 }
 
 #[cfg(test)]
@@ -618,7 +701,7 @@ mod tests {
     #[test]
     fn a_full_pool_and_the_loan_budget_are_pool_exhaustion() {
         assert_eq!(loan_port_error(LoanError::OutOfMemory, 8, None), PortError::PoolExhausted);
-        assert_eq!(loan_port_error(LoanError::ExceedsMaxLoans, 8, None), PortError::PoolExhausted);
+        assert_eq!(loan_port_error(LoanError::ExceedsMaxLoans, 8, None), PortError::LoanLimit);
     }
 
     #[test]

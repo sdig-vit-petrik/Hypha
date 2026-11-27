@@ -70,6 +70,21 @@ fn rejects_a_foreign_magic_as_an_invalid_frame() {
     assert_eq!(validator.stats().invalid_frame, 1);
 }
 
+/// A frame that claims more bytes than its slice carries is a corrupt frame; one whose
+/// slice is longer than its `payload_len` is its first `payload_len` bytes.
+#[test]
+fn a_payload_len_past_the_slice_is_corrupt_and_a_longer_slice_is_its_first_bytes() {
+    let validator = FrameValidator::new(None);
+    let mut claims_more = frame(11, 1, 900);
+    claims_more.payload_len = 2;
+    assert_eq!(
+        validator.validate(topic(), &claims_more, PAYLOAD, 1_000),
+        Err(FrameRejection::CorruptPayload)
+    );
+    assert_eq!(validator.stats().corrupt_payload, 1);
+    assert_eq!(validator.validate(topic(), &frame(11, 2, 900), b"x and more", 1_000), Ok(900));
+}
+
 #[test]
 fn a_corrupt_payload_byte_is_refused_as_corrupt() {
     let validator = FrameValidator::new(None);

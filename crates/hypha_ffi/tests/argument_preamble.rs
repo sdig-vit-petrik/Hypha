@@ -302,8 +302,26 @@ static ROWS: &[Row] = rows! {
             INVALID
         );
     }
+    hypha_publisher_reserve_frame => |_live| {
+        assert_eq!(
+            unsafe { hypha_publisher_reserve_frame(null_mut(), 0, &mut null_mut(), &mut null_mut()) },
+            INVALID
+        );
+    }
     hypha_loan_send => |_live| { assert_eq!(unsafe { hypha_loan_send(null_mut(), -1) }, INVALID) }
     hypha_loan_drop => |_live| { unsafe { hypha_loan_drop(null_mut()) } }
+    hypha_loan_shrink => |live| {
+        assert_eq!(unsafe { hypha_loan_shrink(null_mut(), 0) }, INVALID);
+        let mut loan = null_mut();
+        let mut payload = null_mut();
+        assert_eq!(
+            unsafe { hypha_publisher_loan_frame(live.publisher, 8, &raw mut loan, &raw mut payload) },
+            HyphaStatus::Ok
+        );
+        assert_eq!(unsafe { hypha_loan_shrink(loan, 9) }, INVALID);
+        assert_eq!(unsafe { hypha_loan_shrink(loan, 3) }, HyphaStatus::Ok);
+        unsafe { hypha_loan_drop(loan) };
+    }
     hypha_log_module_register => |_live| {
         let mut id: HyphaLogModule = 0;
         assert_eq!(unsafe { hypha_log_module_register(null(), 3, &raw mut id) }, INVALID);

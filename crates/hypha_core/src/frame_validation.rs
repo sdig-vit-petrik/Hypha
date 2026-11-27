@@ -13,7 +13,7 @@ pub enum FrameRejection {
     InvalidFrame,
     /// The frame checksum does not match its bytes.
     CorruptPayload,
-    /// The frame schema differs from the subscription contract.
+    /// The frame names another schema than the stream it arrived on.
     SchemaMismatch,
     /// The send time is later than the current host time.
     Future,
@@ -63,6 +63,7 @@ pub struct FrameValidator {
     expected_schema_hash: Option<u64>,
     sequences: Mutex<SequenceValidator>,
     missing_sequences: AtomicU64,
+    sent_before_first: AtomicU64,
     counters: RejectionCounters,
 }
 
@@ -74,6 +75,7 @@ impl FrameValidator {
             expected_schema_hash,
             sequences: Mutex::new(SequenceValidator::default()),
             missing_sequences: AtomicU64::new(0),
+            sent_before_first: AtomicU64::new(0),
             counters: RejectionCounters::default(),
         }
     }
@@ -112,7 +114,8 @@ impl FrameValidator {
     ) -> Result<ParsedFrame<'a>, FrameRejection> {
         let frame = match verify(topic, header, payload) {
             Ok(frame) => frame,
-            Err(ParseError::CrcMismatch) => {
+            // A payload_len past the slice cannot be checked: a corrupt frame, as a bad CRC.
+            Err(ParseError::CrcMismatch | ParseError::LengthMismatch) => {
                 self.counters.corrupt_payload.fetch_add(1, Ordering::Relaxed);
                 return Err(FrameRejection::CorruptPayload);
             }
@@ -138,8 +141,9 @@ impl FrameValidator {
         }
 
         let mut sequences = crate::locked(&self.sequences);
-        if sequences.accept(frame.publisher_id(), frame.sequence()) {
+        if sequences.accept_as(frame.publisher_id(), frame.sequence(), !frame.latched()) {
             self.missing_sequences.store(sequences.missing_sequences(), Ordering::Release);
+            self.sent_before_first.store(sequences.sent_before_first(), Ordering::Release);
             return Ok(frame);
         }
         self.counters.sequence_gap.fetch_add(1, Ordering::Relaxed);
@@ -156,6 +160,13 @@ impl FrameValidator {
             sequence_gap: self.counters.sequence_gap.load(Ordering::Acquire),
             invalid_timestamp: self.counters.invalid_timestamp.load(Ordering::Acquire),
         }
+    }
+
+    /// Frames the publishers of this subscription sent before the first one accepted from
+    /// each (see [`SequenceValidator::sent_before_first`]).
+    #[must_use]
+    pub fn sent_before_first(&self) -> u64 {
+        self.sent_before_first.load(Ordering::Acquire)
     }
 
     /// Total missing sequence values across accepted forward frames.

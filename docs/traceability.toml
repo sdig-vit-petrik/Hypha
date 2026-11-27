@@ -49,7 +49,11 @@ id = "FSR-05"
 tests = [
   "hypha_core/frame_validation",
   "cxx:test_typed_schema_identity",
+  "cxx:test_topic_overloading",
   "hypha_node/client_facade_round_trip",
+  "hypha_node/topic_overloading",
+  "hypha_ffi/subscriber_no_publisher_warning",
+  "hypha_ffi/other_schemas",
 ]
 evidence = "R4 harness, by hand (wrong schema hash: all rejected and counted)"
 
@@ -157,7 +161,7 @@ evidence = "the installed SDK flow (`scripts/test-installed-sdk.sh`)"
 
 [[requirement]]
 id = "FSR-22"
-tests = ["hypha_tools/echo_plot_cli", "hypha_tools/topic_follower", "hypha_ffi/introspection_rows"]
+tests = ["hypha_tools/echo_plot_cli", "hypha_node/stream_follower", "hypha_ffi/introspection_rows"]
 gap = "The O(1) clause has no measurement (R7)."
 
 [[requirement]]

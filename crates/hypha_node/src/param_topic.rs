@@ -94,7 +94,13 @@ fn resolve(node: &HyphaNode, entry: &str, rule: TopicRule) -> Result<Resolution,
         };
     };
     if !hypha_core::port::is_valid_topic_name(&topic) {
-        log::error!(target: "hypha", "hypha: the topic '{topic}' of {key} is not a valid topic name");
+        let too_long = topic.trim_start_matches('/').len() > hypha_core::port::MAX_TOPIC_NAME_BYTES;
+        let reason = if too_long {
+            format!(": longer than {} bytes after its '/'", hypha_core::port::MAX_TOPIC_NAME_BYTES)
+        } else {
+            String::new()
+        };
+        log::error!(target: "hypha", "hypha: the topic '{topic}' of {key} is not a valid topic name{reason}");
         return Err(Error::InvalidTopic);
     }
     Ok(Resolution { key, topic: Some(topic), from_file })

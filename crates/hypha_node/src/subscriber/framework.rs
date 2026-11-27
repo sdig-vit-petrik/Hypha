@@ -65,6 +65,7 @@ fn create_framework_subscriber(
         owner_node: 0,
         topic: topic.to_owned(),
         data_type: data_type.to_owned(),
+        md5: md5.to_owned(),
         port,
         budget,
         // The node drains it itself; nothing else may claim it.
@@ -72,11 +73,13 @@ fn create_framework_subscriber(
         attached: AtomicBool::new(false),
         validator: FrameValidator::new(Some(schema_hash)),
         no_publisher_watch: NoPublisherWatch::new(Duration::ZERO, std::time::Instant::now()),
+        watch: None,
         rejection_report: super::RejectionReport::default(),
         introspection: crate::introspection::IntrospectionRow::new(
             introspection,
             crate::introspection::Row::Subscriber(hypha_core::introspection::EndpointRow {
                 queue_depth: depth,
+                md5: md5.to_owned(),
                 ..hypha_core::introspection::EndpointRow::new(topic, data_type)
             }),
         ),

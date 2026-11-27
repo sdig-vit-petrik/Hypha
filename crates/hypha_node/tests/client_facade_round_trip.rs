@@ -77,15 +77,16 @@ fn a_schema_filtered_subscription_passes_matching_frames() {
 }
 
 #[test]
-fn a_schema_filtered_subscription_drops_version_skewed_frames() {
+fn a_version_skewed_publisher_is_another_stream_that_a_schema_subscription_never_meets() {
     let suffix = unique("skew");
     let node_result = BusNode::new(&format!("{suffix}_node"));
     assert!(node_result.is_ok());
     let Ok(node) = node_result else { return };
     let topic = format!("/test/coverage/{suffix}");
     let skew_result = node.publish_raw(&topic, TYPE_NAME, "00000000000000000000000000000000", "");
-    assert!(skew_result.is_ok());
-    let Ok(mut skew) = skew_result else { return };
+    let own_result = node.publish_raw(&topic, TYPE_NAME, MD5, "");
+    assert!(skew_result.is_ok() && own_result.is_ok());
+    let (Ok(mut skew), Ok(_own)) = (skew_result, own_result) else { return };
     let subscriber_result = node.subscribe_raw_with_schema(
         &topic,
         TYPE_NAME,
@@ -95,8 +96,7 @@ fn a_schema_filtered_subscription_drops_version_skewed_frames() {
     assert!(subscriber_result.is_ok());
     let Ok(mut subscriber) = subscriber_result else { return };
     assert!(skew.publish(b"valid"));
-    // The library refuses the frame before it reaches the caller.
-    let refused = subscriber.try_receive();
-    assert!(refused.is_err() || matches!(refused, Ok(None)));
-    assert_eq!(metric(&subscriber, "integrity.schema_mismatch"), Some(1));
+    // The skewed frame travels on its own stream: no refusal, nothing counted.
+    assert!(matches!(subscriber.try_receive(), Ok(None)));
+    assert_eq!(metric(&subscriber, "integrity.schema_mismatch"), Some(0));
 }

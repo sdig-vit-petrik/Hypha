@@ -2,6 +2,7 @@
 #include <hypha/hypha_ffi.h>
 
 #include "ros2_style.h"
+#include "sensor_companions.h"
 #include "short_namespace.h"
 
 #include <consumer_msgs/Reading.h>
@@ -26,6 +27,7 @@ int main()
     const bool ros1NamesUsable = shared->value == 1.5;
 
     const bool consumerOk = validClock && nestedTypeUsable && ros1NamesUsable
-                         && ros2StyleTypesUsable() && shortNamespaceUsable() && ownGlobalHyUsable();
+                         && ros2StyleTypesUsable() && shortNamespaceUsable() && ownGlobalHyUsable()
+                         && sensorCompanionsUsable() && sensorCompanionsRos2Usable();
     return consumerOk ? 0 : 1;
 }

@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration as StdDuration;
 
 use hypha_core::port::{
-    PayloadCapacity, PortError, QosPolicy, QosRequest, TopicSpec, is_valid_topic_pattern,
+    PayloadCapacity, PortError, QosPolicy, QosRequest, SchemaScope, TopicSpec,
+    is_valid_topic_pattern,
 };
 use iceoryx2::port::notifier::Notifier;
 use iceoryx2::prelude::*;
@@ -15,16 +16,10 @@ use crate::header::Iox2FrameHeader;
 use crate::latch::LatchedPort;
 use crate::notification::create_notifier;
 use crate::qos;
+use crate::stream::Stream;
 
 /// The thread-safe service variant, so an endpoint can be served on another thread.
 pub(crate) type Ipc = iceoryx2::service::ipc_threadsafe::Service;
-
-/// The bus name of `topic`: the topic without one leading `/`, so `/odom` and
-/// `odom` are one service. Its wake-up event service has the same name.
-#[must_use]
-pub fn service_name_for(topic: &str) -> String {
-    topic.strip_prefix('/').unwrap_or(topic).to_owned()
-}
 
 /// The first buffer size of a growable publisher that names none.
 const GROWABLE_INITIAL_PAYLOAD: usize = 4096;
@@ -93,6 +88,15 @@ impl Iox2Transport {
         crate::notification::create_listener(&self.node, GRAPH_EVENT, None)
     }
 
+    /// Watch the graph event without a `WaitSet`: a reader of the domain that wants to learn
+    /// of a new stream when it appears asks the watch whether an endpoint came or went.
+    ///
+    /// # Errors
+    /// Returns [`PortError`] when the event service cannot be opened.
+    pub fn graph_watch(&self) -> Result<GraphWatch, PortError> {
+        self.graph_listener().map(|listener| GraphWatch { listener })
+    }
+
     /// Hand the last sample of each latched topic to the subscribers that joined
     /// since the last call, and wake them.
     pub fn replay_latched(&self) {
@@ -139,6 +143,7 @@ impl Iox2Transport {
     /// [`PortError::InvalidTopic`] when the name is empty or refused, and the
     /// other [`PortError`] values that refuse a policy or a service.
     pub fn publish(&self, spec: &TopicSpec) -> Result<Iox2Publisher, PortError> {
+        crate::stream::refuse_overlong(spec)?;
         if !spec.has_valid_public_name() {
             refuse_reserved(&spec.name);
             return Err(PortError::InvalidTopic);
@@ -149,9 +154,9 @@ impl Iox2Transport {
         if !spec.definition.is_empty() && !spec.has_valid_schema_identity() {
             return Err(PortError::InvalidTopic);
         }
-        let name = service_name_for(&spec.name);
+        let stream = Stream::of(spec)?;
         let service_name: ServiceName =
-            name.as_str().try_into().map_err(|_| PortError::InvalidTopic)?;
+            stream.service_name().as_str().try_into().map_err(|_| PortError::InvalidTopic)?;
 
         qos::check_request(&spec.name, &spec.qos)?;
         // Resolved before the service exists, so a refused publisher creates none.
@@ -165,7 +170,7 @@ impl Iox2Transport {
         }
         let port_name = node_port_name(&self.node)?;
         // Declared before the service, so on an early return it drops after it.
-        let schema_release = crate::schema::SchemaRelease::new(&spec.name);
+        let schema_release = crate::schema::SchemaRelease::new(&self.node, &stream);
         let opened = open_data_service(&self.node, &service_name, &spec.name, &spec.qos, true)?;
         let policy = opened.policy;
         // A bounded publisher has one fixed data segment; a growable one adds segments on demand.
@@ -180,9 +185,6 @@ impl Iox2Transport {
             }
         };
         let service = Arc::new(opened.service);
-        if spec.has_schema_identity() {
-            crate::schema::write_schema_file(spec)?;
-        }
 
         let build_publisher = || {
             service
@@ -213,11 +215,12 @@ impl Iox2Transport {
                  /dev/shm, and an undersized /dev/shm can stop the process with SIGBUS", spec.name),
         }
         let publisher = Arc::new(publisher);
+        crate::schema::write_schema_file(spec)?;
 
         // Every publisher notifies; a scheduled subscriber has no listener to signal.
         let notifier = Arc::new(create_notifier(
             &self.node,
-            &service_name_for(&spec.name),
+            service_name.as_str(),
             Some(crate::notification::EventLimits::of_topic(&service)),
         )?);
 
@@ -230,6 +233,8 @@ impl Iox2Transport {
             });
         }
 
+        let graph = GraphAnnouncement(self.graph_notifier().ok());
+        graph.announce();
         Ok(Iox2Publisher {
             publisher,
             service,
@@ -241,7 +246,61 @@ impl Iox2Transport {
             pool_refusals: std::sync::Mutex::new(crate::refusal_episode::RefusalEpisode::default()),
             pool_refusing: std::sync::atomic::AtomicBool::new(false),
             _schema_release: schema_release,
+            _graph: graph,
         })
+    }
+}
+
+/// A listener of the graph event that is read on the caller's own thread.
+pub struct GraphWatch {
+    listener: iceoryx2::port::listener::Listener<Ipc>,
+}
+
+impl GraphWatch {
+    /// Whether an endpoint came or went since the last call. It takes the pending
+    /// notifications and waits for none: one non-blocking read.
+    ///
+    /// # Errors
+    /// [`PortError::Disconnected`] when the listener cannot be read.
+    pub fn changed(&self) -> Result<bool, PortError> {
+        self.listener.try_wait(|_| {}).map(|events| events > 0).map_err(|cause| {
+            log::error!(target: "hypha/transport", "hypha_iceoryx2: failed to read the graph event: {cause:?}");
+            PortError::Disconnected
+        })
+    }
+}
+
+impl GraphWatch {
+    /// Waits up to `timeout` for an endpoint to come or go, and takes the notifications. True
+    /// when one came: the thread sleeps in the kernel meanwhile.
+    ///
+    /// # Errors
+    /// [`PortError::Disconnected`] when the listener cannot be read.
+    pub fn wait(&self, timeout: StdDuration) -> Result<bool, PortError> {
+        self.listener.timed_wait(|_| {}, timeout).map(|events| events > 0).map_err(|cause| {
+            log::error!(target: "hypha/transport", "hypha_iceoryx2: failed to wait for the graph event: {cause:?}");
+            PortError::Disconnected
+        })
+    }
+}
+
+/// Notifies the graph event once when made and once when dropped, so the domain's nodes
+/// see a publisher come and go. A failed notification is logged; the backstop of the
+/// listener's node then covers it.
+pub(crate) struct GraphAnnouncement(Option<Arc<Notifier<Ipc>>>);
+
+impl GraphAnnouncement {
+    fn announce(&self) {
+        let notified = self.0.as_ref().is_some_and(|notifier| notifier.notify().is_ok());
+        if !notified {
+            log::warn!(target: "hypha/transport", "hypha_iceoryx2: an endpoint changed but the graph event failed");
+        }
+    }
+}
+
+impl Drop for GraphAnnouncement {
+    fn drop(&mut self) {
+        self.announce();
     }
 }
 
@@ -278,8 +337,8 @@ pub(crate) const RECLAIM_TIMEOUT: StdDuration = StdDuration::from_secs(1);
 
 /// Remove the resources of the dead nodes a node called `node_name` reclaims
 /// when it starts: its own crashed runs and every dead CLI tool node
-/// (`_hyphacli_<tool>`). A dead CLI tool node that cannot be reclaimed is logged
-/// and the node still starts.
+/// (`_hyphacli_<tool>`). A dead CLI tool node that cannot be reclaimed is logged and the
+/// node still starts.
 ///
 /// # Errors
 /// [`PortError::Backend`] with [`BACKEND_RECLAIM_FAILED`] when the node's own dead run
@@ -482,7 +541,9 @@ impl Iox2Transport {
     /// Create a subscriber for `spec`.
     ///
     ///
-    /// A name with `*` follows every matching topic that exists now, not later ones.
+    /// A subscriber reads the stream of its own schema. A name with `*`, or a spec that
+    /// reads every schema, follows every matching stream that exists now, not later ones. A
+    /// spec that reads one stream by its hash opens that service without listing the domain.
     ///
     /// # Errors
     /// [`PortError::InvalidTopic`] when the name is empty or refused. The other
@@ -491,12 +552,19 @@ impl Iox2Transport {
         if !spec.is_valid() {
             return Err(PortError::InvalidTopic);
         }
-        if spec.name.contains('*') {
-            if !is_valid_topic_pattern(&spec.name) {
+        crate::stream::refuse_overlong(spec)?;
+        let is_pattern = spec.name.contains('*');
+        if is_pattern || spec.schemas != SchemaScope::Own {
+            let is_valid_name = if is_pattern {
+                is_valid_topic_pattern(&spec.name)
+            } else {
+                spec.has_valid_public_name()
+            };
+            if !is_valid_name {
                 return Err(PortError::InvalidTopic);
             }
             qos::check_request(&spec.name, &spec.qos)?;
-            let subscriber = Iox2Subscriber::new_wildcard(&self.node, spec)?;
+            let subscriber = Iox2Subscriber::new_set(&self.node, spec)?;
             self.announce_subscriber();
             return Ok(subscriber);
         }
@@ -509,12 +577,12 @@ impl Iox2Transport {
         }
         qos::check_request(&spec.name, &spec.qos)?;
         let port_name = node_port_name(&self.node)?;
-        let name = service_name_for(&spec.name);
+        let stream = Stream::of(spec)?;
         let service_name: ServiceName =
-            name.as_str().try_into().map_err(|_| PortError::InvalidTopic)?;
+            stream.service_name().as_str().try_into().map_err(|_| PortError::InvalidTopic)?;
 
         // Declared before the service, so on an early return it drops after it.
-        let schema_release = crate::schema::SchemaRelease::new(&spec.name);
+        let schema_release = crate::schema::SchemaRelease::new(&self.node, &stream);
         let may_create = qos::subscriber_may_create(&spec.name, &spec.qos);
         let opened =
             open_data_service(&self.node, &service_name, &spec.name, &spec.qos, may_create)?;
@@ -523,10 +591,6 @@ impl Iox2Transport {
             QosRequest::Undeclared => qos::observer_slots(&spec.name),
         };
         let service = opened.service;
-        // A typed subscriber lets the domain resolve its schema even for a relayed publisher.
-        if spec.has_schema_identity() {
-            crate::schema::write_schema_file(spec)?;
-        }
         // Taken before the subscriber exists, so a live sample is never older.
         let created_nanos = crate::endpoint::steady_nanos()?;
 
@@ -537,12 +601,14 @@ impl Iox2Transport {
             &port_name,
             slots,
         )?;
+        // A typed subscriber lets the domain resolve its schema even for a relayed publisher.
+        crate::schema::write_schema_file(spec)?;
 
         let subscriber = Iox2Subscriber::new(
             subscriber,
             created_nanos,
             service,
-            &spec.name,
+            stream,
             self.node.clone(),
             schema_release,
         );
@@ -559,7 +625,13 @@ impl Iox2Transport {
         }
     }
 
+    /// Notify the graph event: a subscriber or a service endpoint came or went.
     pub(crate) fn notify_graph_change(&self) -> Result<(), PortError> {
+        self.graph_notifier()?.notify().map(drop).map_err(|_| PortError::Disconnected)
+    }
+
+    /// The notifier of the graph event, opened on first use.
+    fn graph_notifier(&self) -> Result<Arc<Notifier<Ipc>>, PortError> {
         let cached = {
             let guard = crate::locked(&self.graph_notifier);
             guard.as_ref().map(Arc::clone)
@@ -572,7 +644,7 @@ impl Iox2Transport {
             let mut guard = crate::locked(&self.graph_notifier);
             Arc::clone(guard.get_or_insert(created))
         };
-        notifier.notify().map(|_| ()).map_err(|_| PortError::Disconnected)
+        Ok(notifier)
     }
 }
 

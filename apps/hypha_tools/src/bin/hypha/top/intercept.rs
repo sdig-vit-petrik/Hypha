@@ -16,7 +16,7 @@ use hypha_tools::msg_patch::{
 };
 use hypha_tools::msg_reflect::{MessageSchema, WalkEvent, is_byte_array, walk};
 
-use crate::top::state::TopicStats;
+use crate::top::state::Topics;
 
 /// A backend whose state has not arrived for this long is shown offline.
 pub(crate) const OFFLINE_AFTER: Duration = Duration::from_secs(2);
@@ -415,22 +415,19 @@ fn name_from_topic(topic: &str) -> String {
 /// The topic hints of the focused form field: the topics on the bus whose name
 /// contains the typed text, prefix matches first, each with its type. The name
 /// field has none.
-pub(crate) fn suggestions<'t>(
-    form: &NewForm,
-    topics: &'t BTreeMap<String, TopicStats>,
-) -> Vec<(&'t str, &'t str)> {
+pub(crate) fn suggestions<'t>(form: &NewForm, topics: &'t Topics) -> Vec<(&'t str, &'t str)> {
     if form.field == FormField::Name {
         return Vec::new();
     }
     let typed = form.text(form.field).to_lowercase();
+    // A name of several streams is one hint, with the type of its first.
     let mut hits: Vec<(bool, &str, &str)> = topics
-        .iter()
-        .filter(|(topic, _)| !is_state_topic(topic))
-        .filter_map(|(topic, stats)| {
+        .names()
+        .filter(|topic| !is_state_topic(topic))
+        .filter_map(|topic| {
             let lower = topic.to_lowercase();
-            lower
-                .contains(&typed)
-                .then(|| (!lower.starts_with(&typed), topic.as_str(), stats.data_type.as_str()))
+            let data_type = topics.get(topic).map_or("", |stats| stats.data_type.as_str());
+            lower.contains(&typed).then(|| (!lower.starts_with(&typed), topic, data_type))
         })
         .collect();
     hits.sort_by_key(|(later, _, _)| *later);
@@ -588,7 +585,7 @@ impl InterceptView {
         &mut self,
         code: KeyCode,
         modifiers: KeyModifiers,
-        topics: &BTreeMap<String, TopicStats>,
+        topics: &Topics,
         default_input: Option<&str>,
     ) -> bool {
         if self.form.is_some() {
@@ -641,7 +638,7 @@ impl InterceptView {
         true
     }
 
-    fn focus_pane(&mut self, pane: Pane, topics: &BTreeMap<String, TopicStats>) {
+    fn focus_pane(&mut self, pane: Pane, topics: &Topics) {
         self.focus = Some(pane);
         if pane == Pane::Editor {
             self.open_edit(topics);
@@ -693,7 +690,7 @@ impl InterceptView {
         }
     }
 
-    fn open_edit(&mut self, topics: &BTreeMap<String, TopicStats>) {
+    fn open_edit(&mut self, topics: &Topics) {
         let Some(TreeRow { path, kind: RowKind::Scalar { type_name, span }, .. }) =
             self.selected_row().cloned()
         else {
@@ -877,7 +874,7 @@ impl InterceptView {
         self.edit = None;
     }
 
-    fn form_key(&mut self, code: KeyCode, topics: &BTreeMap<String, TopicStats>) {
+    fn form_key(&mut self, code: KeyCode, topics: &Topics) {
         let Some(form) = self.form.as_mut() else { return };
         let hints: Vec<String> =
             suggestions(form, topics).into_iter().map(|(topic, _)| topic.to_owned()).collect();

@@ -65,6 +65,17 @@ target_include_directories(hypha INTERFACE
   $<BUILD_INTERFACE:${HYPHA_MSGS_INCLUDE_DIR}>
 )
 
+# The companion headers of sensor_msgs that ROS 1 ships beside the messages
+# (point_cloud2_iterator.h, point_field_conversion.h, image_encodings.h,
+# distortion_models.h): ros/common_msgs unchanged, in upstream/common_msgs, which the
+# SDK installs into the include directory of sensor_msgs. The ROS 2 names of the same
+# headers (<sensor_msgs/point_cloud2_iterator.hpp>, ...) are include/sensor_msgs/*.hpp.
+set(HYPHA_COMMON_MSGS_INCLUDE_DIR
+  "${CMAKE_CURRENT_SOURCE_DIR}/upstream/common_msgs/sensor_msgs/include")
+target_include_directories(hypha SYSTEM INTERFACE
+  $<BUILD_INTERFACE:${HYPHA_COMMON_MSGS_INCLUDE_DIR}>
+)
+
 # hypha::testing_mcap: the static MCAP reader (crate hypha_testing_mcap) under
 # hypha/testing/mcap_replay.h (and its mcap_*.h parts), with HYPHA_BUILD_TESTING_MCAP.
 if(HYPHA_BUILD_TESTING_MCAP)
@@ -104,6 +115,7 @@ else()
   install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     PATTERN "mcap_*.h" EXCLUDE)
 endif()
+install(DIRECTORY "${HYPHA_COMMON_MSGS_INCLUDE_DIR}/" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY log/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY base/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
@@ -300,10 +312,19 @@ if(HYPHA_BUILD_TESTS)
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target log_module_name_invalid)
   set_tests_properties(log_module_name_invalid_is_refused PROPERTIES WILL_FAIL TRUE)
 
+  # A loan of a message with no field to loan must stop the build, with the rule in words.
+  add_library(typed_loan_not_loanable OBJECT EXCLUDE_FROM_ALL test/typed_loan_not_loanable.cpp)
+  target_link_libraries(typed_loan_not_loanable PRIVATE hypha)
+  add_test(NAME typed_loan_of_a_message_without_an_array_is_refused
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target typed_loan_not_loanable)
+  set_tests_properties(typed_loan_of_a_message_without_an_array_is_refused PROPERTIES
+    PASS_REGULAR_EXPRESSION "this message has no single top-level array of numbers to write in place")
+
   add_executable(test_hypha
     test/test_main.cpp
     test/wall_clock_listener.cpp
     test/test_publisher.cpp
+    test/test_typed_loan.cpp
     test/test_subscriber.cpp
     test/subscriber_latest_pair_is_consistent.cpp
     test/test_parameters.cpp
@@ -357,7 +378,13 @@ if(HYPHA_BUILD_TESTS)
     test/test_step_harness.cpp
     test/test_raw_endpoints.cpp
     test/test_qos.cpp
+    test/test_topic_overloading.cpp
+    test/test_sensor_msgs_companions.cpp
+    test/test_sensor_msgs_ros2_names.cpp
   )
+  # The ROS 2 names of sensor_msgs, for test_sensor_msgs_ros2_names.cpp.
+  hypha_generate_ros2_headers(test_hypha_ros2_headers PACKAGES sensor_msgs)
+  target_link_libraries(test_hypha PRIVATE test_hypha_ros2_headers)
   # Every public header compiles on its own: one generated translation unit each.
   file(GLOB_RECURSE HYPHA_PUBLIC_HEADERS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/include"
        CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h")
@@ -381,6 +408,29 @@ if(HYPHA_BUILD_TESTS)
   endif()
   target_compile_definitions(test_hypha_header_contract PRIVATE HYPHA_NO_LOGGING)
   add_dependencies(test_hypha test_hypha_header_contract)
+
+  # The companion headers of sensor_msgs compile on their own, first in their unit,
+  # under both names. Upstream's point_field_conversion.h does not include PointField.h
+  # (in ROS 1 neither); its unit does, which the ROS 2 name does itself.
+  set(HYPHA_COMPANION_HEADERS
+    sensor_msgs/point_cloud2_iterator.h sensor_msgs/point_field_conversion.h
+    sensor_msgs/image_encodings.h sensor_msgs/distortion_models.h
+    sensor_msgs/point_cloud2_iterator.hpp sensor_msgs/point_field_conversion.hpp
+    sensor_msgs/image_encodings.hpp sensor_msgs/distortion_models.hpp)
+  set(HYPHA_COMPANION_UNITS)
+  foreach(header IN LISTS HYPHA_COMPANION_HEADERS)
+    string(MAKE_C_IDENTIFIER "${header}" unit)
+    set(unit "${CMAKE_CURRENT_BINARY_DIR}/header_contract/companion_${unit}.cpp")
+    set(prelude "")
+    if(header STREQUAL "sensor_msgs/point_field_conversion.h")
+      set(prelude "#include <sensor_msgs/PointField.h>\n")
+    endif()
+    file(CONFIGURE OUTPUT "${unit}" CONTENT "${prelude}#include <${header}>\n")
+    list(APPEND HYPHA_COMPANION_UNITS "${unit}")
+  endforeach()
+  add_library(test_hypha_companion_headers OBJECT ${HYPHA_COMPANION_UNITS})
+  target_link_libraries(test_hypha_companion_headers PRIVATE hypha)
+  add_dependencies(test_hypha test_hypha_companion_headers)
 
   add_library(test_hypha_log_header_order OBJECT
     test/headers/log_status_first.cpp
@@ -408,6 +458,15 @@ if(HYPHA_BUILD_TESTS)
       ENVIRONMENT "GTEST_TOTAL_SHARDS=${HYPHA_TEST_SHARDS};GTEST_SHARD_INDEX=${shard}")
     hypha_gtest_report(test_hypha_${shard})
   endforeach()
+  # The typed loan's contract over every loanable standard type, in its own program: it
+  # publishes std_msgs/UInt8MultiArray under the default policy, which test_qos.cpp maps to
+  # a policy of its own (QosOf), and one program must see one QosOf per type.
+  add_executable(test_typed_loan_contract test/test_main.cpp test/test_typed_loan_contract.cpp)
+  target_link_libraries(test_typed_loan_contract PRIVATE hypha GTest::gtest)
+  target_compile_definitions(test_typed_loan_contract PRIVATE HYPHA_NO_LOGGING)
+  add_test(NAME test_typed_loan_contract COMMAND test_typed_loan_contract)
+  set_tests_properties(test_typed_loan_contract PROPERTIES LABELS "needs-iceoryx2")
+  hypha_gtest_report(test_typed_loan_contract)
   # The MCAP replay of the testing component, in its own program: test_hypha links
   # nothing of hypha::testing_mcap, as an application that does not replay links nothing.
   if(HYPHA_BUILD_TESTING_MCAP)
@@ -423,6 +482,16 @@ if(HYPHA_BUILD_TESTS)
     add_test(NAME test_hypha_mcap_replay COMMAND test_hypha_mcap_replay)
     set_tests_properties(test_hypha_mcap_replay PROPERTIES LABELS "needs-iceoryx2")
     hypha_gtest_report(test_hypha_mcap_replay)
+    # `hypha record` stores the bytes of a typed loan shrunk at the publish.
+    if(HYPHA_BUILD_APPS)
+      add_executable(test_typed_loan_record test/test_main.cpp test/test_typed_loan_record.cpp)
+      target_link_libraries(test_typed_loan_record PRIVATE hypha hypha::testing_mcap GTest::gtest)
+      target_compile_definitions(test_typed_loan_record PRIVATE
+        HYPHA_NO_LOGGING HYPHA_TEST_HYPHA_TOOL="$<TARGET_FILE:hypha::hypha>")
+      add_test(NAME test_typed_loan_record COMMAND test_typed_loan_record)
+      set_tests_properties(test_typed_loan_record PROPERTIES LABELS "needs-iceoryx2" TIMEOUT 120)
+      hypha_gtest_report(test_typed_loan_record)
+    endif()
   endif()
   foreach(alone
       NodeStopSignalProcess.StopSignalEndsTheRun
@@ -438,4 +507,17 @@ if(HYPHA_BUILD_TESTS)
       RUN_SERIAL TRUE)
     hypha_gtest_report(test_hypha_${wall_time})
   endforeach()
+endif()
+
+# The typed loan's tests under AddressSanitizer and UBSan, on request: a moved-from loan,
+# a loan that outlives its publisher or its node, a span past the publish.
+option(HYPHA_TYPED_LOAN_SANITIZE "Build test_typed_loan_sanitized with ASan and UBSan" OFF)
+if(HYPHA_BUILD_TESTS AND HYPHA_TYPED_LOAN_SANITIZE)
+  add_executable(test_typed_loan_sanitized
+    test/test_main.cpp test/test_typed_loan.cpp test/test_typed_loan_contract.cpp)
+  target_link_libraries(test_typed_loan_sanitized PRIVATE hypha GTest::gtest)
+  target_compile_definitions(test_typed_loan_sanitized PRIVATE HYPHA_NO_LOGGING)
+  target_compile_options(test_typed_loan_sanitized PRIVATE
+    -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g)
+  target_link_options(test_typed_loan_sanitized PRIVATE -fsanitize=address,undefined)
 endif()

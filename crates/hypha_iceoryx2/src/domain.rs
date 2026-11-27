@@ -60,7 +60,9 @@ fn apply_hypha_defaults(config: &mut Config) {
     let pubsub = &mut config.defaults.publish_subscribe;
     pubsub.max_subscribers = crate::qos::DEFAULT_MAX_SUBSCRIBERS;
     pubsub.max_publishers = crate::qos::DEFAULT_MAX_PUBLISHERS;
-    pubsub.max_nodes = crate::qos::DEFAULT_MAX_PUBLISHERS + crate::qos::DEFAULT_MAX_SUBSCRIBERS;
+    pubsub.max_nodes = crate::qos::DEFAULT_MAX_PUBLISHERS
+        + crate::qos::DEFAULT_MAX_SUBSCRIBERS
+        + crate::qos::PROBE_NODE_SLOTS;
     pubsub.subscriber_max_buffer_size = crate::qos::DEFAULT_MAX_DEPTH;
     pubsub.subscriber_max_borrowed_samples = MAX_BORROWED_SAMPLES;
     // A subscriber keeps a gone publisher's connection while it holds undelivered

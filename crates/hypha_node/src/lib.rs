@@ -34,6 +34,7 @@ pub mod schema;
 pub mod sdk;
 pub mod status;
 pub mod subscriber;
+mod topic_streams;
 pub mod transforms;
 pub mod waitset;
 pub use waitset::{
@@ -81,8 +82,8 @@ pub use qos::HyphaQos;
 pub use sample::HyphaReceivedSample;
 pub use status::HyphaStatus;
 pub use subscriber::{
-    HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS, HyphaSampleIdentity, HyphaSubscriber,
-    HyphaSubscriberCounters, HyphaSubscriberOptions,
+    HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS, HYPHA_NOT_CHECKED, HyphaSampleIdentity,
+    HyphaSubscriber, HyphaSubscriberCounters, HyphaSubscriberOptions,
 };
 pub use transforms::{
     HYPHA_DEFAULT_TF_CACHE_NANOS, HYPHA_TF_AFTER_BUFFER, HYPHA_TF_BEFORE_BUFFER, HYPHA_TF_FOUND,

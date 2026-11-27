@@ -107,10 +107,18 @@ pub fn pool_samples(policy: &QosPolicy, subscribers: usize, loaned_samples: usiz
         .saturating_add(loaned_samples)
 }
 
-/// The nodes one service admits: each endpoint may be a node of its own.
+/// The node slots a service keeps beyond its endpoints, for the two ways a node opens a stream
+/// for an instant without an endpoint: the probe that reads its live publishers, and the check
+/// of its schema record when an endpoint drops. Each is a node of its own while it lasts, so
+/// without these slots it could take the last one an endpoint needs. They admit no endpoint:
+/// the publishers and the subscribers have limits of their own.
+pub(crate) const PROBE_NODE_SLOTS: usize = 2;
+
+/// The nodes one service admits: each endpoint may be a node of its own, and a probe and a
+/// release check are two more.
 #[must_use]
 pub(crate) fn max_nodes(policy: &QosPolicy, subscribers: usize) -> usize {
-    policy.max_publishers.saturating_add(subscribers)
+    policy.max_publishers.saturating_add(subscribers).saturating_add(PROBE_NODE_SLOTS)
 }
 
 /// The subscriber slots one subscriber takes from its service.

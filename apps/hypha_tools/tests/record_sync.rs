@@ -444,3 +444,170 @@ fn a_recorder_started_before_its_topic_records_every_message() {
     std::fs::remove_file(&output_path).expect("remove the recording");
     std::fs::remove_file(&input).expect("remove the input");
 }
+
+/// A stream that a node creates in the middle of a chunk is followed only when the recorder
+/// answers the chunk, so what it sent first is not in the recording: `--sync` fails, naming it,
+/// instead of finishing a recording that lacks it (H2b of the fourth review of #268).
+#[test]
+fn a_stream_that_appears_during_a_chunk_fails_the_sync_recording() {
+    let bus = BusNode::new(PARTICIPANT).expect("the participant's bus");
+    let md5 = md5_from_definition(OUTPUT_TYPE, OUTPUT_DEFINITION).expect("MD5");
+    let mut output = bus
+        .publish_raw_configured(
+            OUTPUT_TOPIC,
+            OUTPUT_TYPE,
+            &md5,
+            OUTPUT_DEFINITION,
+            output_options(),
+        )
+        .expect("an output publisher");
+    let late_definition = "uint8 data\nuint8 extra\n";
+    let late_md5 = md5_from_definition(OUTPUT_TYPE, late_definition).expect("MD5");
+    let mut responder = Responder::new(&bus, PARTICIPANT);
+    let mut waitset = WaitSet::new(&bus).expect("the participant's executor");
+    let input = recording_path("input_late_stream");
+    write_input(&input);
+    let output_path = recording_path("output_late_stream");
+    let (mut recorder, _recorder_out) = spawn_recorder(&output_path, &["--nodes", PARTICIPANT]);
+    let mut player = spawn_player(&input);
+
+    let began = Instant::now();
+    let mut values = BTreeSet::new();
+    let mut late = None;
+    let status = loop {
+        let exited = recorder.try_wait().expect("the recorder's status");
+        if let Some(error) = waitset.run_for(Duration::from_millis(1)).err() {
+            panic!("the participant's executor failed: {error}");
+        }
+        for sample in responder.receive() {
+            if values.insert(sample.nanos) {
+                if values.len() == 3 {
+                    // The reader is stopped while the new stream is made and sends, so that it
+                    // cannot follow the stream before its first frames are out.
+                    let pid = pid_of(&recorder);
+                    kill(pid, Signal::SIGSTOP).expect("stop the recorder");
+                    let mut stream = bus
+                        .publish_raw_configured(
+                            OUTPUT_TOPIC,
+                            OUTPUT_TYPE,
+                            &late_md5,
+                            late_definition,
+                            output_options(),
+                        )
+                        .expect("a stream that joins the name");
+                    for value in 0..PER_VALUE {
+                        assert!(stream.publish(&[value, 0]), "a message on the new stream");
+                    }
+                    kill(pid, Signal::SIGCONT).expect("resume the recorder");
+                    late = Some(stream);
+                } else if let Some(stream) = late.as_mut() {
+                    for value in 0..PER_VALUE {
+                        assert!(stream.publish(&[value, 0]), "a message on the new stream");
+                    }
+                }
+                for value in 0..PER_VALUE {
+                    assert!(output.publish(&[value]), "a message on {OUTPUT_TOPIC}");
+                }
+            }
+            responder.answer(sample);
+        }
+        if let Some(status) = exited {
+            break status;
+        }
+        assert!(began.elapsed() < RUN_LIMIT, "the recorder did not end");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let _ = player.kill();
+    let _ = player.wait();
+    let recorder_stderr = stderr_text(&mut recorder);
+    drop(late);
+
+    assert!(!status.success(), "a recording that lacks samples is no success: {recorder_stderr}");
+    assert!(
+        recorder_stderr.contains("--sync")
+            && recorder_stderr.contains("before it was followed")
+            && recorder_stderr.contains(OUTPUT_TOPIC),
+        "{recorder_stderr}"
+    );
+    let _ = std::fs::remove_file(&output_path);
+    std::fs::remove_file(&input).expect("remove the input");
+}
+
+/// A stream that exists and refuses the recorder's subscription (its observer slots are taken
+/// by other tools) fails a `--sync` recording, naming the stream and the limit; outside `--sync`
+/// the recorder says so and records its other topics (H2a and L2).
+#[test]
+fn a_refused_subscription_fails_the_sync_recording_and_not_the_other_recordings() {
+    let bus = BusNode::new(PARTICIPANT).expect("the participant's bus");
+    let md5 = md5_from_definition(OUTPUT_TYPE, OUTPUT_DEFINITION).expect("MD5");
+    let _output = bus
+        .publish_raw_configured(
+            OUTPUT_TOPIC,
+            OUTPUT_TYPE,
+            &md5,
+            OUTPUT_DEFINITION,
+            output_options(),
+        )
+        .expect("an output publisher");
+    let other_topic = "/rs_other";
+    let mut other = bus
+        .publish_raw_configured(other_topic, OUTPUT_TYPE, &md5, OUTPUT_DEFINITION, output_options())
+        .expect("another output");
+    let hash = hypha_node::sdk::schema_hash_from_md5(&md5).expect("hash");
+    let tools = BusNode::new("rs_other_tools").expect("other tools");
+    let observers: Vec<_> = (0..hypha_node::sdk::UNDECLARED_SUBSCRIBER_SLOTS)
+        .map(|_| {
+            tools
+                .subscribe_raw_stream(
+                    OUTPUT_TOPIC,
+                    hash,
+                    hypha_node::sdk::SubscriberOptions::default(),
+                )
+                .expect("an observer")
+        })
+        .collect();
+
+    // --sync: it fails at once, naming the stream and the limit.
+    let sync_path = recording_path("output_refused_sync");
+    let output = Command::new(env!("CARGO_BIN_EXE_hypha"))
+        .args(["record", "--sync", "--topics", OUTPUT_TOPIC, "--compression", "none", "-o"])
+        .arg(&sync_path)
+        .output()
+        .expect("hypha record --sync");
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{text}");
+    assert!(
+        text.contains(OUTPUT_TOPIC) && text.contains("observer slots") && text.contains("--sync"),
+        "{text}"
+    );
+    assert!(!text.contains("cannot list"), "a refusal is not a listing failure: {text}");
+
+    // Without --sync: the refusal is told, and the other topic is recorded.
+    let path = recording_path("output_refused");
+    let mut recorder = Command::new(env!("CARGO_BIN_EXE_hypha"))
+        .args(["record", "--topics", OUTPUT_TOPIC, other_topic, "--compression", "none", "-o"])
+        .arg(&path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("hypha record");
+    let mut recorder_out = BufReader::new(recorder.stdout.take().expect("stdout"));
+    assert!(wait_until_following(&mut recorder_out));
+    let mut recorder = common::Killed(recorder);
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_millis(1500) {
+        assert!(other.publish(&[1]));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let status = stop_recorder(&mut recorder);
+    let errors = stderr_text(&mut recorder);
+    drop(observers);
+    assert!(status.success(), "{errors}");
+    assert!(errors.contains("observer slots") && errors.contains(OUTPUT_TOPIC), "{errors}");
+    let messages = read_messages(&path);
+    assert!(
+        messages.iter().any(|(topic, _)| topic == other_topic),
+        "the other topic: {messages:?}"
+    );
+    std::fs::remove_file(&path).expect("remove the recording");
+}

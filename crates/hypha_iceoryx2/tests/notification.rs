@@ -24,8 +24,9 @@ fn notification_wakes_another_transport_and_leaves_the_sample_queued() {
     let subscriber = subscriber_transport.subscribe(&spec).expect("subscribe");
     // A `WaitSet` opens its listener when the subscription attaches, before data flows.
     let listener = subscriber
-        .open_listener()
+        .open_listeners()
         .expect("open a listener")
+        .pop()
         .expect("a literal topic has an event service");
 
     let mut loan = publisher.loan(4).expect("loan");
@@ -57,8 +58,9 @@ fn a_latched_replay_wakes_a_subscriber_that_joined_late() {
         Iox2Transport::with_name(&unique_name("latched_subscriber")).expect("subscriber node");
     let subscriber = subscriber_transport.subscribe(&spec).expect("subscribe");
     let listener = subscriber
-        .open_listener()
+        .open_listeners()
         .expect("open a listener")
+        .pop()
         .expect("a notified subscriber has a listener");
 
     publisher_transport.replay_latched();
@@ -80,5 +82,5 @@ fn a_wildcard_subscription_has_no_listener() {
     // A pattern has no one event service to listen on: the subscription is polled.
     let pattern = TopicSpec::new(&format!("/{prefix}/*")).with_type("hypha_test/Data");
     let subscriber = transport.subscribe(&pattern).expect("subscribe");
-    assert!(subscriber.open_listener().expect("open a listener").is_none());
+    assert!(subscriber.open_listeners().expect("open a listener").is_empty());
 }

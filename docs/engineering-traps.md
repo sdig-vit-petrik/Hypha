@@ -214,6 +214,13 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   Budget for the whole pool: with subscribers that drain at different rates every slot was
   written, so a large-message topic needs the whole pool resident. Give a variable-size
   topic of known size a byte limit on its endpoints. Growable publishers are not checked.
+- **A sample's slice is not its message.** Since `IOX7` the message is the first
+  `payload_len` bytes of the iceoryx2 slice; the slice keeps the size the publisher loaned,
+  so a shrunk loan (`hypha_loan_shrink`) leaves bytes past the message (zeros, never an
+  earlier frame's). A new reader, raw or zero-copy (recorder, bridge, probe), takes
+  `Iox2Sample::payload()` after `receive_validated*`, never `sample.payload()` of iceoryx2
+  or the slice's length. `payload()` before verify gives no bytes for a header whose
+  `payload_len` exceeds the slice, but its bytes are not covered by any CRC yet.
 - **The transport uses `iceoryx2::service::ipc_threadsafe::Service`, not `ipc`.**
   `ipc` ports are `!Send`, and an executor worker serving an endpoint the
   application created on another thread would then be undefined behaviour.

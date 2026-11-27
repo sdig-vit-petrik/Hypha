@@ -1,5 +1,6 @@
 //! App state: topic/bus stats, sort/tab/filter state, and value formatting.
 
+use hypha_node::sdk::StreamKey;
 use hypha_tools::approx_f64;
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -15,7 +16,7 @@ fn carries<M: hypha_node::sdk::message::MessageIdentity>(schema_hash: u64) -> bo
 /// Interval between rate/bandwidth recalculation ticks.
 pub(crate) const RATE_TICK: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// Per-topic traffic counters and last-seen payload for the message inspector.
+/// Per-stream traffic counters and last-seen payload for the message inspector.
 pub(crate) struct TopicStats {
     pub data_type: String,
     pub md5: String,
@@ -47,16 +48,7 @@ impl TopicStats {
         }
     }
 
-    fn record_sample(&mut self, schema_hash: u64, payload: &[u8]) {
-        let schema_changed =
-            self.schema_hash != 0 && schema_hash != 0 && self.schema_hash != schema_hash;
-        if schema_changed {
-            self.data_type.clear();
-            self.md5.clear();
-        }
-        if schema_hash != 0 {
-            self.schema_hash = schema_hash;
-        }
+    fn record_sample(&mut self, payload: &[u8]) {
         let byte_len = payload.len() as u64;
         self.total_messages = self.total_messages.saturating_add(1);
         self.total_bytes = self.total_bytes.saturating_add(byte_len);
@@ -130,10 +122,66 @@ impl Tab {
     }
 }
 
+/// The streams the monitor has seen traffic on, by topic name and schema hash: a topic of two
+/// schemas is two entries. Looked up by name, a topic is its first stream.
+#[derive(Default)]
+pub(crate) struct Topics(BTreeMap<StreamKey, TopicStats>);
+
+impl Topics {
+    /// The first stream seen on `topic`, for a view that works by topic name.
+    pub(crate) fn get(&self, topic: &str) -> Option<&TopicStats> {
+        self.streams_of(topic).next().map(|(_, stats)| stats)
+    }
+
+    /// The stream of `topic` with the MD5 `md5`.
+    pub(crate) fn stream(&self, topic: &str, md5: &str) -> Option<&TopicStats> {
+        self.streams_of(topic).map(|(_, stats)| stats).find(|stats| stats.md5 == md5)
+    }
+
+    /// Every stream of `topic`, in schema hash order.
+    pub(crate) fn streams_of<'a>(
+        &'a self,
+        topic: &str,
+    ) -> impl Iterator<Item = (&'a StreamKey, &'a TopicStats)> + use<'a> {
+        let from = StreamKey { topic: topic.to_owned(), schema_hash: 0 };
+        let topic = topic.to_owned();
+        self.0.range(from..).take_while(move |(key, _)| key.topic == topic)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&StreamKey, &TopicStats)> {
+        self.0.iter()
+    }
+
+    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut TopicStats> {
+        self.0.values_mut()
+    }
+
+    /// The streams seen.
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Each topic name once, in order.
+    pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
+        let mut previous: Option<&str> = None;
+        self.0.keys().filter_map(move |key| {
+            let fresh = previous != Some(key.topic.as_str());
+            previous = Some(key.topic.as_str());
+            fresh.then_some(key.topic.as_str())
+        })
+    }
+}
+
 /// All mutable application state: bus-wide and per-topic traffic stats, UI selection, and
 /// filter/sort/pause toggles.
 pub(crate) struct AppState {
-    pub topics: BTreeMap<String, TopicStats>,
+    pub topics: Topics,
+    /// What the last listing showed of the publishers of each stream: an input whose own stream
+    /// has none, while another version has, is a version mismatch.
+    live_publishers: BTreeMap<StreamKey, usize>,
+    /// What the monitor has to say about the bus or itself, for the header: the screen is the
+    /// terminal's, so nothing goes to standard error while it runs.
+    pub notice: Option<String>,
     pub sort_by: SortColumn,
     pub active_tab: Tab,
     pub selected_topic: usize,
@@ -174,7 +222,9 @@ pub(crate) struct AppState {
 impl AppState {
     pub(crate) fn new() -> Self {
         Self {
-            topics: BTreeMap::new(),
+            topics: Topics::default(),
+            live_publishers: BTreeMap::new(),
+            notice: None,
             sort_by: SortColumn::Name,
             active_tab: Tab::TopicsBus,
             selected_topic: 0,
@@ -201,6 +251,19 @@ impl AppState {
             graph: crate::top::graph_ui::GraphView::default(),
             seen_nodes: BTreeMap::new(),
         }
+    }
+
+    /// Records the publishers each followed stream had at the last listing.
+    pub(crate) fn set_live_publishers(&mut self, live: BTreeMap<StreamKey, usize>) {
+        self.live_publishers = live;
+    }
+
+    /// Whether `stream` has a live publisher according to the last listing. A stream the
+    /// listing did not show, or has not been shown yet, has none.
+    pub(crate) fn has_publisher(&self, topic: &str, md5: &str) -> bool {
+        let Some(schema_hash) = hypha_node::sdk::schema_hash_from_md5(md5) else { return false };
+        let key = StreamKey { topic: topic.to_owned(), schema_hash };
+        self.live_publishers.get(&key).is_some_and(|publishers| *publishers > 0)
     }
 
     /// The nodes to show: the registry's `listed` nodes, then every node seen
@@ -296,9 +359,9 @@ impl AppState {
             }
         }
 
-        let stats =
-            self.topics.entry(topic.to_string()).or_insert_with(|| TopicStats::new(schema_hash));
-        stats.record_sample(schema_hash, payload);
+        let stream = StreamKey { topic: topic.to_owned(), schema_hash };
+        let stats = self.topics.0.entry(stream).or_insert_with(|| TopicStats::new(schema_hash));
+        stats.record_sample(payload);
     }
 
     /// Returns one topic whose retained schema identity is still unresolved.
@@ -307,12 +370,12 @@ impl AppState {
         retry_at: &std::collections::BTreeMap<(String, u64), Instant>,
         now: Instant,
     ) -> Option<(String, u64)> {
-        self.topics.iter().find_map(|(topic, stats)| {
-            let key = (topic.clone(), stats.schema_hash);
+        self.topics.iter().find_map(|(stream, stats)| {
+            let key = (stream.topic.clone(), stream.schema_hash);
             let unresolved = stats.schema_hash != 0
                 && (stats.data_type.is_empty() || stats.md5.is_empty())
                 && retry_at.get(&key).is_none_or(|deadline| *deadline <= now);
-            unresolved.then(|| (topic.clone(), stats.schema_hash))
+            unresolved.then_some(key)
         })
     }
 
@@ -324,12 +387,10 @@ impl AppState {
         data_type: &str,
         md5: &str,
     ) {
-        let Some(stats) = self.topics.get_mut(topic) else {
+        let stream = StreamKey { topic: topic.to_owned(), schema_hash };
+        let Some(stats) = self.topics.0.get_mut(&stream) else {
             return;
         };
-        if stats.schema_hash != schema_hash {
-            return;
-        }
         data_type.clone_into(&mut stats.data_type);
         md5.clone_into(&mut stats.md5);
     }
@@ -362,14 +423,14 @@ impl AppState {
         }
     }
 
-    /// Topics visible under the current filter, sorted by the active `sort_by` column.
-    pub(crate) fn visible_topics(&self) -> Vec<(&String, &TopicStats)> {
+    /// Streams visible under the current filter, sorted by the active `sort_by` column.
+    pub(crate) fn visible_topics(&self) -> Vec<(&StreamKey, &TopicStats)> {
         let query = self.filter_query.as_str();
-        let mut list: Vec<(&String, &TopicStats)> = self
+        let mut list: Vec<(&StreamKey, &TopicStats)> = self
             .topics
             .iter()
-            .filter(|(topic, stats)| {
-                query.is_empty() || topic.contains(query) || stats.data_type.contains(query)
+            .filter(|(stream, stats)| {
+                query.is_empty() || stream.topic.contains(query) || stats.data_type.contains(query)
             })
             .collect();
 
@@ -381,7 +442,7 @@ impl AppState {
                 b.rate_hz.partial_cmp(&a.rate_hz).unwrap_or(std::cmp::Ordering::Equal)
             }),
             SortColumn::Messages => list.sort_by_key(|(_, s)| std::cmp::Reverse(s.total_messages)),
-            SortColumn::Name => list.sort_by_key(|(t, _)| (*t).clone()),
+            SortColumn::Name => list.sort_by_key(|(stream, _)| (*stream).clone()),
         }
         list
     }
@@ -402,10 +463,10 @@ impl AppState {
         self.node_introspections.get(node_name)
     }
 
-    /// Active topics whose names begin with `/<node_name>/`.
-    pub(crate) fn node_scoped_topics(&self, node_name: &str) -> Vec<(&String, &TopicStats)> {
+    /// Active streams whose topic names begin with `/<node_name>/`.
+    pub(crate) fn node_scoped_topics(&self, node_name: &str) -> Vec<(&StreamKey, &TopicStats)> {
         let prefix = format!("/{node_name}/");
-        self.topics.iter().filter(|(topic, _)| topic.starts_with(&prefix)).collect()
+        self.topics.iter().filter(|(stream, _)| stream.topic.starts_with(&prefix)).collect()
     }
 }
 
@@ -506,7 +567,8 @@ mod tests {
         for topic in ["/zeta", "/alpha", "/mid"] {
             state.on_sample(topic, 1, &[0]);
         }
-        let names: Vec<&str> = state.visible_topics().iter().map(|(t, _)| t.as_str()).collect();
+        let names: Vec<&str> =
+            state.visible_topics().iter().map(|(t, _)| t.topic.as_str()).collect();
         assert_eq!(names, ["/alpha", "/mid", "/zeta"]);
         assert_eq!(state.sort_by.next(), SortColumn::Bandwidth);
     }
@@ -590,6 +652,7 @@ mod tests {
                 id: 1,
                 topic: "/plan_request".to_string(),
                 data_type: "std_msgs/String".to_string(),
+                md5: "992ce8a1687cec8c8bd883ec73ca41d1".to_string(),
                 queue_depth: 5,
                 latched: false,
                 output_cycle: String::new(),
@@ -599,6 +662,7 @@ mod tests {
                 id: 2,
                 topic: "/plan_reply".to_string(),
                 data_type: "std_msgs/String".to_string(),
+                md5: "992ce8a1687cec8c8bd883ec73ca41d1".to_string(),
                 queue_depth: 0,
                 latched: true,
                 output_cycle: String::new(),

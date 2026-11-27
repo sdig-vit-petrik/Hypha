@@ -541,7 +541,7 @@ fn a_committed_tick_with_an_input_allocates_nothing() {
 }
 
 #[test]
-fn a_loan_adds_one_allocation_and_a_pool_refusal_takes_a_sequence_but_an_unsent_loan_does_not() {
+fn a_loan_adds_one_allocation_and_a_refused_loan_takes_a_sequence_but_an_unsent_loan_does_not() {
     let harness = Harness::new("encode_loan");
     let (publisher, subscriber) = harness.publisher(1);
     let send = |bytes: &[u8]| unsafe { common::replay::send_payload(publisher, bytes) };
@@ -559,12 +559,13 @@ fn a_loan_adds_one_allocation_and_a_pool_refusal_takes_a_sequence_but_an_unsent_
     let mut bytes = ptr::null_mut();
     assert_eq!(
         unsafe { hypha_publisher_loan_frame(publisher, 8, &raw mut loan, &raw mut bytes) },
-        HyphaStatus::PoolExhausted
+        HyphaStatus::LoanLimit,
+        "the publisher's only loan is held: its loan count refuses, not the pool"
     );
     unsafe { hypha_loan_drop(held) };
     send(&[2; 8]);
-    // Sent 1, 2, 3, 5. The loan given up unsent takes no number, and the refused loan
-    // (4) is a dropped sample, so the subscriber counts that one missing value.
+    // Sent 1, 2, 3, 5. The loan given up unsent takes no number, and the refused plain
+    // loan (4) is a dropped sample, so the subscriber counts that one missing value.
     assert_eq!(drain(subscriber), 4);
     assert_eq!(missing(subscriber), 1);
     unsafe {

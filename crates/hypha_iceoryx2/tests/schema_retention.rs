@@ -8,7 +8,7 @@ use support::sealed_send;
 use std::time::Duration;
 
 use hypha_core::port::{SchemaSelector, TopicSpec};
-use hypha_iceoryx2::{Iox2Transport, service_name_for};
+use hypha_iceoryx2::{Iox2Transport, stream_service_name};
 use hypha_testkit::unique_name;
 use hypha_wire::schema_record::parse_schema_record;
 
@@ -24,10 +24,10 @@ fn lookup(
 }
 
 #[test]
-fn data_service_name_is_the_topic_without_its_leading_slash() {
+fn data_service_name_is_the_topic_without_its_leading_slash_and_the_schema_hash() {
     let topic = "/camera/image";
-    assert_eq!(service_name_for(topic), "camera/image");
-    assert_eq!(service_name_for("camera/image"), "camera/image");
+    assert_eq!(stream_service_name(topic, 0xd9d2_13e8_c146_065e), "camera/image@d9d213e8c146065e");
+    assert_eq!(stream_service_name("camera/image", 0), "camera/image@0000000000000000");
 }
 
 #[test]
@@ -125,7 +125,12 @@ fn wildcard_data_subscription_does_not_discover_schema_services() {
         .with_definition("uint32 value");
     let publisher = transport.publish(&spec).expect("publisher");
     let wildcard = transport
-        .subscribe(&TopicSpec::new(&pattern).with_type("std_msgs/String").keeping(2))
+        .subscribe(
+            &TopicSpec::new(&pattern)
+                .with_type("std_msgs/String")
+                .keeping(2)
+                .reading_every_schema(),
+        )
         .expect("wildcard subscriber");
     assert!(wildcard.try_receive().expect("wildcard discovery").is_none());
     let mut loan = publisher.loan(1).expect("loan");
@@ -169,13 +174,14 @@ fn schema_stays_resolvable_while_a_subscriber_holds_the_topic() {
         .with_md5("d9d213e8c146065ec958333c617eb1a6")
         .with_definition("uint32 value");
     let publisher = transport.publish(&spec).expect("publisher");
-    // An untyped subscriber writes no record of its own: it only holds the topic.
-    let subscriber = transport.subscribe(&TopicSpec::new(&topic)).expect("subscriber");
+    // A subscriber of every schema writes no record of its own: it only holds the stream.
+    let subscriber =
+        transport.subscribe(&TopicSpec::new(&topic).reading_every_schema()).expect("subscriber");
 
     drop(publisher);
     assert!(lookup(&transport, &topic, &spec.md5).expect("schema call after drop").is_some());
 
-    // The last endpoint of the topic takes its records with it.
+    // The last endpoint of the stream takes its record with it.
     let topic_dir = hypha_iceoryx2::schema_file_path(&topic, 0)
         .expect("schema path")
         .parent()

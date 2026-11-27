@@ -191,20 +191,28 @@ struct BusRoute {
 }
 
 /// The typed subscription of a `HyphaToRos1` route, once its hypha publisher has opened
-/// the topic. `None` until then.
+/// the topic. `None` until then. A route that names its ROS identity reads the stream of
+/// its MD5 alone, so a frame of another version is never sent to ROS under the route's
+/// type; an opaque route reads every stream of the topic.
 fn open_hypha_input(
     bus: &BusNode,
     descriptor: &BridgeRoute,
 ) -> Result<Option<RawSubscriber>, BridgeError> {
+    let md5 = if descriptor.has_ros_identity() { descriptor.effective_ros_md5() } else { "" };
+    let stream = hypha_node::sdk::schema_hash_from_md5(md5);
     let listed = bus.list_topics().map_err(BridgeError::Bus)?;
-    if !listed.iter().any(|entry| entry.name == descriptor.hypha_topic) {
+    let opened = listed.iter().any(|entry| {
+        entry.name == descriptor.hypha_topic
+            && stream.is_none_or(|schema_hash| entry.schema_hash == schema_hash)
+    });
+    if !opened {
         return Ok(None);
     }
     // Typed, declaring no policy; depth zero is the service's depth.
     bus.subscribe_raw_with_schema(
         &descriptor.hypha_topic,
         descriptor.effective_ros_type(),
-        "",
+        md5,
         SubscriberOptions::default().keeping(0),
     )
     .map(Some)

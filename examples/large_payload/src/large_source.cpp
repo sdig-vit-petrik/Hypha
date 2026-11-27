@@ -114,12 +114,9 @@ int runSource(hypha::Node& node, const Options& options)
         "large_source: {} MB at {} Hz", options.sizeBytes / (1024 * 1024), options.rateHz
     );
 
-    // A raw identity needs a data type and a 32-digit lower-case hex md5.
     std::expected<hypha::RawPublisher, hypha::Status> created = hypha::rawPublisher(
         "/large_frames",
-        {.dataType = "hypha/LargeFrame",
-         .md5 = "0123456789abcdef0123456789abcdef",
-         .definition = ""},
+        hypha_bench::LARGE_FRAME_TYPE,
         hypha_bench::LARGE_FRAME_QOS,
         // Bound the payload to the frame size: the pool is then one fixed segment.
         hypha::maxPayloadDynamic(options.sizeBytes)

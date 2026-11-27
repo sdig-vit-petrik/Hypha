@@ -8,15 +8,16 @@
 //!
 //! ```text
 //! field                  type    encoding
-//! magic                  u32     FRAME_MAGIC, 0x3658_4F49 (bytes 0x49 0x4F 0x58 0x36, "IOX6")
+//! magic                  u32     FRAME_MAGIC, 0x3758_4F49 (bytes 0x49 0x4F 0x58 0x37, "IOX7")
 //! flags                  u32     bit 0 = FLAG_LATCHED
 //! schema_hash            u64
 //! publisher_id           u64
 //! sequence               u64
 //! transport_sent_nanos   u64
 //! framework_sent_nanos   u64
-//! crc                    u32     CRC-32C over the fields above and the payload, started
-//!                                from the code of the topic (frame::TopicCode)
+//! crc                    u32     CRC-32C over the fields above, payload_len and the
+//!                                payload, started from the code of the topic (frame::TopicCode)
+//! payload_len            u32     the message bytes: the first payload_len of the slice
 //! ```
 //!
 //! Every field is little-endian. [`frame::seal`] computes the CRC and [`frame::verify`]

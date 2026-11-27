@@ -191,7 +191,7 @@ type IntervalGuards<'w> = Vec<(usize, iceoryx2::waitset::WaitSetGuard<'w, 'stati
 /// Create every native attachment for one run, before any callback runs.
 fn build_guards<'w, 'l>(
     waitset: &'w iceoryx2::waitset::WaitSet<Ipc>,
-    listeners: &'l [Option<Listener<Ipc>>],
+    listeners: &'l [Vec<Listener<Ipc>>],
     registrations: &[Registration],
     event_guards: &mut EventGuards<'w, 'l>,
     interval_guards: &mut IntervalGuards<'w>,
@@ -200,10 +200,13 @@ fn build_guards<'w, 'l>(
         if registration.trigger == Trigger::Timed {
             continue;
         }
-        let listener = listeners.get(index).and_then(Option::as_ref);
-        let attached = match (registration.trigger, listener) {
-            (Trigger::Event, Some(listener)) => {
-                waitset.attach_notification(listener).map(|guard| event_guards.push((index, guard)))
+        let attached = match (registration.trigger, listeners.get(index)) {
+            (Trigger::Event, Some(listeners)) if !listeners.is_empty() => {
+                listeners.iter().try_for_each(|listener| {
+                    waitset
+                        .attach_notification(listener)
+                        .map(|guard| event_guards.push((index, guard)))
+                })
             }
             (Trigger::Periodic(period), _) => {
                 waitset.attach_interval(period).map(|guard| interval_guards.push((index, guard)))
@@ -219,7 +222,7 @@ fn build_guards<'w, 'l>(
 
 /// Mark every attachment that has work, and consume its notifications.
 fn mark_ready(
-    listeners: &[Option<Listener<Ipc>>],
+    listeners: &[Vec<Listener<Ipc>>],
     registrations: &mut [Registration],
     event_guards: &EventGuards<'_, '_>,
     interval_guards: &IntervalGuards<'_>,
@@ -239,7 +242,7 @@ fn mark_ready(
 /// Consume a notified registration's notifications before the dispatcher reads, so an
 /// unread event cannot spin the run loop.
 fn mark_event_ready(
-    listeners: &[Option<Listener<Ipc>>],
+    listeners: &[Vec<Listener<Ipc>>],
     registrations: &[Registration],
     state: &TurnState,
     index: usize,
@@ -247,11 +250,9 @@ fn mark_event_ready(
     if !state.ready.get(index).copied().unwrap_or(false) {
         return None;
     }
-    let Some(Some(listener)) = listeners.get(index) else {
-        return None;
-    };
     let registration = registrations.get(index)?;
-    drain(listener).err().map(|cause| RunReport::runtime_failed(cause, Some(registration.id)))
+    let drained = listeners.get(index)?.iter().try_for_each(|listener| drain(listener).map(drop));
+    drained.err().map(|cause| RunReport::runtime_failed(cause, Some(registration.id)))
 }
 
 /// A periodic registration is ready for exactly one turn per tick.

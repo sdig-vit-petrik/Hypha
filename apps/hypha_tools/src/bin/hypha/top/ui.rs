@@ -4,10 +4,11 @@ use crate::top::inspector::{SchemaCache, decode_lines};
 use crate::top::intercept::{Layout as InterceptLayout, layout_for};
 use crate::top::intercept_ui::{draw_body, draw_hints, draw_too_small};
 use crate::top::state::{AppState, Tab, format_bandwidth, format_bytes, format_rate};
-use hypha_node::sdk::BusNode;
 use hypha_node::sdk::NodeInfo;
+use hypha_node::sdk::{BusNode, StreamKey};
 use hypha_tools::approx_f64;
 use hypha_tools::proc_usage::{Usage, format_memory};
+use hypha_tools::stream::{fit_type_label, stream_label};
 use hypha_tools::theme::{ACCENT, ACCENT2, BG, ERR, FG, MUTED, OK, ON_ACCENT, SURFACE, WARN};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -171,6 +172,15 @@ fn draw_header(f: &mut Frame<'_>, area: Rect, state: &AppState) {
         Span::raw("   "),
         status_span,
     ]);
+    let line = match &state.notice {
+        Some(notice) => {
+            let mut spans = line.spans;
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(notice.clone(), Style::default().fg(WARN)));
+            Line::from(spans)
+        }
+        None => line,
+    };
     f.render_widget(Paragraph::new(line), area);
 }
 
@@ -281,15 +291,14 @@ fn draw_topics_table(
     let header = header_row(&["TOPIC", "TYPE", "RATE (Hz)", "BW (KB/s)", "MSGS", "TOTAL SIZE"]);
 
     let selected = state.selected_topic;
-    let rows = visible.iter().enumerate().map(|(i, (topic, stats))| {
+    let type_width = column_width(table_area, 28);
+    let rows = visible.iter().enumerate().map(|(i, (stream, stats))| {
         let is_selected = i == selected;
         let base = row_base(is_selected);
-        let data_type_display =
-            if stats.data_type.is_empty() { "?" } else { stats.data_type.as_str() };
 
         Row::new(vec![
-            Cell::from((*topic).clone()).style(tone(is_selected, base, FG)),
-            Cell::from(data_type_display.to_string()).style(tone(is_selected, base, OK)),
+            Cell::from(stream.topic.clone()).style(tone(is_selected, base, FG)),
+            Cell::from(type_cell(stats, type_width)).style(tone(is_selected, base, OK)),
             Cell::from(format_rate(stats.rate_hz)).style(tone(is_selected, base, ACCENT2)),
             Cell::from(format_bandwidth(stats.bandwidth_kbs)).style(tone(is_selected, base, WARN)),
             Cell::from(stats.total_messages.to_string()).style(tone(is_selected, base, FG)),
@@ -307,10 +316,10 @@ fn draw_topics_table(
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(30),
-            Constraint::Percentage(24),
+            Constraint::Percentage(28),
+            Constraint::Percentage(28),
             Constraint::Percentage(12),
-            Constraint::Percentage(14),
+            Constraint::Percentage(12),
             Constraint::Percentage(10),
             Constraint::Percentage(10),
         ],
@@ -319,6 +328,24 @@ fn draw_topics_table(
     .block(muted_block().title(title));
 
     f.render_stateful_widget(table, table_area, table_state);
+}
+
+/// The type of a stream and the start of its MD5, so two versions of a type are two
+/// different rows: `?` while its schema is not resolved.
+fn type_cell(stats: &crate::top::state::TopicStats, width: usize) -> String {
+    if stats.data_type.is_empty() || stats.md5.is_empty() {
+        return "?".to_owned();
+    }
+    fit_type_label(&stats.data_type, &stats.md5, width)
+}
+
+/// The columns of a table column that takes `percent` of `area`, less the gap before the next.
+fn column_width(area: Rect, percent: u16) -> usize {
+    usize::from(area.width)
+        .saturating_mul(usize::from(percent))
+        .checked_div(100)
+        .unwrap_or(0)
+        .saturating_sub(1)
 }
 
 pub(crate) fn sorted_nodes(nodes: &[NodeInfo]) -> Vec<&NodeInfo> {
@@ -373,6 +400,7 @@ fn format_node_status(
 fn format_node_inputs(
     node_st: Option<&(hypha_node::sdk::msgs::hypha_msgs::NodeState, Instant)>,
     intro: Option<&hypha_node::sdk::msgs::hypha_msgs::NodeIntrospection>,
+    app: &AppState,
     is_selected: bool,
     base: Style,
 ) -> (String, Style) {
@@ -399,10 +427,28 @@ fn format_node_inputs(
             })
             .count();
 
+        // An input whose own stream has no live publisher while another version has: the
+        // mismatch a migration must not leave behind, whatever the input's verdict.
+        let other_version = st
+            .inputs
+            .iter()
+            .filter(|i| !i.other_schemas.is_empty() && !app.has_publisher(&i.topic, &i.md5))
+            .count();
+        let version = if other_version > 0 {
+            format!(", {other_version} OTHER VERSION")
+        } else {
+            String::new()
+        };
+
         if stale > 0 {
-            (format!("{usable}/{total} ({stale} STALE)"), tone_bold(is_selected, base, ERR))
+            (
+                format!("{usable}/{total} ({stale} STALE{version})"),
+                tone_bold(is_selected, base, ERR),
+            )
         } else if wait > 0 {
-            (format!("{usable}/{total} ({wait} WAIT)"), tone_bold(is_selected, base, WARN))
+            (format!("{usable}/{total} ({wait} WAIT{version})"), tone_bold(is_selected, base, WARN))
+        } else if other_version > 0 {
+            (format!("{usable}/{total} OK{version}"), tone_bold(is_selected, base, ERR))
         } else {
             (format!("{usable}/{total} OK"), tone(is_selected, base, OK))
         }
@@ -451,7 +497,8 @@ fn draw_nodes_list_panel(
         let (status_text, status_style) =
             format_node_status(node.is_alive, node_st, intro, is_selected, base);
         let name_display = if node.name.is_empty() { "<unnamed>" } else { node.name.as_str() };
-        let (inputs_text, inputs_style) = format_node_inputs(node_st, intro, is_selected, base);
+        let (inputs_text, inputs_style) =
+            format_node_inputs(node_st, intro, state, is_selected, base);
 
         let pubs_text = intro.map_or_else(
             || state.node_scoped_topics(&node.name).len().to_string(),
@@ -731,28 +778,41 @@ fn draw_node_summary_card(
     f.render_widget(block, area);
 }
 
-/// The bus rate and bandwidth of a topic as text; zero when no traffic was seen.
-fn bus_rates(state: &AppState, topic: &str) -> (String, String) {
-    match state.topics.get(topic) {
+/// The bus rate and bandwidth of the stream of `topic` and `md5` as text; zero when no
+/// traffic was seen. A stream with no MD5 (an untyped endpoint) is the topic's first.
+fn bus_rates(state: &AppState, topic: &str, md5: &str) -> (String, String) {
+    let seen =
+        if md5.is_empty() { state.topics.get(topic) } else { state.topics.stream(topic, md5) };
+    match seen {
         Some(seen) => (format_rate(seen.rate_hz), format_bandwidth(seen.bandwidth_kbs)),
         None => ("0.0 Hz".to_string(), "0.0 KB/s".to_string()),
     }
+}
+
+/// The type of an introspected endpoint and the start of its MD5; `?` for an untyped one.
+fn endpoint_type(
+    endpoint: &hypha_node::sdk::msgs::hypha_msgs::IntrospectedEndpoint,
+    width: usize,
+) -> String {
+    if endpoint.data_type.is_empty() {
+        return "?".to_owned();
+    }
+    fit_type_label(&endpoint.data_type, &endpoint.md5, width)
 }
 
 /// One publisher or subscriber row of the endpoints table.
 fn endpoint_row(
     state: &AppState,
     tag: Cell<'static>,
-    topic: &str,
-    data_type: &str,
+    endpoint: &hypha_node::sdk::msgs::hypha_msgs::IntrospectedEndpoint,
     policy: String,
+    type_width: usize,
 ) -> Row<'static> {
-    let (hz_str, bw_str) = bus_rates(state, topic);
-    let data_type = if data_type.is_empty() { "?" } else { data_type };
+    let (hz_str, bw_str) = bus_rates(state, &endpoint.topic, &endpoint.md5);
     Row::new(vec![
         tag,
-        Cell::from(topic.to_owned()).style(Style::default().fg(FG)),
-        Cell::from(data_type.to_owned()).style(Style::default().fg(OK)),
+        Cell::from(endpoint.topic.clone()).style(Style::default().fg(FG)),
+        Cell::from(endpoint_type(endpoint, type_width)).style(Style::default().fg(OK)),
         Cell::from(hz_str).style(Style::default().fg(ACCENT2)),
         Cell::from(bw_str).style(Style::default().fg(WARN)),
         Cell::from(policy).style(Style::default().fg(MUTED)),
@@ -767,6 +827,7 @@ fn draw_node_endpoints_table(
     state: &AppState,
 ) {
     let header = header_row(&["DIR", "TOPIC", "TYPE", "BUS HZ", "BW", "POLICY"]);
+    let type_width = column_width(area, 25);
 
     let pub_rows = intro.publishers.iter().map(|p| {
         let policy = if p.latched {
@@ -777,13 +838,13 @@ fn draw_node_endpoints_table(
             "default".to_string()
         };
         let tag = Cell::from("[PUB]").style(Style::default().fg(OK).add_modifier(Modifier::BOLD));
-        endpoint_row(state, tag, &p.topic, &p.data_type, policy)
+        endpoint_row(state, tag, p, policy, type_width)
     });
 
     let sub_rows = intro.subscribers.iter().map(|s| {
         let tag =
             Cell::from("[SUB]").style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD));
-        endpoint_row(state, tag, &s.topic, &s.data_type, format!("queue {}", s.queue_depth))
+        endpoint_row(state, tag, s, format!("queue {}", s.queue_depth), type_width)
     });
 
     let all_rows: Vec<Row<'_>> = pub_rows.chain(sub_rows).collect();
@@ -898,6 +959,59 @@ fn format_input_policy(input: &hypha_node::sdk::msgs::hypha_msgs::IntrospectedIn
     policy_parts.join(", ")
 }
 
+/// The verdict row of the input that `binding` names: the one of its topic and MD5, so the
+/// inputs of two versions on one topic are judged apart. A binding with no endpoint row, so no
+/// MD5, is found by its topic alone only when one input has that topic: with two, none is
+/// its own.
+fn verdict_of<'a>(
+    state: &'a hypha_node::sdk::msgs::hypha_msgs::NodeState,
+    binding: &hypha_node::sdk::msgs::hypha_msgs::IntrospectedInput,
+    md5: &str,
+) -> Option<&'a hypha_node::sdk::msgs::hypha_msgs::RequiredInput> {
+    let mut on_topic = state.inputs.iter().filter(|input| input.topic == binding.topic);
+    if md5.is_empty() {
+        let only = on_topic.next()?;
+        return on_topic.next().is_none().then_some(only);
+    }
+    on_topic.find(|input| input.md5 == md5)
+}
+
+/// The other versions of an input's topic that a live publisher sends, as its node last
+/// found them: `not checked` before the node's first check, `none`, or each type with the
+/// start of its MD5. Red when it lists a version and the input's own stream has no live
+/// publisher, whatever the verdict (an input without a limit stays `Usable` on its last old
+/// value); yellow when the input's own stream is published as well, as in a migration.
+fn other_schemas_cell(
+    verdict: Option<&hypha_node::sdk::msgs::hypha_msgs::RequiredInput>,
+    own_is_published: bool,
+) -> (String, Style) {
+    let Some(verdict) = verdict else {
+        return ("-".to_owned(), Style::default().fg(MUTED));
+    };
+    if !verdict.other_schemas_checked {
+        return ("not checked".to_owned(), Style::default().fg(MUTED));
+    }
+    if verdict.other_schemas.is_empty() {
+        return ("none".to_owned(), Style::default().fg(MUTED));
+    }
+    let versions: Vec<String> = verdict
+        .other_schemas
+        .iter()
+        .map(|schema| {
+            let known = (!schema.data_type.is_empty() && !schema.md5.is_empty()).then(|| {
+                hypha_node::sdk::ResolvedSchema {
+                    data_type: schema.data_type.clone(),
+                    md5: schema.md5.clone(),
+                    definition: String::new(),
+                }
+            });
+            stream_label(known.as_ref(), schema.schema_hash)
+        })
+        .collect();
+    let style = Style::default().fg(if own_is_published { WARN } else { ERR });
+    (versions.join(", "), style)
+}
+
 fn draw_node_bindings_table(
     f: &mut Frame<'_>,
     area: Rect,
@@ -910,11 +1024,14 @@ fn draw_node_bindings_table(
         "VERDICT",
         "CYCLE",
         "INPUT TOPIC",
+        "TYPE",
         "BUS HZ",
         "BUS BW",
         "DROP/REJ/UNDEC",
+        "OTHER SCHEMAS",
         "POLICY / SUPERVISION",
     ]);
+    let type_width = column_width(area, 16);
 
     let rows = intro.input_bindings.iter().map(|input| {
         let (role_text, role_style) = if input.required {
@@ -923,23 +1040,31 @@ fn draw_node_bindings_table(
             ("OPTIONAL", Style::default().fg(MUTED))
         };
 
-        let verdict_info =
-            node_st.and_then(|(st, _)| st.inputs.iter().find(|i| i.topic == input.topic));
+        let endpoint = intro.subscribers.iter().find(|row| row.id == input.subscriber_id);
+        let md5 = endpoint.map_or("", |row| row.md5.as_str());
+        let verdict_info = node_st.and_then(|(st, _)| verdict_of(st, input, md5));
         let (verdict_text, verdict_style) = format_input_verdict(verdict_info, input.required);
+        let own_md5 = verdict_info.map_or(md5, |verdict| verdict.md5.as_str());
+        let (others_text, others_style) =
+            other_schemas_cell(verdict_info, state.has_publisher(&input.topic, own_md5));
 
-        let (hz_str, bw_str) = bus_rates(state, &input.topic);
+        let (hz_str, bw_str) = bus_rates(state, &input.topic, md5);
 
         let policy_str = format_input_policy(input);
         let counters = verdict_info.map_or_else(|| "-".to_owned(), input_counters_text);
+        let type_text =
+            endpoint.map_or_else(|| "?".to_owned(), |row| endpoint_type(row, type_width));
 
         Row::new(vec![
             Cell::from(role_text).style(role_style),
             Cell::from(verdict_text).style(verdict_style),
             Cell::from(input.cycle.clone()).style(Style::default().fg(WARN)),
             Cell::from(input.topic.clone()).style(Style::default().fg(FG)),
+            Cell::from(type_text).style(Style::default().fg(OK)),
             Cell::from(hz_str).style(Style::default().fg(ACCENT2)),
             Cell::from(bw_str).style(Style::default().fg(WARN)),
             Cell::from(counters).style(Style::default().fg(FG)),
+            Cell::from(others_text).style(others_style),
             Cell::from(policy_str).style(Style::default().fg(MUTED)),
         ])
         .height(1)
@@ -951,12 +1076,14 @@ fn draw_node_bindings_table(
         [
             Constraint::Length(10),
             Constraint::Length(14),
-            Constraint::Length(14),
-            Constraint::Percentage(24),
-            Constraint::Percentage(9),
-            Constraint::Percentage(9),
+            Constraint::Length(12),
+            Constraint::Percentage(16),
+            Constraint::Percentage(16),
+            Constraint::Percentage(6),
+            Constraint::Percentage(6),
             Constraint::Length(15),
-            Constraint::Percentage(20),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
         ],
     )
     .header(header)
@@ -968,15 +1095,15 @@ fn draw_node_scoped_topics_table(
     f: &mut Frame<'_>,
     area: Rect,
     node_name: &str,
-    scoped: &[(&String, &crate::top::state::TopicStats)],
+    scoped: &[(&StreamKey, &crate::top::state::TopicStats)],
 ) {
     let header = header_row(&["TOPIC", "TYPE", "RATE (Hz)", "BW"]);
+    let type_width = column_width(area, 31);
 
-    let rows = scoped.iter().map(|(topic, stats)| {
-        let type_display = if stats.data_type.is_empty() { "?" } else { stats.data_type.as_str() };
+    let rows = scoped.iter().map(|(stream, stats)| {
         Row::new(vec![
-            Cell::from((*topic).clone()).style(Style::default().fg(FG)),
-            Cell::from(type_display.to_string()).style(Style::default().fg(OK)),
+            Cell::from(stream.topic.clone()).style(Style::default().fg(FG)),
+            Cell::from(type_cell(stats, type_width)).style(Style::default().fg(OK)),
             Cell::from(format_rate(stats.rate_hz)).style(Style::default().fg(ACCENT2)),
             Cell::from(format_bandwidth(stats.bandwidth_kbs)).style(Style::default().fg(WARN)),
         ])
@@ -1096,10 +1223,10 @@ fn draw_inspector_modal(
             if let Some(sel) = sorted.get(app_state.selected_node) {
                 let intro_topic = format!("/{}/introspection", sel.name);
                 let state_topic = format!("/{}/state", sel.name);
-                if let Some((t, s)) = app_state.topics.get_key_value(&intro_topic) {
-                    Some((t, s))
-                } else if let Some((t, s)) = app_state.topics.get_key_value(&state_topic) {
-                    Some((t, s))
+                if let Some(found) = app_state.topics.streams_of(&intro_topic).next() {
+                    Some(found)
+                } else if let Some(found) = app_state.topics.streams_of(&state_topic).next() {
+                    Some(found)
                 } else {
                     let scoped = app_state.node_scoped_topics(&sel.name);
                     scoped.first().copied()
@@ -1111,7 +1238,7 @@ fn draw_inspector_modal(
         Tab::Intercept | Tab::Graph | Tab::Help => None,
     };
 
-    let Some((topic, stats)) = target else {
+    let Some((stream, stats)) = target else {
         let modal_area = centered_rect(60, 20, area);
         f.render_widget(Clear, modal_area);
         let lines = vec![
@@ -1135,10 +1262,13 @@ fn draw_inspector_modal(
     let mut lines: Vec<Line<'_>> = Vec::new();
     lines.push(Line::from(vec![
         Span::styled(" Topic: ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled((*topic).clone(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            stream.topic.clone(),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  Type: "),
         Span::styled(
-            if stats.data_type.is_empty() { "?".to_string() } else { stats.data_type.clone() },
+            type_cell(stats, usize::MAX),
             Style::default().fg(OK).add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -1150,7 +1280,7 @@ fn draw_inspector_modal(
             Style::default().fg(WARN),
         ));
     } else {
-        match schema_cache.get(bus, topic, &stats.data_type, &stats.md5) {
+        match schema_cache.get(bus, &stream.topic, &stats.data_type, &stats.md5) {
             None => {
                 lines.push(Line::styled(
                     " (Schema not yet resolved -- waiting for beacon) ",
@@ -1186,7 +1316,7 @@ fn draw_inspector_modal(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(ACCENT))
-            .title(format!(" Message Inspector: {topic} "))
+            .title(format!(" Message Inspector: {} ", stream.topic))
             .title_style(Style::default().fg(FG).add_modifier(Modifier::BOLD))
             .style(Style::default().bg(BG)),
     );
@@ -1277,5 +1407,124 @@ mod tests {
         state.selected_topic = 49;
         render_topics(&mut state);
         assert_eq!(state.topics_table.offset(), offset);
+    }
+
+    type Input = hypha_node::sdk::msgs::hypha_msgs::RequiredInput;
+
+    fn input(topic: &str, md5: &str, verdict: u8) -> Input {
+        Input {
+            topic: topic.to_owned(),
+            data_type: "t/R".to_owned(),
+            md5: md5.to_owned(),
+            verdict,
+            ..Input::default()
+        }
+    }
+
+    fn other(
+        data_type: &str,
+        md5: &str,
+        schema_hash: u64,
+    ) -> hypha_node::sdk::msgs::hypha_msgs::TopicSchema {
+        hypha_node::sdk::msgs::hypha_msgs::TopicSchema {
+            schema_hash,
+            data_type: data_type.to_owned(),
+            md5: md5.to_owned(),
+        }
+    }
+
+    #[test]
+    fn other_schemas_are_shown_as_not_checked_none_or_each_version() {
+        let mut waiting = input("/a", "b3087778e93fcd34cc8d65bc54e850d1", Input::NEVER_ARRIVED);
+        assert_eq!(other_schemas_cell(None, false).0, "-");
+        assert_eq!(
+            other_schemas_cell(Some(&waiting), false).0,
+            "not checked",
+            "before the first check"
+        );
+
+        waiting.other_schemas_checked = true;
+        assert_eq!(other_schemas_cell(Some(&waiting), false).0, "none");
+
+        waiting.other_schemas =
+            vec![other("t/R", "f79835def461350458ead76f07016dd7", 1), other("", "", 0x0102)];
+        let (text, style) = other_schemas_cell(Some(&waiting), false);
+        assert_eq!(text, "t/R (f79835de), ? (0000000000000102)");
+        assert_eq!(style.fg, Some(ERR), "none of its own version is published: a mismatch");
+        assert_eq!(other_schemas_cell(Some(&waiting), true).1.fg, Some(WARN), "a migration");
+    }
+
+    #[test]
+    fn an_input_that_stays_usable_on_an_old_value_is_red_when_only_another_version_is_published() {
+        let mut stale_value = input("/a", "b3087778e93fcd34cc8d65bc54e850d1", Input::USABLE);
+        stale_value.other_schemas_checked = true;
+        stale_value.other_schemas = vec![other("t/R", "f79835def461350458ead76f07016dd7", 1)];
+        let own_is_published = false;
+        assert_eq!(other_schemas_cell(Some(&stale_value), own_is_published).1.fg, Some(ERR));
+    }
+
+    #[test]
+    fn the_verdict_of_a_binding_is_the_one_of_its_own_stream() {
+        let state = hypha_node::sdk::msgs::hypha_msgs::NodeState {
+            inputs: vec![
+                input("/a", "b3087778e93fcd34cc8d65bc54e850d1", Input::USABLE),
+                input("/a", "f79835def461350458ead76f07016dd7", Input::NEVER_ARRIVED),
+            ],
+            ..hypha_node::sdk::msgs::hypha_msgs::NodeState::default()
+        };
+        let binding = hypha_node::sdk::msgs::hypha_msgs::IntrospectedInput {
+            topic: "/a".to_owned(),
+            ..hypha_node::sdk::msgs::hypha_msgs::IntrospectedInput::default()
+        };
+        let second = verdict_of(&state, &binding, "f79835def461350458ead76f07016dd7").unwrap();
+        assert_eq!(second.verdict, Input::NEVER_ARRIVED);
+        let first = verdict_of(&state, &binding, "b3087778e93fcd34cc8d65bc54e850d1").unwrap();
+        assert_eq!(first.verdict, Input::USABLE);
+        assert!(verdict_of(&state, &binding, "00000000000000000000000000000000").is_none());
+        assert!(
+            verdict_of(&state, &binding, "").is_none(),
+            "with no MD5 and two inputs on the topic, neither is its own"
+        );
+    }
+
+    #[test]
+    fn two_versions_of_a_topic_are_two_rows_each_with_its_type_and_md5() {
+        let mut state = AppState::new();
+        let (md5_1, md5_2) =
+            ("b3087778e93fcd34cc8d65bc54e850d1", "f79835def461350458ead76f07016dd7");
+        for (md5, hash) in [(md5_1, 1_u64), (md5_2, 2)] {
+            state.on_sample("/odom", hash, &[0]);
+            state.apply_schema("/odom", hash, "t/R", md5);
+        }
+        let shown = render_topics(&mut state);
+        assert_eq!(shown.matches("/odom").count(), 2, "{shown}");
+        assert!(shown.contains("t/R (b3087778)") && shown.contains("t/R (f79835de)"), "{shown}");
+        assert_eq!(state.topics.names().count(), 1, "a name is one topic");
+        assert_eq!(state.topics.stream("/odom", md5_2).map(|stats| stats.schema_hash), Some(2));
+    }
+
+    #[test]
+    fn the_nodes_list_says_when_an_input_waits_while_another_version_is_published() {
+        let mut waiting = input("/a", "b3087778e93fcd34cc8d65bc54e850d1", Input::NEVER_ARRIVED);
+        let node = |inputs: Vec<Input>| {
+            (
+                hypha_node::sdk::msgs::hypha_msgs::NodeState {
+                    inputs,
+                    ..hypha_node::sdk::msgs::hypha_msgs::NodeState::default()
+                },
+                Instant::now(),
+            )
+        };
+        let shown = |state: &(hypha_node::sdk::msgs::hypha_msgs::NodeState, Instant)| {
+            format_node_inputs(Some(state), None, &AppState::new(), false, Style::default()).0
+        };
+        assert_eq!(shown(&node(vec![waiting.clone()])), "0/1 (1 WAIT)");
+
+        waiting.other_schemas = vec![other("t/R", "f79835def461350458ead76f07016dd7", 1)];
+        assert_eq!(shown(&node(vec![waiting.clone()])), "0/1 (1 WAIT, 1 OTHER VERSION)");
+
+        // An input without a limit stays usable on its last value: the other version is the news.
+        waiting.verdict = Input::USABLE;
+        assert_eq!(shown(&node(vec![waiting])), "1/1 OK, 1 OTHER VERSION");
     }
 }

@@ -121,6 +121,7 @@ fn endpoint_message(row: &EndpointRow) -> IntrospectedEndpoint {
         id: row.id,
         topic: row.topic.clone(),
         data_type: row.data_type.clone(),
+        md5: row.md5.clone(),
         queue_depth: u32::try_from(row.queue_depth).unwrap_or(u32::MAX),
         latched: row.latched,
         output_cycle,
