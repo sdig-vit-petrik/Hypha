@@ -43,6 +43,7 @@ Reference standards (background only; no compliance claim):
 | [features.md](features.md) | Every public capability once, with the question it answers and its users; the rules that keep hypha lean, the triage, and the owner's decisions. `./check.sh` fails on a C ABI function or public header that has no row. |
 | [Hypha Apps tools](tools.md) | Command-line tools maintained with their application source. |
 | [replay-flow-control.md](replay-flow-control.md) | Replay on simulated time: how `hypha play --clock` releases each chunk once the nodes have finished it, the recorder as a participant (`hypha record --sync`), the upstream hold of chained nodes, and its limits. |
+| [design/native-services.md](design/native-services.md) | Proposal for #132: native request and response from a `.srv`, the server and client execution model, lockstep, failure semantics, the API, the staging, and the spike that checks the transport. Not implemented. |
 | [Doxyfile](Doxyfile) | Optional HTML rendering of the public header comments (`doxygen docs/Doxyfile`, into `target/cpp-doc/`); no build or check runs it. |
 | [../AGENTS.md](../AGENTS.md) | Shared working instructions for Codex, Claude Code, and GitHub Copilot. |
 | [engineering-traps.md](engineering-traps.md) | Observed transport, execution, and integration failure modes; consult relevant entries when needed. |
