@@ -68,11 +68,11 @@ Notes:
   stream: it never reaches the subscriber, so it is no fault and no counter grows. A
   frame that does reach it with another `schema_hash` came from a sender that stamped a
   schema other than its stream's, and is a `schema_mismatch`. A publisher of another
-  definition is detected all the same: the subscriber counts the other definitions
-  published on its topic (`topic.other_schemas`) and its `~/state` row names them
-  (`RequiredInput.other_schemas`), also while its own definition is published too; while
-  its own stream has no publisher it also logs them after its no-publisher delay
-  (cpp-api.md §5).
+  definition is detected all the same: the subscriber counts the other definitions of its
+  topic that a live publisher sends (`topic.other_schemas`) and its `~/state` row names
+  them (`RequiredInput.other_schemas`), also while its own definition is published too,
+  within a second while the node runs and "not checked" before; while its own stream has
+  no publisher it also logs them after its no-publisher delay (cpp-api.md §5).
 - Each check covers its own faults, and none stands in for another. The CRC says
   nothing about order, the sequence nothing about age, and the send time nothing
   about content.

@@ -376,9 +376,13 @@ a message is migrated: version 1 and version 2 of `pkg::Odometry` (one type name
 definitions) run on the same topic while the nodes are rebuilt one by one.
 
 Another version on the topic is shown, never hidden: `sub.metrics().otherSchemas` counts
-the other MD5s that a publisher sends on the topic, and the `~/state` row of a cycle input
-names them (`RequiredInput.other_schemas`, type and MD5), checked once a second by the
-run. A peer that is still on the old version therefore shows beside a current one. The
+the other MD5s of the topic that a publisher whose process is alive sends, and the
+`~/state` row of a cycle input names them (`RequiredInput.other_schemas`, schema hash, type
+and MD5). The node's housekeeping refreshes them after a graph event and at least once a
+second while the node runs, so the fact is at most about a second old; before its first
+refresh `otherSchemas` is empty (`std::nullopt`) and `other_schemas_checked` false. A peer
+that is still on the old version therefore shows beside a current one, and one that was
+killed shows no more. The
 verdict says what the data says: an input whose version nobody publishes is `NeverArrived`
 if it never had a publisher, `Stale` after its `silence_ms` once it had one, and `Usable`
 on the last value when it has no limit. While its own stream has no publisher, a subscriber
