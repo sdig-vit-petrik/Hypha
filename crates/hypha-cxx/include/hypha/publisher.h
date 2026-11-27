@@ -44,6 +44,51 @@ class Publisher
         return this->lastStatus_ == HYPHA_STATUS_OK;
     }
 
+    /// @brief Reserve the slot of one message whose large field is written in place.
+    ///
+    /// @p head holds the small fields, its loaned field empty
+    /// (`hypha::message_traits::LoanedField<M>`, e.g. `Image::data`); its strings and
+    /// arrays are final. The returned Loan's data() is @p capacityBytes of the slot. Fill
+    /// it, then publish(). Nothing waits: a full pool is PoolExhausted, a capacity past the
+    /// payload limit TooLarge. A Loan dropped unsent returns its slot.
+    /// @return The loan, or the refusal; lastPublishStatus() says the same.
+    [[nodiscard]] std::expected<Loan<M>, Status> loan(M head, size_t capacityBytes)
+        requires LoanableMessage<M>
+    {
+        if (!this->handle) {
+            this->lastStatus_ = HYPHA_STATUS_INVALID_STATE;
+            return std::unexpected(this->lastStatus_);
+        }
+        std::expected<Loan<M>, Status> loaned = this->handle->loan(std::move(head), capacityBytes);
+        this->lastStatus_ = loaned.has_value() ? Status(HYPHA_STATUS_OK) : loaned.error();
+        return loaned;
+    }
+
+    /// @brief Send @p loan with all capacity() bytes of its loaned field.
+    [[nodiscard]] bool publish(Loan<M>&& loan)
+        requires LoanableMessage<M>
+    {
+        const size_t capacity = loan.capacity();
+        return this->publish(std::move(loan), capacity);
+    }
+
+    /// @brief Send @p loan with the first @p usedBytes of its loaned field, at most
+    ///        capacity(): a cloud whose point count is known only at the end. The bytes on
+    ///        the wire are those publish(const M&) sends for the same message. A changed
+    ///        string or array of message() is InvalidArgument, and nothing is sent.
+    /// @return True if it was sent. The loan is consumed either way.
+    [[nodiscard]] bool publish(Loan<M>&& loan, size_t usedBytes)
+        requires LoanableMessage<M>
+    {
+        if (!this->handle) {
+            this->lastStatus_ = HYPHA_STATUS_INVALID_STATE;
+            return false;
+        }
+        Loan<M> consumed = std::move(loan);
+        this->lastStatus_ = this->handle->publish(std::move(consumed), usedBytes);
+        return this->lastStatus_ == HYPHA_STATUS_OK;
+    }
+
     /// @return The status of the most recent publish attempt.
     Status lastPublishStatus() const
     {

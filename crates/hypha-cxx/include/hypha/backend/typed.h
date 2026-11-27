@@ -6,6 +6,7 @@
 #include "hypha/backend/endpoint_factory.h"
 #include "hypha/backend/ros1_codec.h"
 #include "hypha/detail/report.h"
+#include "hypha/loan.h"
 #include "hypha/options.h"
 #include "hypha/qos.h"
 #include "hypha/raw.h"
@@ -101,6 +102,66 @@ class PublisherHandle
             return HYPHA_STATUS_INVALID_SCHEMA;
         }
         return this->raw.publishLoan(std::move(*loaned));
+    }
+
+    /// @brief Reserve a slot for @p head with @p capacity bytes in its loaned field, which
+    ///        must be empty. See Publisher<M>::loan().
+    [[nodiscard]] std::expected<Loan<M>, Status> loan(M head, size_t capacity)
+        requires LoanableMessage<M>
+    {
+        using Element = typename Loan<M>::Element;
+        const bool refused = !(head.*message_traits::LoanedField<M>::member).empty()
+                          || capacity % sizeof(Element) != 0
+                          || capacity / sizeof(Element) > UINT32_MAX;
+        if (refused) {
+            return std::unexpected(Status(HYPHA_STATUS_INVALID_ARGUMENT));
+        }
+        const size_t headLength = codec::encodedLength(head);
+        const auto   gap = detail::measureGap(head, capacity);
+        if (!gap.complete()) {
+            return std::unexpected(Status(HYPHA_STATUS_INVALID_SCHEMA));
+        }
+        std::expected<LoanedBuffer, Status> loaned = this->raw.loan(headLength + capacity);
+        if (!loaned.has_value()) {
+            return std::unexpected(loaned.error());
+        }
+        return Loan<M>(std::move(head), std::move(*loaned), gap.gapOffset(), capacity, headLength);
+    }
+
+    /// @brief Encode the small fields around the first @p used bytes of the loaned field and
+    ///        send them. See Publisher<M>::publish(Loan<M>&&, size_t).
+    [[nodiscard]] Status publish(Loan<M>&& loan, size_t used)
+        requires LoanableMessage<M>
+    {
+        using Element = typename Loan<M>::Element;
+        M&          head = loan.head_;
+        const auto& field = head.*message_traits::LoanedField<M>::member;
+        // The small fields that size the encoding must be those the slot was cut for.
+        const bool sameShape = field.empty() && used <= loan.capacity_
+                            && used % sizeof(Element) == 0
+                            && codec::encodedLength(head) == loan.headLength_
+                            && detail::measureGap(head, 0).gapOffset() == loan.offset_;
+        if (!sameShape) {
+            return HYPHA_STATUS_INVALID_ARGUMENT;
+        }
+        if constexpr (requires { head.header.seq; }) {
+            head.header.seq = this->seq_++;
+        }
+        const size_t                                  total = loan.headLength_ + used;
+        detail::GapStream<detail::LoanedFieldType<M>> stream(
+            loan.buffer_.data(), total, &field, static_cast<uint32_t>(used / sizeof(Element)), used
+        );
+        ros::serialization::serialize(stream, head);
+        if (!stream.complete() || stream.length() != total) {
+            return HYPHA_STATUS_INVALID_SCHEMA;
+        }
+        if (total < loan.buffer_.size()) {
+            const Status shrunk = loan.buffer_.shrink(total);
+            if (shrunk != HYPHA_STATUS_OK) {
+                return shrunk;
+            }
+        }
+        return this->raw.publishLoan(std::move(loan.buffer_));
     }
 
     std::optional<size_t> subscriberCount() const

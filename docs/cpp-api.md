@@ -342,6 +342,26 @@ Reference: `hypha/node.h`, `hypha/publisher.h`, `hypha/topic.h`, `hypha/options.
   (a hint, not a bound; a larger message still grows the segment) to keep the topic's
   shared memory small (engineering-traps.md). Sizing an image or cloud pool is the
   developer's job (`examples/large_payload`).
+- A large message is written once, in its slot: `loan(head, capacityBytes)` reserves it
+  for `head`'s small fields and gives a `Loan<M>` whose `data()` is the loaned field's
+  bytes in shared memory (`Image::data`, `PointCloud2::data`; reference `hypha/loan.h`).
+  `publish(std::move(loan), usedBytes)` encodes the small fields around the first
+  `usedBytes`, which may be fewer than reserved, and sends exactly what `publish(msg)`
+  sends for the same message. `head`'s strings and arrays (`frame_id`, `encoding`,
+  `fields`) are fixed at the loan, its numbers (`width`, a stamp) may change through
+  `loan.message()` until the publish. A full pool or the publisher's two loans is
+  `PoolExhausted` at once; a loan dropped unsent returns its slot and takes no
+  `header.seq`. The CRC is computed at the publish, over the bytes in the slot.
+
+  ```cpp
+  sensor_msgs::PointCloud2 head = cloudHead();           // frame_id, fields, point_step
+  auto loan = points.loan(head, maxPoints * sizeof(Point));
+  if (!loan) { return; }                                  // loan.error(): PoolExhausted, TooLarge
+  size_t count = decodeInto(loan->data(), packets);       // points written into the slot
+  loan->message().width = count;
+  loan->message().row_step = count * sizeof(Point);
+  (void)points.publish(std::move(*loan), count * sizeof(Point));
+  ```
 - `subscriberCount()` counts subscribers of every node on the machine at that instant.
   It is not delivery; check it first when a message is costly and nobody may listen.
   It returns `std::optional<size_t>`: empty means the count is unavailable (a disabled

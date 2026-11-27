@@ -304,6 +304,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_main.cpp
     test/wall_clock_listener.cpp
     test/test_publisher.cpp
+    test/test_typed_loan.cpp
     test/test_subscriber.cpp
     test/subscriber_latest_pair_is_consistent.cpp
     test/test_parameters.cpp

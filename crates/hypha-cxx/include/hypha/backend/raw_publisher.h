@@ -81,6 +81,22 @@ class LoanedBuffer
         return HYPHA_STATUS_OK;
     }
 
+    /// @brief Send only the first @p size bytes, for a message that came out shorter than
+    ///        the buffer. The bytes stay where they are; data() stays valid.
+    /// @return HYPHA_STATUS_OK. HYPHA_STATUS_INVALID_STATE when the buffer holds no loan,
+    ///         and HYPHA_STATUS_INVALID_ARGUMENT for a size beyond size(); then nothing changes.
+    [[nodiscard]] Status shrink(size_t size)
+    {
+        if (!this->loan) {
+            return HYPHA_STATUS_INVALID_STATE;
+        }
+        const Status status = hypha_loan_shrink(this->loan.get(), size);
+        if (status == HYPHA_STATUS_OK) {
+            this->length = size;
+        }
+        return status;
+    }
+
   private:
     friend class RawPublisherHandle;
 
