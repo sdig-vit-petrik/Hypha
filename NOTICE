@@ -17,6 +17,10 @@ This repository contains third-party material under its own licence:
   compatible with roscpp_serialization of ROS 1 (https://github.com/ros/roscpp_core),
   BSD 3-Clause.
 
+- crates/hypha-cxx/upstream/common_msgs: the header-only companions of sensor_msgs of
+  ROS 1 common_msgs 1.13.2 (https://github.com/ros/common_msgs), BSD 3-Clause, unchanged;
+  each file carries its licence header (Willow Garage, Open Source Robotics Foundation).
+
 - examples/mrs/upstream: sources of the MRS UAV System of the Multi-robot Systems
   group at the Czech Technical University in Prague (https://github.com/ctu-mrs),
   BSD 3-Clause, and tf2 LinearMath of ROS geometry2, which carries the zlib licence
