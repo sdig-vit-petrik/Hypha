@@ -269,6 +269,20 @@ impl GraphWatch {
     }
 }
 
+impl GraphWatch {
+    /// Waits up to `timeout` for an endpoint to come or go, and takes the notifications. True
+    /// when one came: the thread sleeps in the kernel meanwhile.
+    ///
+    /// # Errors
+    /// [`PortError::Disconnected`] when the listener cannot be read.
+    pub fn wait(&self, timeout: StdDuration) -> Result<bool, PortError> {
+        self.listener.timed_wait(|_| {}, timeout).map(|events| events > 0).map_err(|cause| {
+            log::error!(target: "hypha/transport", "hypha_iceoryx2: failed to wait for the graph event: {cause:?}");
+            PortError::Disconnected
+        })
+    }
+}
+
 /// Notifies the graph event once when made and once when dropped, so the domain's nodes
 /// see a publisher come and go. A failed notification is logged; the backstop of the
 /// listener's node then covers it.

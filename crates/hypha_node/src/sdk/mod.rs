@@ -109,9 +109,10 @@ pub mod sys {
     pub use hypha_sys::{ReadOnlyMap, map_read_only};
 }
 
-pub use follow::{StreamFollower, StreamKey, StreamSelector};
+pub use follow::{FollowError, Refusal, StreamFollower, StreamKey, StreamListings, StreamSelector};
 pub use loan::{
-    RawSample, RawSubscriber, ReceiveError, ReceivedSample, SampleIdentity, SubscriberCounters,
+    RawSample, RawSubscriber, ReceiveError, ReceivedSample, SampleIdentity, StreamSubscribeError,
+    SubscriberCounters,
 };
 pub use options::{PayloadCapacity, PublisherOptions, SubscriberOptions};
 pub use raw::{

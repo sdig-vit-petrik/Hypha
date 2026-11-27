@@ -176,6 +176,12 @@ impl Topics {
 /// filter/sort/pause toggles.
 pub(crate) struct AppState {
     pub topics: Topics,
+    /// What the last listing showed of the publishers of each stream: an input whose own stream
+    /// has none, while another version has, is a version mismatch.
+    live_publishers: BTreeMap<StreamKey, usize>,
+    /// What the monitor has to say about the bus or itself, for the header: the screen is the
+    /// terminal's, so nothing goes to standard error while it runs.
+    pub notice: Option<String>,
     pub sort_by: SortColumn,
     pub active_tab: Tab,
     pub selected_topic: usize,
@@ -217,6 +223,8 @@ impl AppState {
     pub(crate) fn new() -> Self {
         Self {
             topics: Topics::default(),
+            live_publishers: BTreeMap::new(),
+            notice: None,
             sort_by: SortColumn::Name,
             active_tab: Tab::TopicsBus,
             selected_topic: 0,
@@ -243,6 +251,19 @@ impl AppState {
             graph: crate::top::graph_ui::GraphView::default(),
             seen_nodes: BTreeMap::new(),
         }
+    }
+
+    /// Records the publishers each followed stream had at the last listing.
+    pub(crate) fn set_live_publishers(&mut self, live: BTreeMap<StreamKey, usize>) {
+        self.live_publishers = live;
+    }
+
+    /// Whether `stream` has a live publisher according to the last listing. A stream the
+    /// listing did not show, or has not been shown yet, has none.
+    pub(crate) fn has_publisher(&self, topic: &str, md5: &str) -> bool {
+        let Some(schema_hash) = hypha_node::sdk::schema_hash_from_md5(md5) else { return false };
+        let key = StreamKey { topic: topic.to_owned(), schema_hash };
+        self.live_publishers.get(&key).is_some_and(|publishers| *publishers > 0)
     }
 
     /// The nodes to show: the registry's `listed` nodes, then every node seen

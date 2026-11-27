@@ -7,8 +7,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use hypha_node::sdk::{
-    BusNode, PublisherOptions, RawPublisher, ReceivedSample, ResolvedSchema, StreamFollower,
-    StreamKey, StreamSelector,
+    BusNode, FollowError, PublisherOptions, RawPublisher, ReceivedSample, ResolvedSchema,
+    StreamFollower, StreamKey, StreamListings, StreamSelector, TopicInfo,
 };
 use roslibrust::ros1::{NodeHandle, PublisherAny};
 use tokio::sync::watch;
@@ -18,7 +18,7 @@ use crate::automatic::RosTopicState;
 use crate::automatic::{
     AutoFlow, HyphaTopicState, RecentSample, RecentSamples, desired_flows, topic_states,
 };
-use crate::bridged_streams::{Admission, BridgedStreams};
+use crate::bridged_streams::{Admission, BridgedStreams, not_bridged_warning};
 use crate::error::BridgeError;
 use crate::publisher_identity::{RosIdentity, agreed_identity, probe_publisher};
 use crate::ros_graph::{RosGraphClient, RosGraphSnapshot};
@@ -40,6 +40,8 @@ const SUBSCRIPTION_DEPTH: usize = 0;
 const DRAIN_BUDGET_PER_PASS: usize = 512;
 const RECENT_SAMPLE_LIMIT: usize = 256;
 const EVENT_QUEUE_DEPTH: usize = 64;
+/// How long the listing thread waits for the graph before it looks at its stop flag.
+const LISTING_STOP_CHECK: Duration = Duration::from_millis(200);
 
 enum AutoEvent {
     Topics(BTreeMap<String, HyphaTopicState>),
@@ -91,19 +93,23 @@ impl AutoBusRuntime {
     }
 
     fn run(mut self, bus: BusNode, stop: Arc<AtomicBool>) -> Result<(), BridgeError> {
+        let bus = Arc::new(bus);
         let mut waitset = schema_serving_waitset(&bus)?;
         // Every stream of every topic, each as the graph event shows it: a version that joins a
-        // topic later is read too.
+        // topic later is read too. A thread of the bridge lists them, so that a listing, tens of
+        // milliseconds, never stops the loop that reads the bus.
         let mut follower = StreamFollower::new(
-            &bus,
             vec![BRIDGED_TOPICS.to_owned()],
             StreamSelector::default(),
             SUBSCRIPTION_DEPTH,
-        )
-        .map_err(BridgeError::Bus)?;
+        );
+        let mut listings = StreamListings::new(&bus).map_err(BridgeError::Bus)?;
+        let first = listings.list(&bus).map_err(BridgeError::Bus)?;
+        self.follow(&bus, &mut follower, vec![Ok(first)]);
+        let listed = ListingThread::spawn(&bus, listings);
         while bus.ok() && !stop.load(Ordering::Acquire) {
             serve_bus(&mut waitset)?;
-            self.follow_new_streams(&bus, &mut follower);
+            self.follow(&bus, &mut follower, listed.take());
             self.drain_ros_to_hypha(&bus, &stop);
             self.drain_hypha_to_ros(&bus, &mut follower, &stop)?;
             if self.last_topic_refresh.elapsed() >= TOPIC_REFRESH {
@@ -148,11 +154,23 @@ impl AutoBusRuntime {
 
     /// Follows the streams that joined the bus since the last pass. A refusal that lasts is
     /// logged once.
-    fn follow_new_streams(&mut self, bus: &BusNode, follower: &mut StreamFollower) {
-        let Err(error) = follower.refresh_if_changed(bus) else { return };
-        if self.follow_error.as_ref() != Some(&error) {
-            log::error!("automatic bridge cannot follow every stream; it will retry: {error}");
-            self.follow_error = Some(error);
+    fn follow(
+        &mut self,
+        bus: &BusNode,
+        follower: &mut StreamFollower,
+        listings: Vec<Result<Vec<TopicInfo>, String>>,
+    ) {
+        for listing in listings {
+            let outcome = match listing {
+                Ok(listing) => follower.apply(bus, &listing),
+                Err(message) => Err(FollowError::Listing(message)),
+            };
+            let Err(error) = outcome else { continue };
+            let text = error.to_string();
+            if self.follow_error.as_ref() != Some(&text) {
+                log::error!("automatic bridge cannot follow every stream; it will retry: {text}");
+                self.follow_error = Some(text);
+            }
         }
     }
 
@@ -307,6 +325,52 @@ impl AutoBusRuntime {
     }
 }
 
+/// A thread of the bridge that lists the streams when the graph changes and hands the listings
+/// to the bus loop.
+struct ListingThread {
+    listings: mpsc::Receiver<Result<Vec<TopicInfo>, String>>,
+    stop: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl ListingThread {
+    fn spawn(bus: &Arc<BusNode>, mut listings: StreamListings) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = {
+            let (bus, stop) = (Arc::clone(bus), Arc::clone(&stop));
+            thread::spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    let outcome = listings.wait_for_listing(&bus, LISTING_STOP_CHECK);
+                    let failed = outcome.is_err();
+                    let Some(outcome) = outcome.transpose() else { continue };
+                    if sender.send(outcome).is_err() {
+                        return;
+                    }
+                    if failed {
+                        thread::sleep(Duration::from_secs(1));
+                    }
+                }
+            })
+        };
+        Self { listings: receiver, stop, handle: Some(handle) }
+    }
+
+    /// The listings made since the last call.
+    fn take(&self) -> Vec<Result<Vec<TopicInfo>, String>> {
+        self.listings.try_iter().collect()
+    }
+}
+
+impl Drop for ListingThread {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// Runs automatic discovery and same-name route reconciliation.
 ///
 /// # Errors
@@ -354,6 +418,8 @@ async fn run_ros(
     let mut ingress = RosIngressSet::default();
     let mut publishers: BTreeMap<String, PublisherAny> = BTreeMap::new();
     let mut publisher_identity: BTreeMap<String, Arc<ResolvedSchema>> = BTreeMap::new();
+    // The other types already told of, per topic, so each is told once while it is advertised.
+    let mut not_bridged_said: BTreeSet<(String, String)> = BTreeSet::new();
     let mut graph_tick = tokio::time::interval(GRAPH_REFRESH);
 
     ingress.reconcile(&ros, &graph_client, &graph, &hypha_topics, &ros_to_hypha_tx, &stop).await?;
@@ -374,7 +440,12 @@ async fn run_ros(
                             &ros_to_hypha_tx,
                             &stop,
                         ).await?;
-                        retain_publishers(&mut publishers, &mut publisher_identity, &hypha_topics);
+                        retain_publishers(
+                            &mut publishers,
+                            &mut publisher_identity,
+                            &mut not_bridged_said,
+                            &hypha_topics,
+                        );
                     }
                     Some(AutoEvent::Sample(message)) => {
                         forward_to_ros(
@@ -383,6 +454,7 @@ async fn run_ros(
                             &hypha_topics,
                             &mut publishers,
                             &mut publisher_identity,
+                            &mut not_bridged_said,
                             message,
                         ).await?;
                     }
@@ -407,7 +479,12 @@ async fn run_ros(
                     &ros_to_hypha_tx,
                     &stop,
                 ).await?;
-                retain_publishers(&mut publishers, &mut publisher_identity, &hypha_topics);
+                retain_publishers(
+                            &mut publishers,
+                            &mut publisher_identity,
+                            &mut not_bridged_said,
+                            &hypha_topics,
+                        );
             }
         }
     }
@@ -446,6 +523,7 @@ fn spawn_event_forwarder(
 fn retain_publishers(
     publishers: &mut BTreeMap<String, PublisherAny>,
     publisher_identity: &mut BTreeMap<String, Arc<ResolvedSchema>>,
+    not_bridged_said: &mut BTreeSet<(String, String)>,
     hypha_topics: &BTreeMap<String, HyphaTopicState>,
 ) {
     publishers.retain(|topic, _| {
@@ -455,6 +533,7 @@ fn retain_publishers(
         hypha_state.published
     });
     publisher_identity.retain(|topic, _| publishers.contains_key(topic));
+    not_bridged_said.retain(|(topic, _)| publishers.contains_key(topic));
 }
 
 /// Automatic ROS 1 ingress of one topic.
@@ -621,6 +700,7 @@ async fn forward_to_ros(
     hypha_topics: &BTreeMap<String, HyphaTopicState>,
     publishers: &mut BTreeMap<String, PublisherAny>,
     publisher_identity: &mut BTreeMap<String, Arc<ResolvedSchema>>,
+    not_bridged_said: &mut BTreeSet<(String, String)>,
     message: BridgeMsg,
 ) -> Result<(), BridgeError> {
     let topic = &*message.topic;
@@ -634,18 +714,18 @@ async fn forward_to_ros(
         .topics
         .get(topic)
         .is_some_and(|state| desired_flows(state, hypha_state).contains(&AutoFlow::HyphaToRos));
-    // The bus side lets one stream of a topic through at a time, so another identity means the
-    // bridged stream changed: its publishers left and another version took its place.
-    let replaced = publisher_identity
-        .get(topic)
-        .is_some_and(|existing| !same_identity(existing, &message.identity));
-    if replaced {
-        log::info!(
-            "{topic} is bridged as {} now; replacing its ROS publisher",
-            message.identity.data_type
-        );
-        publishers.remove(topic);
-        publisher_identity.remove(topic);
+    // The bus side lets one stream of a topic through at a time, but the stream may change when
+    // the bridged one's publishers leave. A ROS 1 topic keeps its type under its subscribers:
+    // the type first advertised stays, and another is told once and not bridged.
+    if let Some(existing) = publisher_identity.get(topic)
+        && !same_identity(existing, &message.identity)
+    {
+        if let Some(warning) =
+            not_bridged_warning(topic, existing, &message.identity, not_bridged_said)
+        {
+            log::warn!("{warning}");
+        }
+        return Ok(());
     }
     if !publisher_identity.contains_key(topic) {
         let publisher = ros
@@ -706,7 +786,8 @@ mod tests {
         let deadline = Instant::now().checked_add(Duration::from_secs(10)).expect("a deadline");
         while Instant::now() < deadline && !done(&seen) {
             send();
-            runtime.follow_new_streams(bus, follower);
+            let listing = bus.list_topics();
+            runtime.follow(bus, follower, vec![listing]);
             runtime.drain_hypha_to_ros(bus, follower, &stop).expect("drain");
             runtime.publish_topic_snapshot(bus, &stop).expect("snapshot");
             seen.extend(handed_over(events));
@@ -728,13 +809,8 @@ mod tests {
         let (_ros_tx, ros_rx) = mpsc::channel();
         let (event_tx, events) = mpsc::channel();
         let mut runtime = AutoBusRuntime::new(ros_rx, event_tx);
-        let mut follower = StreamFollower::new(
-            &bus,
-            vec![topic.clone()],
-            StreamSelector::default(),
-            SUBSCRIPTION_DEPTH,
-        )
-        .expect("follower");
+        let mut follower =
+            StreamFollower::new(vec![topic.clone()], StreamSelector::default(), SUBSCRIPTION_DEPTH);
         follower.refresh(&bus).expect("refresh");
 
         let long = [3_u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];

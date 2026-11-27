@@ -33,6 +33,17 @@ impl GraphWatch {
     }
 }
 
+impl GraphWatch {
+    /// Waits up to `timeout` for an endpoint of the domain to come or go, and takes the
+    /// notifications; true when one came. The calling thread sleeps meanwhile.
+    ///
+    /// # Errors
+    /// [`Error::Disconnected`] when the notification service cannot be read.
+    pub fn wait(&self, timeout: std::time::Duration) -> Result<bool, Error> {
+        self.0.wait(timeout).map_err(Error::from)
+    }
+}
+
 /// Open a watch of the domain's graph event, the event a node's own housekeeping hears.
 /// A reader that lists the streams once, opens this watch before it lists, and lists again
 /// whenever the watch says the graph changed, misses no stream.

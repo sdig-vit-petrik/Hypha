@@ -39,6 +39,7 @@ pub(super) fn list_topic_ports(node: &ffi::HyphaNode) -> Result<Vec<TopicInfo>, 
             name: service.name.to_string_lossy().into_owned(),
             schema_hash: service.schema_hash,
             published: service.publishers > 0,
+            publishers: service.publishers,
             subscribed: service.subscribers > 0,
         });
     };
@@ -64,6 +65,17 @@ impl GraphWatch {
     /// Returns a message when the notification service cannot be read.
     pub fn changed(&self) -> Result<bool, String> {
         self.watch.changed().map_err(|error| numbered_error("graph event failed", error))
+    }
+}
+
+impl GraphWatch {
+    /// Waits up to `timeout` for a publisher or a subscriber of the domain to come or go, and
+    /// takes the notifications; true when one came. The thread sleeps in the kernel.
+    ///
+    /// # Errors
+    /// Returns a message when the notification service cannot be read.
+    pub fn wait(&self, timeout: std::time::Duration) -> Result<bool, String> {
+        self.watch.wait(timeout).map_err(|error| numbered_error("graph event failed", error))
     }
 }
 

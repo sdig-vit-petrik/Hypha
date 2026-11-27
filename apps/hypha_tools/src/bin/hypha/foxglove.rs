@@ -3,7 +3,9 @@
 use crate::cli::{connect, parse_cli};
 use clap::Parser;
 use hypha_node::sdk::{StreamFollower, StreamSelector};
+use hypha_tools::following::Following;
 use hypha_tools::foxglove::{BridgeConfig, FOXGLOVE_SUBPROTOCOL, FoxgloveBridge, ServerOptions};
+use hypha_tools::stream::follow_error_text;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -65,7 +67,7 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         Err(code) => return code,
     };
     let bus = match connect("hypha foxglove: ", "hypha_foxglove_bridge") {
-        Ok(bus) => bus,
+        Ok(bus) => std::sync::Arc::new(bus),
         Err(code) => return code,
     };
 
@@ -95,27 +97,28 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
     println!("===============================================================\n");
 
     // A pattern subscription resolves its streams once, so the follower subscribes to each
-    // stream as the graph shows it.
-    let mut follower = match StreamFollower::new(
-        &bus,
+    // stream as the graph shows it, from listings made on a thread of its own.
+    let follower = StreamFollower::new(
         bridge.subscription_patterns(),
         StreamSelector::default(),
         SUBSCRIPTION_DEPTH,
-    ) {
-        Ok(follower) => follower,
+    );
+    let mut follower = match Following::start(&bus, follower) {
+        Ok(following) => following,
         Err(error) => {
             eprintln!("hypha foxglove: cannot follow the bus: {error}");
             return ExitCode::FAILURE;
         }
     };
-    if let Err(error) = follower.refresh(&bus) {
-        eprintln!("hypha foxglove: cannot list topics: {error}");
-    }
 
     let mut last_health_log = Instant::now();
+    let mut told = None;
     while bus.ok() {
-        if let Err(error) = follower.refresh_if_changed(&bus) {
-            eprintln!("hypha foxglove: cannot list topics: {error}");
+        if let Err(error) = follower.pass(&bus)
+            && told.as_ref() != Some(&error)
+        {
+            eprintln!("hypha foxglove: {}", follow_error_text(&bus, &error));
+            told = Some(error);
         }
         let mut drained = 0_usize;
         while drained < DRAIN_BUDGET_PER_PASS {

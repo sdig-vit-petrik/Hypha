@@ -15,7 +15,7 @@ pub use hypha_core::port::topic_matches_pattern;
 pub use publisher::RawPublisher;
 
 use crate::sdk::ffi;
-use crate::sdk::loan::{RawSubscriber, subscribe_on, subscribe_stream_on};
+use crate::sdk::loan::{RawSubscriber, StreamSubscribeError, subscribe_on, subscribe_stream_on};
 use crate::sdk::options::{PublisherOptions, SubscriberOptions};
 use crate::sdk::status::numbered_error;
 
@@ -55,6 +55,8 @@ pub struct TopicInfo {
     pub schema_hash: u64,
     /// At least one publisher exists outside the caller.
     pub published: bool,
+    /// How many publishers exist outside the caller.
+    pub publishers: usize,
     /// At least one subscriber exists outside the caller.
     pub subscribed: bool,
 }
@@ -135,13 +137,14 @@ impl BusNode {
     /// no definition is read too. A stream that does not exist is `NotAvailable`.
     ///
     /// # Errors
-    /// Returns a message when the library refuses the subscription.
+    /// [`StreamSubscribeError::SlotsTaken`] when other tools hold every observer slot of the
+    /// stream, and a message when the library refuses the subscription otherwise.
     pub fn subscribe_raw_stream(
         &self,
         topic: &str,
         schema_hash: u64,
         options: SubscriberOptions,
-    ) -> Result<RawSubscriber, String> {
+    ) -> Result<RawSubscriber, StreamSubscribeError> {
         subscribe_stream_on(&self.node, topic, schema_hash, options)
     }
 

@@ -8,7 +8,7 @@ use hypha_node::sdk::NodeInfo;
 use hypha_node::sdk::{BusNode, StreamKey};
 use hypha_tools::approx_f64;
 use hypha_tools::proc_usage::{Usage, format_memory};
-use hypha_tools::stream::{stream_label, type_label};
+use hypha_tools::stream::{fit_type_label, stream_label};
 use hypha_tools::theme::{ACCENT, ACCENT2, BG, ERR, FG, MUTED, OK, ON_ACCENT, SURFACE, WARN};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -172,6 +172,15 @@ fn draw_header(f: &mut Frame<'_>, area: Rect, state: &AppState) {
         Span::raw("   "),
         status_span,
     ]);
+    let line = match &state.notice {
+        Some(notice) => {
+            let mut spans = line.spans;
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(notice.clone(), Style::default().fg(WARN)));
+            Line::from(spans)
+        }
+        None => line,
+    };
     f.render_widget(Paragraph::new(line), area);
 }
 
@@ -282,13 +291,14 @@ fn draw_topics_table(
     let header = header_row(&["TOPIC", "TYPE", "RATE (Hz)", "BW (KB/s)", "MSGS", "TOTAL SIZE"]);
 
     let selected = state.selected_topic;
+    let type_width = column_width(table_area, 28);
     let rows = visible.iter().enumerate().map(|(i, (stream, stats))| {
         let is_selected = i == selected;
         let base = row_base(is_selected);
 
         Row::new(vec![
             Cell::from(stream.topic.clone()).style(tone(is_selected, base, FG)),
-            Cell::from(type_cell(stats)).style(tone(is_selected, base, OK)),
+            Cell::from(type_cell(stats, type_width)).style(tone(is_selected, base, OK)),
             Cell::from(format_rate(stats.rate_hz)).style(tone(is_selected, base, ACCENT2)),
             Cell::from(format_bandwidth(stats.bandwidth_kbs)).style(tone(is_selected, base, WARN)),
             Cell::from(stats.total_messages.to_string()).style(tone(is_selected, base, FG)),
@@ -322,11 +332,20 @@ fn draw_topics_table(
 
 /// The type of a stream and the start of its MD5, so two versions of a type are two
 /// different rows: `?` while its schema is not resolved.
-fn type_cell(stats: &crate::top::state::TopicStats) -> String {
+fn type_cell(stats: &crate::top::state::TopicStats, width: usize) -> String {
     if stats.data_type.is_empty() || stats.md5.is_empty() {
         return "?".to_owned();
     }
-    type_label(&stats.data_type, &stats.md5)
+    fit_type_label(&stats.data_type, &stats.md5, width)
+}
+
+/// The columns of a table column that takes `percent` of `area`, less the gap before the next.
+fn column_width(area: Rect, percent: u16) -> usize {
+    usize::from(area.width)
+        .saturating_mul(usize::from(percent))
+        .checked_div(100)
+        .unwrap_or(0)
+        .saturating_sub(1)
 }
 
 pub(crate) fn sorted_nodes(nodes: &[NodeInfo]) -> Vec<&NodeInfo> {
@@ -381,6 +400,7 @@ fn format_node_status(
 fn format_node_inputs(
     node_st: Option<&(hypha_node::sdk::msgs::hypha_msgs::NodeState, Instant)>,
     intro: Option<&hypha_node::sdk::msgs::hypha_msgs::NodeIntrospection>,
+    app: &AppState,
     is_selected: bool,
     base: Style,
 ) -> (String, Style) {
@@ -407,15 +427,12 @@ fn format_node_inputs(
             })
             .count();
 
-        // An input that reads nothing while a live publisher sends another version of its
-        // topic: the mismatch a migration must not leave behind.
+        // An input whose own stream has no live publisher while another version has: the
+        // mismatch a migration must not leave behind, whatever the input's verdict.
         let other_version = st
             .inputs
             .iter()
-            .filter(|i| {
-                i.verdict != hypha_node::sdk::msgs::hypha_msgs::RequiredInput::USABLE
-                    && !i.other_schemas.is_empty()
-            })
+            .filter(|i| !i.other_schemas.is_empty() && !app.has_publisher(&i.topic, &i.md5))
             .count();
         let version = if other_version > 0 {
             format!(", {other_version} OTHER VERSION")
@@ -430,6 +447,8 @@ fn format_node_inputs(
             )
         } else if wait > 0 {
             (format!("{usable}/{total} ({wait} WAIT{version})"), tone_bold(is_selected, base, WARN))
+        } else if other_version > 0 {
+            (format!("{usable}/{total} OK{version}"), tone_bold(is_selected, base, ERR))
         } else {
             (format!("{usable}/{total} OK"), tone(is_selected, base, OK))
         }
@@ -478,7 +497,8 @@ fn draw_nodes_list_panel(
         let (status_text, status_style) =
             format_node_status(node.is_alive, node_st, intro, is_selected, base);
         let name_display = if node.name.is_empty() { "<unnamed>" } else { node.name.as_str() };
-        let (inputs_text, inputs_style) = format_node_inputs(node_st, intro, is_selected, base);
+        let (inputs_text, inputs_style) =
+            format_node_inputs(node_st, intro, state, is_selected, base);
 
         let pubs_text = intro.map_or_else(
             || state.node_scoped_topics(&node.name).len().to_string(),
@@ -770,11 +790,14 @@ fn bus_rates(state: &AppState, topic: &str, md5: &str) -> (String, String) {
 }
 
 /// The type of an introspected endpoint and the start of its MD5; `?` for an untyped one.
-fn endpoint_type(endpoint: &hypha_node::sdk::msgs::hypha_msgs::IntrospectedEndpoint) -> String {
+fn endpoint_type(
+    endpoint: &hypha_node::sdk::msgs::hypha_msgs::IntrospectedEndpoint,
+    width: usize,
+) -> String {
     if endpoint.data_type.is_empty() {
         return "?".to_owned();
     }
-    type_label(&endpoint.data_type, &endpoint.md5)
+    fit_type_label(&endpoint.data_type, &endpoint.md5, width)
 }
 
 /// One publisher or subscriber row of the endpoints table.
@@ -783,12 +806,13 @@ fn endpoint_row(
     tag: Cell<'static>,
     endpoint: &hypha_node::sdk::msgs::hypha_msgs::IntrospectedEndpoint,
     policy: String,
+    type_width: usize,
 ) -> Row<'static> {
     let (hz_str, bw_str) = bus_rates(state, &endpoint.topic, &endpoint.md5);
     Row::new(vec![
         tag,
         Cell::from(endpoint.topic.clone()).style(Style::default().fg(FG)),
-        Cell::from(endpoint_type(endpoint)).style(Style::default().fg(OK)),
+        Cell::from(endpoint_type(endpoint, type_width)).style(Style::default().fg(OK)),
         Cell::from(hz_str).style(Style::default().fg(ACCENT2)),
         Cell::from(bw_str).style(Style::default().fg(WARN)),
         Cell::from(policy).style(Style::default().fg(MUTED)),
@@ -803,6 +827,7 @@ fn draw_node_endpoints_table(
     state: &AppState,
 ) {
     let header = header_row(&["DIR", "TOPIC", "TYPE", "BUS HZ", "BW", "POLICY"]);
+    let type_width = column_width(area, 25);
 
     let pub_rows = intro.publishers.iter().map(|p| {
         let policy = if p.latched {
@@ -813,13 +838,13 @@ fn draw_node_endpoints_table(
             "default".to_string()
         };
         let tag = Cell::from("[PUB]").style(Style::default().fg(OK).add_modifier(Modifier::BOLD));
-        endpoint_row(state, tag, p, policy)
+        endpoint_row(state, tag, p, policy, type_width)
     });
 
     let sub_rows = intro.subscribers.iter().map(|s| {
         let tag =
             Cell::from("[SUB]").style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD));
-        endpoint_row(state, tag, s, format!("queue {}", s.queue_depth))
+        endpoint_row(state, tag, s, format!("queue {}", s.queue_depth), type_width)
     });
 
     let all_rows: Vec<Row<'_>> = pub_rows.chain(sub_rows).collect();
@@ -935,25 +960,30 @@ fn format_input_policy(input: &hypha_node::sdk::msgs::hypha_msgs::IntrospectedIn
 }
 
 /// The verdict row of the input that `binding` names: the one of its topic and MD5, so the
-/// inputs of two versions on one topic are judged apart. A binding with no endpoint row is
-/// found by its topic alone.
+/// inputs of two versions on one topic are judged apart. A binding with no endpoint row, so no
+/// MD5, is found by its topic alone only when one input has that topic: with two, none is
+/// its own.
 fn verdict_of<'a>(
     state: &'a hypha_node::sdk::msgs::hypha_msgs::NodeState,
     binding: &hypha_node::sdk::msgs::hypha_msgs::IntrospectedInput,
     md5: &str,
 ) -> Option<&'a hypha_node::sdk::msgs::hypha_msgs::RequiredInput> {
-    state
-        .inputs
-        .iter()
-        .find(|input| input.topic == binding.topic && (md5.is_empty() || input.md5 == md5))
+    let mut on_topic = state.inputs.iter().filter(|input| input.topic == binding.topic);
+    if md5.is_empty() {
+        let only = on_topic.next()?;
+        return on_topic.next().is_none().then_some(only);
+    }
+    on_topic.find(|input| input.md5 == md5)
 }
 
 /// The other versions of an input's topic that a live publisher sends, as its node last
 /// found them: `not checked` before the node's first check, `none`, or each type with the
-/// start of its MD5. Shown as a warning when it lists a version and the input has no
-/// publisher of its own.
+/// start of its MD5. Red when it lists a version and the input's own stream has no live
+/// publisher, whatever the verdict (an input without a limit stays `Usable` on its last old
+/// value); yellow when the input's own stream is published as well, as in a migration.
 fn other_schemas_cell(
     verdict: Option<&hypha_node::sdk::msgs::hypha_msgs::RequiredInput>,
+    own_is_published: bool,
 ) -> (String, Style) {
     let Some(verdict) = verdict else {
         return ("-".to_owned(), Style::default().fg(MUTED));
@@ -978,8 +1008,7 @@ fn other_schemas_cell(
             stream_label(known.as_ref(), schema.schema_hash)
         })
         .collect();
-    let mismatch = verdict.verdict != hypha_node::sdk::msgs::hypha_msgs::RequiredInput::USABLE;
-    let style = Style::default().fg(if mismatch { ERR } else { WARN });
+    let style = Style::default().fg(if own_is_published { WARN } else { ERR });
     (versions.join(", "), style)
 }
 
@@ -1002,6 +1031,7 @@ fn draw_node_bindings_table(
         "OTHER SCHEMAS",
         "POLICY / SUPERVISION",
     ]);
+    let type_width = column_width(area, 16);
 
     let rows = intro.input_bindings.iter().map(|input| {
         let (role_text, role_style) = if input.required {
@@ -1014,13 +1044,16 @@ fn draw_node_bindings_table(
         let md5 = endpoint.map_or("", |row| row.md5.as_str());
         let verdict_info = node_st.and_then(|(st, _)| verdict_of(st, input, md5));
         let (verdict_text, verdict_style) = format_input_verdict(verdict_info, input.required);
-        let (others_text, others_style) = other_schemas_cell(verdict_info);
+        let own_md5 = verdict_info.map_or(md5, |verdict| verdict.md5.as_str());
+        let (others_text, others_style) =
+            other_schemas_cell(verdict_info, state.has_publisher(&input.topic, own_md5));
 
         let (hz_str, bw_str) = bus_rates(state, &input.topic, md5);
 
         let policy_str = format_input_policy(input);
         let counters = verdict_info.map_or_else(|| "-".to_owned(), input_counters_text);
-        let type_text = endpoint.map_or_else(|| "?".to_owned(), endpoint_type);
+        let type_text =
+            endpoint.map_or_else(|| "?".to_owned(), |row| endpoint_type(row, type_width));
 
         Row::new(vec![
             Cell::from(role_text).style(role_style),
@@ -1065,11 +1098,12 @@ fn draw_node_scoped_topics_table(
     scoped: &[(&StreamKey, &crate::top::state::TopicStats)],
 ) {
     let header = header_row(&["TOPIC", "TYPE", "RATE (Hz)", "BW"]);
+    let type_width = column_width(area, 31);
 
     let rows = scoped.iter().map(|(stream, stats)| {
         Row::new(vec![
             Cell::from(stream.topic.clone()).style(Style::default().fg(FG)),
-            Cell::from(type_cell(stats)).style(Style::default().fg(OK)),
+            Cell::from(type_cell(stats, type_width)).style(Style::default().fg(OK)),
             Cell::from(format_rate(stats.rate_hz)).style(Style::default().fg(ACCENT2)),
             Cell::from(format_bandwidth(stats.bandwidth_kbs)).style(Style::default().fg(WARN)),
         ])
@@ -1233,7 +1267,10 @@ fn draw_inspector_modal(
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  Type: "),
-        Span::styled(type_cell(stats), Style::default().fg(OK).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            type_cell(stats, usize::MAX),
+            Style::default().fg(OK).add_modifier(Modifier::BOLD),
+        ),
     ]));
     lines.push(Line::raw(""));
 
@@ -1399,20 +1436,31 @@ mod tests {
     #[test]
     fn other_schemas_are_shown_as_not_checked_none_or_each_version() {
         let mut waiting = input("/a", "b3087778e93fcd34cc8d65bc54e850d1", Input::NEVER_ARRIVED);
-        assert_eq!(other_schemas_cell(None).0, "-");
-        assert_eq!(other_schemas_cell(Some(&waiting)).0, "not checked", "before the first check");
+        assert_eq!(other_schemas_cell(None, false).0, "-");
+        assert_eq!(
+            other_schemas_cell(Some(&waiting), false).0,
+            "not checked",
+            "before the first check"
+        );
 
         waiting.other_schemas_checked = true;
-        assert_eq!(other_schemas_cell(Some(&waiting)).0, "none");
+        assert_eq!(other_schemas_cell(Some(&waiting), false).0, "none");
 
         waiting.other_schemas =
             vec![other("t/R", "f79835def461350458ead76f07016dd7", 1), other("", "", 0x0102)];
-        let (text, style) = other_schemas_cell(Some(&waiting));
+        let (text, style) = other_schemas_cell(Some(&waiting), false);
         assert_eq!(text, "t/R (f79835de), ? (0000000000000102)");
         assert_eq!(style.fg, Some(ERR), "none of its own version is published: a mismatch");
+        assert_eq!(other_schemas_cell(Some(&waiting), true).1.fg, Some(WARN), "a migration");
+    }
 
-        waiting.verdict = Input::USABLE;
-        assert_eq!(other_schemas_cell(Some(&waiting)).1.fg, Some(WARN), "a migration, not a fault");
+    #[test]
+    fn an_input_that_stays_usable_on_an_old_value_is_red_when_only_another_version_is_published() {
+        let mut stale_value = input("/a", "b3087778e93fcd34cc8d65bc54e850d1", Input::USABLE);
+        stale_value.other_schemas_checked = true;
+        stale_value.other_schemas = vec![other("t/R", "f79835def461350458ead76f07016dd7", 1)];
+        let own_is_published = false;
+        assert_eq!(other_schemas_cell(Some(&stale_value), own_is_published).1.fg, Some(ERR));
     }
 
     #[test]
@@ -1433,6 +1481,10 @@ mod tests {
         let first = verdict_of(&state, &binding, "b3087778e93fcd34cc8d65bc54e850d1").unwrap();
         assert_eq!(first.verdict, Input::USABLE);
         assert!(verdict_of(&state, &binding, "00000000000000000000000000000000").is_none());
+        assert!(
+            verdict_of(&state, &binding, "").is_none(),
+            "with no MD5 and two inputs on the topic, neither is its own"
+        );
     }
 
     #[test]
@@ -1464,11 +1516,15 @@ mod tests {
             )
         };
         let shown = |state: &(hypha_node::sdk::msgs::hypha_msgs::NodeState, Instant)| {
-            format_node_inputs(Some(state), None, false, Style::default()).0
+            format_node_inputs(Some(state), None, &AppState::new(), false, Style::default()).0
         };
         assert_eq!(shown(&node(vec![waiting.clone()])), "0/1 (1 WAIT)");
 
         waiting.other_schemas = vec![other("t/R", "f79835def461350458ead76f07016dd7", 1)];
-        assert_eq!(shown(&node(vec![waiting])), "0/1 (1 WAIT, 1 OTHER VERSION)");
+        assert_eq!(shown(&node(vec![waiting.clone()])), "0/1 (1 WAIT, 1 OTHER VERSION)");
+
+        // An input without a limit stays usable on its last value: the other version is the news.
+        waiting.verdict = Input::USABLE;
+        assert_eq!(shown(&node(vec![waiting])), "1/1 OK, 1 OTHER VERSION");
     }
 }

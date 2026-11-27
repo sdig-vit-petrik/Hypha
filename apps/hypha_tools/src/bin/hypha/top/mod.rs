@@ -20,6 +20,8 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use hypha_node::sdk::{BusNode, StreamFollower, StreamSelector};
+use hypha_tools::following::Following;
+use hypha_tools::stream::follow_error_text;
 use inspector::SchemaCache;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -111,24 +113,20 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         Err(code) => return code,
     };
     let bus = match connect("hypha top: cannot connect to bus: ", "_hyphacli_top") {
-        Ok(bus) => bus,
+        Ok(bus) => Arc::new(bus),
         Err(code) => return code,
     };
 
     // Every stream of every topic, each one as it appears: a second version of a topic joins
     // the table when its publisher starts.
-    let mut follower =
-        match StreamFollower::new(&bus, vec!["**".to_owned()], StreamSelector::default(), 0) {
-            Ok(follower) => follower,
-            Err(e) => {
-                eprintln!("hypha top: cannot follow the bus: {e}");
-                return ExitCode::FAILURE;
-            }
-        };
-    if let Err(e) = follower.refresh(&bus) {
-        eprintln!("hypha top: cannot list topics: {e}");
-        return ExitCode::FAILURE;
-    }
+    let follower = StreamFollower::new(vec!["**".to_owned()], StreamSelector::default(), 0);
+    let mut follower = match Following::start(&bus, follower) {
+        Ok(following) => following,
+        Err(e) => {
+            eprintln!("hypha top: cannot follow the bus: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let guard = match TerminalGuard::new() {
         Ok(g) => g,
@@ -181,7 +179,7 @@ fn exit_code_for(loop_result: &io::Result<()>) -> ExitCode {
 fn run_tui_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     bus: &BusNode,
-    follower: &mut StreamFollower,
+    follower: &mut Following,
     state: &mut AppState,
     schema_cache: &mut SchemaCache,
     stop_signal: &Arc<AtomicBool>,
@@ -192,11 +190,14 @@ fn run_tui_loop(
     let mut last_usage = Instant::now().checked_sub(USAGE_PERIOD).unwrap_or_else(Instant::now);
 
     while bus.ok() && !stop_signal.load(Ordering::Relaxed) {
-        if let Err(error) = follower.refresh_if_changed(bus) {
-            eprintln!("hypha top: {error}");
+        // Told on the header line: the screen is the terminal's, not standard error's.
+        match follower.pass(bus) {
+            Ok(true) => state.set_live_publishers(follower.publisher_counts()),
+            Ok(false) => {}
+            Err(error) => state.notice = Some(follow_error_text(bus, &error)),
         }
         while let Some(received) = follower.next_sample().unwrap_or_else(|error| {
-            eprintln!("hypha top: {error}");
+            state.notice = Some(error);
             None
         }) {
             let (Some(identity), Some(bytes)) = (received.identity(), received.bytes()) else {
@@ -264,7 +265,7 @@ fn resolve_one_schema(
             retry_schemas.insert(key, retry_deadline());
         }
         Err(error) => {
-            eprintln!("hypha top: schema lookup failed: {error}");
+            state.notice = Some(format!("schema lookup failed: {error}"));
             retry_schemas.insert(key, retry_deadline());
         }
     }

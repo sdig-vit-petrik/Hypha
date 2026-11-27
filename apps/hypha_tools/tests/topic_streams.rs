@@ -153,34 +153,52 @@ fn echo_prints_every_stream_of_the_name_each_under_its_label() {
     assert!(echo.child.wait().expect("status").success());
 }
 
+/// One table has one header: `-p` of a name with several streams prints no row, names the
+/// streams and says how to pick one (M2 of the fourth review of #268).
 #[test]
-fn echo_p_prints_the_header_of_a_stream_before_each_run_of_its_rows() {
+fn echo_p_of_several_streams_names_them_and_asks_for_one() {
     let (bus, topic) = setup("ts_plot");
     let mut versions = Versions::publish_first(&bus, &topic);
     versions.join_second(&bus);
-    let mut echo = spawn(&["echo", "-p", &topic, "--count", "6"]);
+    let mut echo = spawn(&["echo", "-p", &topic]);
 
     until(&mut echo, &mut versions, |_| false);
 
-    let text = echo.seen.join("\n");
-    println!("{text}");
-    // Every row has as many columns as the header above it.
-    let mut columns = None;
-    let mut rows = 0_usize;
-    for line in &echo.seen {
-        if line.starts_with('#') {
-            continue;
-        }
-        if line.starts_with("%time") {
-            columns = Some(line.split(',').count());
-        } else {
-            assert_eq!(columns, Some(line.split(',').count()), "a misaligned row: {text}");
-            rows += 1;
-        }
-    }
-    assert_eq!(rows, 6, "{text}");
-    assert!(has(&echo.seen, "%time,value,label,weight"), "{text}");
-    assert!(has(&echo.seen, &format!("# {}", label_of(VERSION_2))), "{text}");
+    let errors = echo.errors();
+    assert!(!echo.child.wait().expect("status").success(), "{errors}");
+    assert!(echo.seen.is_empty(), "no row, no header: {:?}", echo.seen);
+    assert!(errors.contains("pick one with --type or --md5"), "{errors}");
+    assert!(
+        errors.contains(&label_of(VERSION_1)) && errors.contains(&label_of(VERSION_2)),
+        "{errors}"
+    );
+}
+
+/// A flag that matches nothing says which streams the name has, one with no definition by its
+/// hash (L1).
+#[test]
+fn a_selector_that_matches_nothing_names_the_streams_the_name_has() {
+    let (bus, topic) = setup("ts_nothing");
+    let mut versions = Versions::publish_first(&bus, &topic);
+    versions.join_second(&bus);
+    let _bare =
+        bus.publish_raw(&topic, DATA_TYPE, "00112233445566778899aabbccddeeff", "").expect("bare");
+    let mut echo = spawn(&["echo", &topic, "--type", "std_msgs/Other"]);
+    std::thread::sleep(Duration::from_millis(1500));
+    echo.collect();
+    let errors = echo.errors();
+    assert!(!echo.exited(), "it waits");
+    assert!(errors.contains("has no stream with --type std_msgs/Other"), "{errors}");
+    assert!(
+        errors.contains(&label_of(VERSION_1)) && errors.contains(&label_of(VERSION_2)),
+        "{errors}"
+    );
+    let bare =
+        hypha_node::sdk::schema_hash_from_md5("00112233445566778899aabbccddeeff").expect("md5");
+    assert!(
+        errors.contains(&format!("? ({bare:016x})")),
+        "the stream without a definition: {errors}"
+    );
 }
 
 #[test]

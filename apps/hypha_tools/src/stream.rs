@@ -2,7 +2,9 @@
 //! its MD5, and the flags that choose among the streams of a name.
 
 use clap::Args;
-use hypha_node::sdk::{BusNode, ResolvedSchema, StreamFollower, StreamKey, StreamSelector};
+use hypha_node::sdk::{
+    BusNode, FollowError, ResolvedSchema, StreamFollower, StreamKey, StreamSelector,
+};
 
 /// The flags that choose among the streams of a topic name: all of them, or those of one
 /// message type and/or one MD5. The same on `hypha topic echo`, `hz` and `bw`.
@@ -37,6 +39,21 @@ pub fn type_label(data_type: &str, md5: &str) -> String {
     format!("{data_type} ({})", short_md5(md5))
 }
 
+/// `type (md5 start)` in `width` columns: the type is cut first, from its start, so that the
+/// MD5 start, which is what tells two versions of one type apart, stays whole.
+#[must_use]
+pub fn fit_type_label(data_type: &str, md5: &str, width: usize) -> String {
+    let full = type_label(data_type, md5);
+    if full.chars().count() <= width || md5.is_empty() {
+        return full;
+    }
+    let tail = format!(" ({})", short_md5(md5));
+    let room = width.saturating_sub(tail.chars().count()).saturating_sub(1);
+    let kept: String =
+        data_type.chars().rev().take(room).collect::<Vec<_>>().into_iter().rev().collect();
+    if room == 0 { tail.trim_start().to_owned() } else { format!("…{kept}{tail}") }
+}
+
 /// A stream as a line names it: its type and MD5 start, or `? (schema hash)` when its
 /// schema is not known.
 #[must_use]
@@ -66,9 +83,27 @@ pub fn follower_title(follower: &StreamFollower, bus: &BusNode, stream: &StreamK
     stream_title(&stream.topic, &stream_label(schema.as_ref(), stream.schema_hash), shared)
 }
 
+/// Why a listing could not be followed, in words: a refused stream is named by its topic, type
+/// and MD5 start, and says which limit refused it.
+#[must_use]
+pub fn follow_error_text(bus: &BusNode, error: &FollowError) -> String {
+    let FollowError::Refused(refusals) = error else { return error.to_string() };
+    let each: Vec<String> = refusals
+        .iter()
+        .map(|refusal| {
+            let stream = &refusal.stream;
+            let schema =
+                bus.resolve_schema_hash_now(&stream.topic, stream.schema_hash).ok().flatten();
+            let label = stream_label(schema.as_ref(), stream.schema_hash);
+            format!("{}: {}", stream_title(&stream.topic, &label, true), refusal.cause)
+        })
+        .collect();
+    format!("cannot follow {}", each.join("; "))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{short_md5, stream_label, type_label};
+    use super::{fit_type_label, short_md5, stream_label, type_label};
     use hypha_node::sdk::ResolvedSchema;
 
     const V1: &str = "b3087778e93fcd34cc8d65bc54e850d1";
@@ -84,5 +119,14 @@ mod tests {
         assert_eq!(stream_label(None, 7), "? (0000000000000007)");
         assert_eq!(short_md5("abc"), "abc");
         assert_eq!(type_label("a/B", ""), "a/B", "a type of no MD5 is its name");
+    }
+
+    #[test]
+    fn a_label_that_does_not_fit_loses_the_start_of_its_type_and_never_its_md5() {
+        let md5 = "b3087778e93fcd34cc8d65bc54e850d1";
+        assert_eq!(fit_type_label("nav_msgs/Odometry", md5, 40), "nav_msgs/Odometry (b3087778)");
+        assert_eq!(fit_type_label("nav_msgs/Odometry", md5, 20), "…Odometry (b3087778)");
+        assert_eq!(fit_type_label("nav_msgs/Odometry", md5, 12), "(b3087778)");
+        assert_eq!(fit_type_label("a/B", "", 2), "a/B");
     }
 }

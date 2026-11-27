@@ -113,7 +113,7 @@ fn run_list(bus: &BusNode, timeout_sec: f64) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_echo(bus: &BusNode, echo: &EchoArgs) -> ExitCode {
+fn run_echo(bus: &Arc<BusNode>, echo: &EchoArgs) -> ExitCode {
     let max_count = echo.max_count;
     let mut followed = match Followed::open(bus, &echo.topic, &echo.streams, "echo") {
         Ok(followed) => followed,
@@ -123,9 +123,7 @@ fn run_echo(bus: &BusNode, echo: &EchoArgs) -> ExitCode {
     let mut cache = SchemaCache::new("hypha_topic");
     let identities = SchemaIdentityCache::new();
     let mut count = 0usize;
-    // The stream whose header the last row of `-p` followed: a row has the columns of the
-    // header above it, so the header is printed again when the stream changes.
-    let mut header_of: Option<StreamKey> = None;
+    let mut header_printed = false;
 
     while bus.ok() && (max_count == 0 || count < max_count) {
         followed.refresh();
@@ -134,9 +132,19 @@ fn run_echo(bus: &BusNode, echo: &EchoArgs) -> ExitCode {
             count = count.saturating_add(1);
             let stream = StreamKey { topic: sample.topic.clone(), schema_hash: sample.schema_hash };
             let resolved = resolve_identity(bus, &identities, &sample.topic, sample.schema_hash);
-            let label = followed
-                .is_shared(&stream)
-                .then(|| stream_label(resolved.as_deref(), sample.schema_hash));
+            let shared = followed.is_shared(&stream);
+            // One table has one header: the rows of two streams cannot share it, and a header
+            // before every row is no table. The streams are named, and the user picks one.
+            if echo.plot && shared {
+                eprintln!(
+                    "hypha topic echo: -p prints one table, and '{}' has several streams: {}; \
+                     pick one with --type or --md5",
+                    echo.topic,
+                    followed.streams().join(", ")
+                );
+                return ExitCode::FAILURE;
+            }
+            let label = shared.then(|| stream_label(resolved.as_deref(), sample.schema_hash));
             if !echo.plot {
                 println!("---");
                 print_label(label.as_deref());
@@ -167,10 +175,9 @@ fn run_echo(bus: &BusNode, echo: &EchoArgs) -> ExitCode {
                         continue;
                     }
                 };
-                if header_of.as_ref() != Some(&stream) {
-                    print_label(label.as_deref());
+                if !header_printed {
                     println!("{}", plot_header(&columns));
-                    header_of = Some(stream);
+                    header_printed = true;
                 }
                 println!("{}", plot_row(sample.framework_sent_nanos, &columns));
                 continue;
@@ -269,7 +276,7 @@ impl RateWindow {
     }
 }
 
-fn run_hz(bus: &BusNode, topic: &str, window: usize, streams: &StreamFlags) -> ExitCode {
+fn run_hz(bus: &Arc<BusNode>, topic: &str, window: usize, streams: &StreamFlags) -> ExitCode {
     let mut followed = match Followed::open(bus, topic, streams, "hz") {
         Ok(followed) => followed,
         Err(code) => return code,
@@ -367,7 +374,7 @@ impl BandwidthWindow {
     }
 }
 
-fn run_bw(bus: &BusNode, topic: &str, streams: &StreamFlags) -> ExitCode {
+fn run_bw(bus: &Arc<BusNode>, topic: &str, streams: &StreamFlags) -> ExitCode {
     let mut followed = match Followed::open(bus, topic, streams, "bw") {
         Ok(followed) => followed,
         Err(code) => return code,
@@ -406,7 +413,7 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         Err(code) => return code,
     };
     let bus = match connect("hypha topic: ", "_hyphacli_topic") {
-        Ok(bus) => bus,
+        Ok(bus) => Arc::new(bus),
         Err(code) => return code,
     };
 

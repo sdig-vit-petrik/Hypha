@@ -2,8 +2,12 @@
 
 use std::time::{Duration, Instant};
 
-use hypha_node::sdk::{BusNode, StreamFollower, StreamSelector};
+use hypha_node::sdk::{BusNode, StreamSelector};
 use hypha_testkit::unique_name;
+
+#[path = "support/following.rs"]
+mod following;
+use following::Following;
 
 #[test]
 #[allow(clippy::expect_used)]
@@ -12,8 +16,7 @@ fn a_topic_created_after_the_follower_is_picked_up() {
     let prefix = format!("/{}", unique_name("follow"));
     let pattern = format!("{prefix}/*");
 
-    let mut follower =
-        StreamFollower::new(&bus, vec![pattern], StreamSelector::default(), 8).expect("follower");
+    let mut follower = Following::new(&bus, vec![pattern], StreamSelector::default(), 8);
     follower.refresh(&bus).expect("initial refresh");
     assert_eq!(follower.followed(), 0, "nothing matches yet");
 
@@ -25,7 +28,7 @@ fn a_topic_created_after_the_follower_is_picked_up() {
     let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap_or_else(Instant::now);
     let mut received = None;
     while Instant::now() < deadline && received.is_none() {
-        follower.refresh_if_changed(&bus).expect("refresh");
+        follower.settle(&bus).expect("refresh");
         assert!(publisher.publish(b"hello"));
         received = follower.next_sample().expect("receive");
         if received.is_none() {
@@ -50,8 +53,7 @@ fn a_topic_outside_the_keys_is_not_followed() {
         .expect("publisher");
     assert!(publisher.publish(b"hello"));
 
-    let mut follower =
-        StreamFollower::new(&bus, vec![wanted], StreamSelector::default(), 8).expect("follower");
+    let mut follower = Following::new(&bus, vec![wanted], StreamSelector::default(), 8);
     follower.refresh(&bus).expect("refresh");
     assert_eq!(follower.followed(), 0, "a topic outside the keys must be left alone");
 }
@@ -71,10 +73,13 @@ fn a_subscription_failure_is_reported() {
         subscribers.push(bus.subscribe_raw(&topic, 1).expect("subscriber"));
     }
 
-    let mut follower = StreamFollower::new(&bus, vec![topic.clone()], StreamSelector::default(), 1)
-        .expect("follower");
+    let mut follower = Following::new(&bus, vec![topic.clone()], StreamSelector::default(), 1);
     let error = follower.refresh(&bus).expect_err("the subscriber limit must be reported");
-    assert!(error.contains(&topic));
+    assert!(error.to_string().contains(&topic), "{error}");
+    assert!(
+        matches!(error, hypha_node::sdk::FollowError::Refused(ref refusals) if refusals.iter().all(|refusal| refusal.cause == hypha_node::sdk::StreamSubscribeError::SlotsTaken)),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -86,8 +91,7 @@ fn a_followed_topic_that_overflows_is_listed_by_lost() {
         .publish_raw(&topic, "std_msgs/Type", "d9d213e8c146065ec958333c617eb1a6", "")
         .expect("publisher");
 
-    let mut follower = StreamFollower::new(&bus, vec![topic.clone()], StreamSelector::default(), 1)
-        .expect("follower");
+    let mut follower = Following::new(&bus, vec![topic.clone()], StreamSelector::default(), 1);
     follower.refresh(&bus).expect("refresh");
     assert!(publisher.publish(&[0]));
     assert!(follower.next_sample().expect("receive").is_some());
@@ -106,16 +110,18 @@ fn a_followed_topic_that_overflows_is_listed_by_lost() {
 
 #[test]
 #[allow(clippy::expect_used)]
-fn missing_lists_the_names_that_are_not_followed_yet() {
+fn missing_lists_the_names_that_have_no_followed_stream_with_a_publisher() {
     let bus = BusNode::new(&unique_name("follow_missing_rt")).expect("bus node");
+    let peer = BusNode::new(&unique_name("follow_missing_peer")).expect("peer");
     let present = format!("/{}", unique_name("present"));
     let absent = format!("/{}", unique_name("absent"));
-    let _publisher = bus
+    let _publisher = peer
         .publish_raw(&present, "std_msgs/Type", "d9d213e8c146065ec958333c617eb1a6", "")
         .expect("publisher");
     let wanted = vec![present.clone(), absent.clone()];
-    let mut follower =
-        StreamFollower::new(&bus, wanted.clone(), StreamSelector::default(), 8).expect("follower");
+    let mut follower = Following::new(&bus, wanted.clone(), StreamSelector::default(), 8);
     follower.refresh(&bus).expect("refresh");
-    assert_eq!(follower.missing(&wanted), vec![absent]);
+    let missing = follower.missing(&wanted);
+    assert!(missing.contains(&absent), "{missing:?}");
+    assert!(!missing.contains(&present), "{missing:?}");
 }

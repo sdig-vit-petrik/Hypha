@@ -16,6 +16,7 @@
 pub mod cdr;
 pub mod convert;
 pub mod echo_args;
+pub mod following;
 pub mod foxglove;
 pub mod intercept_doc;
 pub mod intercept_relay;

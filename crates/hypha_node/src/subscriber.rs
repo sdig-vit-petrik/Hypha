@@ -323,6 +323,11 @@ impl HyphaSubscriber {
         self.validator.missing_sequences()
     }
 
+    /// Frames sent before the first accepted from each publisher.
+    pub(crate) fn validator_sent_before_first(&self) -> u64 {
+        self.validator.sent_before_first()
+    }
+
     /// Take one sample and validate its header, payload, send time, age and sequence.
     ///
     /// # Errors
