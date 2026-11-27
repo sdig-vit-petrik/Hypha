@@ -298,8 +298,11 @@ exactly by the lockstep rule above, because the calls are made again live.
 header layout is unchanged (communication-integrity.md §2, FSR-09/10). The CRC's start
 value binds each frame to its role:
 
-- A request is sealed for `<service>#request`.
-- A response is sealed for `<service>#response/<client id>/<request sequence>`.
+- A request is sealed for `<service>␟request`.
+- A response is sealed for `<service>␟response␟<client id>␟<request sequence>`.
+
+`␟` is the unit separator (U+001F), a control character that no topic or service name
+may hold, so no topic frame and no frame of another service is sealed with these codes.
 
 So a response verifies only against the request it answers. It cannot pass as a request,
 as a topic frame, or as the answer to another call. Stage 1a tests all three.
@@ -333,6 +336,7 @@ second response has nowhere to go.
 | Server restarts | New calls reach the new server. No old request is served again | the restart, or a new server, reclaims the dead node, which disconnects the old calls |
 | No answer within the timeout | `Timeout`. A late response is dropped and counted (`late_responses`) | the client, in framework time |
 | Response corrupt, misrouted, or of another schema | `ServerLost("invalid response: <check>")`, counted in the frame counters | the frame checks |
+| Request corrupt, of another schema, or above its bound | `Refused("invalid request: <check>")`, counted as `invalid_requests`; never a disconnect that reads as the server leaving | the server's frame checks |
 | Client gone before the answer | The server drops the slot and counts it as `abandoned`. A later `reply()` returns `Disconnected` | iceoryx2 `ActiveRequest::is_connected()` |
 | A server queue that is full | Cannot happen. A request is never dropped silently | iceoryx2 sizes each client's queue to its outstanding limit (`port/server.rs:437`); the client counts its held calls |
 
@@ -345,6 +349,14 @@ the domain with filesystem calls. The probe uses the service's own node list
 (`PortFactory::nodes`, `service/port_factory/request_response.rs:173`), which visits only
 the nodes registered at that service. That is the per-stream form PR #266 adopted for the
 same reason. The rate limit is kept as the review states it.
+
+*Review of stage 1a.* A probe's result is reused only within its second and only while
+the stream's server is still the node it judged. Before, a server killed and replaced
+within that second left the new server reported dead. A client drops a call only once a
+probe found the stream's current server dead, or the stream has no server
+(`Iox2Client::abandon` refuses otherwise): iceoryx2 lets a server hold at most
+`outstanding` requests of each client, and a client that dropped a call its live server
+still held could send another, after which every receive of that server failed.
 
 **Delivery.** A request is executed at most once, and a call gets exactly one outcome.
 hypha does not retry, and it does not recognise a retried request: a retry is a new call
@@ -438,11 +450,16 @@ one more:
 The hash is the frame's schema hash of the `.srv` MD5 (`hypha_wire::schema_hash_from_md5`),
 as the topic streams of PR #266 key theirs. PR #266 is not on `develop` yet, so the key is
 spelled in one place (`service/key.rs`) to be unified with it. A service name may not
-contain `@` (the key's separator) or `#`: a topic named `/a#request` would otherwise seal
-its frames with the code of the requests of service `/a`.
+contain `@`, the key's separator.
 
-The `hypha/` namespace is already the framework's (`hypha/hk/graph/v1`), so none of these
-names can collide with a topic.
+*Review of stage 1a.* A topic's bus name drops only its leading `/`, and its wake-up event
+has the same name, so a topic `/hypha/srv/x` was an event `hypha/srv/x`: the server lock of
+service `/x`, with a topic's eight notifier slots. Two servers of two versions served one
+name that way. The `hypha/` namespace is therefore reserved, not only used: `/hypha` and
+every topic name under `/hypha/` are refused with `InvalidTopic`, except `/hypha/intercept/`
+where `hypha intercept` publishes. Service names follow the topic rule. The lock also
+checks itself (below), so an event of its name that some other build or tool left is
+refused rather than shared.
 
 **One server per name.** The review's mechanism: server creation lists the sibling
 streams `hypha/srv/<name>@*`, refuses when one has a live server, and tolerates a race of
@@ -453,8 +470,25 @@ of the name-level event `hypha/srv/<name>` instead, which the server holds for i
 lifetime. A server opens its stream, then takes that slot, then creates its stream's server
 port. iceoryx2 refuses a second notifier atomically (`ExceedsMaxSupportedNotifiers`),
 whatever the version, so two servers created at once cannot both succeed, and nothing needs
-logging later. The sibling listing remains, only on the refusal path, to name the type the
-holder serves; it finds the holder's node at its stream, which the holder opened first.
+logging later. The holder's notifier is named `<MD5>:<type>`, so a refusal names the type
+and version the holder serves without a listing of the domain.
+
+The lock carries the attribute `hypha.service_lock` with the service's name, and a server
+opens it only with that attribute. An event of the lock's name without it was made by
+something else and locks nothing: the server is refused with backend code 45 and a log
+line that says so. A server port that a dead holder still holds after the lock was taken
+is reclaimed the same way, within 500 ms.
+
+**Clients and their slots.** A client of a CLI tool node (`_hyphacli_*`, as the stream's
+node list names it) takes one of the three observer slots, any other client one of the
+policy's; neither kind takes the other's. Both are counted after the client is created, so
+two created at once cannot both take the last slot of their kind. A dead node that holds a
+client and not the server is reclaimed at the next client's creation, as a dead server is
+at the next server's: a client killed under a name that never returns would otherwise keep
+its slot, and the requests its server holds for it, forever. A process with too few file
+descriptors left for another service (about 20 for one service end) is refused with
+`OutOfDescriptors`, which names the open count and the limit, rather than an iceoryx2
+internal failure.
 
 The lock is not the server's wake-up listener. A `WaitSet` takes a listener by value
 (`Iox2WaitSet::attach`), so a listener that served as the lock would stay locked in a

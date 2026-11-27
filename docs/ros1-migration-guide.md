@@ -623,6 +623,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | `pnh.param("x", v, d)`, rosparam YAML | Top-level TOML key, `hypha::config().required<T>("x")` |
 | `<remap>`, `ns=` | `[ports.inputs.<name>]` or `[ports.outputs.<name>]` table with the full `topic` |
 | Private topic `~x` | `~/x` in a ports table |
+| A topic under `/hypha/` | A topic of another namespace: `/hypha` and the names under it are the framework's, and a port on one is refused with `InvalidTopic` |
 | `nh.subscribe` that stores the latest value | `hypha::Latest<T>` port |
 | `nh.subscribe` with work for each message | `hypha::Arrivals<T>` port |
 | `message_filters` synchroniser | `Arrivals` ports; match `header.stamp` in the step. Trigger on the input that is published last: its step holds the partner samples sent before it, or with it by one step of one node ([execution-model.md](execution-model.md) §6.6). A partner sent after the trigger sample is not in that step |

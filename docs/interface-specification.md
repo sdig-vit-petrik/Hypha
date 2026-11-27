@@ -29,7 +29,7 @@ Every call that can fail returns `HyphaStatus`:
 |---|---|---|
 | 0 | `Ok` | The call succeeded. |
 | 1 | `InvalidArgument` | A pointer was null, or a length made no sense. |
-| 2 | `InvalidTopic` | The topic name was empty or refused. |
+| 2 | `InvalidTopic` | The topic name was empty or refused, a name under the reserved `/hypha/` included (below). |
 | 3 | `PoolExhausted` | No buffer was free, or the publisher's loan budget (the loans its caller holds) is full. The caller drops this message. |
 | 4 | `TooLarge` | The requested buffer is larger than the transport carries. |
 | 5 | `Disconnected` | The endpoint is closed. |
@@ -146,6 +146,13 @@ process, not to one node:
   domain. `hypha clean --domain <prefix>` removes the domains named `<prefix>*` that
   no live node uses, `hypha clean` the domain of `HYPHA_DOMAIN`; `./clean-shm.sh` in
   the repository wipes every domain of the host.
+- **Topic names.** A public topic name begins with `/`. `/hypha` and every name under
+  `/hypha/` belong to the framework and are refused with `InvalidTopic`
+  (`hypha_topic_validate_public_name` too), except `/hypha/intercept/`, where `hypha
+  intercept` publishes its state. The transport keeps its own services under that
+  prefix (`hypha/srv/` for request-response services, `hypha/hk/` for housekeeping), and
+  a topic's bus name only drops the leading `/`: a topic `/hypha/srv/x` would otherwise
+  be the server lock of service `/x`.
 - **Restart when time goes back.** A timer or cycle of a `WaitSet` that sees simulated
   time go back, and a `WaitSet` of a node on simulated time (lockstep or follow, not a CLI
   tool) that reads a `/clock` lower than the node's last one, end the run with `ClockRewound`; the process exits 75 (C++ `runNode`)
