@@ -4,7 +4,7 @@
 //! received header against its payload and the topic it arrived on.
 use core::fmt;
 
-use crc32c::{crc32c, crc32c_append};
+use crc_fast::{CrcAlgorithm, Digest, crc32_iscsi};
 
 /// Frame magic. It changes when the header layout changes: `IOX7` (0.4.0) added
 /// `payload_len`, so a frame of `IOX6` (0.2.0, 0.3.0) is refused as another magic. The
@@ -25,7 +25,7 @@ impl TopicCode {
     /// The code of the topic `name`: the CRC-32C of its bytes.
     #[must_use]
     pub fn of(name: &str) -> Self {
-        Self(crc32c(name.as_bytes()))
+        Self(crc32_iscsi(name.as_bytes()))
     }
 }
 
@@ -210,7 +210,13 @@ fn integrity_code(topic: TopicCode, header: &FrameHeader, payload: &[u8]) -> u32
         rest = put(rest, field.to_le_bytes());
     }
     put(rest, header.payload_len.to_le_bytes());
-    crc32c_append(crc32c_append(topic.0, &covered), payload)
+    // CRC-32C (CRC-32/ISCSI) continued from `topic.0`: the register is its complement.
+    let mut digest = Digest::new_with_init_state(CrcAlgorithm::Crc32Iscsi, u64::from(!topic.0));
+    digest.update(&covered);
+    digest.update(payload);
+    // A 32-bit CRC in the low half of the u64.
+    let [b0, b1, b2, b3, ..] = digest.finalize().to_le_bytes();
+    u32::from_le_bytes([b0, b1, b2, b3])
 }
 
 /// Write `bytes` at the front of `rest` and return the bytes after them. The caller sizes

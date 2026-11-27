@@ -140,7 +140,7 @@ pub fn write_schema_record(
     put_front(cursor, definition.as_bytes())?;
 
     let checksum =
-        crc32c::crc32c(record.get(..footer_start).ok_or(SchemaRecordError::InvalidFrame)?);
+        crc_fast::crc32_iscsi(record.get(..footer_start).ok_or(SchemaRecordError::InvalidFrame)?);
     record
         .get_mut(footer_start..)
         .ok_or(SchemaRecordError::InvalidFrame)?
@@ -214,7 +214,7 @@ fn parse_record_payload(bytes: &[u8]) -> Result<&[u8], SchemaRecordError> {
     }
     let stored = bytes.get(footer_start..).ok_or(SchemaRecordError::InvalidFrame)?;
     let checksum =
-        crc32c::crc32c(bytes.get(..footer_start).ok_or(SchemaRecordError::InvalidFrame)?);
+        crc_fast::crc32_iscsi(bytes.get(..footer_start).ok_or(SchemaRecordError::InvalidFrame)?);
     if stored != checksum.to_le_bytes() {
         return Err(SchemaRecordError::InvalidFrame);
     }
