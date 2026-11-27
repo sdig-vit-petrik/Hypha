@@ -198,3 +198,16 @@ fn a_loan_past_the_loan_count_is_loan_limit_and_only_the_plain_loan_counts_a_los
     }
     assert_eq!(fixture.missing(), 1, "a refused plain loan drops its message");
 }
+
+/// A reservation over the payload bound is `TooLarge` and, like every refused reservation,
+/// takes no sequence number.
+#[test]
+fn a_reservation_refused_as_too_large_leaves_no_gap() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.send(4, b"one!"), HyphaStatus::Ok);
+    assert!(fixture.receive_one());
+    assert_eq!(fixture.hold(BOUND + 1, true).err(), Some(HyphaStatus::TooLarge));
+    assert_eq!(fixture.send(4, b"two!"), HyphaStatus::Ok);
+    assert!(fixture.receive_one());
+    assert_eq!(fixture.missing(), 0, "the refused reservation took no sequence number");
+}

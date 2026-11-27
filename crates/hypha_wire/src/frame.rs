@@ -158,11 +158,12 @@ pub fn seal(topic: TopicCode, metadata: FrameMetadata, flags: u32, payload: &[u8
 }
 
 /// The message bytes of a frame whose transport slice is `slice`: its first
-/// `header.payload_len` bytes, or all of `slice` when the header claims more, which
-/// [`verify`] then refuses.
+/// `header.payload_len` bytes, or none when the header claims more than the slice holds,
+/// so a reader that has not verified the frame never sees bytes no CRC covered. [`verify`]
+/// refuses such a frame as [`ParseError::LengthMismatch`].
 #[must_use]
 pub fn message_bytes<'a>(header: &FrameHeader, slice: &'a [u8]) -> &'a [u8] {
-    usize::try_from(header.payload_len).ok().and_then(|len| slice.get(..len)).unwrap_or(slice)
+    usize::try_from(header.payload_len).ok().and_then(|len| slice.get(..len)).unwrap_or(&[])
 }
 
 /// Check that `header` is a supported frame, sealed for `topic`, whose message is the first

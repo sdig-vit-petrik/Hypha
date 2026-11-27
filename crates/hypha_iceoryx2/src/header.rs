@@ -20,10 +20,19 @@ pub(crate) struct Iox2FrameHeader {
     transport_sent_nanos: u64,
     framework_sent_nanos: u64,
     crc: u32,
-    /// The message bytes: the first `payload_len` of the slice. In what were four bytes of
-    /// padding before `IOX7`, so the layout stays 56 bytes, a whole number of 8-byte words.
+    /// The message bytes: the first `payload_len` of the slice. In the four bytes that were
+    /// the field `reserved` (always 0) before `IOX7`, so the layout stays 56 bytes.
     payload_len: u32,
 }
+
+// The layout in shared memory: iceoryx2 matches services by type name and size, so a
+// reordered or added field would connect to an older build and be misread silently.
+const _: () = assert!(
+    size_of::<Iox2FrameHeader>() == 56
+        && align_of::<Iox2FrameHeader>() == 8
+        && core::mem::offset_of!(Iox2FrameHeader, crc) == 48
+        && core::mem::offset_of!(Iox2FrameHeader, payload_len) == 52
+);
 
 impl From<FrameHeader> for Iox2FrameHeader {
     fn from(header: FrameHeader) -> Self {

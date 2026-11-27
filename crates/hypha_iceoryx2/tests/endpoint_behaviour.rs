@@ -171,6 +171,44 @@ fn a_loan_shrunk_to_nothing_arrives_empty_and_every_slot_returns_whole() {
     }
 }
 
+/// A growable topic has no byte limit of its own, so the frame's `payload_len` (a `u32`)
+/// is the limit: a longer loan is `TooLarge` before anything is allocated, never a frame
+/// whose `payload_len` its receivers would refuse.
+#[test]
+#[allow(clippy::expect_used)]
+fn a_loan_past_what_payload_len_can_say_is_too_large_on_a_growable_topic() {
+    use hypha_wire::frame::MAX_PAYLOAD_LEN;
+    let transport = Iox2Transport::with_name(&unique_name("loan_max")).expect("transport");
+    let topic = format!("/{}", unique_name("loan_max"));
+    let spec = TopicSpec::new(&topic).with_type("std_msgs/String").keeping(2);
+    let publisher = transport.publish(&spec).expect("publisher");
+    let refused = publisher.loan(MAX_PAYLOAD_LEN + 1).err();
+    assert!(
+        matches!(refused, Some(PortError::TooLarge { requested, limit })
+            if requested == MAX_PAYLOAD_LEN + 1 && limit == MAX_PAYLOAD_LEN),
+        "{refused:?}"
+    );
+}
+
+/// A shrunk loan dropped unsent returns its slot whole: far more rounds than the pool has
+/// slots or the publisher has loans, each followed by a full-size loan.
+#[test]
+#[allow(clippy::expect_used)]
+fn a_shrunk_loan_dropped_unsent_returns_its_slot() {
+    let transport = Iox2Transport::with_name(&unique_name("loan_drop")).expect("transport");
+    let topic = format!("/{}", unique_name("loan_drop"));
+    let spec = TopicSpec::new(&topic).with_type("std_msgs/String").keeping(2);
+    let publisher = transport.publish(&spec).expect("publisher");
+    let _subscriber = transport.subscribe(&spec).expect("subscriber");
+    for round in 0..64_usize {
+        let mut loan = publisher.loan(4096).expect("a full-size loan on every round");
+        loan.shrink(round % 3).expect("shrink");
+        drop(loan);
+    }
+    let whole = publisher.loan(4096).expect("a full-size loan after the drops");
+    assert_eq!(whole.len(), 4096);
+}
+
 /// A loan shrunk at the send is, header and payload, the frame of a loan of exactly the
 /// bytes it kept: with the same metadata the two headers are equal field by field, the CRC
 /// and `payload_len` included, and the payloads are equal.

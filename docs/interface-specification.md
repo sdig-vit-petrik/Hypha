@@ -463,7 +463,7 @@ alone, as ROS 1 serialized bytes, so a payload has no header in front of it.
 | payload | variable | ROS 1 serialized message bytes, the first `payload_len` bytes of the sample's user payload |
 
 The header is 56 bytes with 8-byte alignment, `payload_len` in the four bytes after `crc`
-that were padding before. The transport's slice keeps the size the publisher loaned; a
+that were the field `reserved` (always 0) before; a compile-time assertion pins the layout. The transport's slice keeps the size the publisher loaned; a
 loan shrunk before its send (`hypha_loan_shrink`) sets a shorter `payload_len`, and every
 reader takes the first `payload_len` bytes. A frame whose `payload_len` exceeds its slice is
 refused as `CorruptPayload`. A payload is at most 4 GiB − 1 bytes; a longer loan is
@@ -471,7 +471,9 @@ refused as `CorruptPayload`. A payload is at most 4 GiB − 1 bytes; a longer lo
 
 The magic is `0x3758_4F49` (`IOX7`, 0.4.0, which added `payload_len`). It changes when
 the header layout changes, and a receiver refuses any other value: a 0.3.0 frame
-(`IOX6`) is `InvalidFrame`. Release 0.2.0 introduced the topic-bound CRC.
+(`IOX6`) is `InvalidFrame`. A 0.3.0 and a 0.4.0 process in one domain still attach to
+each other's services (the header's type name and size are unchanged), so the refusal
+comes per frame, counted as `invalid_frame`, not at connect. Release 0.2.0 introduced the topic-bound CRC.
 It kept the 0.1.0 layout and its magic, so a frame from 0.1.0 fails its CRC and is
 refused as `corrupt_payload`: the two release lines do not share a domain.
 

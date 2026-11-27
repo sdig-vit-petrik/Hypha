@@ -153,7 +153,8 @@ proptest! {
         prop_assert_eq!(hypha_wire::frame::message_bytes(&header, &slice), message);
     }
 
-    /// A `payload_len` past the slice is refused as a length mismatch, whatever the CRC.
+    /// A `payload_len` past the slice is refused as a length mismatch, whatever the CRC, and
+    /// an unverified reader gets no bytes of it.
     #[test]
     fn a_payload_len_past_the_slice_is_refused(
         metadata in metadata(),
@@ -167,6 +168,7 @@ proptest! {
             verify(topic(), &header, short).err(),
             Some(hypha_wire::frame::ParseError::LengthMismatch)
         );
+        prop_assert_eq!(hypha_wire::frame::message_bytes(&header, short), &[] as &[u8]);
     }
 
     #[test]
