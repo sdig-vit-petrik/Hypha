@@ -45,6 +45,24 @@ pub fn publisher_loan_frame(
     Ok(held)
 }
 
+/// [`publisher_loan_frame`] for a loan its caller may ask for again: a refusal takes no
+/// sequence number, so the subscribers count no lost frame. The typed loan uses it.
+///
+/// # Errors
+/// As [`publisher_loan_frame`]: `PoolExhausted` for a full pool, `LoanLimit` when the
+/// publisher's callers hold all its loans.
+pub fn publisher_reserve_frame(
+    publisher: &HyphaPublisher,
+    payload_size: usize,
+) -> Result<HyphaLoan, Error> {
+    let mut held = lend_frame(publisher, payload_size)?;
+    let payload = held.payload_mut().ok_or(Error::InvalidState)?;
+    if payload.len() != payload_size {
+        return Err(Error::InvalidState);
+    }
+    Ok(held)
+}
+
 /// Send a filled loan. A negative `framework_sent_nanos` stamps framework time on this
 /// thread: the time of the step or the replayed callback that sends, else the clock. The
 /// loan is released whatever the result.
@@ -93,14 +111,15 @@ pub(crate) fn lend_frame(
     })
 }
 
-/// [`lend_frame`] for a caller that sends its frame at once. A pool with no free buffer
-/// drops that sample, so it takes a sequence number that the subscribers count as lost.
+/// [`lend_frame`] for a caller that sends its frame at once. A pool with no free buffer, or
+/// a publisher whose loans are all held, drops that sample, so it takes a sequence number
+/// that the subscribers count as lost.
 pub(crate) fn lend_frame_or_gap(
     endpoint: &HyphaPublisher,
     payload_size: usize,
 ) -> Result<HyphaLoan, Error> {
     lend_frame(endpoint, payload_size).inspect_err(|error| {
-        if *error == Error::PoolExhausted {
+        if matches!(error, Error::PoolExhausted | Error::LoanLimit) {
             take_sequence(&endpoint.next_sequence);
         }
     })

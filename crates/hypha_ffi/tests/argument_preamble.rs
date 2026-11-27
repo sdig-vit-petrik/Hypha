@@ -302,6 +302,12 @@ static ROWS: &[Row] = rows! {
             INVALID
         );
     }
+    hypha_publisher_reserve_frame => |_live| {
+        assert_eq!(
+            unsafe { hypha_publisher_reserve_frame(null_mut(), 0, &mut null_mut(), &mut null_mut()) },
+            INVALID
+        );
+    }
     hypha_loan_send => |_live| { assert_eq!(unsafe { hypha_loan_send(null_mut(), -1) }, INVALID) }
     hypha_loan_drop => |_live| { unsafe { hypha_loan_drop(null_mut()) } }
     hypha_loan_shrink => |live| {

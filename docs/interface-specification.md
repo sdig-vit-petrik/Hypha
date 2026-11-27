@@ -30,7 +30,7 @@ Every call that can fail returns `HyphaStatus`:
 | 0 | `Ok` | The call succeeded. |
 | 1 | `InvalidArgument` | A pointer was null, or a length made no sense. |
 | 2 | `InvalidTopic` | The topic name was empty or refused. |
-| 3 | `PoolExhausted` | No buffer was free, or the publisher's loan budget (the loans its caller holds) is full. The caller drops this message. |
+| 3 | `PoolExhausted` | No buffer was free. A send or `hypha_publisher_loan_frame` drops this message, and subscribers count it lost; `hypha_publisher_reserve_frame` takes no sequence, and its caller may ask again. |
 | 4 | `TooLarge` | The requested buffer is larger than the transport carries. |
 | 5 | `Disconnected` | The endpoint is closed. |
 | 6 | `Backend` | The transport failed for a reason of its own: a send that fails inside the transport, or an internal loan failure. Each cause has its own backend code in `crates/hypha_iceoryx2/src/lib.rs`. |
@@ -51,6 +51,7 @@ Every call that can fail returns `HyphaStatus`:
 | 21 | — | Retired (`Stale`; the verdict `HYPHA_CYCLE_VERDICT_STALE` names a stale input). No function returns it. |
 | 22 | `ClockRewound` | Simulated time went back under a timer or cycle of a `WaitSet`, or a node on simulated time read a `/clock` lower than its last one: a backward seek. Nothing rewinds in place; `runNode` exits 75 and `hypha launch` restarts the process. |
 | 23 | `ApplicationFailed` | The application asked for its run to fail (`hypha_waitset_request_failure`, C++ `failRun()`). The run report carries it with `HYPHA_RUN_REASON_RUNTIME_FAILED`. |
+| 24 | `LoanLimit` | The publisher's callers already hold all its loans (its loan count, two by default); the pool may have room. Lost frame or not as for `PoolExhausted`. Send or drop a held loan, then ask again. |
 
 `Panic` reports a foreign callback that threw; the C++ SDK catches the exception
 at the boundary and the call is reported as having had no effect. A fault inside
@@ -92,6 +93,9 @@ The cycle calls (`hypha_cycle_*`, `hypha_input_source_*`) give these causes:
   publisher is destroyed. `hypha_loan_shrink` shortens an unsent loan to its first bytes
   (never longer): the slot keeps its size, the frame's `payload_len` says the shorter
   length, and subscribers see only those bytes.
+  `hypha_publisher_reserve_frame` lends as `hypha_publisher_loan_frame` does, but a refusal
+  takes no sequence number: it is for a caller that holds the loan to fill it and may ask
+  again, and subscribers count no lost frame.
 - **A callback context moves only on success.** A successful attach or cycle
   creation takes the `context` and its `release`, and calls `release` exactly once,
   after no callback can run again. A refused call leaves the context to the caller.
