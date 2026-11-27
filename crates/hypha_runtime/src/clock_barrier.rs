@@ -214,7 +214,7 @@ pub struct DriverOptions {
     pub timeout: Duration,
     /// Simulated seconds per host second. `None` steps as fast as the participants allow.
     pub real_time_factor: Option<f64>,
-    /// Node names that must acknowledge the first value before the second step.
+    /// Node names that must acknowledge the start value before the first step.
     pub expected: Vec<String>,
 }
 
@@ -227,8 +227,9 @@ pub enum DriverAction {
         /// The new clock value, in nanoseconds.
         deadline: i64,
     },
-    /// Publish `/clock = value` again; it is still awaited.
-    Resend {
+    /// Publish `/clock = value` with no step, then call [`DriverSchedule::sent`]: the
+    /// start value, or an awaited value again.
+    Publish {
         /// The clock value awaited, in nanoseconds.
         value: i64,
     },
@@ -255,7 +256,10 @@ struct Awaited {
 }
 
 /// The lockstep schedule of a clock driver: `/clock` advances only once every required
-/// participant has acknowledged the previous value.
+/// participant has acknowledged the previous value. The start value is the start
+/// barrier, as `hypha play` runs it: it goes out with no step, and the first step, at
+/// start + period, waits until every expected participant has acknowledged it. A step's
+/// outputs therefore reach every expected participant.
 #[derive(Debug, Clone)]
 pub struct DriverSchedule {
     options: DriverOptions,
@@ -325,7 +329,7 @@ impl DriverSchedule {
     #[must_use]
     pub fn next(&mut self, now: Instant) -> DriverAction {
         let Some(awaited) = self.awaited else {
-            return DriverAction::Step { deadline: self.options.start_nanos };
+            return DriverAction::Publish { value: self.options.start_nanos };
         };
         let mut required = self.participants.names();
         for name in &self.options.expected {
@@ -363,7 +367,7 @@ impl DriverSchedule {
             return DriverAction::Fail { silent: unheard, last_clock_nanos: None };
         }
         if now.saturating_duration_since(awaited.last_send) >= CLOCK_RESEND_INTERVAL {
-            return DriverAction::Resend { value: awaited.value };
+            return DriverAction::Publish { value: awaited.value };
         }
         DriverAction::Wait
     }

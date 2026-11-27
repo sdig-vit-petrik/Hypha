@@ -327,8 +327,13 @@ impl Stage {
         let name = unique(label);
         let node = match mode {
             Mode::Driver(..) => create_node(&name),
-            _ => create_sim_node_with_triggers(&name, &[50_000, 60_000]),
+            _ => participant_node(&name),
         };
+        Self::on_node(name, node, mode, input, output)
+    }
+
+    /// The stage `name` on `node`, which is already created: its ports open only now.
+    fn on_node(name: String, node: *mut HyphaNode, mode: &Mode, input: &str, output: &str) -> Self {
         let waitset = unsafe { create_waitset(node) };
         let quiet = format!("{input}_quiet");
         let inputs =
@@ -459,6 +464,11 @@ impl Drop for Stage {
     }
 }
 
+/// The node of a participant: on simulated time, with the trigger tables of its ports.
+fn participant_node(name: &str) -> *mut HyphaNode {
+    create_sim_node_with_triggers(name, &[50_000, 60_000])
+}
+
 /// A driver and one participant `stage`, created in that order of clock ownership.
 struct Loop {
     _serial: MutexGuard<'static, ()>,
@@ -507,8 +517,9 @@ fn a_driver_steps_only_after_every_participant_acknowledges() {
     let run = Loop::new(&Mode::Rate, true, 5_000 * MS);
     run.run(50, false);
     let driver: Vec<i64> = run.driver.steps().iter().map(|step| step.scheduled).collect();
-    let expected: Vec<i64> = (0..driver.len()).map(deadline).collect();
-    assert_eq!(driver, expected, "the driver steps start + k * period");
+    // The start value is the barrier: the first step is one period after it.
+    let expected: Vec<i64> = (1..=driver.len()).map(deadline).collect();
+    assert_eq!(driver, expected, "the driver steps start + k * period, k > 0");
     // Step k + 1 waits for the stage to acknowledge step k, so the stage is never more
     // than two values behind.
     let stage = run.stage.steps();
@@ -620,7 +631,7 @@ fn a_participant_that_stops_fails_the_driver_naming_it() {
 }
 
 #[test]
-fn an_expected_participant_holds_the_start_and_the_value_is_resent() {
+fn an_expected_participant_holds_the_first_step_and_the_start_value_is_resent() {
     let serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
     let _ = hypha_clock_disable_sim_time();
     let topic = format!("/{}", unique("drv_solo"));
@@ -636,7 +647,7 @@ fn an_expected_participant_holds_the_start_and_the_value_is_resent() {
     while started.elapsed() < std::time::Duration::from_secs(1) {
         assert_eq!(driver.run(20 * MS), 0);
     }
-    assert_eq!(driver.steps().len(), 1, "only the start value ran");
+    assert!(driver.steps().is_empty(), "a step ran before the participant acknowledged");
     let mut received = 0;
     while unsafe { receive_payload(reader) }.is_some() {
         received += 1;
@@ -647,6 +658,37 @@ fn an_expected_participant_holds_the_start_and_the_value_is_resent() {
         hypha_node_destroy(reader_node);
     }
     drop(driver);
+    let _ = hypha_clock_disable_sim_time();
+    drop(serial);
+}
+
+#[test]
+fn an_expected_participant_that_joins_late_reads_the_first_step() {
+    let serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    let _ = hypha_clock_disable_sim_time();
+    let (to_stage, to_driver) =
+        (format!("/{}", unique("drv_out")), format!("/{}", unique("drv_back")));
+    // The participant's node exists first, as the driver needs, but none of its ports.
+    let name = unique("stage");
+    let node = participant_node(&name);
+    let driver =
+        Stage::new("driver", &Mode::Driver(vec![name.clone()], 5_000 * MS), &to_driver, &to_stage);
+    for _ in 0..5 {
+        assert_eq!(driver.run(2 * MS), 0);
+    }
+    let stage = Stage::on_node(name, node, &Mode::Triggered, &to_stage, &to_driver);
+    let started = std::time::Instant::now();
+    while driver.steps().len() < 5 {
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "the driver stalled");
+        for participant in [&driver, &stage] {
+            assert_eq!(participant.run(2 * MS), 0, "a run failed");
+        }
+    }
+    // The driver's first step emits its deadline; the stage's first step must read it.
+    let sent = driver.steps().first().expect("a driver step").scheduled;
+    let first = Record { scheduled: sent, seen: Some(sent.unsigned_abs()) };
+    assert_eq!(stage.steps().first(), Some(&first), "the first step's output was lost");
+    drop((stage, driver));
     let _ = hypha_clock_disable_sim_time();
     drop(serial);
 }
