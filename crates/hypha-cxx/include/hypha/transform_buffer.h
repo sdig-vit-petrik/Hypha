@@ -44,9 +44,15 @@ namespace hypha {
 /// Threading: lookup() and lookupLatest() may be called from any thread while the object
 /// lives. Construct and destroy it on the thread that configures the node, never while
 /// node.run() runs on another thread. Nothing is ingested unless the node runs.
+///
+/// A default-constructed buffer holds nothing, like a default Publisher: a member of an
+/// application, assigned in setup() as `tf_ = hypha::TransformBuffer(node);`. A lookup
+/// on it, or on a buffer that was moved from, throws std::runtime_error.
 class TransformBuffer
 {
   public:
+    TransformBuffer() = default;
+
     /// @brief Subscribe @p topics (default `/tf`, `/tf_static`) and keep @p cache of
     ///        dynamic transforms per frame. Create it before node.run().
     /// @throws ConfigError when a topic exists with another policy (QosMismatch).
@@ -83,6 +89,13 @@ class TransformBuffer
 
     ~TransformBuffer() = default;
 
+    /// @return False for a buffer that was default-constructed and not yet assigned, or
+    ///         moved from.
+    bool isValid() const
+    {
+        return this->buffer_.get() != nullptr;
+    }
+
     /// @brief The transform that maps @p source coordinates into @p target at @p at.
     ///        Never waits.
     /// @return The transform, or why none was found.
@@ -111,6 +124,12 @@ class TransformBuffer
     std::expected<geometry_msgs::TransformStamped, TransformError>
     find(std::string_view target, std::string_view source, std::optional<int64_t> atNanos) const
     {
+        if (!this->isValid()) {
+            throw std::runtime_error(
+                "hypha: TransformBuffer::lookup() on a buffer that was never created or was "
+                "moved from: assign TransformBuffer(node) to it in setup()"
+            );
+        }
         uint32_t            result = 0;
         HyphaTransform      raw{};
         const ::HyphaStatus status = backend::transformBufferLookup(
@@ -184,6 +203,11 @@ class SendReport
 class TransformBroadcaster
 {
   public:
+    /// @brief A broadcaster that was never created: send() sends nothing and returns false
+    ///        with lastPublishStatus() InvalidState. Assign `TransformBroadcaster(node)`
+    ///        to it in setup().
+    TransformBroadcaster() = default;
+
     /// @brief Advertise a TFMessage publisher on @p topic with the `tf` policy.
     /// @throws std::runtime_error when the endpoint is refused; ConfigError for a topic
     ///         that exists with another policy (QosMismatch).
@@ -250,6 +274,9 @@ class TransformBroadcaster
 class StaticTransformBroadcaster
 {
   public:
+    /// @brief As TransformBroadcaster(): a member assigned in setup().
+    StaticTransformBroadcaster() = default;
+
     /// @brief Advertise a latched TFMessage publisher on @p topic.
     /// @throws std::runtime_error when the endpoint is refused; ConfigError for a topic
     ///         that exists with another policy (QosMismatch).
