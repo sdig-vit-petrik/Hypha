@@ -82,7 +82,7 @@ pub(crate) fn run(args: &PoolArgs) -> ExitCode {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "a failed setup is a test failure")]
+#[expect(clippy::expect_used, reason = "a failed setup is a test failure")]
 mod tests {
     use super::*;
 
