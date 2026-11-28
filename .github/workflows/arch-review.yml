@@ -1,0 +1,50 @@
+# On-demand fresh-context architecture review for pull requests.
+# Comment `/arch-review` on a PR to run a read-only pass focused solely on
+# layering, duplication, public surface, and test-pyramid fit (not style).
+name: arch-review
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  review:
+    if: |
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/arch-review')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install agent configuration
+        run: ./scripts/agent-hooks/install.sh
+
+      - name: Run architecture-fit review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Perform a strict, read-only architecture-fit review of this pull request.
+            Ignore formatting, naming bikesheds, and typos. Report ONLY concrete findings
+            with file:line citations across these five checks (or state "No architectural
+            findings" if clean):
+            1. **Duplication:** Does this PR duplicate an existing helper, state machine,
+               or abstraction already in the repository?
+            2. **Layering (AGENTS.md Single-owner map):** Is any policy, state machine, or
+               retry loop placed in `hypha_ffi`, `crates/hypha-cxx`, or `apps/` instead of
+               its owning core crate?
+            3. **Public surface:** Does it add a new C ABI symbol, public C++ header, or
+               parallel API where extending an existing one would suffice (docs/features.md
+               rule 3)?
+            4. **Test pyramid:** Does it repeat a pure-logic permutation matrix at
+               `hypha_ffi` / `hypha-cxx` instead of testing once in the owning core crate?
+            5. **Subtraction:** What code, boilerplate, or dead paths in the diff can be
+               collapsed or deleted?

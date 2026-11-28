@@ -96,7 +96,7 @@ impl Encoder<'_> {
             None if field.is_fixed_length => vec![None; field.array_length],
             None => Vec::new(),
             Some(Value::String(text)) if is_byte_array(field) => {
-                return self.bytes(field, text.as_bytes(), path, out);
+                return Self::bytes(field, text.as_bytes(), path, out);
             }
             Some(other) => {
                 return Err(format!(
@@ -106,7 +106,7 @@ impl Encoder<'_> {
                 ));
             }
         };
-        self.length(field, given.len(), path, out)?;
+        Self::length(field, given.len(), path, out)?;
         for (index, item) in given.into_iter().enumerate() {
             self.element(&field.type_name, item, &format!("{path}[{index}]"), out)?;
         }
@@ -115,21 +115,18 @@ impl Encoder<'_> {
 
     /// A byte array written as a string: its UTF-8 bytes.
     fn bytes(
-        &mut self,
         field: &ReflectedField,
         bytes: &[u8],
         path: &str,
         out: &mut Vec<u8>,
     ) -> Result<(), String> {
-        self.length(field, bytes.len(), path, out)?;
+        Self::length(field, bytes.len(), path, out)?;
         out.extend_from_slice(bytes);
         Ok(())
     }
 
     /// Checks a fixed array's length, or writes a variable array's.
-    #[allow(clippy::unused_self)]
     fn length(
-        &self,
         field: &ReflectedField,
         count: usize,
         path: &str,
@@ -188,7 +185,10 @@ fn scalar_of(type_name: &str, value: Option<&Value>) -> Result<ScalarValue, Stri
         ("string", Value::String(text)) => Ok(ScalarValue::Text(text.as_bytes().to_vec())),
         ("float32" | "float64", Value::Float(number)) => Ok(ScalarValue::Float(*number)),
         // An integer is an exact float here; beyond 2^53 it rounds, as in ROS.
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a TOML integer for a float field converts as ROS does; past 2^53 it rounds"
+        )]
         ("float32" | "float64", Value::Integer(number)) => Ok(ScalarValue::Float(*number as f64)),
         ("time" | "duration", Value::Table(table)) => time_of(type_name, table),
         (_, Value::Integer(number))
@@ -347,7 +347,10 @@ fn scalar_text(type_name: &str, value: &ScalarValue) -> String {
         ScalarValue::Int(number) => number.to_string(),
         ScalarValue::UInt(number) => number.to_string(),
         // A float32 widened to f64 is exact; narrowing it back loses nothing.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a float32 field narrows on purpose; one out of range prints as the wider value"
+        )]
         ScalarValue::Float(number) if type_name == "float32" => {
             let narrow = *number as f32;
             if narrow.is_finite() { format!("{narrow:?}") } else { float_text(*number) }

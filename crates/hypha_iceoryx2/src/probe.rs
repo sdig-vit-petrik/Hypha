@@ -39,7 +39,7 @@ impl Iox2Transport {
         let owners = {
             let locked_node = crate::locked(&self.node);
             let node_ref = locked_node.as_ref().ok_or(PortError::Backend(1))?;
-            match crate::transport::data_service_builder(node_ref, &name).open() {
+            match crate::data_service::data_service_builder(node_ref, &name).open() {
                 Ok(service) => {
                     let mut owners: Vec<UniqueNodeId> = Vec::new();
                     service.dynamic_config().list_publishers(|details| {

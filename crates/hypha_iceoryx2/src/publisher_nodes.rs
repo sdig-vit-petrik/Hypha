@@ -9,7 +9,7 @@ use hypha_core::port::PortError;
 use iceoryx2::node::{Node, NodeState, NodeView as _};
 use iceoryx2::prelude::{CallbackProgression, PortFactory as _};
 
-use crate::endpoint::Iox2Subscriber;
+use crate::subscriber::Iox2Subscriber;
 use crate::transport::Ipc;
 
 impl Iox2Subscriber {

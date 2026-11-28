@@ -258,7 +258,7 @@ fn check_input_source<'set>(
     if endpoint.is_some_and(|endpoint| endpoint.owner_node != node) {
         return Err(Error::InvalidArgument);
     }
-    let topic = endpoint.map_or_default(|endpoint| endpoint.topic.clone());
+    let topic = endpoint.map(|endpoint| endpoint.topic.clone()).unwrap_or_default();
     // The source drains the subscriber alone.
     if let Some(endpoint) = endpoint {
         let previous = endpoint.claim(crate::subscriber::MODE_SOURCE)?;

@@ -1,8 +1,18 @@
-//! The C ABI for hypha.
+//! Safe Rust node runtime and Rust SDK for hypha (`hypha_node::safe`, `hypha_node::sdk`).
 //!
-//! A Rust panic ends the process: no entry point catches it. No Rust type crosses:
-//! handles are opaque pointers. One create, one destroy. Callback samples live only
-//! for the callback; owning receive keeps a transport sample until its explicit release.
+//! Only this crate depends on `hypha_iceoryx2` and `hypha_sys`. `hypha_ffi` wraps
+//! `hypha_node::safe` as the C ABI; Rust tools under `apps/` use `hypha_node::sdk` only.
+//!
+//! # Module map
+//! - `safe`: safe Rust entrypoints wrapped by `hypha_ffi`
+//! - `sdk`: public safe Rust SDK for `apps/` (`BusNode`, `WaitSet`, `StreamFollower`, `clean`, `msgs`)
+//! - `node` / `domain` / `process_stop` / `clean`: session lifecycle, `HYPHA_DOMAIN`, `SIGINT`/`SIGTERM`, SHM cleanup
+//! - `publisher` / `subscriber` / `loan` / `sample` / `qos` / `topic_streams`: endpoints, loans, multi-MD5 stream tracking
+//! - `waitset`: single-threaded event loop, timers, subscriptions, lockstep progress
+//! - `cycle`: cycle registration, sources, tick execution, clock driver
+//! - `config` / `param_topic` / `parameter_parse` / `parameter_constraints` / `port_limits`: TOML parameter & port wiring
+//! - `clock` / `replay_restart` / `node_progress`: framework clock and rewind restarts
+//! - `transforms` / `schema` / `introspection` / `node_state` / `node_health` / `node_discovery` / `metrics` / `log`: TF, schemas, reporting, logging
 
 pub mod clean;
 pub mod clock;

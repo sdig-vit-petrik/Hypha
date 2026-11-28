@@ -255,7 +255,6 @@ TEST_F(ServiceFixture, ADeferredRequestIsAnsweredFromAnotherThread)
     auto        server = this->node->advertiseService<SetBool>(
         hypha::Service{this->name("worker")}, [&worker](hypha::Request<SetBool>& request) {
             worker = std::thread([deferred = request.defer()]() mutable {
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 EXPECT_EQ(
                     deferred.reply({.success = true, .message = "worker"}), hypha::Status::Ok
                 );

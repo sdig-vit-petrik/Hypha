@@ -32,6 +32,21 @@ framework would accept. Simple and robust comes before clever or fast.
 beside a running hypha system. A change to the C ABI, the transport, the build or the
 installation needs the full `./test.sh`.
 
+## Moving the Rust toolchain
+
+Two versions, each in one place that `check.sh` keeps consistent:
+
+- **The compiler of development and CI** is pinned: edit `channel` in `rust-toolchain.toml`
+  and `ARG HYPHA_RUST_VERSION` in `docker/Dockerfile` in one change, fix what the new lints
+  report, and run `./check.sh` and `./test.sh`. The changed `docker/` builds the image once
+  in CI.
+- **The MSRV** (`rust-version` in `Cargo.toml`) is the highest `rust-version` of the
+  dependencies: no older than they allow, no newer than needed. `check.sh` fails when a
+  dependency update raises it; then set `rust-version` and `ARG HYPHA_RUST_MSRV` (its
+  `x.y.0`) to the new value. `test.sh` and CI build the workspace with the MSRV, so code
+  that uses a newer standard-library API than the MSRV fails there (`rustup toolchain
+  install <msrv>` once, locally). The pinned compiler is never older than the MSRV.
+
 ## Rules worth knowing before you start
 
 - The layering and the C ABI: [docs/architecture.md](docs/architecture.md),

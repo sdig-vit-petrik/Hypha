@@ -92,6 +92,7 @@
 
 #![forbid(unsafe_code)]
 
+mod data_service;
 mod discovery;
 pub mod domain;
 mod endpoint;
@@ -109,13 +110,14 @@ mod service;
 mod service_open;
 mod shm_capacity;
 mod stream;
+mod subscriber;
 mod subscriber_port;
 mod transport;
 pub mod waitset;
 
 pub use discovery::{DiscoveredNode, DiscoveredService, list_nodes, list_service_ports};
 pub use domain::MAX_BORROWED_SAMPLES;
-pub use endpoint::{Iox2Loan, Iox2Publisher, Iox2Sample, Iox2Subscriber};
+pub use endpoint::{Iox2Loan, Iox2Publisher, Iox2Sample};
 pub use notification::failed_notifications;
 pub use publisher_nodes::node_names;
 pub use schema::{
@@ -127,6 +129,7 @@ pub use service::{
     Liveness, ReceivedRequest, RequestHandle, ServerCounters,
 };
 pub use stream::stream_service_name;
+pub use subscriber::Iox2Subscriber;
 pub use transport::{GRAPH_EVENT, GraphWatch, Iox2Transport};
 pub use waitset::{
     Dispatcher, EventOutcome, Iox2Listener, Iox2WaitSet, Progression, StopHandle, Trigger,
