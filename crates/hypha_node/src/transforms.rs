@@ -261,6 +261,12 @@ impl TfState {
         Ok(())
     }
 
+    /// Forget every dynamic transform and return how many frames held one. Static
+    /// transforms, and the refusal kept for a frame, stay.
+    pub(crate) fn clear_dynamic(&mut self) -> usize {
+        self.buffer.clear_dynamic()
+    }
+
     /// Count a message that did not decode, for an owner that goes on without it.
     pub(crate) fn count_undecodable(&mut self, pass: &mut IngestPass) {
         self.undecodable = self.undecodable.saturating_add(1);

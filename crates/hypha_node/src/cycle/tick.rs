@@ -193,6 +193,10 @@ pub(crate) fn cycle_timer_tick(
     if step_outcome.answer.is_some() {
         apply_rejections(cycle_name, inputs, &state.port_names, runtime, supervision);
         apply_supervision(&state.input_rows, &state.input_options, runtime, supervision);
+        apply_clears(cycle_name, inputs, &state.port_names, runtime, supervision);
+        for input in &mut state.transforms {
+            input.apply_clear(cycle_name);
+        }
     }
     if let Some(duration_nanos) = step_outcome.duration_nanos {
         // An overrun is a host-time fact: under simulated time a slow step slows the clock.
@@ -356,6 +360,28 @@ fn apply_supervision(
             }
             super::introspection::refresh_input_row(rows, options, runtime, index);
         }
+    }
+}
+
+/// Clear each input the finished step asked to clear, and log it once per clear.
+fn apply_clears(
+    cycle_name: &str,
+    inputs: &[Arc<CycleInputSource>],
+    port_names: &[String],
+    runtime: &mut CycleRuntime,
+    copies: &mut [RefCell<SupervisionCopy>],
+) {
+    for (index, copy) in copies.iter_mut().enumerate() {
+        if !std::mem::take(&mut copy.get_mut().update.clear) {
+            continue;
+        }
+        let Ok(dropped) = runtime.clear_binding(index) else {
+            continue;
+        };
+        let topic = inputs.get(index).map_or("", |source| source.topic.as_str());
+        let port = port_names.get(index).map_or("", String::as_str);
+        let subject = input_subject(cycle_name, port, topic);
+        log::info!(target: "hypha", "hypha: {subject} cleared: {dropped} pending sample(s) dropped");
     }
 }
 
@@ -635,6 +661,7 @@ pub(super) fn binding_view(
             age_rejections_total: capture.counters.age_rejections_total,
             latest_unavailable_iterations: capture.counters.latest_unavailable_iterations,
             usable_to_stale_transitions: capture.counters.usable_to_stale_transitions,
+            cleared_total: capture.counters.cleared_total,
         },
         held: HyphaCycleHeldReport {
             received_total: held.received_total,

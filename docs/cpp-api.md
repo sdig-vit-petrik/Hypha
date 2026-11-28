@@ -729,6 +729,7 @@ counts no queue evictions: a transport drop shows only as a gap in `overrun_tota
 | `bindingHealth().overrun_total`                                         | every input   | History losses and, for a queued input, transport sequence gaps. A `Latest` input counts neither in host time; under replay it counts transport gaps and the evictions of execution-model.md §11.1. |
 | `bindingHealth().age_rejections_total`                                  | every input   | Samples the age rule refused. They were received, not lost.                                         |
 | `bindingHealth().work_limit_drops_total`, `.capture.work_limit_drops` | queued inputs | Samples over the step's share, dropped on purpose; `capture.` counts the latest step only.        |
+| `bindingHealth().cleared_total`                                         | every input   | Pending samples a step's `clear()` dropped (a reset, below). A rate step leaves none pending.     |
 
 #### Topic states of an input port
 
@@ -858,6 +859,33 @@ Each change of an input's judgement is logged once; execution model §6.4 lists 
 
 Reference: `<hypha/cycle_input.h>` (`stale()`, `stagnant()`, `setAlive()`, `setIgnored()`),
 `<hypha/cycle_runtime.h>` (`inputsOk()`).
+
+#### A reset: `clear()`
+
+A node that resets (robot_localization's `reset` and `set_pose`, an EKF that starts again)
+forgets what its inputs and its TF input hold with `clear()`, in the step:
+
+```cpp
+void RosEkf::reset()                        // called from step()
+{
+    for (OdomInput& input : this->odom_inputs) {
+        input.port.clear();                 // hypha::Arrivals<nav_msgs::Odometry>
+    }
+    this->transforms.clear();               // tf2's tfBuffer_.clear(); static ones stay
+    this->filter_.reset();                  // the node's own state, as upstream
+}
+```
+
+The clear applies when the step returns: the rest of the step still reads its capture.
+Later steps see only later samples. Until one arrives the input has no value (`has()`
+is false) and is `NeverArrived`, and it turns `Stale` when the newest sample before the
+clear passes `silence_ms`: a clear restarts no timer and hides no silent source. A trigger
+port cannot be cleared (`std::logic_error`). The pending samples it drops are counted in
+`bindingHealth().cleared_total`. A `Transforms` port forgets its dynamic transforms and
+keeps the static ones; a lookup misses until a new transform arrives. Under replay a clear
+at step T forgets what the cut of T admitted, the same in every run and every `--chunk`.
+In a `StepHarness`, `harness.cleared(port)` tells whether the last step cleared the port,
+and later steps find it cleared. The rules: [execution-model.md](execution-model.md) §6.8.
 
 ### 5.5 Cycle composition (L2)
 
@@ -1139,7 +1167,9 @@ hypha::Transforms tf{*this};                               // a member of the Cy
 const auto found = this->tf.lookupLatest("map", "base_link");  // in step(): base_link in map
 ```
 
-Buffer, clock steps, losses: [execution-model.md](execution-model.md) §6.7.
+Buffer, clock steps, losses: [execution-model.md](execution-model.md) §6.7. `tf.clear()` in a
+step forgets the dynamic transforms when the step returns, as tf2's `Buffer::clear()`, and
+keeps the static ones (§5.4, a reset).
 
 ### 10.2 Looking transforms up in a plain node, and sending transforms
 

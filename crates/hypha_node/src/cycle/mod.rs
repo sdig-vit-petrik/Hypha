@@ -17,8 +17,8 @@ pub(crate) use driver::DriverSetup;
 pub use driver::{cycle_expect_participant, cycle_set_clock_driver};
 pub use image::{
     EmissionView, HyphaCycleEmission, HyphaCycleImage, ImageView, emission_commit,
-    emission_reserve, image_alive, image_binding, image_held, image_reject_sample, image_sample,
-    image_set_ignored,
+    emission_reserve, image_alive, image_binding, image_clear, image_held, image_reject_sample,
+    image_sample, image_set_ignored,
 };
 pub use input_supervision::{
     HyphaInputSupervisionRequest, HyphaInputSupervisionResult, cycle_bind_input_supervision,
@@ -31,12 +31,12 @@ pub use registration::{
 pub use source::{HyphaInputSource, input_source_create, input_source_destroy};
 pub use transforms::{cycle_bind_transforms, image_lookup_transform};
 pub use types::{
-    HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, HYPHA_CYCLE_VERDICT_STALE, HYPHA_CYCLE_VERDICT_USABLE,
-    HYPHA_DEFAULT_ARRIVALS_PER_STEP, HYPHA_FAULT_STAGNANT, HYPHA_FAULT_STALE,
-    HyphaClockDriverOptions, HyphaCycleBindingHealth, HyphaCycleBindingOptions,
-    HyphaCycleBindingReport, HyphaCycleBindingView, HyphaCycleHealth, HyphaCycleHeldReport,
-    HyphaCycleInputMode, HyphaCycleOutputFailure, HyphaCycleSampleView, HyphaCycleStep,
-    HyphaCycleTime, HyphaSupervisionLimits, HyphaSupervisionReport,
+    HYPHA_CYCLE_CLEAR_INPUT, HYPHA_CYCLE_CLEAR_TRANSFORMS, HYPHA_CYCLE_VERDICT_NEVER_ARRIVED,
+    HYPHA_CYCLE_VERDICT_STALE, HYPHA_CYCLE_VERDICT_USABLE, HYPHA_DEFAULT_ARRIVALS_PER_STEP,
+    HYPHA_FAULT_STAGNANT, HYPHA_FAULT_STALE, HyphaClockDriverOptions, HyphaCycleBindingHealth,
+    HyphaCycleBindingOptions, HyphaCycleBindingReport, HyphaCycleBindingView, HyphaCycleHealth,
+    HyphaCycleHeldReport, HyphaCycleInputMode, HyphaCycleOutputFailure, HyphaCycleSampleView,
+    HyphaCycleStep, HyphaCycleTime, HyphaSupervisionLimits, HyphaSupervisionReport,
 };
 
 pub(crate) use hypha_cycle::TIME_BASE_BOUND_PERIODS;

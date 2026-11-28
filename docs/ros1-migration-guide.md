@@ -646,6 +646,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(condition, false, ...)`: writes when the condition becomes true |
 | `tf2_ros::TransformBroadcaster` | Output on `/tf` of type `tf2_msgs::TFMessage` |
 | `tf2_ros::StaticTransformBroadcaster` | An `Output<tf2_msgs::TFMessage>` declared with `latched` and `topic = "/tf_static"` in its ports table |
+| A reset that clears state: robot_localization's `reset` service and `set_pose` (`tfBuffer_.clear()`, `clearMeasurementQueue()`), an EKF reinitialisation, a tracker reset | In the step: `port.clear()` on each input whose old samples must not reach the next step and `transforms.clear()` on the `Transforms` port (static transforms stay), beside the node's own reset. Applied when the step returns; later steps see only later samples, the inputs are `NeverArrived` until one arrives (cpp-api.md §5.4, execution-model.md §6.8). A queue the node keeps itself is the node's to empty |
 | `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment; for `ros2 bag play`'s behaviour, outside the replay lockstep, `HYPHA_REPLAY_LOCKSTEP=0` for the player and every node of the launch |
 | rosbag record / play | `hypha record` / `hypha play` (`apps/`); a topic recorded with two versions of a message is two channels, replayed as two streams |
 | roslaunch | `hypha launch` |

@@ -17,8 +17,8 @@ pub use crate::cycle::{
     cycle_binding, cycle_commit, cycle_create, cycle_destroy, cycle_expect_participant,
     cycle_health, cycle_set_class_based, cycle_set_clock_driver, cycle_set_host_clock,
     cycle_set_trigger, cycle_tick, emission_commit, emission_reserve, image_alive, image_binding,
-    image_held, image_lookup_transform, image_reject_sample, image_sample, image_set_ignored,
-    input_source_create, input_source_destroy,
+    image_clear, image_held, image_lookup_transform, image_reject_sample, image_sample,
+    image_set_ignored, input_source_create, input_source_destroy,
 };
 pub use crate::domain::domain;
 pub use crate::introspection_abi::{config_record_config, node_introspect, node_record_config};

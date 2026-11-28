@@ -90,6 +90,9 @@ pub struct BindingCounters {
     pub latest_unavailable_iterations: u64,
     /// Transitions from usable latest value to stale value.
     pub usable_to_stale_transitions: u64,
+    /// Samples a step's clear dropped before this binding took them
+    /// ([`BindingCapture::clear`]).
+    pub cleared_total: u64,
 }
 
 /// The immutable samples and diagnostics frozen for one binding.
@@ -131,8 +134,36 @@ pub struct BindingCapture {
     stale: bool,
     /// Captured on the host clock under replay too: see [`BindingCapture::host_clock`].
     host_clock: bool,
+    /// A trigger port of a triggered cycle: see [`BindingCapture::is_trigger`].
+    trigger: bool,
     /// The judgement last reported by [`BindingCapture::take_judgement_events`].
     reported: crate::judgement::JudgementTracker,
+    /// What the last capture could take, for a clear after its step.
+    last_take: Option<LastTake>,
+    /// The samples the last clear forgot, while any of them is retained or no later
+    /// sample was admitted.
+    cleared: Option<Cleared>,
+    /// History losses a clear found, reported by the next capture.
+    carried_lost: u64,
+}
+
+/// What one capture could take: the samples below `high_water` that `clock` admits and,
+/// with `sent_through`, those within [`BindingCapture::reach`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LastTake {
+    clock: CaptureClock,
+    sent_through: Option<u64>,
+    high_water: u64,
+}
+
+/// The samples one clear forgot: those before `through` that `clock` admits, or every one
+/// before it without a clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Cleared {
+    through: u64,
+    clock: Option<CaptureClock>,
+    /// The newest sample the binding had before the clear: its silence counts on.
+    newest: Option<Arc<HistorySample>>,
 }
 
 impl BindingCapture {
@@ -186,7 +217,11 @@ impl BindingCapture {
             first_nanos: None,
             stale: false,
             host_clock: false,
+            trigger: false,
             reported: crate::judgement::JudgementTracker::default(),
+            last_take: None,
+            cleared: None,
+            carried_lost: 0,
         })
     }
 
@@ -212,6 +247,17 @@ impl BindingCapture {
 
     pub(crate) const fn set_host_clock(&mut self) {
         self.host_clock = true;
+    }
+
+    /// Whether this binding is a trigger port of a triggered cycle. Its pending samples are
+    /// the steps its schedule plans, so no step clears it.
+    #[must_use]
+    pub const fn is_trigger(&self) -> bool {
+        self.trigger
+    }
+
+    pub(crate) const fn set_trigger(&mut self) {
+        self.trigger = true;
     }
 
     /// Supervision state, or `None` when this binding is not supervised.
@@ -290,8 +336,8 @@ impl BindingCapture {
         self.received_total = accepted_on(history, clock);
         self.judge(Some(history), silence_nanos, clock);
         let usable_newer = latest_delivery && self.verdict == InputVerdict::Usable;
-        if usable_newer && let Some(newest) = clock.newest_admitted_arc(history) {
-            self.hold_latest_usable(newest);
+        if usable_newer && let Some(newest) = self.newest_judged(history, clock).cloned() {
+            self.hold_latest_usable(&newest);
         }
         if let Some(supervision) = self.supervision.as_mut() {
             supervision.set_stale(self.stale);
@@ -329,19 +375,134 @@ impl BindingCapture {
             self.verdict = InputVerdict::NeverArrived;
             return;
         }
-        let newest_admitted = history.and_then(|history| clock.newest_admitted(history));
-        let held = self.held.as_deref().filter(|_| self.mode == CaptureMode::Latest);
-        let reference = newest_admitted.or(held);
-        let fresh = if let Some(sample) = reference {
+        let newest_admitted = history.and_then(|history| self.newest_judged(history, clock));
+        let held = self.held.as_ref().filter(|_| self.mode == CaptureMode::Latest);
+        let reference = newest_admitted.or(held).map(Arc::clone);
+        if let Some(history) = history {
+            self.end_spent_clear(history, reference.is_some());
+        }
+        let before_clear = self.cleared.as_ref().and_then(|cleared| cleared.newest.as_deref());
+        let fresh = if let Some(sample) = reference.as_deref() {
             let sent = clock.sent(sample);
             self.age_nanos = now.saturating_sub(sent);
             value_usable_within(silence_nanos, sent, now)
+        } else if let Some(sample) = before_clear {
+            // Nothing since a clear: no value, and the silence counts from the newest
+            // sample before it, so a clear never hides a source that stopped.
+            let sent = clock.sent(sample);
+            self.age_nanos = now.saturating_sub(sent);
+            let fresh = value_usable_within(silence_nanos, sent, now);
+            self.verdict = if fresh { InputVerdict::NeverArrived } else { InputVerdict::Stale };
+            self.stale = !fresh;
+            return;
         } else {
             self.age_nanos = now.saturating_sub(first);
             false
         };
         self.verdict = if fresh { InputVerdict::Usable } else { InputVerdict::Stale };
         self.stale = !fresh;
+    }
+
+    /// The newest retained sample `clock` admits that no reader rejected and no clear
+    /// forgot.
+    fn newest_judged<'h>(
+        &self,
+        history: &'h CycleHistory,
+        clock: CaptureClock,
+    ) -> Option<&'h Arc<HistorySample>> {
+        let end = clock.admitted_end(history).unwrap_or(history.samples().len());
+        history.samples().range(..end).rev().find(|sample| {
+            clock.admits(sample) && !history.is_rejected(sample.sequence) && !self.forgets(sample)
+        })
+    }
+
+    /// Whether the last clear forgot `sample`.
+    fn forgets(&self, sample: &HistorySample) -> bool {
+        self.cleared.as_ref().is_some_and(|cleared| {
+            before(sample.sequence, cleared.through)
+                && cleared.clock.is_none_or(|clock| clock.admits(sample))
+        })
+    }
+
+    /// Drop the record of the last clear once no forgotten sample is retained and a later
+    /// one was admitted (`admitted_since`).
+    fn end_spent_clear(&mut self, history: &CycleHistory, admitted_since: bool) {
+        let spent = self.cleared.as_ref().is_some_and(|cleared| {
+            let oldest =
+                history.samples().front().map_or(history.high_water_next(), |s| s.sequence);
+            admitted_since && !before(oldest, cleared.through)
+        });
+        if spent {
+            self.cleared = None;
+        }
+    }
+
+    /// Forget, after the step of the last capture, what that capture could take: the held
+    /// sample, and the samples it admitted that are still pending. The cursor moves past
+    /// them as a capture with no limit would, and they are counted in `cleared_total`; the
+    /// count is returned. A sample the capture did not admit (sent at or after the cut of a
+    /// replay step, after a host trigger sample, or not yet in the history) stays, so a
+    /// replay forgets exactly what was pending at the step's time.
+    ///
+    /// Later captures judge only the samples the clear did not forget: until one is
+    /// admitted the verdict is `NeverArrived` and no value is held, and the silence counts
+    /// from the newest sample before the clear (`Stale` past the limit). The received and
+    /// delivered counts and the supervision state are not reset.
+    pub fn clear(&mut self, history: Option<&CycleHistory>) -> u64 {
+        let newest = self.last_take.and_then(|take| {
+            history
+                .and_then(|history| self.newest_judged(history, take.clock))
+                .or(self.held.as_ref())
+                .map(Arc::clone)
+                .or_else(|| self.cleared.as_ref().and_then(|cleared| cleared.newest.clone()))
+        });
+        self.held = None;
+        self.previous_held = None;
+        self.passed_from = None;
+        let (Some(take), Some(history)) = (self.last_take, history) else {
+            return 0;
+        };
+        let dropped = self.skip_admitted(history, take);
+        self.counters.cleared_total = self.counters.cleared_total.wrapping_add(dropped);
+        let (through, clock) = match self.mode {
+            CaptureMode::Queued => (self.cursor, None),
+            CaptureMode::Latest => (take.high_water, Some(take.clock)),
+        };
+        self.cleared = Some(Cleared { through, clock, newest });
+        dropped
+    }
+
+    /// Move the cursor past the pending samples `take` admitted and return how many of
+    /// them no reader rejected. A queued binding first reports the samples the history
+    /// evicted before it read them, as a capture would.
+    fn skip_admitted(&mut self, history: &CycleHistory, take: LastTake) -> u64 {
+        let Some(oldest) = history.samples().front().map(|sample| sample.sequence) else {
+            return 0;
+        };
+        if self.mode == CaptureMode::Queued && before(self.cursor, oldest) {
+            let lost = oldest.wrapping_sub(self.cursor);
+            self.carried_lost = self.carried_lost.wrapping_add(lost);
+            self.counters.overrun_total = self.counters.overrun_total.wrapping_add(lost);
+            self.cursor = oldest;
+        }
+        let start = history.cursor_offset(self.cursor);
+        let end =
+            self.reach(history, take.clock, take.sent_through).unwrap_or(history.samples().len());
+        let mut dropped = 0_u64;
+        for sample in history.samples().range(start..end.max(start)) {
+            let admitted = before(sample.sequence, take.high_water) && take.clock.admits(sample);
+            if !admitted {
+                break;
+            }
+            self.cursor = sample.sequence.wrapping_add(1);
+            if !history.is_rejected(sample.sequence) {
+                dropped = dropped.wrapping_add(1);
+            }
+        }
+        if self.mode == CaptureMode::Latest {
+            return 0;
+        }
+        dropped
     }
 
     /// Advance past the oldest pending sample without delivering it, and count it as
@@ -415,8 +576,9 @@ impl BindingCapture {
         clock: CaptureClock,
     ) -> u64 {
         let high_water = history.high_water_next();
+        self.last_take = Some(LastTake { clock, sent_through: None, high_water });
         self.received_total = accepted_on(history, clock);
-        self.lost_since_capture = 0;
+        self.lost_since_capture = std::mem::take(&mut self.carried_lost);
         self.stale_since_capture = 0;
         self.backlog_samples = 0;
         self.work_limit_drops = 0;
@@ -504,7 +666,7 @@ impl BindingCapture {
     fn count_evicted_from(&mut self, from: u64, oldest: u64) {
         if before(from, oldest) {
             let lost = oldest.wrapping_sub(from);
-            self.lost_since_capture = lost;
+            self.lost_since_capture = self.lost_since_capture.wrapping_add(lost);
             self.counters.overrun_total = self.counters.overrun_total.wrapping_add(lost);
         }
         if before(self.cursor, oldest) {
@@ -535,6 +697,9 @@ impl BindingCapture {
         sent_through: Option<u64>,
     ) {
         let high_water = self.begin_capture(history, options, clock);
+        if let Some(last) = self.last_take.as_mut() {
+            last.sent_through = sent_through;
+        }
         let take = Take { assigned, sent_through, examine: Examine::WithinLimit };
         self.capture_queued(history, high_water, options, clock, take);
     }
@@ -554,6 +719,7 @@ impl BindingCapture {
             before(sample.sequence, high_water)
                 && clock.admits(sample)
                 && !history.is_rejected(sample.sequence)
+                && !self.forgets(sample)
         });
         if clock.is_replay()
             && let Some(oldest) = history.samples().front().map(|sample| sample.sequence)

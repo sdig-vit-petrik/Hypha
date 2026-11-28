@@ -62,6 +62,8 @@ pub(super) struct SupervisionCopy {
 pub(super) struct SupervisionUpdate {
     pub(super) alive: Option<u64>,
     pub(super) ignored: Option<bool>,
+    /// The step cleared the input: applied after it returns.
+    pub(super) clear: bool,
 }
 
 impl SupervisionCopy {
@@ -266,6 +268,37 @@ pub fn image_set_ignored(
         state.set_ignored(ignored);
     }
     Ok(())
+}
+
+/// Asks to clear input `index` (`HYPHA_CYCLE_CLEAR_INPUT`) or the TF input `index`
+/// (`HYPHA_CYCLE_CLEAR_TRANSFORMS`) when the step returns; a repeat in one step asks once.
+/// The rest of the step still reads what it captured.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown kind or index, or a trigger port; `InvalidState`
+/// while the binding is borrowed.
+pub fn image_clear(view: &ImageView<'_>, kind: u32, index: u32) -> Result<(), Error> {
+    match kind {
+        super::types::HYPHA_CYCLE_CLEAR_INPUT => {
+            let capture = usize::try_from(index).ok().and_then(|i| view.captures.get(i));
+            // The pending samples of a trigger port are the steps its schedule plans.
+            if capture.is_none_or(hypha_cycle::BindingCapture::is_trigger) {
+                return Err(Error::InvalidArgument);
+            }
+            let cell = supervision_copy(view, index).ok_or(Error::InvalidArgument)?;
+            cell.try_borrow_mut().map_err(|_| Error::InvalidState)?.update.clear = true;
+            Ok(())
+        }
+        super::types::HYPHA_CYCLE_CLEAR_TRANSFORMS => {
+            let input = usize::try_from(index)
+                .ok()
+                .and_then(|i| view.transforms.get(i))
+                .ok_or(Error::InvalidArgument)?;
+            input.request_clear();
+            Ok(())
+        }
+        _ => Err(Error::InvalidArgument),
+    }
 }
 
 /// The view of input `binding_index` in the step, after any rejection of the step.

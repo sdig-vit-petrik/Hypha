@@ -18,6 +18,15 @@ namespace hypha {
 
 namespace detail {
 
+/// @brief What a testing::StepHarness step's clear() leaves of an input's @p facts: no
+///        sample, NeverArrived, and not ok unless the input does not count for health.
+inline void forgetJudgement(HyphaCycleBindingView& facts, bool countsForHealth)
+{
+    facts.health.capture.verdict = HYPHA_CYCLE_VERDICT_NEVER_ARRIVED;
+    facts.supervision.faults &= ~HYPHA_FAULT_STALE;
+    facts.ok = countsForHealth ? 0 : 1;
+}
+
 /// @brief The supervision of one input port. Latest and Arrivals hold one by composition.
 class InputSupervision
 {
@@ -138,6 +147,27 @@ class InputSupervision
         if (status != HYPHA_STATUS_OK) {
             throw std::runtime_error(
                 "hypha: setIgnored() failed with status " + std::to_string(static_cast<int>(status))
+            );
+        }
+    }
+
+    /// @brief Clear input @p index when the step returns. @throws std::logic_error outside
+    ///        step() or for a trigger port, std::runtime_error when the library refuses.
+    void clear(uint32_t index) const
+    {
+        if (this->image_ == nullptr) {
+            throw std::logic_error("hypha: clear() outside step()");
+        }
+        const ::HyphaStatus status =
+            backend::cycleImageClear(this->image_, HYPHA_CYCLE_CLEAR_INPUT, index);
+        if (status == HYPHA_STATUS_INVALID_ARGUMENT) {
+            throw std::logic_error(
+                "hypha: clear() on a trigger port: its pending samples are the cycle's steps"
+            );
+        }
+        if (status != HYPHA_STATUS_OK) {
+            throw std::runtime_error(
+                "hypha: clear() failed with status " + std::to_string(static_cast<int>(status))
             );
         }
     }

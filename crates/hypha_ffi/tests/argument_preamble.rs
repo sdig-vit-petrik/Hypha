@@ -153,6 +153,9 @@ static ROWS: &[Row] = rows! {
     hypha_cycle_image_alive => |_live| {
         assert_eq!(unsafe { hypha_cycle_image_alive(null(), 0, 0) }, INVALID);
     }
+    hypha_cycle_image_clear => |_live| {
+        assert_eq!(unsafe { hypha_cycle_image_clear(null(), HYPHA_CYCLE_CLEAR_INPUT, 0) }, INVALID);
+    }
     hypha_cycle_image_set_ignored => |_live| {
         assert_eq!(unsafe { hypha_cycle_image_set_ignored(null(), 0, 0) }, INVALID);
     }

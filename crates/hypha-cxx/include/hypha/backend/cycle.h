@@ -228,6 +228,12 @@ cycleBinding(const HyphaCycle* cycle, uint32_t bindingIndex, HyphaCycleBindingVi
     return hypha_cycle_binding(cycle, bindingIndex, out);
 }
 
+/// @brief Clear input or TF input @p index (@p kind: HYPHA_CYCLE_CLEAR_*) when the step returns.
+inline ::HyphaStatus cycleImageClear(const HyphaCycleImage* image, uint32_t kind, uint32_t index)
+{
+    return hypha_cycle_image_clear(image, kind, index);
+}
+
 inline ::HyphaStatus
 cycleImageSetIgnored(const HyphaCycleImage* image, uint32_t bindingIndex, uint8_t ignore)
 {

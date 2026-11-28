@@ -100,6 +100,21 @@ class Input : public Port
         this->supervision_.setIgnored(this->index_, ignore);
     }
 
+    /// @brief Forget, when the step returns, the value and the pending samples this step
+    ///        admitted (`cleared_total`): later steps see later samples only, NeverArrived
+    ///        until one comes, Stale once the last one before is older than `silence_ms`.
+    /// @throws std::logic_error outside step(), or on a trigger port.
+    void clear()
+    {
+        if (detail::CaptureStore* const harness = this->harnessStore()) {
+            harness->clearAfterStep(*this, [](Port& port) {
+                static_cast<Input<M>&>(port).forgetCleared();
+            });
+            return;
+        }
+        this->supervision_.clear(this->index_);
+    }
+
     /// @brief Declare the stagnation check: an end-to-end life sign, an integral member of
     ///        the message that the original source advances. Call before start() only.
     template <typename Counter>
@@ -205,6 +220,8 @@ class Input : public Port
     {
         return detail::TopicSource::ofPort(name, false, settings.optionalTopic);
     }
+
+    virtual void forgetCleared() = 0;  ///< A testing::StepHarness step's clear() returned.
 
     /// @brief The library's ok bit of this binding: usable and not stagnant, or not
     ///        counted (disabled, advisory) or ignored. True before start().
