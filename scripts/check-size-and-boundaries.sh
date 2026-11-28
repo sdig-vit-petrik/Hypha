@@ -172,6 +172,7 @@ SLEEP_ALLOWLIST = frozenset({
     "crates/hypha-cxx/base/test/test_clock.cpp",
     "crates/hypha_ffi/tests/slow_callback_budget.rs",  # the sleep is the overrun under test
     "crates/hypha_node/tests/subscriber_missing_sequences.rs",  # a creation race: stagger and pacing are its stimulus
+    "crates/hypha-cxx/test/test_handover.cpp",  # the sleep lets a pop wait before the stop
 })
 # 6. #[allow(...)] ratchet in shipped Rust (use #[expect(lint, reason = "...")] per docs/rust-style.md).
 MAX_PROD_ALLOWS = 72

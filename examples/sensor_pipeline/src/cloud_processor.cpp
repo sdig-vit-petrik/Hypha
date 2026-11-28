@@ -18,18 +18,17 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <deque>
 #include <exception>
 #include <expected>
-#include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 HYPHA_LOG_MODULE_INIT("cloud_processor")
@@ -38,6 +37,7 @@ namespace {
 
 using ImuPtr = hypha::MessagePtr<sensor_msgs::Imu>;
 using CloudPtr = hypha::MessagePtr<sensor_msgs::PointCloud2>;
+using CloudHandover = hypha::Handover<CloudPtr>;
 using CentroidPublisher = hypha::Publisher<geometry_msgs::PointStamped>;
 using TransformResult = std::expected<geometry_msgs::TransformStamped, hypha::TransformError>;
 using Milliseconds = std::chrono::milliseconds;
@@ -85,91 +85,6 @@ ProcessorSettings readSettings()
     settings.slowStallMs = requiredMillis(slow, "stall_ms");
     return settings;
 }
-
-/// The bounded FIFO between the run() thread (push) and the worker (pop). One mutex
-/// guards every member; the condition variable wakes the worker.
-class CloudHandover
-{
-  public:
-    explicit CloudHandover(size_t depth) : depth_(depth)
-    {
-    }
-
-    /// run() thread. Never waits: a full queue drops its oldest cloud.
-    void push(CloudPtr cloud)
-    {
-        {
-            const std::lock_guard<std::mutex> lock(this->mutex_);
-            const bool                        full = this->clouds_.size() >= this->depth_;
-            if (full) {
-                this->clouds_.pop_front();
-                ++this->dropped_;
-            }
-            this->clouds_.push_back(std::move(cloud));
-        }
-        this->wake_.notify_one();
-    }
-
-    /// Worker. Waits for a cloud. Empty only once stop() was called and the queue is
-    /// drained.
-    std::optional<CloudPtr> pop()
-    {
-        std::unique_lock<std::mutex> lock(this->mutex_);
-        while (this->clouds_.empty()) {
-            if (this->stopping_) {
-                return std::nullopt;
-            }
-            this->wake_.wait(lock);
-        }
-        CloudPtr cloud = std::move(this->clouds_.front());
-        this->clouds_.pop_front();
-        return cloud;
-    }
-
-    /// Worker. Waits @p duration of host time, or less once stop() was called.
-    void pause(Milliseconds duration)
-    {
-        std::unique_lock<std::mutex>                lock(this->mutex_);
-        const std::chrono::steady_clock::time_point until =
-            std::chrono::steady_clock::now() + duration;
-        while (!this->stopping_) {
-            const std::cv_status woke = this->wake_.wait_until(lock, until);
-            if (woke == std::cv_status::timeout) {
-                return;
-            }
-        }
-    }
-
-    /// Any thread. The worker drains the queue and returns.
-    void stop()
-    {
-        {
-            const std::lock_guard<std::mutex> lock(this->mutex_);
-            this->stopping_ = true;
-        }
-        this->wake_.notify_all();
-    }
-
-    bool stopping() const
-    {
-        const std::lock_guard<std::mutex> lock(this->mutex_);
-        return this->stopping_;
-    }
-
-    uint64_t dropped() const
-    {
-        const std::lock_guard<std::mutex> lock(this->mutex_);
-        return this->dropped_;
-    }
-
-  private:
-    mutable std::mutex      mutex_;
-    std::condition_variable wake_;
-    std::deque<CloudPtr>    clouds_;
-    size_t                  depth_;
-    bool                    stopping_{false};
-    uint64_t                dropped_{0};
-};
 
 /// What the worker counts. The worker writes, the Reporter reads on the run() thread.
 struct WorkerCounters
@@ -319,6 +234,7 @@ Vector3 applyTransform(const geometry_msgs::Transform& transform, const Vector3&
 struct CloudWorker
 {
     CloudHandover*                handover;
+    std::stop_token               stop;
     const hypha::TransformBuffer* tf;
     WorkerCounters*               counters;
     CentroidPublisher             centroids;
@@ -329,14 +245,16 @@ struct CloudWorker
     void operator()()
     {
         for (;;) {
-            std::optional<CloudPtr> cloud = this->handover->pop();
+            // Empty only at the node's stop, once the queue is drained.
+            const std::optional<CloudHandover::Item> cloud = this->handover->pop();
             if (!cloud.has_value()) {
                 return;
             }
             if (this->slowDelay.has_value()) {
-                this->handover->pause(*this->slowDelay);
+                // A stop ends the delay: the clouds still queued are processed without it.
+                (void)hypha::sleepFor(this->stop, *this->slowDelay);
             }
-            this->process(**cloud);
+            this->process(*std::get<CloudPtr>(*cloud));
             this->counters->processed.fetch_add(1U, std::memory_order_relaxed);
         }
     }
@@ -387,12 +305,9 @@ struct CloudWorker
                 return found;
             }
             const bool waitedEnough = std::chrono::steady_clock::now() >= deadline;
-            const bool stopping = this->handover->stopping();
-            const bool giveUp = waitedEnough || stopping;
-            if (giveUp) {
+            if (waitedEnough || !hypha::sleepFor(this->stop, Milliseconds(1))) {
                 return found;
             }
-            this->handover->pause(Milliseconds(1));
             found = this->tf->lookup(this->targetFrame, sourceFrame, stamp);
         }
     }
@@ -589,7 +504,7 @@ class CloudProcessorNode final : public hypha::ApplicationNode
   public:
     CloudProcessorNode()
         : settings_(readSettings())
-        , handover_(settings_.handoverDepth)
+        , handover_(settings_.handoverDepth, this->stopToken())
         , cloudForwarder_(handover_)
         , reporter_(settings_, imuCounter_, cloudForwarder_, imu_, clouds_, handover_, counters_)
     {
@@ -600,7 +515,6 @@ class CloudProcessorNode final : public hypha::ApplicationNode
 
     ~CloudProcessorNode() override
     {
-        this->handover_.stop();
         const bool workerStarted = this->worker_.joinable();
         if (!workerStarted) {
             return;  // start-up failed: there was no run to report
@@ -642,6 +556,7 @@ class CloudProcessorNode final : public hypha::ApplicationNode
         this->worker_ = std::thread(
             CloudWorker{
                 &this->handover_,
+                this->stopToken(),
                 &*this->tf_,
                 &this->counters_,
                 std::move(this->centroids_),

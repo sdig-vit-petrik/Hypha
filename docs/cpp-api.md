@@ -357,6 +357,40 @@ void grabLoop(std::stop_token stop)             // this->stopToken(), copied int
 - Reference: `hypha/worker.h`, `hypha/application_node.h`; the thread rules in
   [ros1-migration-guide.md](ros1-migration-guide.md#106-threads).
 
+### 2.6 A hand-over from threads the node does not own
+
+A vendor SDK that calls back on its own threads (a lidar's cloud, IMU and fault callbacks),
+or a blocking device read, must not publish from there: `Publisher::publish()` runs on one
+thread at a time. `hypha/handover.h` is the bounded queue between those threads and the
+one worker that owns the publishers, as ROS 1's callback queue was:
+
+```cpp
+hypha::Handover<Cloud, Imu> queue(8U, this->stopToken());          // 8 of each kind
+hypha::Handover<Cloud, Imu> queue({2U, 400U}, this->stopToken());  // 2 clouds, 400 samples
+
+queue.push(toRos(cloud));                       // any thread; never waits
+while (auto item = queue.pop()) {               // the worker; ends at the node's stop
+    std::visit([this](const auto& m) { this->send(m); }, *item);
+}
+```
+
+- A kind at its depth drops its oldest message. Every drop is counted (`dropped()`, all
+  kinds; `dropped<Kind>()`), `push()` returns true for it, and the log carries a warning at
+  most once a second. A burst of one kind never displaces another: each has its own depth.
+- `pop()` waits for a message and returns them in the order they were pushed (one pushing
+  thread's order is kept). `popFor(timeout)` also returns empty at the timeout; `stopped()`
+  tells it from the stop. After the stop both return what is queued first, then empty: the
+  worker's loop drains and ends, and the destructor only joins.
+- The stop is the `std::stop_token` given at construction, `this->stopToken()` of the
+  application (section 2.5; valid in the constructor's initializer list). A default token
+  never stops a wait.
+- A `Handover` is neither copyable nor movable; a kind that is move-only is fine. Each kind
+  appears once: send two kinds of one type as two wrapper types.
+- The count is not in `~/state`: that needs a field in `hypha_msgs/NodeState` and a way for
+  an application to register a counter, which is runtime work (issue #233).
+- Reference: `hypha/handover.h`; the thread rules in
+  [ros1-migration-guide.md](ros1-migration-guide.md#106-threads).
+
 ## 3. Time and clock
 
 Pace periodic work with a cycle (section 5.4) or `Node::timer()`; there is no blocking
@@ -1522,6 +1556,7 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hyph
 | `hypha/node.h`                                                         | `Node`, `RunResult`, `StopReason`, `Timer`, `ok`, `nodeName`, `requestStop`                                                                                                            |
 | `hypha/application_node.h`                                             | `ApplicationNode`, `runNode`, `failRun`, `stopToken`, the exit codes                                                                                                                                        |
 | `hypha/worker.h`                                                       | `sleepFor`, `sleepUntil`, `Rate`: a worker thread's sleep and rate, ended by the node's stop                                                                                                           |
+| `hypha/handover.h`                                                     | `Handover<Kinds...>`: the bounded queue from threads the node does not own to the worker that publishes, with counted drop-oldest                                                                                                           |
 | `hypha/callback.h`, `hypha/topic.h`                                  | `bind<&Class::method>(object)`; `Topic`, `validateTopicName`                                                                                                                                   |
 | `hypha/options.h`, `hypha/qos.h`                                     | The option tags; `Qos`, `QosOf`, `defaultQos`, `tfQos`, `imageQos`, `cloudQos`                                                                                                                                     |
 | `hypha/message_size.h`                                               | `serializedSize(message)`, `serializedSize(head, loanedBytes)`: the bound of a payload                                                                                                                             |
