@@ -32,6 +32,13 @@ framework would accept. Simple and robust comes before clever or fast.
 beside a running hypha system. A change to the C ABI, the transport, the build or the
 installation needs the full `./test.sh`.
 
+## Moving the Rust toolchain
+
+The compiler is pinned: edit `channel` in `rust-toolchain.toml`, `ARG HYPHA_RUST_VERSION`
+in `docker/Dockerfile` and `rust-version` (its major.minor) in `Cargo.toml` in one
+change, fix what the new lints report, and run `./check.sh` and `./test.sh`; `check.sh`
+fails when the three differ, and the changed `docker/` builds the image once in CI.
+
 ## Rules worth knowing before you start
 
 - The layering and the C ABI: [docs/architecture.md](docs/architecture.md),

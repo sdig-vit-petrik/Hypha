@@ -78,7 +78,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # rustup installs the toolchain rust-toolchain.toml selects on first use.
+      # The exact version rust-toolchain.toml pins, with its components, installed
+      # explicitly; its version is in the log next to the result.
+      - name: The Rust toolchain
+        run: |
+          rustup toolchain install --profile minimal
+          rustc --version
+
       - name: clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
