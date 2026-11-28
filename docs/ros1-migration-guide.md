@@ -575,9 +575,10 @@ Reading the diff is not verification. Run the binary.
 2. Read the manifest on `~/introspection` (`hypha topic echo /<node>/introspection`,
    or `hypha::introspect()`). Compare its configuration rows, endpoints and
    cycle rows with the TOML file: the resolved topics and the rate.
-3. `hypha topic list` shows only the topics seen publishing during its `--timeout`
-   (default 1.0 s): a topic of the inventory with no traffic in that time is not listed.
-   Check such a topic with `hypha topic hz <topic>` (item 5) once traffic starts.
+3. `hypha topic list` shows every topic of the inventory the node has opened, with its
+   type, whether or not a sample was sent (`-v` adds the publishers and subscribers of
+   each). A topic of the inventory that is missing has not been opened by anyone yet. Check the rate of a topic
+   with `hypha topic hz <topic>` (item 5) once traffic starts.
 4. With no input publisher, `hypha topic echo /<node>/state` (published by
    `runNode`) shows `WAITING`, and the outputs follow the approved missing-input
    response.
