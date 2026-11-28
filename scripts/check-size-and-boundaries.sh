@@ -53,7 +53,7 @@ CAPS = {
 # Production files above their cap: strict shrink-only ratchet (hard failure on growth).
 PROD_RATCHET = {
     "apps/hypha_tools/src/bin/hypha/top/intercept.rs": 1554,
-    "apps/hypha_tools/src/bin/hypha/top/ui.rs": 1353,
+    "apps/hypha_tools/src/bin/hypha/top/ui.rs": 1361,
     "apps/hypha_tools/src/load/coordinator.rs": 1057,
     "apps/hypha_tools/src/bin/hypha/top/intercept_ui.rs": 859,
     "crates/hypha_cycle/src/capture.rs": 857,

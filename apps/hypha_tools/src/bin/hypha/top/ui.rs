@@ -888,16 +888,24 @@ fn input_flags_text(input: &hypha_node::sdk::msgs::hypha_msgs::RequiredInput) ->
     flags
 }
 
-/// One detail line per cycle: steps, missed periods, last and max step in ms,
+/// One detail line per cycle: steps, missed periods, the step time in ms as median, 99th
+/// percentile and maximum since the start and over the recent window, the last step,
 /// overruns and output drops.
 fn cycle_line_text(cycle: &hypha_node::sdk::msgs::hypha_msgs::CycleState) -> String {
+    let ms = |nanos: u64| approx_f64(nanos) / 1_000_000.0;
     format!(
-        "{}: {} steps, {} missed, step {:.2}/{:.2} ms (last/max), {} overruns, {} output drops",
+        "{}: {} steps, {} missed, step p50/p99/max {:.2}/{:.2}/{:.2} ms, recent {:.2}/{:.2}/{:.2}, \
+         last {:.2}, {} overruns, {} output drops",
         cycle.name,
         cycle.steps,
         cycle.missed_periods,
-        approx_f64(cycle.last_step_nanos) / 1_000_000.0,
-        approx_f64(cycle.max_step_nanos) / 1_000_000.0,
+        ms(cycle.step_p50_nanos),
+        ms(cycle.step_p99_nanos),
+        ms(cycle.max_step_nanos),
+        ms(cycle.recent_step_p50_nanos),
+        ms(cycle.recent_step_p99_nanos),
+        ms(cycle.recent_step_max_nanos),
+        ms(cycle.last_step_nanos),
         cycle.overruns,
         cycle.output_drops
     )

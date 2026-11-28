@@ -584,7 +584,11 @@ Reading the diff is not verification. Run the binary.
    response.
 5. Start the input (a peer node, `hypha play`, or `hypha_ros_bridge` from the
    ROS system). `~/state` shows `INPUTS_USABLE`. `hypha topic hz` on each
-   output shows `rate_hz`, or the rate the step publishes at.
+   output shows `rate_hz`, or the rate the step publishes at. `hypha topic delay
+   <input> <output>` is the `rostopic delay` of the node: the median, the p99 and the
+   worst time from an input to the output it causes, for a triggered node and for a
+   rate node, with no payload decoded. `~/state` (`hypha top`) shows the step time as
+   median, p99 and maximum, since the start and over the last 10 to 20 seconds.
 6. Stop the input. After its `silence_ms`, `~/state` shows `DEGRADED` and
    the outputs follow the approved stale-input response.
 7. Compare the outputs with the ROS node for the same input. Record both

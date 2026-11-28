@@ -31,10 +31,17 @@ fn hypha_top_shows_cycle_rows_and_input_counters() {
         max_step_nanos: 15_250_000,
         overruns: 1,
         output_drops: 2,
+        step_p50_nanos: 1_200_000,
+        step_p99_nanos: 3_400_000,
+        recent_step_p50_nanos: 1_100_000,
+        recent_step_p99_nanos: 2_500_000,
+        recent_step_max_nanos: 3_100_000,
+        ..hypha_node::sdk::msgs::hypha_msgs::CycleState::default()
     };
     assert_eq!(
         cycle_line_text(&cycle),
-        "control: 12 steps, 3 missed, step 1.50/15.25 ms (last/max), 1 overruns, 2 output drops"
+        "control: 12 steps, 3 missed, step p50/p99/max 1.20/3.40/15.25 ms, \
+         recent 1.10/2.50/3.10, last 1.50, 1 overruns, 2 output drops"
     );
     let input = hypha_node::sdk::msgs::hypha_msgs::RequiredInput {
         topic: "/a".to_owned(),

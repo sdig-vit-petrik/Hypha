@@ -139,6 +139,14 @@ TEST(NodeStateCycles, OneRowPerCycleInCreationOrderCountsStepsAndMeasuresASlowSt
     EXPECT_GE(row.max_step_nanos, 15'000'000U) << "the first step slept 15 ms";
     EXPECT_GE(row.max_step_nanos, row.last_step_nanos);
     EXPECT_GE(row.overruns, 1U) << "the 15 ms step is longer than the 10 ms period";
+    // The distribution of the step times (#232): one slow step among about ten.
+    EXPECT_GE(row.steps, 5U);
+    EXPECT_LE(row.step_p50_nanos, row.step_p90_nanos);
+    EXPECT_LE(row.step_p90_nanos, row.step_p99_nanos);
+    EXPECT_GE(row.step_p99_nanos, 15'000'000U) << "the p99 of so few steps is the slow one";
+    EXPECT_LE(row.step_p99_nanos, row.max_step_nanos);
+    EXPECT_GE(row.recent_step_max_nanos, 15'000'000U) << "the slow step is within the last 10 s";
+    EXPECT_LE(row.recent_step_p50_nanos, row.recent_step_p99_nanos);
     EXPECT_FALSE(state.sim_time);
     EXPECT_EQ(state.state, hypha_msgs::NodeState::INPUTS_USABLE)
         << "a missed period or an overrun does not change the state";

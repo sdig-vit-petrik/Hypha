@@ -18,8 +18,7 @@ use super::types::{
     HyphaCycleTime, HyphaSupervisionReport,
 };
 use crate::loan::{HyphaLoan, take_sequence};
-use crate::status::Error;
-use crate::status::HyphaStatus;
+use crate::status::{Error, HyphaStatus};
 use crate::waitset::{
     HYPHA_ACTION_CONTINUE, HYPHA_ACTION_FAIL, HYPHA_ACTION_STOP, HyphaCallbackResult,
 };
@@ -199,6 +198,7 @@ pub(crate) fn cycle_timer_tick(
         let host_rate = !hypha_time::is_sim_time() && !is_replay;
         let period = if host_rate { u64::try_from(cycle.period_nanos()).unwrap_or(0) } else { 0 };
         runtime.record_step(duration_nanos, period);
+        cycle.snapshots.record_step_time(duration_nanos, timing.capture_steady_nanos);
     }
     log_judgement_events(cycle_name, inputs, &state.port_names, input_options, runtime);
     store_health(cycle, inputs, input_options, runtime, is_replay);

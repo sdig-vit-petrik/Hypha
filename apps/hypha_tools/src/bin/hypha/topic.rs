@@ -1,9 +1,10 @@
-//! `hypha topic` -- rostopic-equivalent bus introspection: list, echo, hz, and bw.
+//! `hypha topic` -- rostopic-equivalent bus introspection: list, echo, hz, delay, and bw.
 
 use crate::cli::{connect, parse_cli};
 use clap::{Parser, Subcommand};
 use hypha_node::sdk::SchemaIdentityCache;
 use hypha_node::sdk::{BusNode, ResolvedSchema, StreamKey, TopicInfo};
+use hypha_tools::delay::Delays;
 use hypha_tools::echo_args::EchoArgs;
 use hypha_tools::msg_plot::{plot_header, plot_row, plot_values};
 use hypha_tools::msg_reflect::{SchemaCache, decode_message};
@@ -20,7 +21,7 @@ mod pool;
 
 use follow::Followed;
 
-/// Bus introspection: list, echo, hz, and bw; and the sizing of a topic's pool.
+/// Bus introspection: list, echo, hz, delay, and bw; and the sizing of a topic's pool.
 #[derive(Debug, Parser)]
 #[command(
     name = "hypha topic",
@@ -55,6 +56,22 @@ enum Verb {
         window: usize,
         #[command(flatten)]
         streams: StreamFlags,
+    },
+    /// Time from an input topic to an output topic, from the frames' send stamps alone.
+    #[command(
+        after_help = "For each output frame, the time since the newest input frame sent at or \
+                      before it, from the host send stamps in the frame headers: no payload is \
+                      decoded, so a large cloud costs what a small message costs. Both topics \
+                      must be sent on this host. Every stream of each topic counts."
+    )]
+    Delay {
+        /// Topic the node reads.
+        input: String,
+        /// Topic the node writes.
+        output: String,
+        /// Outputs in the window of the figures.
+        #[arg(long, value_name = "n", default_value_t = 100)]
+        window: usize,
     },
     /// Bandwidth and mean message size of each stream of one topic.
     Bw {
@@ -338,6 +355,51 @@ fn report_streams<W>(
     }
 }
 
+/// `delay`: each output frame against the newest input frame sent at or before it, by send
+/// stamp, and the figures of the last `window` outputs once a second.
+fn run_delay(bus: &Arc<BusNode>, input: &str, output: &str, window: usize) -> ExitCode {
+    if input == output {
+        eprintln!("hypha topic delay: '{input}' is both the input and the output");
+        return ExitCode::FAILURE;
+    }
+    let open = |topic: &str| Followed::open(bus, topic, &StreamFlags::default(), "delay");
+    let (mut inputs, mut outputs) = match (open(input), open(output)) {
+        (Ok(inputs), Ok(outputs)) => (inputs, outputs),
+        (Err(code), _) | (_, Err(code)) => return code,
+    };
+    let mut delays = Delays::new(window);
+    let mut last_report = Instant::now();
+
+    while bus.ok() {
+        inputs.refresh();
+        outputs.refresh();
+        // The outputs are taken before the inputs, and measured after: every input sent
+        // before an output that was taken is already on the bus when the inputs are taken.
+        let mut sent_outputs = Vec::new();
+        while let Some(received) = outputs.next() {
+            sent_outputs.extend(received.identity().map(|id| id.transport_sent_nanos));
+        }
+        while let Some(received) = inputs.next() {
+            if let Some(identity) = received.identity() {
+                delays.on_input(identity.transport_sent_nanos);
+            }
+        }
+        for sent in sent_outputs {
+            delays.on_output(sent);
+        }
+
+        if last_report.elapsed() >= Duration::from_secs(1) {
+            last_report = Instant::now();
+            match delays.report() {
+                Some(report) => println!("{report}"),
+                None => println!("no output on '{output}' after an input on '{input}' yet"),
+            }
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    ExitCode::SUCCESS
+}
+
 /// What `bw` says before it has two messages of a stream, or before there is a stream.
 const NOT_ENOUGH_DATA: &str = "not enough data yet";
 
@@ -438,6 +500,7 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         Verb::List { verbose } => run_list(&bus, verbose),
         Verb::Echo { echo } => run_echo(&bus, &echo),
         Verb::Hz { topic, window, streams } => run_hz(&bus, &topic, window, &streams),
+        Verb::Delay { input, output, window } => run_delay(&bus, &input, &output, window),
         Verb::Bw { topic, streams } => run_bw(&bus, &topic, &streams),
         Verb::Pool { .. } => ExitCode::SUCCESS,
     }
