@@ -16,7 +16,8 @@
 ///    table, a missing `topic` and `topic = ""` leave it disabled. The constructor throws
 ///    ConfigError for a name a start would refuse, or for an entry that is a plain string
 ///    where a start requires a table;
-///  - the verdict of a delivered input, by the rule of the capture, from `silence_ms`;
+///  - the verdict of a delivered input, by the rule of the capture, from `silence_ms`
+///    (`silence_ms = 0` and the tag unsupervised are no limit, and Input::untimed() says so);
 ///  - the counters of an input: received() counts in the next step each sample given to
 ///    deliver() or set(), deliveredCount() each one that step takes as usable;
 ///    setNeverArrived() sets both to zero;
@@ -112,8 +113,8 @@ class StepHarness final : private detail::CaptureStore
     ///        a capture does: usable while (step time - sentAt) <= silence_ms, stale after.
     /// @throws std::logic_error when the port is disabled, or reads a table and no
     ///         configuration is loaded.
-    /// @throws ParameterError when `silence_ms` is not a whole number of milliseconds
-    ///         from 1 to the limitMax() of the port.
+    /// @throws ParameterError when `silence_ms` is missing, or is neither 0 (no limit) nor
+    ///         a whole number of milliseconds from 1 to the limitMax() of the port.
     template <typename M>
     void deliver(Latest<M>& port, M value, Time sentAt)
     {

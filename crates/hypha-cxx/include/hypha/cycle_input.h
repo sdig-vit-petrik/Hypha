@@ -87,6 +87,30 @@ class Input : public Port
         return this->hasFault(HYPHA_FAULT_STAGNANT);
     }
 
+    /// @brief True when the port has no time limit: tagged unsupervised, or `silence_ms = 0`
+    ///        in its table (a ROS timeout of 0.0). It is never stale: NeverArrived before its
+    ///        first sample, Usable from it on, until a later sample replaces the value. False
+    ///        for a port with a limit, a disabled port, and before start(); in a
+    ///        testing::StepHarness it is read from the parameter file, as a start decides it.
+    /// @throws std::logic_error in a StepHarness without a loaded configuration.
+    /// @throws ParameterError in a StepHarness when the table's `silence_ms` is missing or
+    ///         outside its range.
+    bool untimed() const
+    {
+        if (!this->enabled()) {
+            return false;
+        }
+        if (this->supervision_.decided()) {
+            return this->supervision_.untimed();
+        }
+        if (!this->enabledByHarness()) {
+            return false;
+        }
+        const bool noTable = this->supervision_.name().empty() || this->settings_.unsupervised;
+        return noTable
+            || detail::tableSilenceNanos(this->supervision_.name(), this->settings_.limitMax) == 0;
+    }
+
     /// @brief True when setIgnored(true) hides the fault of this port.
     bool ignored() const
     {

@@ -178,6 +178,7 @@ with its own name.
 | Member variables of the node class that the logic changes | Members of the cycle node. Use the original logic class as a member when one exists. |
 | Constant tuning (`gain`, limits) | Members of the cycle node, read from TOML in the constructor or `setup()`. |
 | Own staleness check (`now - stamp > timeout`) | Replace it with the port's `silence_ms` (carry the old timeout's value) and read `usable()` or `stale()`. Delete the timeout parameter. A use of the source time as data stays (logic). |
+| A timeout of 0.0 (no timeout: valid until replaced, `twist_mux`'s locks and inputs) | `silence_ms = 0` in the port's table: the input has no time limit, is `NeverArrived` before its first sample and `Usable` from it on, never stale. Declare the port as for any timeout; code that treated an expired input and a never-set untimed one differently reads `port.untimed()`, not `silence_ms`. An input that may never be published (a pause switch) is also `advisory`, so that `~/state` does not wait for it. A trigger with `silence_ms = 0` runs no fallback of its own. Leaving the key out is refused: there is no untimed input by omission. An input that has no limit in any deployment is tagged `unsupervised` instead. |
 | A store-then-take buffer between callback and timer (input image, slot, double buffer) | Delete it: the `Latest` port is the buffer. Read `*port` when `fresh()`; `lastKnown()` holds the old value. |
 
 `silence_ms` judges the age from the time the sender sent the sample, not from
@@ -198,9 +199,9 @@ effect for each message (a counter, an integrator, a queue) must use an
   trigger in `setup()` with `this->setTrigger(this->ground_truth)`. Its table in
   `examples/mrs/config/estimation_manager.toml` has a `silence_ms` (100), and no
   `[cycle]` table sets `rate_hz`: a rate and a trigger exclude each other.
-- Each trigger needs its own `silence_ms`, also when the port is `unsupervised`;
-  `start()` fails without one and names the port. Carry the old timeout of the input
-  when the node had one, else the longest gap the input may have.
+- Each trigger has its own `silence_ms`. Carry the old timeout of the input when the
+  node had one, else the longest gap the input may have; a timeout of 0.0 is
+  `silence_ms = 0`, a trigger with no limit, which runs no fallback of its own.
 - When no step ran for the shortest `silence_ms` of the triggers, one **fallback step**
   runs with every trigger's `samples().empty()`, and each trigger past its own limit
   `stale()`; it repeats every shortest `silence_ms`. Handle it in `step()`:

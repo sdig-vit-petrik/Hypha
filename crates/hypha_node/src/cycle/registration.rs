@@ -396,9 +396,9 @@ fn check_clock_owner(
 }
 
 /// The silence limit of each trigger in nanoseconds, in port order, for a triggered
-/// cycle; `None` for a rate cycle. A cycle with both a rate and a trigger, with neither,
-/// or with a trigger that has no positive silence limit is refused, and the reason names
-/// that trigger.
+/// cycle, zero for an untimed trigger (`silence_ms = 0` or `unsupervised`), which runs no
+/// fallback of its own; `None` for a rate cycle. A cycle with both a rate and a trigger,
+/// or with neither, is refused.
 fn trigger_silences(cycle: &Cycle, registration: &CycleStep) -> Result<Option<Vec<i64>>, Error> {
     let name = cycle.name();
     let refuse = |reason: &str| {
@@ -419,17 +419,13 @@ fn trigger_silences(cycle: &Cycle, registration: &CycleStep) -> Result<Option<Ve
     }
     let silence_of = |index: usize| {
         let capture = registration.runtime.binding_capture(index);
-        capture
+        let silence = capture
             .and_then(hypha_cycle::BindingCapture::supervision)
-            .map(|supervision| supervision.limits().silence_nanos)
-            .and_then(|nanos| i64::try_from(nanos).ok())
-            .filter(|nanos| *nanos > 0)
-            .ok_or_else(|| {
-                let input = input_name(registration, index);
-                refuse(&format!(
-                    "its trigger input {input} needs a positive silence limit (silence_ms)"
-                ))
-            })
+            .map_or(0, |supervision| supervision.limits().silence_nanos);
+        i64::try_from(silence).map_err(|_| {
+            let input = input_name(registration, index);
+            refuse(&format!("its trigger input {input} has a silence limit past i64"))
+        })
     };
     triggers.iter().map(|&index| silence_of(index)).collect::<Result<_, _>>().map(Some)
 }

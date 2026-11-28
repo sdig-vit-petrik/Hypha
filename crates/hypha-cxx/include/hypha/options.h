@@ -47,8 +47,9 @@ struct Advisory
     }
 };
 
-/// @brief The input runs without a silence limit. The table must then not set
-///        `silence_ms`, and the port must not be advisory.
+/// @brief The input runs without a silence limit: it is never stale (Input::untimed()). The
+///        table must then not set `silence_ms`. It may be advisory too. A deployment that
+///        chooses no limit sets `silence_ms = 0` in the table instead.
 struct Unsupervised
 {
     bool on = true;

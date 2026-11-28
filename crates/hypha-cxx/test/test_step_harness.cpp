@@ -242,8 +242,8 @@ hypha::CycleTime stepAt(int64_t nanos)
     return time;
 }
 
-/// A parameter file with a 100 ms limit on `limited`, no limit on `loose`, and a table
-/// for `open`, which is unsupervised.
+/// A parameter file with a 100 ms limit on `limited`, no limit on `loose`
+/// (`silence_ms = 0`), and a table for `open`, which is unsupervised.
 class DeliverFixture : public ::testing::Test
 {
   protected:
@@ -254,6 +254,7 @@ class DeliverFixture : public ::testing::Test
         output << "[ports.inputs.limited]\n"
                   "silence_ms = 100\n"
                   "[ports.inputs.loose]\n"
+                  "silence_ms = 0\n"
                   "[ports.inputs.open]\n"
                   "[ports.inputs.queue]\n"
                   "silence_ms = 100\n";
@@ -313,15 +314,37 @@ TEST_F(DeliverFixture, AStaleVerdictReportsTheAgeAndTheLimitOfTheTable)
     }
 }
 
-TEST_F(DeliverFixture, APortWithoutALimitIsNeverStale)
+TEST_F(DeliverFixture, APortWithSilenceMsZeroIsNeverStale)
 {
     Judged                      judged;
     hypha::testing::StepHarness harness{judged};
+    EXPECT_TRUE(judged.loose.untimed()) << "read from the table, as a start decides";
+    EXPECT_TRUE(judged.open.untimed());
+    EXPECT_FALSE(judged.limited.untimed());
     harness.deliver(judged.loose, Float64{1.0}, Time::fromNanos(kStartNanos));
     harness.step(judged, stepAt(kStartNanos + 3'600'000'000'000));
     EXPECT_TRUE(judged.loose.usable());
     EXPECT_FALSE(judged.loose.stale());
     EXPECT_EQ(judged.loose.verdict(), InputVerdict::Usable);
+}
+
+TEST(StepHarnessLimits, DeliverToAPortWithoutSilenceMsIsRefusedAsAStartRefusesIt)
+{
+    const std::filesystem::path path =
+        std::filesystem::temp_directory_path() / "hypha_step_harness_no_limit.toml";
+    std::ofstream(path) << "[ports.inputs.limited]\nsilence_ms = 100\n[ports.inputs.loose]\n"
+                           "[ports.inputs.open]\n";
+    {
+        const hypha::ConfigContext  context(path.string());
+        Judged                      judged;
+        hypha::testing::StepHarness harness{judged};
+        EXPECT_THROW(
+            harness.deliver(judged.loose, Float64{1.0}, Time::fromNanos(kStartNanos)),
+            hypha::ParameterError
+        ) << "an advisory port states its limit too";
+        EXPECT_THROW(static_cast<void>(judged.loose.untimed()), hypha::ParameterError);
+    }
+    std::filesystem::remove(path);
 }
 
 TEST_F(DeliverFixture, AnUnsupervisedPortIsNeverStale)

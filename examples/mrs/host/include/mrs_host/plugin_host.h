@@ -258,7 +258,7 @@ hypha::Latest<M>& PluginHost::latest(const std::string& topic)
         return static_cast<hypha::Latest<M>&>(*found->second.port);
     }
     this->refuseAfterStart("subscriber '" + topic + "'");
-    auto              port = this->inputPort<M, hypha::Latest>(topic, hypha::advisory);
+    auto port = this->inputPort<M, hypha::Latest>(topic, hypha::advisory, hypha::unsupervised);
     hypha::Latest<M>& ref = *port;
     this->latest_.emplace(topic, Port{&typeid(M), std::move(port)});
     return ref;
@@ -294,8 +294,9 @@ hypha::Arrivals<M>& PluginHost::arrivals(const std::string& topic, uint32_t perS
         return static_cast<hypha::Arrivals<M>&>(*found->second.port);
     }
     this->refuseAfterStart("subscriber '" + topic + "'");
-    auto port =
-        this->inputPort<M, hypha::Arrivals>(topic, hypha::advisory, hypha::perStep(perStep));
+    auto port = this->inputPort<M, hypha::Arrivals>(
+        topic, hypha::advisory, hypha::unsupervised, hypha::perStep(perStep)
+    );
     hypha::Arrivals<M>& ref = *port;
     this->arrivals_.emplace(topic, Port{&typeid(M), std::move(port)});
     return ref;

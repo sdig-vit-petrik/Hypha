@@ -503,9 +503,9 @@ typedef struct HyphaSupervisionRanges {
 // What one input's supervision binding reads: the port table, the checks the code
 // It is read for the call only.
 //
-// `silence_ms` is required on an enabled input that counts for health unless
-// `unsupervised` is set, optional on an advisory one and refused with `unsupervised`;
-// `stagnation_ms` is read when `check_stagnation` is set. A key the request does not
+// `silence_ms` is required on an enabled input, advisory or not, unless `unsupervised`
+// is set, and refused with it; `silence_ms = 0` is an input with no time limit, as the
+// tag is. `stagnation_ms` is read when `check_stagnation` is set. A key the request does not
 // allow and a limit out of range are `InvalidArgument`; a declared limit that is
 // missing is `NotAvailable`.
 typedef struct HyphaInputSupervisionRequest {
@@ -1276,7 +1276,8 @@ HyphaStatus hypha_cycle_set_class_based(struct HyphaCycle *cycle,
 
 // Atomically attach the cycle timer, triggers or clock driver after all bindings; an
 // uncommitted cycle never runs. `InvalidArgument`: neither a period nor a trigger, both,
-// any trigger binding without a positive silence limit, or a refused `[cycle]` key.
+// or a refused `[cycle]` key. A trigger binding without a silence limit is untimed: it
+// runs no fallback of its own, and a cycle of untimed triggers runs no fallback.
 // `InvalidState`: a committed cycle, a running `WaitSet`, any cycle on a CLI tool node
 // or on a node with a clock driver, and a driver in a process already on simulated
 // time, on a node with another cycle, or while another process publishes `/clock`. A

@@ -384,8 +384,15 @@ calling thread.
 
 ### 6.4 Input supervision
 
-Every enabled input that counts for health has a silence limit, unless its code tags
-it `unsupervised`; the decision is made below the C ABI (`hypha_runtime::port_limits`).
+Every enabled input, advisory or not, has a silence limit or says that it has none:
+`silence_ms = 0` in its table (a ROS timeout of 0.0), or the tag `unsupervised` in its
+code. An input never runs without a limit because a key was left out: without
+`silence_ms` and without the tag, the start is refused. The decision is made below the C
+ABI (`hypha_runtime::port_limits`). An input with no limit, an *untimed* input, is
+`NeverArrived` before its first sample and `Usable` from it on, valid until a later sample
+replaces it; it is never stale and logs no fault (`Input::untimed()`, `silence_nanos = 0`
+in `~/introspection`, "no time limit" in `hypha top`). A required untimed input keeps the
+node `WAITING` until its first sample; an advisory one does not count.
 A port with a silence limit checks that its input is current. Two checks exist:
 staleness (the silence limit) and stagnation. One limit, `silence_ms`, decides both
 whether a value may be used (the `Stale` verdict) and whether the port is stale
@@ -448,8 +455,9 @@ nothing. An input without a silence limit never logs `never arrived`. Two ports 
 topic log under their own names. `<in>` is `cycle '<cycle>' input '<port>' (<topic>)`,
 or `cycle '<cycle>' input (<topic>)` without a table; an advisory input's line ends in
 ` (advisory)`, and an advisory input reports its faults at INFO where the table says WARN:
-the node is healthy without it. An `unsupervised` or an ignored input is not advisory: its
-lines have the levels of the table. Ages and limits are whole milliseconds.
+the node is healthy without it. Neither `unsupervised` nor ignoring makes an input
+advisory: without the tag its lines have the levels of the table. Ages and limits are whole
+milliseconds.
 
 | Change | Level | Line |
 |---|---|---|
@@ -492,12 +500,12 @@ A cycle runs either on a rate or on triggers, never both. A trigger is one of th
 cycle's `Arrivals` inputs (`Cycle::setTrigger(port)`, C ABI `hypha_cycle_set_trigger`
 on a cycle created with period 0); each call adds one trigger, a repeat adds nothing,
 and the order of the calls has no meaning. A trigger is queued and wired and has its
-own positive silence limit. Two triggers may not read one topic through `sharing()`,
-since each sample would step twice: `setTrigger` refuses the second with
+own silence limit, or none: an untimed trigger (section 6.4) has no fallback of its own
+(item 3), is never stale and never late. Two triggers may not read one topic through
+`sharing()`, since each sample would step twice: `setTrigger` refuses the second with
 `InvalidArgument`. A cycle has at most 64 triggers. A cycle with both a rate and a
-trigger, with neither, or with a trigger that has no positive silence limit is refused
-at start with `InvalidArgument`, and one log line names the cycle and the reason, and
-the trigger that has no limit.
+trigger, or with neither, is refused at start with `InvalidArgument`, and one log line
+names the cycle and the reason.
 
 1. **One step per trigger sample.** The samples of all triggers run in one order:
    by framework send stamp, a tie by port (the binding index of the port, which is
@@ -543,8 +551,13 @@ the trigger that has no limit.
    of the step that sent the trigger sample are, is cut and belongs to the next step:
    the two clocks differ here.
 3. **Fallback.** When no step ran for the shortest silence limit (`silence_ms`) of
-   the triggers, one step runs without a trigger sample. The limit counts from the
-   last step, or from the cycle's first evaluation when that is later: a trigger
+   the triggers that have one, one step runs without a trigger sample. An untimed
+   trigger counts for no fallback and is never due in one. A cycle whose triggers are
+   all untimed runs no fallback: before its first trigger sample it runs no step, so
+   nothing judges its inputs, and `~/state` shows its required inputs `NEVER_ARRIVED`
+   and the node `WAITING` (its `CycleState.steps` stays 0), as a ROS callback with no
+   timeout never runs. The limit counts from the last step, or from the cycle's first
+   evaluation when that is later: a trigger
    stamped before the first evaluation moves the count no earlier. It repeats every
    shortest limit until a trigger arrives. In the fallback step every trigger is
    empty; a trigger without a sample for its own limit, since its last step or the
@@ -566,8 +579,8 @@ the trigger that has no limit.
    every publisher does, and the `WaitSet` wakes at the cycle's next fallback
    deadline, so a fallback runs on its deadline. A wildcard trigger has no listener: a
    cycle with one polls its triggers every tenth of its shortest silence limit, at
-   least every millisecond. Under simulated time the wake follows the rule of a cycle
-   timer (section 11.1).
+   least every millisecond, and every millisecond when no trigger has a limit. Under
+   simulated time the wake follows the rule of a cycle timer (section 11.1).
 5. **Simulated time.** A step at T, for a trigger or a fallback, runs when the node's
    clock is at least T and every upstream of the cycle has reported at least T on
    `/clock_progress`, so no trigger stamped T can still come. A grid replay cycle needs
