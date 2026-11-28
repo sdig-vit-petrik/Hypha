@@ -379,6 +379,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_worker_stop.cpp
     test/test_handover.cpp
     test/test_step_harness.cpp
+    test/test_diagnostic_updater.cpp
     test/test_raw_endpoints.cpp
     test/test_qos.cpp
     test/test_topic_overloading.cpp

@@ -153,6 +153,7 @@ Write this table in your working notes. Do not write code yet.
 | Services | Name, type, server or client, timeout. |
 | Time | Use of `ros::Time::now()`, `header.stamp`, `ros::Duration`, `use_sim_time`. |
 | Own staleness checks | Every place the code compares a message time with now. |
+| Diagnostics | Each `diagnostic_updater` task and topic diagnostic: name, levels, values, period; the `/diagnostics` consumers (section 4). |
 | TF | Broadcaster, static broadcaster, listener. |
 | Tests | Each test file, its framework, and whether it needs a ROS master. |
 | Items of [section 7](#7-stop-and-ask) | Each one. |
@@ -653,11 +654,36 @@ included, uses the same `HYPHA_DOMAIN`.
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(condition, false, ...)`: writes when the condition becomes true |
 | `tf2_ros::TransformBroadcaster` | Output on `/tf` of type `tf2_msgs::TFMessage` |
 | `tf2_ros::StaticTransformBroadcaster` | An `Output<tf2_msgs::TFMessage>` declared with `latched` and `topic = "/tf_static"` in its ports table |
+| `diagnostic_updater::Updater updater;` with `updater.setHardwareID(id)`, `updater.add("Name", this, &Class::method)` | `hypha::DiagnosticUpdater updater{diagnostics};` over an `Output<diagnostic_msgs::DiagnosticArray> diagnostics{*this, "diagnostics"}` (`[ports.outputs.diagnostics] topic = "/diagnostics"`); the calls stay (`<hypha/diagnostic_updater.h>`, cpp-api.md §2.7) |
+| The updater's own timer, `~diagnostic_period`, `updater.update()` / `force_update()` | `updater.update()` in `step()` (it runs the tasks once per period, default 1 s); the period is a top-level key read with `hypha::config()` and given to `setPeriod`; `forceUpdate()` runs now |
+| `diagnostic_updater::DiagnosticStatusWrapper`: `summary`, `summaryf`, `mergeSummary`, `add`, `addf`, `clear` | `hypha::DiagnosticStatusWrapper`, the same calls; the levels are `diagnostic_msgs::DiagnosticStatus::OK`, `WARN`, `ERROR`, `STALE` |
+| `FrequencyStatusParam`, `FrequencyStatus`, `TimeStampStatus`, `TopicDiagnostic`, `HeaderlessTopicDiagnostic` | The same names in `hypha::` (`<hypha/diagnostic_functions.h>`); `tick(msg.header.stamp)` takes the `RosTime` stamp |
+| `diagnostic_updater::DiagnosedPublisher` | An `Output` and a `TopicDiagnostic`: `diag.tick(stamp)` before `output.send(msg)` |
 | `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment; for `ros2 bag play`'s behaviour, outside the replay lockstep, `HYPHA_REPLAY_LOCKSTEP=0` for the player and every node of the launch |
 | rosbag record / play | `hypha record` / `hypha play` (`apps/`); a topic recorded with two versions of a message is two channels, replayed as two streams |
 | roslaunch | `hypha launch` |
 | roscore | None. Nodes find each other through shared memory |
 | A second message type or MD5 on a topic: roscore refuses the connection (`md5sum mismatch`) | Each type and each version (MD5) is its own stream of the topic: both are delivered, each to its own subscribers, and two versions of a message can run side by side during a migration. A subscriber whose version nobody publishes gets nothing; its counters (`otherSchemas`) and its `~/state` row (`other_schemas`) name the version that is published, and after 5 s without a publisher of its own it logs `topic '<t>' has publishers, none of type <T> (<md5>): published are <T> (<other md5>)`. Its input is `NeverArrived` if it never had a publisher, else `Stale` after its `silence_ms`, or `Usable` on the last value when it has no limit (cpp-api.md §5) |
+
+**Diagnostics (`diagnostic_updater`):** a status task the application owns (the device is
+absent, a fix is lost, a rate is low) keeps its task and its name: the node publishes it with
+`hypha::DiagnosticUpdater` as above, and the system's `diagnostic_aggregator` reads
+`/diagnostics` as in ROS. Three kinds of diagnostic are not tasks:
+
+- A check of the age of an input (`now - stamp > timeout`) is the port's `silence_ms`
+  (section 2.1); `~/state` shows it and `hypha top` reads it. Drop the task, unless the
+  system's aggregator configuration names that item: then keep it and say so in the report.
+- A task that only says "the node is running" is `~/state`; drop it.
+- A task that mirrors a rate of an output is `TopicDiagnostic`, or `FrequencyStatus`, with
+  `tick()` where the node sends.
+
+A task keeps its logic as it is: the method that fills the `DiagnosticStatusWrapper`
+changes only the include and the namespace. The updater needs a node name: a node under
+`hypha::runNode` has one. A task that throws, or sets no summary, is an ERROR status
+that names the reason: keep it that way and do not catch it. Test the tasks with
+`testing::StepHarness` (`harness.sent(node.diagnostics)`), as the other outputs.
+The aggregator is another node: its input on `/diagnostics` needs a `silence_ms` of
+the longest diagnostic period, and a `perStep` for the burst of all publishers.
 
 **Queue sizing:** `queue_size` has no counterpart: there are no transport depths,
 history samples or history byte limits to tune. A topic's service policy (`hypha::Qos`,
@@ -884,6 +910,7 @@ Report each item in the change description, with the evidence.
 - [ ] No input has an age limit besides `silence_ms`.
 - [ ] The response to each missing or stale input is explicit and approved.
 - [ ] `main` only calls `hypha::runNode`, for a `CycleNode` and an `ApplicationNode` alike: one TOML file at most, a second argument stops the node with status 2.
+- [ ] Every `diagnostic_updater` task is a `DiagnosticUpdater` task, or is replaced by `silence_ms` or `~/state` with the reason reported (section 4).
 - [ ] The logged snapshot shows the expected topics and period.
 - [ ] Step 7 was done on the bus, and its results are recorded.
 - [ ] A `hypha launch` unit and an installed TOML file exist.
