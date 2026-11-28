@@ -15,6 +15,9 @@ if [[ "${1:-}" == "--clean" ]]; then
 fi
 suite="${1:-all}"
 
+# The compiler of rust-toolchain.toml, in the log next to the result.
+rustc --version
+
 ./build.sh --tests "${clean[@]}"
 # Every test process runs in a bus domain of its own under the test root t_, so the
 # domains of the runs that ended are all there is to clear: a system running on this
@@ -29,6 +32,10 @@ esac
 
 if [[ "$suite" == all || "$suite" == rust ]]; then
   cargo clippy --locked --workspace --all-targets -- -D warnings
+  # The MSRV of Cargo.toml (the highest of the dependencies') builds the workspace too.
+  msrv="$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml).0"
+  rustc "+$msrv" --version
+  CARGO_TARGET_DIR=target/msrv cargo "+$msrv" check --locked --workspace --all-targets
   cargo nextest run --locked --workspace
   cargo test --locked --workspace --doc
   # The debug library exports exactly the recorded C symbols.
@@ -37,6 +44,9 @@ if [[ "$suite" == all || "$suite" == rust ]]; then
 fi
 
 if [[ "$suite" == all || "$suite" == cpp ]]; then
+  # CMake follows CARGO_TARGET_DIR (#181); configures only.
+  ./scripts/test-cargo-target-dir.sh
+
   # The gtest shards run in parallel, each in a bus domain of its own (test/test_main.cpp).
   ctest --test-dir build -j "$(getconf _NPROCESSORS_ONLN)" --output-on-failure \
     --output-junit ctest-junit.xml

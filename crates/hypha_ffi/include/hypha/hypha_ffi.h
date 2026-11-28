@@ -945,6 +945,12 @@ int64_t hypha_clock_steady_now_nanos(void);
 // Return 1 while the active clock is simulated, else 0.
 int32_t hypha_clock_is_sim_time(void);
 
+// Return 1 when framework time holds a time, else 0. Host time always does; simulated
+// time does once it has a value (a `/clock` sample, a set, an advance, or an enable at a
+// value). The zero that a simulated-time node starts with is a placeholder: until the
+// first value `hypha_clock_now_nanos` returns it, and this returns 0.
+int32_t hypha_clock_is_valid(void);
+
 // Enable simulated time at `initial_nanos`, for a test or a tool that owns the
 // simulation; not beside a sim-time node or a clock-driver cycle.
 //

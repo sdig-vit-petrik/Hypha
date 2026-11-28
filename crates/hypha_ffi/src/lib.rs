@@ -41,7 +41,7 @@ pub mod waitset;
 pub use abi::hypha_abi_revision;
 pub use clock::{
     hypha_clock_advance_sim_time, hypha_clock_disable_sim_time, hypha_clock_enable_sim_time,
-    hypha_clock_is_sim_time, hypha_clock_now_nanos, hypha_clock_set_sim_time,
+    hypha_clock_is_sim_time, hypha_clock_is_valid, hypha_clock_now_nanos, hypha_clock_set_sim_time,
     hypha_clock_steady_now_nanos,
 };
 pub use config::{

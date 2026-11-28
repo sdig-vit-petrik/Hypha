@@ -1,0 +1,13 @@
+# Sensitive architectural seams and repository fence:
+# automatically requests owner review when colleagues or bots touch these paths.
+/abi.revision                         @sdig-vit-petrik
+/crates/hypha_ffi/                    @sdig-vit-petrik
+/crates/hypha-cxx/include/            @sdig-vit-petrik
+/Cargo.toml                           @sdig-vit-petrik
+/deny.toml                            @sdig-vit-petrik
+/AGENTS.md                            @sdig-vit-petrik
+/.githooks/                           @sdig-vit-petrik
+/.github/                             @sdig-vit-petrik
+/scripts/agent-hooks/                 @sdig-vit-petrik
+/scripts/check-deps.sh                @sdig-vit-petrik
+/scripts/check-size-and-boundaries.sh @sdig-vit-petrik
