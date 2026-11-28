@@ -1,4 +1,3 @@
-// test-layer: unit (no node, no bus, no C function; #336)
 // Time::fromSeconds and Duration::fromSeconds must keep every nanosecond a double holds
 // (#243). A double near 1.7e9 s has a spacing of 2^-22 s (238.4 ns), so what it holds is
 // that value to 238 ns; multiplying the whole value by 1e9 rounds again, in a double near

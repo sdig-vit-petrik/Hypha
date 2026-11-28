@@ -4,7 +4,7 @@ use crate::boundary::{handle_mut, handle_ref, require_non_null, write_out};
 use crate::status::try_guard;
 use hypha_node::safe::{
     EmissionView, ImageView, emission_commit, emission_reserve, image_alive, image_binding,
-    image_clear, image_held, image_reject_sample, image_sample, image_set_ignored,
+    image_held, image_reject_sample, image_sample, image_set_ignored,
 };
 use hypha_node::status::HyphaStatus;
 use hypha_node::{
@@ -128,28 +128,6 @@ pub unsafe extern "C" fn hypha_cycle_image_set_ignored(
     try_guard(|| {
         let view = unsafe { handle_ref(image.cast::<ImageView<'_>>()) }?;
         Ok(image_set_ignored(view, binding_index, ignore != 0)?)
-    })
-}
-
-/// Clear, when the step returns, the input binding `index` (`kind` is
-/// `HYPHA_CYCLE_CLEAR_INPUT`) or the TF input `index` (`HYPHA_CYCLE_CLEAR_TRANSFORMS`).
-/// An input forgets its held sample and the pending samples its capture admitted, counted
-/// in `cleared_total`; a TF input forgets its dynamic transforms and keeps the static ones.
-/// The rest of the step still reads what it captured; a repeat in one step clears once.
-/// Valid only during the step callback. `InvalidArgument` for a null `image`, an unknown
-/// `kind` or index, or a trigger port, whose pending samples are the cycle's steps.
-///
-/// # Safety
-/// `image` must be a callback-live pointer.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hypha_cycle_image_clear(
-    image: *const HyphaCycleImage,
-    kind: u32,
-    index: u32,
-) -> HyphaStatus {
-    try_guard(|| {
-        let view = unsafe { handle_ref(image.cast::<ImageView<'_>>()) }?;
-        Ok(image_clear(view, kind, index)?)
     })
 }
 

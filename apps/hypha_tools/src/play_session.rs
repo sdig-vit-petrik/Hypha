@@ -146,26 +146,17 @@ pub fn publish_channel(
 
 /// Whether the replay publishes `topic`: the topics of the filter, and never the
 /// recording's `/clock` under `--clock`, which the replay's own clock takes the place of.
-/// Whether the replay publishes `channel`. The call log of a service
-/// (`hypha_msgs/ServiceCall`) is a record of calls made live, never published again.
-fn replays(config: &PlaySessionConfig, channel: &ChannelResolution) -> bool {
-    let topic = channel.topic.as_str();
+fn replays(config: &PlaySessionConfig, topic: &str) -> bool {
     if config.publish_clock && topic == CLOCK_TOPIC {
-        return false;
-    }
-    if channel.data_type == SERVICE_CALL_TYPE {
         return false;
     }
     config.topics.is_empty() || config.topics.iter().any(|allowed| allowed == topic)
 }
 
-/// The type of a service's call log.
-const SERVICE_CALL_TYPE: &str = hypha_node::sdk::msgs::hypha_msgs::ServiceCall::TYPE_NAME;
-
 fn replayed_topics<'a>(player: &'a Player, config: &PlaySessionConfig) -> Vec<&'a str> {
     let mut topics: Vec<&str> = Vec::new();
     for ch in player.channels() {
-        if !replays(config, ch) {
+        if !replays(config, &ch.topic) {
             continue;
         }
         if !topics.contains(&ch.topic.as_str()) {
@@ -204,7 +195,7 @@ fn create_channel_publishers(
         ChannelPublishers { publishers: HashMap::new(), order: Vec::new(), titles: HashMap::new() };
     let mut refusals: Vec<String> = Vec::new();
     let channels: Vec<&ChannelResolution> =
-        player.channels().iter().filter(|ch| replays(config, ch)).collect();
+        player.channels().iter().filter(|ch| replays(config, &ch.topic)).collect();
 
     for ch in &channels {
         if ch.md5.is_empty() {

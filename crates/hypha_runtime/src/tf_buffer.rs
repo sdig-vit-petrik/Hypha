@@ -238,17 +238,6 @@ impl TfBuffer {
         Ok(inserted)
     }
 
-    /// Forget every dynamic transform, as `tf2::BufferCore::clear` does, and return how
-    /// many frames held one. Static transforms stay: their publishers send them once.
-    pub fn clear_dynamic(&mut self) -> usize {
-        let frames = self.newest.len();
-        for (child, _) in self.newest.drain() {
-            self.registry.remove_frame(&child);
-            self.parents.remove(&child);
-        }
-        frames
-    }
-
     /// The transform that maps `source` coordinates into `target` at `at_nanos`, and
     /// the time it holds for. `None` asks for the latest time common to every transform
     /// on the chain; an all-static chain then holds at time 0.
@@ -522,22 +511,5 @@ mod tests {
         // A static transform is never dropped by the rule.
         assert_eq!(tf.insert("map", "fixed", 0, at(0.0, 0.0, 0.0), true), Ok(Inserted::Kept));
         assert_eq!(tf.insert("map", "fixed", 0, at(0.0, 0.0, 0.0), true), Ok(Inserted::Kept));
-    }
-
-    #[test]
-    fn a_clear_forgets_the_dynamic_transforms_and_keeps_the_static_ones() {
-        let mut tf = buffer();
-        tf.insert("map", "base", 100 * SECOND, at(1.0, 0.0, 0.0), false).unwrap();
-        tf.insert("base", "lidar", 0, at(0.0, 0.0, 1.0), true).unwrap();
-        assert_eq!(tf.clear_dynamic(), 1);
-        assert_eq!(tf.lookup("map", "base", None), Err(TfError::UnknownFrame("map".to_owned())));
-        assert!(tf.lookup("base", "lidar", None).is_ok(), "the static transform stays");
-        // An earlier stamp is a new history, not one more than the buffer behind.
-        assert_eq!(
-            tf.insert("map", "base", 50 * SECOND, at(2.0, 0.0, 0.0), false),
-            Ok(Inserted::Kept)
-        );
-        let (pose, stamp) = tf.lookup("map", "lidar", None).unwrap();
-        assert_eq!((pose.translation, stamp), ([2.0, 0.0, 1.0], 50 * SECOND));
     }
 }

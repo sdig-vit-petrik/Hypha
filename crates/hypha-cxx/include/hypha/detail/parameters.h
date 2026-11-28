@@ -148,11 +148,10 @@ inline Status listReadStatus(HyphaParamResult result)
 /// @brief Read the scalar parameter @p name into @p out. A value of another type, or out of
 ///        the range of T, is MALFORMED and leaves @p out unchanged.
 template <typename T>
-HyphaParamResult
-readParameterValue(const std::string& name, T& out, const HyphaConfig* own = nullptr)
+HyphaParamResult readParameterValue(const std::string& name, T& out)
 {
     using Read = std::pair<HyphaParamResult, HyphaConfigValue>;
-    const Read              read = backend::readConfigValue(name, own);
+    const Read              read = backend::readConfigValue(name);
     const HyphaParamResult  result = read.first;
     const HyphaConfigValue& stored = read.second;
     if (result != HYPHA_PARAM_RESULT_OK) {
@@ -168,16 +167,11 @@ readParameterValue(const std::string& name, T& out, const HyphaConfig* own = nul
 
 /// @brief Read element @p index of the list @p name, or its @p field, as readParameterValue.
 template <typename T>
-HyphaParamResult readListValue(
-    const std::string& name,
-    size_t             index,
-    const std::string& field,
-    T&                 out,
-    const HyphaConfig* own = nullptr
-)
+HyphaParamResult
+readListValue(const std::string& name, size_t index, const std::string& field, T& out)
 {
     using Read = std::pair<HyphaParamResult, HyphaConfigValue>;
-    const Read              read = backend::readListConfigValue(name, index, field, own);
+    const Read              read = backend::readListConfigValue(name, index, field);
     const HyphaParamResult  result = read.first;
     const HyphaConfigValue& stored = read.second;
     if (result != HYPHA_PARAM_RESULT_OK) {
@@ -193,11 +187,10 @@ HyphaParamResult readListValue(
 
 /// @brief Number of elements in the TOML array `name`. A missing name is NotAvailable, a
 ///        scalar InvalidArgument.
-inline std::expected<size_t, Status>
-paramListLength(const std::string& name, const HyphaConfig* own = nullptr)
+inline std::expected<size_t, Status> paramListLength(const std::string& name)
 {
     size_t                 length = 0;
-    const HyphaParamResult result = backend::paramListLength(name, &length, own);
+    const HyphaParamResult result = backend::paramListLength(name, &length);
     if (result != HYPHA_PARAM_RESULT_OK) {
         return std::unexpected(listReadStatus(result));
     }
@@ -209,19 +202,15 @@ paramListLength(const std::string& name, const HyphaConfig* own = nullptr)
 ///        supported. A missing index or field is NotAvailable; a wrong kind or range
 ///        InvalidArgument.
 template <typename T>
-std::expected<T, Status> paramListAt(
-    const std::string& name,
-    size_t             index,
-    const std::string& field = {},
-    const HyphaConfig* own = nullptr
-)
+std::expected<T, Status>
+paramListAt(const std::string& name, size_t index, const std::string& field = {})
 {
     static_assert(
         ConfigValueType<T>,
         "ConfigView element reads take bool, an integer, float, double or std::string"
     );
     T                      value{};
-    const HyphaParamResult result = readListValue<T>(name, index, field, value, own);
+    const HyphaParamResult result = readListValue<T>(name, index, field, value);
     if (result != HYPHA_PARAM_RESULT_OK) {
         return std::unexpected(listReadStatus(result));
     }
@@ -280,11 +269,10 @@ inline std::string storedValueText(const std::pair<HyphaParamResult, HyphaConfig
 }
 
 template <typename T>
-std::string
-arrayElementRefusal(const std::string& list, size_t index, const HyphaConfig* own = nullptr)
+std::string arrayElementRefusal(const std::string& list, size_t index)
 {
     const std::pair<HyphaParamResult, HyphaConfigValue> read =
-        backend::readListConfigValue(list, index, std::string{}, own);
+        backend::readListConfigValue(list, index, std::string{});
     return "hypha: parameter '" + list + "[" + std::to_string(index) + "]': expected "
          + expectedKindText<T>() + ", found " + storedValueText(read);
 }

@@ -1,5 +1,7 @@
 //! Capture admission and freshness on host or replay time.
 
+use std::sync::Arc;
+
 use super::{CycleHistory, HistorySample};
 
 /// The clock a capture admits and judges its samples on.
@@ -73,6 +75,21 @@ impl CaptureClock {
             Self::Host { steady_nanos } => steady_nanos,
             Self::Replay { cut_nanos } | Self::ReplayThrough { cut_nanos } => cut_nanos,
         }
+    }
+
+    /// The newest retained sample this clock admits that no reader rejected.
+    pub(super) fn newest_admitted(self, history: &CycleHistory) -> Option<&HistorySample> {
+        self.newest_admitted_arc(history).map(|sample| &**sample)
+    }
+
+    /// The newest retained sample this clock admits that no reader rejected, shared.
+    pub(super) fn newest_admitted_arc(self, history: &CycleHistory) -> Option<&Arc<HistorySample>> {
+        let end = self.admitted_end(history).unwrap_or(history.samples().len());
+        history
+            .samples()
+            .range(..end)
+            .rev()
+            .find(|sample| self.admits(sample) && !history.is_rejected(sample.sequence))
     }
 
     /// The send time of `sample` on this clock.

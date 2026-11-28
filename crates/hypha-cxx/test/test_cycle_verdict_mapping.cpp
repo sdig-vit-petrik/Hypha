@@ -1,4 +1,3 @@
-// test-layer: unit (no node, no bus, no C function; #336)
 // The C++ facade maps each verdict the library reports, and refuses any other value.
 
 #include "hypha/cycle.h"

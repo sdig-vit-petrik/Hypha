@@ -121,12 +121,11 @@ pub use endpoint::{Iox2Loan, Iox2Publisher, Iox2Sample};
 pub use notification::failed_notifications;
 pub use publisher_nodes::node_names;
 pub use schema::{
-    RecordedStream, ServiceHalf, ServiceSchema, invalid_record_count, lookup_schema,
-    lookup_service_schema, schema_file_path, service_schema_key, topic_records,
+    RecordedStream, invalid_record_count, lookup_schema, schema_file_path, topic_records,
 };
 pub use service::{
     CallEvent, CallId, CallReport, ClientCounters, DiscoveredServiceStream, Iox2Client, Iox2Server,
-    Liveness, ReceivedRequest, RequestHandle, ServerCounters, response_too_large,
+    Liveness, ReceivedRequest, RequestHandle, ServerCounters,
 };
 pub use stream::stream_service_name;
 pub use subscriber::Iox2Subscriber;

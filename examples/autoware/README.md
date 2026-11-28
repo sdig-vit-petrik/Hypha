@@ -62,10 +62,6 @@ names its directory once: `edit <package> <dir> --source upstream/<repository>/<
 `diff` with the same `--source`; afterwards the patch header names it. To drop a file,
 delete it and its `[files]` line. The patch lines depend on the `diff` that writes them
 (Apple's and GNU's group hunks differently); a patch applies the same edits either way.
-A manifest may name a `root`, a path from its directory to where its files are: for the
-files that sit among others of another origin, as the `.srv` files in
-`crates/hypha_msgs/msg` (manifests in `crates/hypha_msgs/upstream`, named
-`hypha_msgs/<directory>` in `vendor`), only the listed files are then checked.
 `tools/test_port.py` tests the tool on a temporary tree; `./check.sh` runs it.
 
 ## The shim

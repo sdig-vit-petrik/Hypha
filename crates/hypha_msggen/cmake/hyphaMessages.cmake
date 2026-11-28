@@ -34,20 +34,6 @@
 # installed SDK, so a second declaration of one from another directory is
 # refused, as is any package declared twice.
 #
-# An application adds to a standard package by naming it with its own definitions:
-#
-#   hypha_generate_messages(PACKAGE sensor_msgs
-#     SRV_DIR ${CMAKE_SOURCE_DIR}/srv/sensor_msgs)      # a SetExposure.srv of its own
-#   target_link_libraries(app PRIVATE sensor_msgs_additions)
-#
-# The SDK's definitions of the package are read (the added ones may name
-# sensor_msgs/CameraInfo without DEPENDS) and are not emitted again; one of the
-# application's of a name the package has is refused, whatever its kind. The headers
-# land in <OUT_DIR>/<package>/ beside, not among, the SDK's, and the target is
-# <package>_additions: the package's own target belongs to the SDK. A package is added
-# to by one call. DEPENDS on the package, in a later call, names the SDK's definitions of
-# it only, not the added ones; hypha_generate_ros2_headers() for it covers both.
-#
 # hypha_generate_ros2_headers(<target> PACKAGES <package>... [OUT_DIR <dir>])
 #
 # Generates ROS 2 alias headers for declared or standard packages: for each
@@ -100,15 +86,6 @@ if(HYPHA_STANDARD_MSG_DIR AND IS_DIRECTORY "${HYPHA_STANDARD_MSG_DIR}")
     list(REMOVE_ITEM standard_closure "${standard_name}")
     _hypha_register_message_package(
       "${standard_name}" "${HYPHA_STANDARD_MSG_DIR}/${standard_name}" "${standard_closure}")
-    get_filename_component(standard_real "${HYPHA_STANDARD_MSG_DIR}/${standard_name}" REALPATH)
-    set_property(GLOBAL PROPERTY HYPHA_STANDARD_DIR_${standard_name} "${standard_real}")
-    # A standard package of services (std_srvs) has ROS 2 alias headers too.
-    file(GLOB standard_srvs "${HYPHA_STANDARD_MSG_DIR}/${standard_name}/*.srv")
-    if(standard_srvs)
-      set_property(GLOBAL PROPERTY HYPHA_SRV_DIR_${standard_name}
-        "${HYPHA_STANDARD_MSG_DIR}/${standard_name}")
-      set_property(GLOBAL PROPERTY HYPHA_SRV_CLOSURE_${standard_name} "${standard_closure}")
-    endif()
   endforeach()
 endif()
 
@@ -134,34 +111,6 @@ function(hypha_generate_messages)
     set(ARG_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
   endif()
 
-  # A standard package named with definitions that are not its own is added to.
-  set(additive FALSE)
-  get_property(standard_dir GLOBAL PROPERTY HYPHA_STANDARD_DIR_${ARG_PACKAGE})
-  if(standard_dir)
-    set(additive TRUE)
-    foreach(definitions_dir ${ARG_MSG_DIR} ${ARG_SRV_DIR})
-      get_filename_component(definitions_real "${definitions_dir}" REALPATH)
-      if(definitions_real STREQUAL standard_dir)
-        set(additive FALSE)
-      endif()
-    endforeach()
-  endif()
-  set(target ${ARG_PACKAGE})
-  if(additive)
-    if(ARG_PACKAGE IN_LIST ARG_DEPENDS)
-      message(FATAL_ERROR
-        "hypha_generate_messages: ${ARG_PACKAGE} is a package of the SDK and is added to: "
-        "its definitions are read already. Remove it from DEPENDS.")
-    endif()
-    get_property(added GLOBAL PROPERTY HYPHA_ADDED_TO_${ARG_PACKAGE})
-    if(added)
-      message(FATAL_ERROR
-        "hypha_generate_messages: the SDK's package '${ARG_PACKAGE}' is added to by "
-        "one call, and an earlier one did. Put the definitions in one call.")
-    endif()
-    set(target ${ARG_PACKAGE}_additions)
-  endif()
-
   set(msg_files "")
   if(ARG_MSG_DIR)
     file(GLOB msg_files CONFIGURE_DEPENDS "${ARG_MSG_DIR}/*.msg")
@@ -174,37 +123,6 @@ function(hypha_generate_messages)
     message(FATAL_ERROR
       "hypha_generate_messages: no .msg or .srv files for package ${ARG_PACKAGE} "
       "in '${ARG_MSG_DIR}' '${ARG_SRV_DIR}'")
-  endif()
-
-  if(additive)
-    # A name the SDK's package has is refused here, where the application reads the error,
-    # and again by the generator.
-    set(taken "")
-    file(GLOB base_msgs "${standard_dir}/*.msg")
-    file(GLOB base_srvs "${standard_dir}/*.srv")
-    foreach(definition ${base_msgs})
-      get_filename_component(name "${definition}" NAME_WE)
-      list(APPEND taken "${name}")
-    endforeach()
-    foreach(definition ${base_srvs})
-      get_filename_component(name "${definition}" NAME_WE)
-      list(APPEND taken "${name}" "${name}Request" "${name}Response")
-    endforeach()
-    foreach(definition ${msg_files} ${srv_files})
-      get_filename_component(name "${definition}" NAME_WE)
-      set(own_names "${name}")
-      if(definition MATCHES "\\.srv$")
-        list(APPEND own_names "${name}Request" "${name}Response")
-      endif()
-      foreach(own_name ${own_names})
-        if(own_name IN_LIST taken)
-          message(FATAL_ERROR
-            "hypha_generate_messages: ${ARG_PACKAGE}/${own_name} is already defined by the "
-            "SDK ('${definition}'). A call that names a package of the SDK adds to it with "
-            "names of its own; it does not declare the package again.")
-        endif()
-      endforeach()
-    endforeach()
   endif()
 
   set(generated_headers "")
@@ -221,9 +139,6 @@ function(hypha_generate_messages)
   endforeach()
 
   set(generator_args --package "${ARG_PACKAGE}" --out-dir "${ARG_OUT_DIR}")
-  if(additive)
-    list(APPEND generator_args --base-dir "${standard_dir}")
-  endif()
   if(ARG_MSG_DIR)
     list(APPEND generator_args --msg-dir "${ARG_MSG_DIR}")
   endif()
@@ -244,11 +159,6 @@ function(hypha_generate_messages)
     get_property(dependency_closure GLOBAL PROPERTY HYPHA_MSG_CLOSURE_${dependency})
     list(APPEND closure "${dependency}" ${dependency_closure})
   endforeach()
-  if(additive)
-    # The SDK's other packages are what the package's own definitions refer to.
-    get_property(standard_closure GLOBAL PROPERTY HYPHA_MSG_CLOSURE_${ARG_PACKAGE})
-    list(APPEND closure ${standard_closure})
-  endif()
   list(REMOVE_DUPLICATES closure)
 
   set(dependency_files "")
@@ -259,33 +169,14 @@ function(hypha_generate_messages)
     list(APPEND dependency_files ${dependency_msgs})
   endforeach()
 
-  if(additive)
-    # Recorded apart: the package stays the SDK's for DEPENDS and for its own headers.
-    # The package's own definitions change when the SDK does.
-    file(GLOB base_definitions CONFIGURE_DEPENDS "${standard_dir}/*.msg" "${standard_dir}/*.srv")
-    list(APPEND dependency_files ${base_definitions})
-    set(added_msg_dir "")
-    set(added_srv_dir "")
-    if(ARG_MSG_DIR)
-      get_filename_component(added_msg_dir "${ARG_MSG_DIR}" ABSOLUTE)
-    endif()
-    if(ARG_SRV_DIR)
-      get_filename_component(added_srv_dir "${ARG_SRV_DIR}" ABSOLUTE)
-    endif()
-    set_property(GLOBAL PROPERTY HYPHA_ADDED_TO_${ARG_PACKAGE} TRUE)
-    set_property(GLOBAL PROPERTY HYPHA_ADD_MSG_DIR_${ARG_PACKAGE} "${added_msg_dir}")
-    set_property(GLOBAL PROPERTY HYPHA_ADD_SRV_DIR_${ARG_PACKAGE} "${added_srv_dir}")
-    set_property(GLOBAL PROPERTY HYPHA_ADD_CLOSURE_${ARG_PACKAGE} "${closure}")
-  else()
-    if(ARG_MSG_DIR)
-      _hypha_register_message_package("${ARG_PACKAGE}" "${ARG_MSG_DIR}" "${closure}")
-    endif()
-    # For hypha_generate_ros2_headers(); DEPENDS reads the .msg definitions alone.
-    if(ARG_SRV_DIR)
-      get_filename_component(srv_dir "${ARG_SRV_DIR}" ABSOLUTE)
-      set_property(GLOBAL PROPERTY HYPHA_SRV_DIR_${ARG_PACKAGE} "${srv_dir}")
-      set_property(GLOBAL PROPERTY HYPHA_SRV_CLOSURE_${ARG_PACKAGE} "${closure}")
-    endif()
+  if(ARG_MSG_DIR)
+    _hypha_register_message_package("${ARG_PACKAGE}" "${ARG_MSG_DIR}" "${closure}")
+  endif()
+  # For hypha_generate_ros2_headers(); DEPENDS reads the .msg definitions alone.
+  if(ARG_SRV_DIR)
+    get_filename_component(srv_dir "${ARG_SRV_DIR}" ABSOLUTE)
+    set_property(GLOBAL PROPERTY HYPHA_SRV_DIR_${ARG_PACKAGE} "${srv_dir}")
+    set_property(GLOBAL PROPERTY HYPHA_SRV_CLOSURE_${ARG_PACKAGE} "${closure}")
   endif()
 
   # hypha_msggen_cargo exists in the hypha source tree only: there, the
@@ -295,7 +186,7 @@ function(hypha_generate_messages)
     set(generator_dependency hypha_msggen_cargo)
   endif()
 
-  set(inputs_file "${CMAKE_CURRENT_BINARY_DIR}/hypha_msggen/${target}.inputs")
+  set(inputs_file "${CMAKE_CURRENT_BINARY_DIR}/hypha_msggen/${ARG_PACKAGE}.inputs")
   string(REPLACE ";" "\n" inputs_text
     "$<TARGET_FILE:hypha::msggen>;${generator_args};${msg_files};${srv_files};${dependency_files}")
   file(GENERATE OUTPUT "${inputs_file}" CONTENT "${inputs_text}\n")
@@ -305,23 +196,23 @@ function(hypha_generate_messages)
     COMMAND hypha::msggen ${generator_args}
     DEPENDS ${msg_files} ${srv_files} ${dependency_files} ${generator_dependency}
             "$<TARGET_FILE:hypha::msggen>" "${inputs_file}"
-    COMMENT "Generating the ${target} C++ message and service headers"
+    COMMENT "Generating the ${ARG_PACKAGE} C++ message and service headers"
     VERBATIM)
 
   # ALL, not the INTERFACE library's dependency alone: an INTERFACE library is
   # not itself built, so nothing would pull the generation in for a consumer
   # that only carries the headers on its include path.
-  add_custom_target(${target}_generate ALL DEPENDS ${generated_headers})
+  add_custom_target(${ARG_PACKAGE}_generate ALL DEPENDS ${generated_headers})
 
-  add_library(${target} INTERFACE)
-  target_include_directories(${target} INTERFACE $<BUILD_INTERFACE:${ARG_OUT_DIR}>)
+  add_library(${ARG_PACKAGE} INTERFACE)
+  target_include_directories(${ARG_PACKAGE} INTERFACE $<BUILD_INTERFACE:${ARG_OUT_DIR}>)
   # The headers this call generates, and nothing else of OUT_DIR: what an install
   # names, so that a file an earlier build left there is never installed.
-  set_target_properties(${target} PROPERTIES HYPHA_GENERATED_HEADERS "${generated_headers}")
-  add_dependencies(${target} ${target}_generate)
+  set_target_properties(${ARG_PACKAGE} PROPERTIES HYPHA_GENERATED_HEADERS "${generated_headers}")
+  add_dependencies(${ARG_PACKAGE} ${ARG_PACKAGE}_generate)
   foreach(dependency ${ARG_DEPENDS})
     if(TARGET ${dependency})
-      target_link_libraries(${target} INTERFACE ${dependency})
+      target_link_libraries(${ARG_PACKAGE} INTERFACE ${dependency})
     endif()
   endforeach()
 endfunction()
@@ -405,57 +296,6 @@ function(hypha_generate_ros2_headers target)
       COMMENT "Generating the ${package} ROS 2 alias headers"
       VERBATIM)
     list(APPEND all_headers ${headers})
-
-    # What the application added to a standard package has aliases of its own.
-    get_property(added GLOBAL PROPERTY HYPHA_ADDED_TO_${package})
-    if(added)
-      get_property(standard_dir GLOBAL PROPERTY HYPHA_STANDARD_DIR_${package})
-      get_property(added_msg_dir GLOBAL PROPERTY HYPHA_ADD_MSG_DIR_${package})
-      get_property(added_srv_dir GLOBAL PROPERTY HYPHA_ADD_SRV_DIR_${package})
-      get_property(added_closure GLOBAL PROPERTY HYPHA_ADD_CLOSURE_${package})
-      set(added_args --package "${package}" --out-dir "${ARG_OUT_DIR}" --language ros2
-        --base-dir "${standard_dir}")
-      set(added_files "")
-      set(added_headers "")
-      if(added_msg_dir)
-        list(APPEND added_args --msg-dir "${added_msg_dir}")
-        file(GLOB added_msgs CONFIGURE_DEPENDS "${added_msg_dir}/*.msg")
-        list(APPEND added_files ${added_msgs})
-        foreach(msg_file ${added_msgs})
-          get_filename_component(name "${msg_file}" NAME_WE)
-          _hypha_ros2_header_stem("${name}" stem)
-          list(APPEND added_headers "${ARG_OUT_DIR}/${package}/msg/${stem}.hpp")
-        endforeach()
-      endif()
-      if(added_srv_dir)
-        list(APPEND added_args --srv-dir "${added_srv_dir}")
-        file(GLOB added_srvs CONFIGURE_DEPENDS "${added_srv_dir}/*.srv")
-        list(APPEND added_files ${added_srvs})
-        foreach(srv_file ${added_srvs})
-          get_filename_component(name "${srv_file}" NAME_WE)
-          _hypha_ros2_header_stem("${name}" stem)
-          list(APPEND added_headers "${ARG_OUT_DIR}/${package}/srv/${stem}.hpp")
-        endforeach()
-      endif()
-      file(GLOB base_definitions CONFIGURE_DEPENDS "${standard_dir}/*.msg" "${standard_dir}/*.srv")
-      list(APPEND added_files ${base_definitions})
-      foreach(dependency ${added_closure})
-        get_property(dependency_dir GLOBAL PROPERTY HYPHA_MSG_DIR_${dependency})
-        list(APPEND added_args --dependency "${dependency}=${dependency_dir}")
-        file(GLOB dependency_msgs CONFIGURE_DEPENDS "${dependency_dir}/*.msg")
-        list(APPEND added_files ${dependency_msgs})
-      endforeach()
-      add_custom_command(
-        OUTPUT ${added_headers}
-        COMMAND hypha::msggen ${added_args}
-        DEPENDS ${added_files} ${generator_dependency} "$<TARGET_FILE:hypha::msggen>"
-        COMMENT "Generating the ROS 2 alias headers of what was added to ${package}"
-        VERBATIM)
-      list(APPEND all_headers ${added_headers})
-      if(TARGET ${package}_additions)
-        list(APPEND package_targets ${package}_additions)
-      endif()
-    endif()
     if(TARGET ${package})
       list(APPEND package_targets ${package})
     endif()

@@ -4,15 +4,12 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 mod arrivals;
-mod emission;
-mod triggers;
-pub use emission::EmissionBudget;
 mod helpers;
 use helpers::{message_stamp_fits_ros_time, shares_history};
 
 use super::{
-    BindingCapture, BindingOptions, CaptureClock, CycleHistory, Supervision, SupervisionLimits,
-    TriggerStep,
+    BindingCapture, BindingOptions, CaptureClock, CycleHistory, Passed, Supervision,
+    SupervisionLimits, TriggerPorts, TriggerStep,
 };
 
 const STATUS_INVALID_ARGUMENT: i32 = 1;
@@ -169,6 +166,42 @@ struct OutputBinding {
     max_messages_per_iteration: u32,
 }
 
+/// The output limits of one step, which admits each message as the step stages it.
+///
+///
+/// A message over its output's count gets `STATUS_RESOURCE_LIMIT`, one over its
+/// payload limit `STATUS_TOO_LARGE`, and an unknown output `STATUS_INVALID_ARGUMENT`.
+pub struct EmissionBudget<'a> {
+    outputs: &'a [OutputBinding],
+    counts: &'a mut [u32],
+}
+
+impl<'a> EmissionBudget<'a> {
+    fn new(outputs: &'a [OutputBinding], counts: &'a mut Vec<u32>) -> Self {
+        counts.resize(outputs.len(), 0);
+        counts.fill(0);
+        Self { outputs, counts }
+    }
+
+    /// Count one message of `len` payload bytes on `output`.
+    ///
+    /// # Errors
+    /// The status code of the limit the message breaks, as documented on the type.
+    pub fn admit(&mut self, output: u32, len: usize) -> Result<(), i32> {
+        let index = usize::try_from(output).map_err(|_| STATUS_INVALID_ARGUMENT)?;
+        let limits = self.outputs.get(index).ok_or(STATUS_INVALID_ARGUMENT)?;
+        let count = self.counts.get_mut(index).ok_or(STATUS_INVALID_ARGUMENT)?;
+        if *count >= limits.max_messages_per_iteration {
+            return Err(STATUS_RESOURCE_LIMIT);
+        }
+        if len > limits.max_payload_bytes {
+            return Err(STATUS_TOO_LARGE);
+        }
+        *count = count.checked_add(1).ok_or(STATUS_RESOURCE_LIMIT)?;
+        Ok(())
+    }
+}
+
 impl CycleRuntime {
     /// Create an empty runtime.
     #[must_use]
@@ -217,6 +250,37 @@ impl CycleRuntime {
         Ok(())
     }
 
+    /// Add binding `index` to the triggers of a triggered cycle; a repeat adds nothing.
+    /// Each step takes the samples its [`CycleTime::trigger_step`] names, outside the
+    /// binding's limits and the arrival budget.
+    ///
+    /// # Errors
+    /// Returns `STATUS_INVALID_ARGUMENT` unless the binding exists, is queued and has a
+    /// source, and no other trigger reads its history, where each sample would step
+    /// twice; `STATUS_RESOURCE_LIMIT` past [`TriggerPorts::CAPACITY`] triggers.
+    pub fn set_trigger(&mut self, index: usize) -> Result<(), i32> {
+        let slot = self.bindings.get(index).ok_or(STATUS_INVALID_ARGUMENT)?;
+        if slot.options.mode != super::CaptureMode::Queued || slot.history.is_none() {
+            return Err(STATUS_INVALID_ARGUMENT);
+        }
+        let Err(position) = self.triggers.binary_search(&index) else {
+            return Ok(());
+        };
+        let shared = self
+            .triggers
+            .iter()
+            .filter_map(|&trigger| self.bindings.get(trigger))
+            .any(|trigger| shares_history(trigger, slot));
+        if shared {
+            return Err(STATUS_INVALID_ARGUMENT);
+        }
+        if self.triggers.len() >= TriggerPorts::CAPACITY {
+            return Err(STATUS_RESOURCE_LIMIT);
+        }
+        self.triggers.insert(position, index);
+        Ok(())
+    }
+
     /// Capture latest binding `index` on the host clock, also in a replay step: see
     /// [`BindingCapture::host_clock`].
     ///
@@ -242,6 +306,34 @@ impl CycleRuntime {
             return Err(STATUS_INVALID_ARGUMENT);
         }
         slot.exempt = true;
+        Ok(())
+    }
+
+    /// The trigger bindings, in binding order; empty for a rate cycle. Trigger port `p`
+    /// is binding `triggers()[p]`.
+    #[must_use]
+    pub fn triggers(&self) -> &[usize] {
+        &self.triggers
+    }
+
+    /// Replace `out` with one list per trigger port: the framework send stamps of the
+    /// samples it has not taken, in history order. Empty for a rate cycle.
+    ///
+    /// # Errors
+    /// Returns `STATUS_INVALID_ARGUMENT` for a stamp beyond `i64::MAX`.
+    pub fn pending_trigger_stamps(&self, out: &mut Vec<Vec<i64>>) -> Result<(), i32> {
+        out.resize_with(self.triggers.len(), Vec::new);
+        for (&index, stamps) in self.triggers.iter().zip(out.iter_mut()) {
+            stamps.clear();
+            let history = self.bindings.get(index).and_then(|slot| slot.history.as_ref());
+            let (Some(history), Some(capture)) = (history, self.captures.get(index)) else {
+                return Err(STATUS_INVALID_ARGUMENT);
+            };
+            let history = crate::locked(history);
+            for stamp in capture.pending_stamps(&history) {
+                stamps.push(i64::try_from(stamp).map_err(|_| STATUS_INVALID_ARGUMENT)?);
+            }
+        }
         Ok(())
     }
 
@@ -515,6 +607,32 @@ impl CycleRuntime {
         Ok(())
     }
 
+    /// Start the silence count of every trigger port at `clock_nanos` on its capture
+    /// clock, unless a capture started it: the first evaluation of a triggered cycle.
+    pub fn start_trigger_silence(&mut self, clock_nanos: u64) {
+        for &index in &self.triggers {
+            if let Some(capture) = self.captures.get_mut(index) {
+                capture.start_at(clock_nanos);
+            }
+        }
+    }
+
+    /// Consume the oldest pending sample of trigger port `port` without a step, counted as
+    /// `why` says on that port.
+    ///
+    /// # Errors
+    ///
+    /// Returns `STATUS_INVALID_ARGUMENT` without such a port or a pending sample.
+    pub fn pass_trigger(&mut self, port: usize, why: Passed) -> Result<(), i32> {
+        let index = *self.triggers.get(port).ok_or(STATUS_INVALID_ARGUMENT)?;
+        let history = self.bindings.get(index).and_then(|slot| slot.history.as_ref());
+        let (Some(history), Some(capture)) = (history, self.captures.get_mut(index)) else {
+            return Err(STATUS_INVALID_ARGUMENT);
+        };
+        let history = crate::locked(history);
+        if capture.pass_pending(&history, why) { Ok(()) } else { Err(STATUS_INVALID_ARGUMENT) }
+    }
+
     /// Report the alive counter of a binding's newest accepted sample.
     /// Ignored when the index is unknown or the binding is not supervised.
     pub fn apply_alive(&mut self, index: usize, value: u64) {
@@ -550,22 +668,6 @@ impl CycleRuntime {
         if overran {
             self.health.overruns = self.health.overruns.wrapping_add(1);
         }
-    }
-
-    /// Clear binding `index` after the step that captured it last: see
-    /// [`BindingCapture::clear`]. Returns the pending samples it dropped.
-    ///
-    /// # Errors
-    /// Returns `STATUS_INVALID_ARGUMENT` if `index` names no binding, or a trigger port,
-    /// whose pending samples are the steps the schedule has planned.
-    pub fn clear_binding(&mut self, index: usize) -> Result<u64, i32> {
-        let slot = self.bindings.get(index).ok_or(STATUS_INVALID_ARGUMENT)?;
-        let capture = self.captures.get_mut(index).ok_or(STATUS_INVALID_ARGUMENT)?;
-        if capture.is_trigger() {
-            return Err(STATUS_INVALID_ARGUMENT);
-        }
-        let history = slot.history.as_ref().map(|history| crate::locked(history));
-        Ok(capture.clear(history.as_deref()))
     }
 
     /// Re-judge binding `index` after the step rejected its sample `sequence` as

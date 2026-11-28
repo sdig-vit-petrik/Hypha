@@ -39,9 +39,6 @@ class CaptureStore
   public:
     virtual void* storeFor(const Port& port, void* (*make)(), void (*destroy)(void*)) = 0;
     virtual const HyphaTransformBuffer* transformsFor(const Port& port, int64_t cacheNanos) = 0;
-    /// Clear @p port when the step returns: @p forget drops an input's value; nullptr for a
-    /// Transforms port.
-    virtual void clearAfterStep(Port& port, void (*forget)(Port&)) = 0;
 
   protected:
     ~CaptureStore() = default;
@@ -51,7 +48,6 @@ template <typename Step>
 class CycleRunner;
 struct StepLeave;
 struct StepEmission;
-class HarnessServices;
 
 /// @brief A failure of the step with the status the run reports. An output throws it
 ///        when a send is refused before the message reaches the library.
@@ -122,13 +118,6 @@ class Port
         return this->enabledByHarness_;
     }
 
-    /// @brief A service port binds itself to the services of a testing::StepHarness and
-    ///        returns true; any other port returns false. Default: false.
-    virtual bool bindStepServices(HyphaStepServices*)
-    {
-        return false;
-    }
-
     /// @brief The binding index of a port that can trigger its cycle, once bound.
     ///        Default: none.
     virtual std::optional<uint32_t> triggerIndex() const
@@ -181,7 +170,6 @@ class Port
     friend class detail::CycleRunner;
     friend struct detail::StepLeave;
     friend struct detail::StepEmission;
-    friend class detail::HarnessServices;
     friend class testing::StepHarness;
 
     void setEmission(HyphaCycleEmission* emission)

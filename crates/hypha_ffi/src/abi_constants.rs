@@ -45,14 +45,6 @@ same_as_node!(HYPHA_TF_AFTER_BUFFER, transforms);
 pub const HYPHA_TF_REFUSED: u32 = 6;
 same_as_node!(HYPHA_TF_REFUSED, transforms);
 
-/// `hypha_cycle_image_clear`: `index` names an input binding.
-pub const HYPHA_CYCLE_CLEAR_INPUT: u32 = 0;
-same_as_node!(HYPHA_CYCLE_CLEAR_INPUT, cycle::types);
-
-/// `hypha_cycle_image_clear`: `index` names a TF input (`hypha_cycle_bind_transforms`).
-pub const HYPHA_CYCLE_CLEAR_TRANSFORMS: u32 = 1;
-same_as_node!(HYPHA_CYCLE_CLEAR_TRANSFORMS, cycle::types);
-
 /// Freshness verdict: no sample admitted since the binding was created.
 pub const HYPHA_CYCLE_VERDICT_NEVER_ARRIVED: u32 = 0;
 same_as_node!(HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, cycle::types);
@@ -172,41 +164,3 @@ same_as_node!(HYPHA_ATTACH_SUBSCRIPTION, waitset::registrations);
 /// A periodic registration on framework time, owned by the `WaitSet`.
 pub const HYPHA_ATTACH_TIMER: u32 = 2;
 same_as_node!(HYPHA_ATTACH_TIMER, waitset::registrations);
-
-/// `hypha_client_call` sent the request, or holds it until a server appears: one outcome
-/// follows.
-pub const HYPHA_CALL_SENT: u32 = 0;
-same_as_node!(HYPHA_CALL_SENT, service);
-
-/// `hypha_client_call` refused: the client has its limit of calls in flight.
-pub const HYPHA_CALL_BUSY: u32 = 1;
-same_as_node!(HYPHA_CALL_BUSY, service);
-
-/// `hypha_client_call` refused: the request is above the service's bound.
-pub const HYPHA_CALL_TOO_LARGE: u32 = 2;
-same_as_node!(HYPHA_CALL_TOO_LARGE, service);
-
-/// The outcome of a call: the server answered.
-pub const HYPHA_CALL_ANSWERED: u32 = 0;
-same_as_node!(HYPHA_CALL_ANSWERED, service);
-
-/// The server refused, or left the request unanswered.
-pub const HYPHA_CALL_REFUSED: u32 = 1;
-same_as_node!(HYPHA_CALL_REFUSED, service);
-
-/// No live server of the stream until the timeout.
-pub const HYPHA_CALL_NO_SERVER: u32 = 2;
-same_as_node!(HYPHA_CALL_NO_SERVER, service);
-
-/// Nothing was sent: the transport refused the request.
-pub const HYPHA_CALL_NOT_SENT: u32 = 3;
-same_as_node!(HYPHA_CALL_NOT_SENT, service);
-
-/// The server crashed or left, failed while it handled the call, or its answer did not
-/// verify.
-pub const HYPHA_CALL_SERVER_LOST: u32 = 4;
-same_as_node!(HYPHA_CALL_SERVER_LOST, service);
-
-/// No answer within the timeout.
-pub const HYPHA_CALL_TIMEOUT: u32 = 5;
-same_as_node!(HYPHA_CALL_TIMEOUT, service);

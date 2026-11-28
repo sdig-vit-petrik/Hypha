@@ -53,9 +53,6 @@ of every row from a test run.
 | FSR-38 | `hypha_cycle/*`, `hypha_ffi/cycle_*`, `cxx:test_cycle_node`, `cxx:test_cycle_step_faults` |  |
 | FSR-39 | `hypha_cycle/input_supervision`, `cxx:test_input_supervision` |  |
 | FSR-41 | `hypha_ffi/introspection_snapshot`, `cxx:test_node_introspection` |  |
-| FSR-42 | `hypha_iceoryx2/service_transport`, `hypha_node/service_calls`, `hypha_tools/service_cli`, `cxx:test_services`, `cxx:test_cycle_services` |  |
-| FSR-43 | `hypha_node/service_calls`, `hypha_tools/service_cli`, `cxx:test_services` |  |
-| FSR-44 | `hypha_tools/service_lockstep`, `cxx:test_cycle_services` |  |
 
 ## Non-functional requirements
 

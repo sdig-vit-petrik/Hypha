@@ -92,7 +92,7 @@ class Latest final : public Input<M>
     {
     }
 
-    /// @brief True once a usable value was captured, and not cleared since (clear()).
+    /// @brief True once a usable value was captured.
     bool has() const
     {
         return this->hasHeld_;
@@ -113,8 +113,7 @@ class Latest final : public Input<M>
         return &**this;
     }
 
-    /// @brief The newest value that was usable since the start or the last clear(), also when
-    ///        the input is stale now.
+    /// @brief The newest value that was ever usable, also when the input is stale now.
     /// @throws std::logic_error unless has().
     const M& lastKnown() const
     {
@@ -183,11 +182,9 @@ class Latest final : public Input<M>
         if (stale) {
             const std::string limitMs =
                 std::to_string(this->supervision_.silenceNanos() / 1'000'000);
-            const std::string hint = this->hasHeld_ ? "; read lastKnown() to use the old value"
-                                                    : "; it has no value since clear()";
             throw InputNotUsable(
-                subject + " is stale: its newest sample is " + ageMs
-                    + " ms old, silence_ms = " + limitMs + hint,
+                subject + " is stale: its newest sample is " + ageMs + " ms old, silence_ms = "
+                    + limitMs + "; read lastKnown() to use the old value",
                 InputVerdict::Stale
             );
         }
@@ -249,14 +246,6 @@ class Latest final : public Input<M>
         const std::optional<uint64_t> alive =
             this->hasHeld_ ? this->aliveOf(this->held_) : std::nullopt;
         return this->captureSupervised(image, alive);
-    }
-
-    void forgetCleared() override
-    {
-        this->hasHeld_ = false;
-        this->fresh_ = false;
-        this->verdict_ = InputVerdict::NeverArrived;
-        detail::forgetJudgement(this->facts_, this->settings_.countsForHealth);
     }
 
     ::HyphaStatus captureHeld(const HyphaCycleImage* image, const HyphaCycleHeldReport& report)

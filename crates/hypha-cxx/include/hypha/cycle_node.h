@@ -10,10 +10,8 @@
 #include "hypha/cycle_latest.h"
 #include "hypha/cycle_output.h"
 #include "hypha/cycle_runtime.h"
-#include "hypha/cycle_service.h"
 #include "hypha/node.h"
 #include "hypha/options.h"
-#include "hypha/sequence.h"
 
 #include <expected>
 #include <optional>
@@ -46,10 +44,6 @@ class CycleNode
     using Arrivals = hypha::Arrivals<M>;
     template <typename M>
     using Output = hypha::Output<M>;
-    template <typename Srv>
-    using Requests = hypha::Requests<Srv>;
-    template <typename Srv>
-    using Calls = hypha::Calls<Srv>;
 
     static constexpr OptionalTopic optionalTopic{};
     static constexpr Advisory      advisory{};

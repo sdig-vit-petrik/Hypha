@@ -31,7 +31,6 @@ pub mod msg_library;
 pub mod msg_patch;
 pub mod msg_plot;
 pub mod msg_reflect;
-pub mod msg_toml;
 pub mod play_session;
 pub mod player;
 pub mod point_layout;

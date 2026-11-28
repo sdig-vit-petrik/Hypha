@@ -208,13 +208,6 @@ that waits for a round trip therefore stops the loop that must complete it.
 Blocking schema lookups refuse a call made from a dispatcher callback and
 return `InvalidState`. There is no asynchronous submission in the C ABI.
 
-**A service call.** A blocking client's `callAndWait()` and `waitForServer()` are
-refused the same way, with `InvalidState`, on a thread that runs a dispatch (FSR-43);
-the message names what to use instead. In a callback, a client of the node sends
-with `call(request, onResult)`, and `onResult` runs at a later turn with the outcome,
-never inside `call()` (cpp-api.md §8). A server's handler runs on the run thread too,
-and answers there or defers the request to a thread that may wait.
-
 **Resolve before the run.** Call `hypha_schema_lookup` (or, in the Rust SDK,
 `BusNode::resolve_schema_hash`) outside a callback, before the run. A later
 `hypha_schema_lookup` for the same type returns the definition from inside a
@@ -511,8 +504,6 @@ Each cause of loss has its own counter:
 2. Age rejection: the input read the sample, and the age rule refused it.
 3. Overflow discard: the input discarded an old sample beyond its share on purpose, or a
    newest-only trigger passed a sample for a newer one (section 6.6 item 7).
-4. Clear: a step's `clear()` dropped a sample that its capture had admitted and left
-   pending (`cleared_total`, section 6.8).
 
 The transport's cumulative missing-sequence count is read atomically, so health
 queries do not take the source-history or sequence-validator locks.
@@ -637,25 +628,9 @@ names the cycle and the reason.
    one topic whose samples arrive out of order, fails the run with `SequenceGap`, and
    the log names both times. A publisher that reports no progress, such as a plain
    callback, is not waited for, so a tie with its samples runs in arrival order.
-
-   A service edge needs one nanosecond less. Requests (`hypha::Requests`) and responses
-   (`hypha::Calls`) are cut strictly before a step's time T on both kinds of cycle
-   (`docs/design/native-services.md` §4), so a triggered step at T needs a client of its
-   servers, or the server of its clients, to have reported T − 1 ns only, not T. An
-   upstream that also feeds the cycle a topic still has to report T. Without this a
-   triggered client that calls a triggered server would hold for good: each would wait
-   for the other to report T before its own step at T. A client and its server that are
-   cycles of one `WaitSet` hold each other in the same way, and so do two cycles of one
-   `WaitSet` joined by a topic (section 11.1): a triggered step at T waits for the cycle that
-   sends a topic it reads to have run its step at T. Cycles of two `WaitSet`s of one node
-   report as one node and are not held: for services the cycle logs it, and their replay is
-   not deterministic. A peer that reports no progress (a tool, a plain node) is
-   no upstream: its requests and answers are read at the first step after they came.
 6. **Progress and loops.** A triggered cycle cannot know when its next trigger
-   comes. It reports at most the lowest clock its topic upstreams reported (a cycle of its
-   `WaitSet` that sends a topic it reads counts as one, section 11.1), and stays
-   below its earliest pending trigger or fallback. A request or a response steps no
-   cycle, so a service peer bounds which steps run, not the clock the cycle reports. A feedback loop made only of
+   comes. It reports at most the lowest clock its upstreams reported, and stays
+   below its earliest pending trigger or fallback. A feedback loop made only of
    triggered cycles has no delay element: it holds for good, until the player's
    `--timeout` ends it with an error that names the loop's nodes, or a stop does. A loop needs a delay element, a rate cycle or a clock driver, as an
    algebraic loop does in any block-diagram tool.
@@ -729,8 +704,6 @@ below the C ABI, that the step looks up with explicit results and never waits on
 6. **Loops.** The TF input makes every `/tf` publisher an upstream of the cycle. A
    triggered cycle that publishes the TF a second triggered cycle reads, while the
    second feeds the first, is the loop of §6.6 item 6.
-7. **Clear.** A step's `clear()` forgets the dynamic transforms and keeps the static
-   ones (section 6.8).
 
 A plain node with no cycle uses the same buffer through a transform buffer (C ABI
 `hypha_transform_buffer_create`; [interface-specification.md](interface-specification.md#transform-buffer-of-a-plain-node)).
@@ -741,52 +714,6 @@ lookup may come from any thread at any time; one lock guards the buffer for one
 message or one lookup, and no lookup waits on the transport. A message that does not
 decode is counted and logged with the refused transforms and fails nothing, and a
 `/tf` loss is the subscriber's missing-sequence count, not a failed run.
-
-### 6.8 Clearing an input or the TF input (a reset)
-
-A node that resets (robot_localization's `reset` service and `set_pose`, an EKF that
-starts again, a tracker reset) forgets what it received before. A step asks for it with
-`clear()` on an input or on its `Transforms` port (C ABI `hypha_cycle_image_clear`). The
-rules live below the C ABI (`hypha_cycle::BindingCapture::clear`, the cycle's TF input).
-
-1. **When the step returns.** A clear is a request, applied after the step returns, as
-   `setIgnored()` and the outputs are. The rest of the step still reads what it captured:
-   `*port`, `samples()` and every lookup. Two clears of one port in one step are one.
-2. **What an input forgets.** Its value (`has()` and `lastKnown()` of a `Latest` port turn
-   false and throw), and the samples that the step's capture admitted and left pending.
-   A rate step takes every sample its cut admits (section 6.5), so it leaves none; a
-   queued input of a host-time triggered step can leave the samples sent after its
-   trigger sample (section 6.6 item 2), and these are dropped. A sample the capture did not
-   admit stays: in host time one that arrived after the capture, under simulated time one
-   sent at or after the step's time. A clear at step T thus drops exactly what was pending
-   at T, the same in every run and every `--chunk` of the player.
-3. **A trigger port is not cleared.** Its pending samples are the steps the schedule has
-   planned; `clear()` on it throws `std::logic_error` (C ABI `InvalidArgument`).
-4. **Supervision.** Until a sample after the clear is admitted, the input holds no value
-   and its verdict is `NeverArrived`. The silence keeps counting from the newest sample
-   before the clear: the input turns `Stale` (and `stale()`) on the schedule it had
-   without the clear, so a clear never hides a source that stopped, and it logs nothing
-   for a source that keeps sending. A clear restarts no timer: stagnation keeps its alive
-   value and its timer, and `received()` and `deliveredCount()` keep counting. A step
-   that finds the input `NeverArrived` after a clear and then `Usable` logs
-   `<in> is usable again`.
-5. **Counters and log.** The dropped samples are counted in `cleared_total` of
-   `bindingHealth()` (cause 4 of section 6.5), in no loss counter, and not in the node
-   state's `dropped`: a clear is the application's decision. Each clear logs one INFO
-   line, `hypha: <in> cleared: <n> pending sample(s) dropped`.
-6. **The TF input.** `Transforms::clear()` forgets every dynamic transform, as tf2's
-   `Buffer::clear()` does, and keeps the static ones, which their publishers send once.
-   A lookup through a forgotten frame answers `UnknownFrame` (or `Refused`, while the
-   frame's newest transform was a refused one) until a new transform of it is ingested,
-   and a transform stamped earlier than the forgotten ones is a new history, not an old
-   one. It logs `hypha: cycle '<cycle>' TF input cleared: <n> dynamic frame(s) forgotten,
-   static transforms kept`. The TF bindings take every admitted sample before the step, so
-   no `/tf` sample is pending to drop.
-7. **Under replay.** A clear changes nothing but the cut it applies: a reset at step T
-   forgets the samples stamped before T, and the step at T + period sees those stamped in
-   [T, T + period). A `testing::StepHarness` step records the clear (`cleared(port)`) and
-   applies it when the step returns: the input has no value and is `NeverArrived` until the
-   test gives it one, and the Transforms port keeps its static transforms alone.
 
 ---
 
@@ -880,9 +807,8 @@ detach a registration of its own `WaitSet` (a destroyed timer or subscription):
 it is never dispatched again, and it is removed and its context released when the
 run returns. A detach from another thread during a run is refused.
 
-A callback may **not** block on a reply. A service call from a callback is
-`call(request, onResult)`, and its outcome arrives at a later turn; a blocking call
-there is refused (section 5.1, cpp-api.md §8).
+A callback may **not** block on a reply. A request and its reply are two topics
+(cpp-api.md §8); the reply arrives as a later sample.
 
 **Detach a registration before you destroy the object its callback context
 points to.** The registration shares the subscriber, so the endpoint itself
@@ -1039,23 +965,6 @@ host:
   the cycle still reports its clock up to that deadline (`replay-flow-control.md`,
   section 6.4). A held deadline has no time limit in the node: the player's
   `--timeout` names an upstream that stops reporting.
-- **Cycles of one `WaitSet` hold each other as two nodes do.** A turn runs all the due
-  deadlines of one cycle before the next cycle's, and the cycles of a node report one
-  progress, so the node-wide hold cannot order them. A cycle that reads a topic sent by
-  another cycle of its `WaitSet` (the same topic and stream, as the bindings fixed at
-  start give them) treats that cycle as an upstream: its deadline `D` waits until the
-  other cycle has run every deadline before `D`, its triggered step at T until the other
-  has run its step at T. A client and its server in one `WaitSet` hold each other in the
-  same way (section 6.6 item 5). The turn repeats the timers of these cycles while a held
-  step can run, within its step budget, and stops at a repeat that runs no step; the steps
-  still held run on the next turn. What a step reads therefore depends neither on
-  `--chunk` nor on the order of the cycles in the turn. A cycle that reads its own topic
-  is no upstream of itself: a step reads what its own earlier steps sent. The reader drains
-  its inputs at its own turn, so its queue must hold what the sender sends in the steps of
-  one turn, a chunk of `hypha play` (an `Arrivals` port's `perStep()`, 20 for a 100 Hz
-  sender at `--chunk 200`); a smaller queue fails the run with `SequenceGap`. A feedback loop
-  inside one node advances as one across nodes does, and a loop of triggered cycles alone
-  holds as in section 6.6 item 6. Cycles in two `WaitSet`s of one node are not held.
 - **A time base mismatch is reported.** A sample stamped more than 250 periods
   past a step's deadline can never be admitted. This is the usual sign of a
   publisher on wall time feeding a replay. The node logs
@@ -1161,16 +1070,6 @@ The replay lockstep runs cycles only: rate cycles (section 11.1) and triggered c
   `HYPHA_USE_SIM_TIME=follow` is refused: no node of a launch leaves the lockstep
   alone. A system that needs a deterministic replay is built from cycles; one that
   cannot be, such as a port of ROS nodes, plays in the open loop.
-
-**Services in a replay.** A server or a client of a plain node is a plain callback
-here: a request is served as it arrives and an outcome delivered as it is found, with
-no cut and no hold, so a replay with services between plain nodes is not deterministic.
-A client's timeout counts on the scheduling clock, simulated time in a replay: a call
-times out when the clock reaches its deadline, and while `/clock` is paused it does
-not. A `Deferred` answered from a worker thread is outside any replay. The cycle ports
-(`Requests`, `Calls`, cpp-api.md §8.5) make a call part of the lockstep: requests and
-responses are inputs cut strictly before a step's time, and the service peers are
-upstreams of each other (section 6.6 item 5, [design/native-services.md](design/native-services.md) §4).
 
 ### 11.3 Design note: one execution model for cycles and plain callbacks (#136)
 

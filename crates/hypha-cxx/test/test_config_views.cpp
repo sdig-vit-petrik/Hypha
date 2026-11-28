@@ -5,7 +5,6 @@
 
 #include <gtest/gtest.h>
 
-#include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -435,48 +434,4 @@ TEST(ConfigContextTest, RefusesAnInvalidFileAndAConflictingContext)
     }
     std::filesystem::remove(firstPath);
     std::filesystem::remove(secondPath);
-}
-
-TEST(ConfigFileTest, ReadsAFileApartFromTheConfigurationOfTheProcess)
-{
-    const std::filesystem::path directory =
-        std::filesystem::temp_directory_path() / "hypha_config_file_test";
-    std::filesystem::create_directories(directory);
-    {
-        std::ofstream(directory / "node.toml") << "count = 1\n";
-        std::ofstream(directory / "other.toml") << "count = 2\n"
-                                                   "model = 'm.bin'\n"
-                                                   "[limits]\n"
-                                                   "max = [1.0, 2.0]\n";
-    }
-    {
-        hypha::ConfigContext    context((directory / "node.toml").string());
-        const hypha::ConfigFile file((directory / "other.toml").string());
-        EXPECT_EQ(file.view().required<int64_t>("count"), 2);
-        EXPECT_EQ(hypha::config().required<int64_t>("count"), 1);
-        EXPECT_EQ(file.view().path("model"), (directory / "m.bin").string());
-        EXPECT_EQ(file.view().optionalPath("absent"), std::nullopt);
-        EXPECT_EQ(file.view("limits").unreadKeys(), (std::vector<std::string>{"limits.max"}));
-        EXPECT_EQ(
-            (file.view("limits").requiredArray<double, 2>("max")), (std::array<double, 2>{1.0, 2.0})
-        );
-        EXPECT_TRUE(file.view().unreadKeys().empty());
-        EXPECT_TRUE(hypha::config().unreadKeys().empty());
-    }
-    EXPECT_THROW(hypha::ConfigFile((directory / "absent.toml").string()), hypha::ConfigError);
-    std::filesystem::remove_all(directory);
-}
-
-TEST(ConfigContextTest, OptionalPathIsEmptyOnlyForAnAbsentKey)
-{
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "hypha_config_optional_path.toml";
-    std::ofstream(path) << "calib = 'c.toml'\nempty = ''\n";
-    {
-        hypha::ConfigContext context(path.string());
-        EXPECT_EQ(hypha::config().optionalPath("calib"), (path.parent_path() / "c.toml").string());
-        EXPECT_EQ(hypha::config().optionalPath("absent"), std::nullopt);
-        EXPECT_THROW(hypha::config().optionalPath("empty"), hypha::ParameterError);
-    }
-    std::filesystem::remove(path);
 }

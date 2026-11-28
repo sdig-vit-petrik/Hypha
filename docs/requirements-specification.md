@@ -70,7 +70,6 @@ serialization, MCAP, the Foxglove protocol.
 | **FSR-05** | The software **shall** verify data-definition compatibility at runtime: a message whose data definition differs from what a subscriber expects **shall** not be delivered to it; for a topic its node subscribes to, the subscriber **shall** report in its counters and in its node's input state which other data definitions of the topic have a publisher whose process is alive, at most one second after a change while the node runs, and **shall** report "not checked" until it has checked; and a received frame that names another data definition than the one it was sent under **shall** be rejected and recorded in an error count. | S | T |
 | **FSR-06** | When a publisher has no message capacity remaining to accept a new message, the publish call **shall** return an explicit, distinct failure indication immediately, without blocking the caller. | S | T |
 | **FSR-07** | A publisher **shall** optionally retain its last message, so that a subscriber which connects later receives that message (latched topic). | S | T |
-| **FSR-42** | The software **shall** provide request and response between nodes, typed by a ROS 1 `.srv` definition. A service name **shall** have at most one server across its versions, and a second server **shall** be refused at creation. Each call **shall** end in exactly one outcome, and the outcomes **shall** distinguish answered, refused, no server, not sent, server lost and timeout. No request **shall** be lost without an outcome. | S | T |
 
 ### 2.2 Frame integrity and data validity
 
@@ -90,7 +89,6 @@ serialization, MCAP, the Foxglove protocol.
 | **FSR-15** | The software **shall** provide periodic timers with fixed cadence and report an overrun whenever a cycle deadline expires without the associated work having executed. | S | T |
 | **FSR-38** | The software **shall** let an application define periodic processing cycles with application state, input ports, and output ports. Each iteration **shall** capture its inputs at one instant, invoke the application step on an application-owned thread, and publish no output when the step or output validation fails. | S | T, I |
 | **FSR-39** | A cycle input **shall** optionally report silence after its configured limit and stagnation when its configured alive value does not change. An ignored fault **shall** remain observable as a fault while it does not count against the cycle. | S | T |
-| **FSR-43** | A call **shall** carry a timeout in framework time. A call that waits for its outcome **shall** be refused on a thread that runs a dispatch. | S | T |
 
 ### 2.4 Time
 
@@ -122,7 +120,6 @@ serialization, MCAP, the Foxglove protocol.
 | **FSR-41** | A node **shall** provide its application with a snapshot of its identity, the configuration it read, and its active endpoints and cycles with their effective policies. | N | T |
 | **FSR-23** | A tool **shall** be able to obtain the full data definition of a live topic at runtime, from the publishing node, without compiled-in knowledge of the message type. | N | T |
 | **FSR-24** | The software **shall** record live topics to a self-describing file. It **shall** support MCAP chunk compression. It **shall** replay a recording in timestamp order while it publishes the recorded time on `/clock`. | N | T, D |
-| **FSR-44** | A request made by a replay participant **shall** be served at a deterministic step of its server. A replay with services between participants **shall** repeat exactly, whatever `--chunk` is and whatever observers are attached. | S | T |
 
 ### 2.8 Robustness
 
@@ -209,4 +206,3 @@ An ID is not used again.
 | 2026-11-21 | The owner confirmed the classes. |
 | 2026-11-25 | The note on NFR-03, NFR-04 and NFR-06 names the rated-load workload; no requirement changed. |
 | 2026-11-27 | FSR-05: each data definition of a topic is a stream of its own (#209), so a message of another definition is not delivered; the subscriber reports the other definitions of its topic that have a live publisher, within a second, or that it has not checked yet, in its counters and its node's input state; a frame that names another definition than its stream is rejected and counted. |
-| 2026-11-28 | FSR-42, FSR-43 and FSR-44 were added: services, typed by a ROS 1 `.srv`, with one server per name and one outcome per call; a call's timeout and the refusal of a waiting call on a dispatch thread; the replay of calls between participants (#132, native-services.md §11). |

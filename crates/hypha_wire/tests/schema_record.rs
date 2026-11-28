@@ -6,8 +6,8 @@
     clippy::arithmetic_side_effects
 )]
 use hypha_wire::schema_record::{
-    MAX_SCHEMA_RECORD_LEN, SchemaRecordError, parse_half_record, parse_schema_record,
-    schema_record_frame_len, write_half_record, write_schema_record,
+    MAX_SCHEMA_RECORD_LEN, SchemaRecordError, parse_schema_record, schema_record_frame_len,
+    write_schema_record,
 };
 
 const TYPE: &str = "std_msgs/String";
@@ -67,20 +67,4 @@ fn only_lower_case_hex_md5_is_an_identity() {
     );
     let mut bytes = vec![0; MAX_SCHEMA_RECORD_LEN];
     assert_eq!(write_schema_record(&mut bytes, TYPE, upper, DEF), Err(SchemaRecordError::WrongMd5));
-}
-
-#[test]
-fn the_record_of_a_service_half_may_hold_an_empty_definition() {
-    let size = schema_record_frame_len(TYPE.len(), MD5.len(), 0).unwrap();
-    let mut bytes = vec![0; size];
-    assert_eq!(write_half_record(&mut bytes, TYPE, MD5, "").unwrap(), size);
-    let parsed = parse_half_record(&bytes).unwrap();
-    assert_eq!((parsed.data_type(), parsed.md5(), parsed.definition()), (TYPE, MD5, ""));
-    // A topic's record still holds a definition.
-    assert_eq!(parse_schema_record(&bytes), Err(SchemaRecordError::EmptyDefinition));
-    assert_eq!(
-        write_half_record(&mut bytes, "", MD5, ""),
-        Err(SchemaRecordError::WrongType),
-        "the other fields are still checked"
-    );
 }

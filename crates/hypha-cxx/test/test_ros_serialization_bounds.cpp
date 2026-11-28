@@ -1,4 +1,3 @@
-// test-layer: unit (no node, no bus, no C function; #336)
 // The ROS 1 decoder must refuse untrusted input before it acts on it. A length is checked
 // against the bytes that remain before any allocation, and a bounds check never forms a
 // pointer past the buffer.

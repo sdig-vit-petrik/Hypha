@@ -17,14 +17,9 @@ use hypha_core::port::{PortError, SchemaSelector, TopicSpec};
 
 use crate::stream::Stream;
 use hypha_wire::schema_record::{
-    MAX_SCHEMA_RECORD_LEN, ParsedSchemaRecord, SchemaRecordError, parse_schema_record,
-    schema_record_frame_len, write_schema_record,
+    MAX_SCHEMA_RECORD_LEN, parse_schema_record, schema_record_frame_len, write_schema_record,
 };
 use std::fs::TryLockError;
-
-mod service;
-pub use service::{ServiceHalf, ServiceSchema, lookup_service_schema, service_schema_key};
-pub(crate) use service::{ServiceSchemaRelease, write_service_schema};
 
 pub(crate) const SCHEMA_MAX_PAYLOAD: usize = MAX_SCHEMA_RECORD_LEN;
 
@@ -394,17 +389,6 @@ pub fn lookup_schema(
     wanted: SchemaSelector,
     timeout: StdDuration,
 ) -> Result<Option<Vec<u8>>, PortError> {
-    lookup_record(topic, wanted, timeout, parse_schema_record)
-}
-
-/// [`lookup_schema`] with the parser that verifies the record: the one of a service half
-/// accepts an empty definition.
-fn lookup_record(
-    topic: &str,
-    wanted: SchemaSelector,
-    timeout: StdDuration,
-    parse: fn(&[u8]) -> Result<ParsedSchemaRecord<'_>, SchemaRecordError>,
-) -> Result<Option<Vec<u8>>, PortError> {
     let schema_hash = match &wanted {
         SchemaSelector::Hash(hash) => *hash,
         SchemaSelector::Md5(md5) => {
@@ -420,7 +404,7 @@ fn lookup_record(
             match std::fs::read(&path) {
                 // A stream whose endpoints gave no definition: nothing to resolve yet.
                 Ok(bytes) if bytes.is_empty() => {}
-                Ok(bytes) => match parse(&bytes) {
+                Ok(bytes) => match parse_schema_record(&bytes) {
                     Ok(record) => {
                         let hash_matches =
                             hypha_wire::schema_hash_from_md5(record.md5()) == Some(schema_hash);

@@ -98,7 +98,6 @@ mod metrics;
 mod options;
 mod raw;
 pub mod schema;
-mod service;
 mod status;
 pub mod waitset;
 
@@ -142,10 +141,6 @@ pub use raw::{
     list_nodes, topic_matches_pattern,
 };
 pub use schema::{ResolvedSchema, SCHEMA_RETRY_INTERVAL, SchemaError, SchemaIdentityCache};
-pub use service::{
-    CallOutcome, CallResult, ListedService, ServiceClient, ServiceDefinitions, ServicePolicy,
-    call_log_topic,
-};
 pub use waitset::{AttachmentId, Delivery, RunResult, StopReason, WaitSet};
 
 pub use hypha_core::message;

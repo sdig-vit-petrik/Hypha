@@ -1,4 +1,3 @@
-// test-layer: unit (no node, no bus, no C function; #336)
 // The checked conversion to the RosTime wire type. A split that wraps a negative or a
 // too-large time writes a plausible but wrong stamp, so the conversion refuses those values.
 

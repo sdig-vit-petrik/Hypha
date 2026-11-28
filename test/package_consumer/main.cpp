@@ -4,7 +4,6 @@
 #include "ros2_style.h"
 #include "sensor_companions.h"
 #include "short_namespace.h"
-#include "standard_services.h"
 
 #include <consumer_msgs/Reading.h>
 
@@ -29,7 +28,6 @@ int main()
 
     const bool consumerOk = validClock && nestedTypeUsable && ros1NamesUsable
                          && ros2StyleTypesUsable() && shortNamespaceUsable() && ownGlobalHyUsable()
-                         && sensorCompanionsUsable() && sensorCompanionsRos2Usable()
-                         && standardServicesUsable();
+                         && sensorCompanionsUsable() && sensorCompanionsRos2Usable();
     return consumerOk ? 0 : 1;
 }

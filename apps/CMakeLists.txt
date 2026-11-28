@@ -21,7 +21,6 @@ set(HYPHA_TOOLS
     param
     play
     record
-    service
     top
     topic)
 set(HYPHA_TOOL_LINKS hy)

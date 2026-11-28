@@ -1,4 +1,3 @@
-// test-layer: unit (no node, no bus, no C function; #336)
 // The ROS 2 names of the sensor_msgs companion headers: the .hpp paths and the
 // sensor_msgs::msg names of the messages they work on. The message headers come from
 // hypha_generate_ros2_headers() in CMakeLists.txt.

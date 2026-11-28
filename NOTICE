@@ -13,11 +13,6 @@ This repository contains third-party material under its own licence:
   diagnostic_msgs, rosgraph_msgs, tf2_msgs): message definitions of ROS 1
   (https://github.com/ros), BSD 3-Clause.
 
-- crates/hypha_msgs/msg: the standard services (`.srv`) of ROS 1 common_msgs 1.13.2
-  (https://github.com/ros/common_msgs: nav_msgs, sensor_msgs, diagnostic_msgs) and of
-  ROS 1 geometry2 0.7.10 (https://github.com/ros/geometry2: tf2_msgs), BSD 3-Clause,
-  unchanged; crates/hypha_msgs/upstream records where each came from.
-
 - crates/hypha-cxx/include/ros: a serialization interface that is source
   compatible with roscpp_serialization of ROS 1 (https://github.com/ros/roscpp_core),
   BSD 3-Clause.

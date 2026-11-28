@@ -233,12 +233,7 @@ fn run_protocol_mistake(label: &str, mistake: ProtocolMistake) -> (i32, u64) {
     assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
     let mut report =
         HyphaWaitSetRunReport { reason: 0, status: 0, attachment: 0, slow_callbacks: 0 };
-    // The mistake fails the step, which ends the run at once; the bound only stops a run
-    // whose step never came, so it is long (#64: no host speed is assumed).
-    assert_eq!(
-        unsafe { hypha_waitset_run(waitset, 10_000_000_000, &raw mut report) },
-        HyphaStatus::Ok
-    );
+    assert_eq!(unsafe { hypha_waitset_run(waitset, 20_000_000, &raw mut report) }, HyphaStatus::Ok);
     let mut health = HyphaCycleHealth::default();
     assert_eq!(unsafe { hypha_cycle_health(cycle, &raw mut health) }, HyphaStatus::Ok);
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);

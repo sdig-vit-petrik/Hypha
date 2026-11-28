@@ -1,4 +1,4 @@
-string value
+bool data
 ---
 bool success
 string message

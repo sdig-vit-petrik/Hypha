@@ -541,5 +541,3 @@ Each architectural ring tests **only the responsibility it adds**, trusting inne
 | **4. C ABI** | `hypha_ffi` | FFI boundary contracts only: null/invalid args, buffer-too-small, status mapping, ownership/drop, 1 smoke call per symbol (`argument_preamble`). | Cycle, replay, or TF permutation matrices. |
 | **5. C++ SDK** | `crates/hypha-cxx` | C++ facade only: RAII/move/drop, compile-time tags, exception/status mapping, `StepHarness` wiring, 1 happy + 1 error smoke test per API. | Re-testing Rust core or FFI matrices through C++. |
 | **6. Apps & E2E** | `apps/*`, `examples/` | CLI flags, exit codes, and a few real system scenarios (`hypha record`/`play`/`launch`, `examples/mrs`, `examples/sensor_pipeline`). | Unit-level edge cases of core crates. |
-
-A C++ test of header-only code (a codec, a time type, a message helper) that starts no node, touches no bus and calls no C function is that code's ring 1: it begins with `// test-layer: unit`, and the pyramid ratchet of `scripts/check-size-and-boundaries.sh` counts it with the pure core, not with ring 5 (#336). The script refuses a marked file that uses a node, a harness, the configuration or a C function.

@@ -8,7 +8,6 @@
 #include "hypha/publisher.h"
 #include "hypha/raw.h"
 #include "hypha/raw_api.h"
-#include "hypha/service_client.h"
 #include "hypha/status.h"
 #include "hypha/subscriber.h"
 #include "hypha/topic.h"
@@ -267,63 +266,6 @@ class Node
         return Timer(require(backend::createTimer(period, std::move(callback)), "timer"));
     }
 
-    /// @brief The server of the service `[ports.servers.<port>]` names. The run calls
-    ///        @p handler for each request, which replies, refuses or defers it. Create
-    ///        servers before run().
-    /// @throws ConfigError for a missing or refused table, or a policy mismatch;
-    ///         std::runtime_error for any other refusal, a live server of the name among them.
-    template <typename Srv>
-    [[nodiscard]] ServiceServer
-    advertiseService(std::string port, std::function<void(Request<Srv>&)> handler)
-    {
-        return detail::serve<Srv>(
-            detail::declarationOf<Srv>(std::move(port), false), std::move(handler)
-        );
-    }
-
-    /// @brief The server of a service that code fixes: `hypha::Service{"~/set_exposure"}`.
-    template <typename Srv>
-    [[nodiscard]] ServiceServer
-    advertiseService(Service service, std::function<void(Request<Srv>&)> handler)
-    {
-        return detail::serve<Srv>(
-            detail::declarationOf<Srv>(std::move(service.name), true), std::move(handler)
-        );
-    }
-
-    /// @brief A client of the service `[ports.clients.<port>]` names, whose outcomes the run
-    ///        delivers. A server need not exist. Create clients before run().
-    /// @throws As advertiseService().
-    template <typename Srv>
-    [[nodiscard]] ServiceClient<Srv> serviceClient(std::string port, Timeout timeout = {})
-    {
-        return ServiceClient<Srv>(clientOf<Srv>(std::move(port), false, timeout, false));
-    }
-
-    template <typename Srv>
-    [[nodiscard]] ServiceClient<Srv> serviceClient(Service service, Timeout timeout = {})
-    {
-        return ServiceClient<Srv>(clientOf<Srv>(std::move(service.name), true, timeout, false));
-    }
-
-    /// @brief A blocking client, for a worker thread, a test or a tool: its callAndWait()
-    ///        waits on the calling thread, and is refused on the run's thread.
-    template <typename Srv>
-    [[nodiscard]] BlockingServiceClient<Srv>
-    serviceClient(std::string port, Blocking, Timeout timeout = {})
-    {
-        return BlockingServiceClient<Srv>(clientOf<Srv>(std::move(port), false, timeout, true));
-    }
-
-    template <typename Srv>
-    [[nodiscard]] BlockingServiceClient<Srv>
-    serviceClient(Service service, Blocking, Timeout timeout = {})
-    {
-        return BlockingServiceClient<Srv>(
-            clientOf<Srv>(std::move(service.name), true, timeout, true)
-        );
-    }
-
     /// @brief Run this node's callbacks on the calling thread until it stops.
     ///
     /// Attach every subscription and timer before this call: a subscription created
@@ -343,17 +285,6 @@ class Node
     }
 
   private:
-    template <typename Srv>
-    static backend::UniqueClient
-    clientOf(std::string name, bool literal, Timeout timeout, bool isBlocking)
-    {
-        backend::ServiceDeclaration declaration =
-            detail::declarationOf<Srv>(std::move(name), literal);
-        declaration.timeout = timeout.value;
-        declaration.blocking = isBlocking;
-        return backend::createClient(declaration);
-    }
-
     bool joined_{false};
 };
 

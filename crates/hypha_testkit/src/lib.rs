@@ -5,26 +5,7 @@ mod env;
 pub use env::{remove_env, set_env};
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-/// How often [`wait_until`] looks again.
-const POLL: Duration = Duration::from_millis(10);
-
-/// Look at `done` every 10 ms until it holds or `limit` has passed; whether it held. The
-/// one bounded condition poll of the tests: a test waits for a state, not for a time.
-pub fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
-    let began = Instant::now();
-    loop {
-        if done() {
-            return true;
-        }
-        let left = limit.saturating_sub(began.elapsed());
-        if left.is_zero() {
-            return false;
-        }
-        std::thread::sleep(POLL.min(left));
-    }
-}
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The last suffix [`unique_name`] gave in this process.
 static LAST: AtomicU64 = AtomicU64::new(0);
