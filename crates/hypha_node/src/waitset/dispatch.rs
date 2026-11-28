@@ -289,7 +289,10 @@ impl std::fmt::Display for Subject<'_> {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
             Self::Topic(topic) => write!(out, "topic '{topic}'"),
-            Self::Timer(period) => write!(out, "timer {} ms", period / 1_000_000),
+            Self::Timer(period) => {
+                let period = u64::try_from(period).unwrap_or(0);
+                write!(out, "timer {} ms", hypha_core::dispatch::millis_text(period))
+            }
             Self::Cycle(name) => write!(out, "cycle '{name}'"),
         }
     }
@@ -560,6 +563,7 @@ mod slow_callback_subject_tests {
             "topic '/sensing/lidar/points'"
         );
         assert_eq!(Subject::Timer(100_000_000).to_string(), "timer 100 ms");
+        assert_eq!(Subject::Timer(2_500_000).to_string(), "timer 2.5 ms");
         assert_eq!(Subject::Cycle("ekf").to_string(), "cycle 'ekf'");
     }
 }

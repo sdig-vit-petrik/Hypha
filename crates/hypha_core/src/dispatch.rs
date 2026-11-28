@@ -147,7 +147,8 @@ pub fn callback_budget(configured_ms: Option<u32>, period_nanos: Option<u64>) ->
 
 /// Nanoseconds as milliseconds with the fraction that matters, rounded up to a
 /// microsecond: `10`, `2.5`, `10.001`.
-fn millis_text(nanos: u64) -> String {
+#[must_use]
+pub fn millis_text(nanos: u64) -> String {
     let micros = nanos.div_ceil(1_000);
     let (millis, fraction) = (micros / 1_000, micros % 1_000);
     if fraction == 0 {
