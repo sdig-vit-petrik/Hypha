@@ -581,6 +581,27 @@ Reference: `hypha/node.h`, `hypha/publisher.h`, `hypha/topic.h`, `hypha/options.
   loan->message().row_step = count * sizeof(CloudPoint);
   (void)points.publish(std::move(*loan), count * sizeof(CloudPoint));
   ```
+- A cycle step writes a large output in place the same way: `Output<M>::loan(head,
+  capacityBytes)` reserves a slot of this step, and `output.send(std::move(*loan),
+  usedBytes)` registers it, shrunk; it goes out after a successful step, in the order of the
+  step's sends, with the bytes `send(const M&)` sends (`hypha/cycle_output.h`). The step may
+  hold several loans, of several outputs, and send other messages meanwhile. A loan counts
+  against `perStep()` from the loan; dropped unsent it gives its slot and its count back.
+  A loan kept past its step returns its slot at the step's end, and a send of it in a later
+  step throws `std::logic_error`. A refused loan (`PoolExhausted`, `LoanLimit`,
+  `ResourceLimit` past `perStep()`, `TooLarge`) does not fail the step. In a
+  `testing::StepHarness` the loan is memory of its own and `sent(output)` holds the message.
+
+  ```cpp
+  void step(const hypha::CycleTime&) override {
+      for (const hypha::ViewPtr<PointCloud2>& cloud : this->input.samples()) {
+          auto loan = this->output.loan(headOf(*cloud), cloud->data.size());
+          if (!loan) { continue; }                       // no slot free: nothing lost
+          const size_t used = downsample(*cloud, loan->data());   // writes the points
+          this->output.send(std::move(*loan), used);
+      }
+  }
+  ```
 - `subscriberCount()` counts subscribers of every node on the machine at that instant.
   It is not delivery; check it first when a message is costly and nobody may listen.
   It returns `std::optional<size_t>`: empty means the count is unavailable (a disabled
@@ -635,6 +656,59 @@ hypha: topic '/odom' has publishers, none of type pkg/Odometry (581e4b1b): publi
 
 The `~/state` row of an input names its `data_type` and `md5`: two types of one topic are
 two rows ([interface-specification.md](interface-specification.md#streams)).
+
+### 5.0 Reading a large message in place
+
+A camera frame or a lidar cloud is read where it arrived, in the publisher's shared-memory
+slot, after the one CRC check of the receive, with no copy: subscribe to `hypha::View<M>`
+instead of `M` (`hypha/view.h`). `View<M>` has the fields of `M`, decoded, its array of
+bytes (`Image::data`, `PointCloud2::data`) a `std::span<const uint8_t>` of the slot; the
+generator emits it for every message whose loaned field (section 4) is an array of bytes:
+`Image`, `CompressedImage`, `PointCloud2`, `OccupancyGrid`, `UInt8MultiArray`,
+`Int8MultiArray`, `ByteMultiArray`, and an application's own. `hypha::ViewPtr<M>` owns
+a view as `M::ConstPtr` owns a message, so ported code reads unchanged: `msg->width`,
+`msg->data.size()`, `msg->data[i]`, `sensor_msgs::PointCloud2ConstIterator<float> x(*msg,
+"x")`, `sensor_msgs::image_encodings::bitDepth(msg->encoding)`.
+
+```cpp
+void onCloud(const hypha::ViewPtr<sensor_msgs::PointCloud2>& msg) {
+    sensor_msgs::PointCloud2ConstIterator<float> x(*msg, "x");   // reads the slot
+    for (; x != x.end(); ++x) { /* ... */ }
+    this->latest_ = msg;               // keeps the slot (one per subscriber), no copy
+}
+auto sub = node.subscribe<hypha::View<sensor_msgs::PointCloud2>>("points", onCloud);
+```
+
+A cycle input reads views the same way: `Arrivals<View<M>>::samples()` gives a
+`ViewPtr<M>` per sample and `Latest<View<M>>` a `View<M>` (`*port`, `port->width`) and its
+ViewPtr (`port.sample()`), the bytes of the step's input. On host time the input keeps a
+message of 64 KiB or more in the subscriber's slot, not in a copy; under simulated time, or
+for a smaller message, the bytes the step reads are the input's copy, read in place all the
+same. A `std::shared_ptr<const M>` converts to a `ViewPtr<M>` over the message's own
+array, so an upstream test that passes a message to code that now takes a view compiles
+unchanged, and a `testing::StepHarness` feeds a view port with messages (`deliver(port,
+std::vector<M>{...})`).
+
+The lifetime is the ViewPtr's, and it is bounded:
+
+- Copies share one view; the bytes are valid while any copy lives. A `std::span` or a
+  pointer taken out of a view lives no longer than the ViewPtr it came from.
+- A copy still held when its callback returns keeps the slot, within the subscriber's
+  loan budget: one slot (`metrics().loanBudget`, `loanHeld`), since one stays free for the
+  next delivery. So `latest_ = msg;` in each callback keeps every frame in place. Past the
+  budget the bytes of the held copy are copied once at that return, logged (at most once in
+  10 s) and counted in `metrics().loanRefused`. Nothing is dropped, nothing dangles.
+- A copy still held when a cycle step returns owns a copy of its bytes from there, logged.
+  A cycle input whose step takes fewer samples than arrive copies the oldest out of its
+  slot to receive the next, logged with its count.
+- `hypha::toMessage(*msg)` copies a view into an `M`, for code that takes `const M&`.
+- The bytes are where the ROS 1 encoding puts them, not aligned: read a number of more
+  than a byte with `std::memcpy`. `PointCloud2ConstIterator` reads a field through a
+  reference to its type, as it does for any cloud; aarch64 and x86-64 load such a field, and
+  UBSan reports it as a misaligned access.
+- Do not read a ViewPtr on another thread before its callback or step returns: that
+  return may move the bytes into a copy. A subscriber of views keeps no
+  `latestSample()` (it would hold the budget's slot).
 
 ### 5.1 Freshness and the latest value
 

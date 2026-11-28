@@ -499,6 +499,10 @@ impl BindingCapture {
                 break;
             }
             self.cursor = sample.sequence.wrapping_add(1);
+            // A queued binding reads a cleared sample no more: bytes read in place may go back.
+            if self.mode == CaptureMode::Queued {
+                sample.payload.mark_taken();
+            }
             if !history.is_rejected(sample.sequence) {
                 dropped = dropped.wrapping_add(1);
             }
@@ -517,6 +521,8 @@ impl BindingCapture {
             return false;
         };
         self.cursor = sample.sequence.wrapping_add(1);
+        // This binding reads the sample no more: bytes read in place may go back.
+        sample.payload.mark_taken();
         self.counters.age_rejections_total = self.counters.age_rejections_total.wrapping_add(1);
         true
     }
@@ -531,6 +537,8 @@ impl BindingCapture {
             return false;
         };
         self.cursor = sample.sequence.wrapping_add(1);
+        // This binding reads the sample no more: bytes read in place may go back.
+        sample.payload.mark_taken();
         self.superseded_since_capture = self.superseded_since_capture.wrapping_add(1);
         self.counters.work_limit_drops_total = self.counters.work_limit_drops_total.wrapping_add(1);
         true
@@ -901,7 +909,14 @@ impl BindingCapture {
             let Some(drop_through) = drop_through else {
                 return;
             };
-            self.cursor = drop_through.sequence.wrapping_add(1);
+            let dropped_end = drop_through.sequence.wrapping_add(1);
+            for skipped in history.samples().range(start..) {
+                if !before(skipped.sequence, dropped_end) {
+                    break;
+                }
+                skipped.payload.mark_taken();
+            }
+            self.cursor = dropped_end;
         }
 
         let mut examined = 0usize;
@@ -922,6 +937,8 @@ impl BindingCapture {
             }
             examined = examined.saturating_add(1);
             self.cursor = sample.sequence.wrapping_add(1);
+            // This binding reads the sample no more: bytes read in place may go back.
+            sample.payload.mark_taken();
             // A sample a reader rejected is neither delivered nor an age rejection.
             if history.is_rejected(sample.sequence) {
                 continue;

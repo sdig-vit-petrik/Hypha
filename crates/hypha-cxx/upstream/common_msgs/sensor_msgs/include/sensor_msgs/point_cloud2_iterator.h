@@ -189,6 +189,9 @@ public:
    */
   PointCloud2IteratorBase(C &cloud_msg, const std::string &field_name);
 
+  // hypha port: a received cloud read in place (hypha/view.h), its data a span of the slot.
+  PointCloud2IteratorBase(const hypha::View<sensor_msgs::PointCloud2> &cloud_msg, const std::string &field_name);
+
   /** Assignment operator
    * @param iter the iterator to copy data from
    * @return a reference to *this
@@ -239,7 +242,9 @@ private:
    * @param field_name the name of the field to iterate upon
    * @return the offset at which the field is found
    */
-  int set_field(const sensor_msgs::PointCloud2 &cloud_msg, const std::string &field_name);
+  // hypha port: of a message or of its view, which have the same fields.
+  template<typename Cloud>
+  int set_field(const Cloud &cloud_msg, const std::string &field_name);
 
   /** The "point_step" of the original cloud */
   int point_step_;
@@ -293,6 +298,9 @@ class PointCloud2ConstIterator : public impl::PointCloud2IteratorBase<T, const T
 {
 public:
   PointCloud2ConstIterator(const sensor_msgs::PointCloud2 &cloud_msg, const std::string &field_name) :
+    impl::PointCloud2IteratorBase<T, const T, const unsigned char, const sensor_msgs::PointCloud2, sensor_msgs::PointCloud2ConstIterator>::PointCloud2IteratorBase(cloud_msg, field_name) {}
+  // hypha port: a received cloud read in place (hypha/view.h).
+  PointCloud2ConstIterator(const hypha::View<sensor_msgs::PointCloud2> &cloud_msg, const std::string &field_name) :
     impl::PointCloud2IteratorBase<T, const T, const unsigned char, const sensor_msgs::PointCloud2, sensor_msgs::PointCloud2ConstIterator>::PointCloud2IteratorBase(cloud_msg, field_name) {}
 };
 }

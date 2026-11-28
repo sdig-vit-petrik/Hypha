@@ -19,7 +19,11 @@ beside the headers generated from `crates/hypha_msgs/msg/sensor_msgs`, and
 Licence: BSD 3-Clause, in the header of each file (Willow Garage, Inc.; Open Source
 Robotics Foundation, Inc.; listed in `NOTICE`). Upstream has no separate licence file.
 
-The files are unchanged; `vendor.toml` holds their SHA-256, and `python3 -I
+The files are unchanged but for one edit, marked `hypha port:`: `point_cloud2_iterator.h` and
+its `impl/` take a `hypha::View<sensor_msgs::PointCloud2>` too, a received cloud read in place
+(`hypha/view.h`, #255), in a constructor of `PointCloud2ConstIterator` and its base, and
+`set_field` reads the fields of either. A fresh `port.py vendor` drops the edit: apply it again.
+`vendor.toml` holds their SHA-256, and `python3 -I
 examples/autoware/tools/port.py verify` (run by `./check.sh`) checks them. To fetch them
 again: `python3 -I examples/autoware/tools/port.py vendor common_msgs`.
 

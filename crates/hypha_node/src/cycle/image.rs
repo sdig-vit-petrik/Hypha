@@ -114,12 +114,23 @@ pub struct EmissionView<'a, 'b> {
     /// True between a reserve and its commit.
     pub(super) open: bool,
     pub(super) error: Option<Error>,
+    /// The loans the step holds (`emission_lend`), by token; `None` once sent or returned.
+    /// Those left when the step returns go back unsent.
+    pub(super) lent: &'a mut Vec<Option<LentMessage>>,
+}
+
+/// A loan of an output that the step fills in place and sends by its token.
+pub(crate) struct LentMessage {
+    output: u32,
+    loan: HyphaLoan,
 }
 
 fn sample_view(sample: &hypha_cycle::HistorySample) -> HyphaCycleSampleView {
+    // Valid for the step: bytes read in place move only between steps.
+    let (payload, payload_len) = sample.payload.raw_parts();
     HyphaCycleSampleView {
-        payload: sample.payload.as_ptr(),
-        payload_len: sample.payload.len(),
+        payload,
+        payload_len,
         transport_sent_nanos: sample.transport_sent_nanos,
         sequence: sample.sequence,
         publisher_id: sample.origin.publisher_id,
@@ -209,6 +220,85 @@ pub fn emission_reserve<'view>(
         }
         Err(error) => Err(latch(view, error)),
     }
+}
+
+/// Lends `capacity` bytes of output `output_index` for one message the step fills in place,
+/// held until [`emission_send`] or [`emission_return`] with the returned token, or the end
+/// of the step, which returns it unsent. A step may hold several, of any outputs, beside
+/// reserves. The message counts against the output's per-step count from here.
+///
+/// # Errors
+/// `PoolExhausted` or `LoanLimit` when no loan is free, and the message is not counted: a
+/// refusal is no lost message. A refusal of the step's budget (`ResourceLimit` past the
+/// count, `TooLarge` past the payload limit), `InvalidArgument` for an unknown output, and
+/// `ResourceLimit` when the list of loans cannot grow; none of them latches.
+pub fn emission_lend<'view>(
+    view: &'view mut EmissionView<'_, '_>,
+    output_index: u32,
+    capacity: usize,
+) -> Result<(u64, &'view mut [u8]), Error> {
+    if let Some(error) = view.error {
+        return Err(error);
+    }
+    view.budget.admit(output_index, capacity).map_err(Error::from_code)?;
+    let output = usize::try_from(output_index).ok().and_then(|i| view.outputs.get(i));
+    let lent = output.ok_or(Error::InvalidArgument).and_then(|output| {
+        view.lent.try_reserve(1).map_err(|_| Error::ResourceLimit)?;
+        view.emissions.try_reserve(1).map_err(|_| Error::ResourceLimit)?;
+        crate::loan::lend_frame(&output.publisher, capacity)
+    });
+    let loan = match lent {
+        Ok(loan) => loan,
+        Err(error) => {
+            view.budget.refund(output_index);
+            return Err(error);
+        }
+    };
+    let token = u64::try_from(view.lent.len()).map_err(|_| Error::ResourceLimit)?;
+    view.lent.push(Some(LentMessage { output: output_index, loan }));
+    let buffer = view
+        .lent
+        .last_mut()
+        .and_then(Option::as_mut)
+        .and_then(|lent| lent.loan.payload_mut())
+        .ok_or(Error::InvalidState)?;
+    Ok((token, buffer))
+}
+
+fn take_lent(view: &mut EmissionView<'_, '_>, token: u64) -> Result<LentMessage, Error> {
+    let index = usize::try_from(token).map_err(|_| Error::InvalidArgument)?;
+    view.lent.get_mut(index).and_then(Option::take).ok_or(Error::InvalidArgument)
+}
+
+/// Stages the loan `token` for dispatch after the step with its first `len` bytes, in the
+/// order of the sends and commits of the step. The loan is consumed either way.
+///
+/// # Errors
+/// The latched error of the step; `InvalidArgument` for a token the step does not hold (sent,
+/// returned or unknown) or a `len` past the loan, which returns the loan unsent.
+pub fn emission_send(view: &mut EmissionView<'_, '_>, token: u64, len: usize) -> Result<(), Error> {
+    if let Some(error) = view.error {
+        return Err(error);
+    }
+    let LentMessage { output, mut loan } = take_lent(view, token)?;
+    if let Err(error) = crate::loan::loan_shrink(&mut loan, len) {
+        view.budget.refund(output);
+        return Err(error);
+    }
+    view.emissions.push(StagedMessage { output, len, value: Some(loan) });
+    Ok(())
+}
+
+/// Returns the loan `token` unsent: its slot goes back to the pool, and the output may lend
+/// or send another message in its place.
+///
+/// # Errors
+/// `InvalidArgument` for a token the step does not hold.
+pub fn emission_return(view: &mut EmissionView<'_, '_>, token: u64) -> Result<(), Error> {
+    let LentMessage { output, loan } = take_lent(view, token)?;
+    drop(loan);
+    view.budget.refund(output);
+    Ok(())
 }
 
 /// Closes the message the last [`emission_reserve`] opened.

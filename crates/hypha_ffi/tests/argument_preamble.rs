@@ -153,6 +153,25 @@ static ROWS: &[Row] = rows! {
     hypha_cycle_emission_reserve => |_live| {
         assert_eq!(unsafe { hypha_cycle_emission_reserve(null_mut(), 0, 0, null_mut()) }, INVALID);
     }
+    hypha_cycle_emission_lend => |_live| {
+        let mut out = null_mut();
+        let mut token = 7;
+        assert_eq!(
+            unsafe { hypha_cycle_emission_lend(null_mut(), 0, 8, &raw mut out, &raw mut token) },
+            INVALID
+        );
+    }
+    hypha_cycle_emission_send => |_live| {
+        assert_eq!(unsafe { hypha_cycle_emission_send(null_mut(), 0, 0) }, INVALID);
+    }
+    hypha_cycle_emission_return => |_live| {
+        assert_eq!(unsafe { hypha_cycle_emission_return(null_mut(), 0) }, INVALID);
+    }
+    hypha_delivery_retain => |_live| {
+        let mut out = null_mut();
+        assert_eq!(unsafe { hypha_delivery_retain(std::ptr::null(), &raw mut out) }, INVALID);
+        assert!(out.is_null());
+    }
     hypha_cycle_emission_commit => |_live| {
         assert_eq!(unsafe { hypha_cycle_emission_commit(null_mut()) }, INVALID);
     }
@@ -328,6 +347,7 @@ static ROWS: &[Row] = rows! {
     }
     hypha_loan_send => |_live| { assert_eq!(unsafe { hypha_loan_send(null_mut(), -1) }, INVALID) }
     hypha_loan_drop => |_live| { unsafe { hypha_loan_drop(null_mut()) } }
+    hypha_received_sample_release => |_live| { unsafe { hypha_received_sample_release(null_mut()) } }
     hypha_loan_shrink => |live| {
         assert_eq!(unsafe { hypha_loan_shrink(null_mut(), 0) }, INVALID);
         let mut loan = null_mut();

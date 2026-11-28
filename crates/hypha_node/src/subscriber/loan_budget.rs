@@ -5,7 +5,9 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 pub(crate) struct LoanBudget {
-    pub(crate) budget: usize,
+    /// The samples the subscriber may hold at once: its owning receives, or, once a
+    /// `WaitSet` dispatches it, the deliveries its callbacks retain.
+    pub(crate) budget: AtomicUsize,
     pub(crate) held: AtomicUsize,
     pub(crate) refused: AtomicU64,
 }
@@ -14,7 +16,7 @@ impl LoanBudget {
     pub(crate) fn reserve(&self) -> bool {
         let mut current = self.held.load(Ordering::Acquire);
         loop {
-            if current >= self.budget {
+            if current >= self.budget.load(Ordering::Acquire) {
                 return false;
             }
             let next = current.saturating_add(1);

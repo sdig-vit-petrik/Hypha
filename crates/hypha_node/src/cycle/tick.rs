@@ -45,6 +45,8 @@ struct StepState<'a> {
     is_replay: bool,
     /// The `WaitSet` of the cycle: a failure the application requested holds the step's outputs.
     waitset: &'a crate::waitset::HyphaWaitSet,
+    /// The loans the step holds, by token (`emission_lend`); empty between steps.
+    lent: &'a mut Vec<Option<super::image::LentMessage>>,
 }
 
 /// Drain each physical source of `cycle` once into its history for `clock`, for the
@@ -167,6 +169,7 @@ pub(crate) fn cycle_timer_tick(
         outcome: &mut step_outcome,
         is_replay,
         waitset: set,
+        lent: &mut state.lent,
     };
 
     let mut send_stamps: Option<(u64, u64)> = None;
@@ -247,8 +250,14 @@ fn run_step(
             .ingest(state.cycle_name, captures, replay_losses(time, state.waitset))
             .map_err(|status| status as i32)?;
     }
-    let mut emission =
-        EmissionView { emissions, outputs: state.outputs, budget, open: false, error: None };
+    let mut emission = EmissionView {
+        emissions,
+        outputs: state.outputs,
+        budget,
+        open: false,
+        error: None,
+        lent: &mut *state.lent,
+    };
     let image = ImageView::new(
         captures,
         state.inputs,
@@ -267,10 +276,12 @@ fn run_step(
     let duration = called_at.elapsed();
     state.outcome.answer = Some(answer);
     state.outcome.duration_nanos = Some(u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX));
-    // A reservation the callback did not commit fails the step.
+    // A reservation the callback did not commit fails the step; a loan it did not send
+    // goes back unsent.
     if emission.open && emission.error.is_none() {
         emission.error = Some(Error::InvalidState);
     }
+    emission.lent.clear();
     if state.waitset.failure_requested() {
         emission.emissions.clear();
         return Err(HyphaStatus::ApplicationFailed as i32);

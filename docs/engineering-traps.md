@@ -226,6 +226,17 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   `Iox2Sample::payload()` after `receive_validated*`, never `sample.payload()` of iceoryx2
   or the slice's length. `payload()` before verify gives no bytes for a header whose
   `payload_len` exceeds the slice, but its bytes are not covered by any CRC yet.
+- **A subscriber has two borrowed samples, and a held one takes one of them.** iceoryx2
+  lets a subscriber borrow `MAX_BORROWED_SAMPLES` (2) samples at once, and a receive needs
+  one free. A `WaitSet` subscriber's callbacks therefore keep at most one delivery
+  (`hypha_delivery_retain`), and a cycle input reads at most one sample in place at a
+  receive: it gives back the slot of a sample every queued binding took
+  (`SamplePayload::mark_taken`, the capture's cursor) and no `Latest` binding holds as the
+  newest, and copies the oldest out when that is not enough. A new reader that keeps a
+  received sample past its call must count it the same way, or the next receive fails.
+  The bytes of a sample read in place move (`PinnedPayload::copy_out`, `release`) only in a
+  drain, between steps: a C pointer from `hypha_cycle_image_sample` is valid in its step
+  only, and the C++ `ViewPtr` of a step copies its bytes at the step's end when it is held.
 - **The transport uses `iceoryx2::service::ipc_threadsafe::Service`, not `ipc`.**
   `ipc` ports are `!Send`, and an executor worker serving an endpoint the
   application created on another thread would then be undefined behaviour.

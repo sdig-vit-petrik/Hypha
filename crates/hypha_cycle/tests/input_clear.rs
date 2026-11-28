@@ -7,7 +7,7 @@ mod common;
 use common::RunIteration;
 use hypha_cycle::{
     BindingOptions, CaptureMode, CycleHistory, CycleRuntime, CycleTime, FAULT_STALE, InputVerdict,
-    QueueOverflowPolicy, SupervisionLimits,
+    PinnedBytes, PinnedPayload, QueueOverflowPolicy, SampleOrigin, SupervisionLimits,
 };
 use std::sync::{Arc, Mutex};
 
@@ -56,8 +56,12 @@ fn step(runtime: &mut CycleRuntime, time: CycleTime) -> Seen {
             |captures, _| {
                 let capture = &captures[0];
                 seen = Some(Seen {
-                    payloads: capture.samples.iter().map(|sample| sample.payload[0]).collect(),
-                    held: capture.held().map(|sample| sample.payload[0]),
+                    payloads: capture
+                        .samples
+                        .iter()
+                        .map(|sample| sample.payload.with_bytes(|bytes| bytes[0]))
+                        .collect(),
+                    held: capture.held().map(|sample| sample.payload.with_bytes(|bytes| bytes[0])),
                     verdict: capture.verdict,
                     stale: capture.stale(),
                 });
@@ -250,4 +254,35 @@ fn a_trigger_port_cannot_be_cleared() {
     let mut runtime = runtime_over(&history, CaptureMode::Queued, 4);
     runtime.set_trigger(0).expect("trigger");
     assert!(runtime.clear_binding(0).is_err(), "its pending samples are planned steps");
+}
+
+struct Slot(Vec<u8>);
+
+impl PinnedBytes for Slot {
+    fn bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+#[test]
+fn a_cleared_sample_read_in_place_counts_as_taken_so_its_slot_can_go_back() {
+    let history = Arc::new(Mutex::new(CycleHistory::new(16).expect("limits")));
+    let pins: Vec<Arc<PinnedPayload>> =
+        (1..=4_u8).map(|value| PinnedPayload::new(Box::new(Slot(vec![value])))).collect();
+    for (value, pin) in (1_u64..).zip(&pins) {
+        let sent = value * MS;
+        let _ = history.lock().expect("history").push_pinned(
+            Arc::clone(pin),
+            sent,
+            sent,
+            SampleOrigin::default(),
+        );
+    }
+    let mut runtime = runtime_over(&history, CaptureMode::Queued, 1);
+
+    let first = host_step(&mut runtime, 10 * MS);
+    assert_eq!(first.payloads, [1]);
+    assert_eq!(runtime.clear_binding(0), Ok(3), "2, 3 and 4 were pending");
+    let taken: Vec<u32> = pins.iter().map(|pin| pin.taken()).collect();
+    assert_eq!(taken, [1, 1, 1, 1], "the one queued binding reads none of them again");
 }

@@ -11,6 +11,7 @@
 #include "hypha/node.h"
 #include "hypha/status.h"
 #include "hypha/subscriber.h"
+#include "hypha/view.h"
 #include "hypha_base/time.h"
 
 #include <cmath>
@@ -21,6 +22,9 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 namespace hypha {
 
@@ -129,6 +133,96 @@ template <typename M>
         return HYPHA_STATUS_INVALID_FRAME;
     }
     return HYPHA_STATUS_OK;
+}
+
+/// What an input of @p M holds for one sample: the message, or for a View<M> a ViewPtr of
+/// the bytes the step reads.
+template <typename M>
+struct SampleOf
+{
+    using type = M;
+};
+
+template <typename M>
+struct SampleOf<View<M>>
+{
+    using type = ViewPtr<M>;
+};
+
+/// The message type of an input of @p M: M, or the M of a View<M>.
+template <typename M>
+struct MessageOfPort
+{
+    using type = M;
+};
+
+template <typename M>
+struct MessageOfPort<View<M>>
+{
+    using type = M;
+};
+
+template <typename M>
+using MessageOf = typename MessageOfPort<M>::type;
+
+/// What an input of @p M holds for @p message: itself, or a view of it (a test's sample).
+template <typename M>
+typename SampleOf<M>::type sampleOf(MessageOf<M> message)
+{
+    if constexpr (IsView<M>::value) {
+        return ViewPtr<MessageOf<M>>(std::make_shared<const MessageOf<M>>(std::move(message)));
+    } else {
+        return message;
+    }
+}
+
+template <typename M>
+std::vector<typename SampleOf<M>::type> samplesOf(std::vector<MessageOf<M>> messages)
+{
+    if constexpr (IsView<M>::value) {
+        std::vector<typename SampleOf<M>::type> samples;
+        samples.reserve(messages.size());
+        for (MessageOf<M>& message : messages) {
+            samples.push_back(sampleOf<M>(std::move(message)));
+        }
+        return samples;
+    } else {
+        return messages;
+    }
+}
+
+template <typename M>
+const M& valueOf(const M& message)
+{
+    return message;
+}
+
+template <typename M>
+const View<M>& valueOf(const ViewPtr<M>& view)
+{
+    return *view;
+}
+
+/// A view of the bytes of @p view, valid in the step; INVALID_FRAME when they do not decode.
+template <typename M>
+::HyphaStatus decodeView(const HyphaCycleSampleView& view, ViewPtr<M>& output)
+{
+    output = ViewAccess<M>::lend(view.payload, view.payload_len);
+    return output ? HYPHA_STATUS_OK : HYPHA_STATUS_INVALID_FRAME;
+}
+
+/// The end of a step for a sample a port holds: a view gives up the step's bytes, and a
+/// copy the step kept owns a copy of them. True when the bytes were copied.
+template <typename M>
+bool leaveSample(M&)
+{
+    return false;
+}
+
+template <typename M>
+bool leaveSample(ViewPtr<M>& view)
+{
+    return ViewAccess<M>::release(view);
 }
 
 /// Where a captured sample came from, read from its frame header.

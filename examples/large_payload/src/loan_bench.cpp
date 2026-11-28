@@ -1,14 +1,20 @@
 /// Measures what publishing and receiving a camera image or a lidar cloud costs, by path.
 ///
-///   hypha_loan_bench pub <image|cloud> <bytes> <hz> <seconds> <typed|raw|loan>
-///   hypha_loan_bench sub <image|cloud> <bytes> <seconds> <typed|decode|view>
-///   hypha_loan_bench memcpy <bytes>
+///   hypha_loan_bench pub <image|cloud> <bytes> <hz> <seconds>
+///   <typed|raw|loan|cycle-typed|cycle-loan> hypha_loan_bench sub <image|cloud> <bytes> <seconds>
+///   <typed|decode|raw|view|cycle-typed|cycle-view> hypha_loan_bench memcpy <bytes>
 ///
 /// pub typed: the driver copies its frame into the message, then publish(message).
 /// pub raw:   the message is encoded by hand into a raw loan (measurement only).
 /// pub loan:  Publisher<M>::loan(), the frame written once into the slot.
+/// pub cycle-typed / cycle-loan: a cycle at <hz> that sends the frame with Output<M>::send(msg),
+///            or writes it into Output<M>::loan(); thread CPU per frame is step to step.
 /// sub typed: an ordinary typed subscriber. decode: a raw subscriber that decodes as the typed
-///            one does (make_shared + decode) and times it. view: the bytes are read in place.
+///            one does (make_shared + decode) and times it. raw: a raw subscriber that reads
+///            the bytes in place. view: Subscriber<View<M>>, the message read in place.
+/// sub cycle-typed / cycle-view: a cycle triggered by Arrivals<M> or Arrivals<View<M>>.
+/// Every sub mode reports the receiving thread's CPU per frame, from one frame to the next:
+/// the receive with its CRC check, the decode or the view, and the callback or the step.
 
 #include <hypha/hypha.h>
 
@@ -17,6 +23,7 @@
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
@@ -25,7 +32,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -134,7 +144,7 @@ void report(
         "RESULT %s sent=%" PRIu64 " failed=%" PRIu64
         " last_failure=%s frame_p50_us=%.0f frame_p99_us=%.0f "
         "publish_p50_us=%.0f publish_p99_us=%.0f cpu_pct=%.1f cpu_ms_per_msg=%.2f "
-        "thread_cpu_us: frame_p50=%.0f loan_p50=%.0f publish_p50=%.0f\n",
+        "thread_cpu_us: frame_p50=%.0f frame_p99=%.0f loan_p50=%.0f publish_p50=%.0f\n",
         label,
         stats.sent,
         stats.failed,
@@ -146,6 +156,7 @@ void report(
         100.0 * cpu / seconds,
         stats.sent ? 1e3 * cpu / static_cast<double>(stats.sent) : 0.0,
         hypha_bench::percentileNs(stats.cpuFrameNs, 0.5) / 1e3,
+        hypha_bench::percentileNs(stats.cpuFrameNs, 0.99) / 1e3,
         hypha_bench::percentileNs(stats.cpuLoanNs, 0.5) / 1e3,
         hypha_bench::percentileNs(stats.cpuPublishNs, 0.5) / 1e3
     );
@@ -192,8 +203,59 @@ std::vector<uint8_t> encodedHead(const M& head)
     return hypha::codec::encode(head);
 }
 
+/// The thread CPU between one frame and the next: what one frame cost the receiving thread.
+struct FrameCpu
+{
+    std::vector<int64_t> perFrame;
+    int64_t              last{0};
+
+    void mark()
+    {
+        const int64_t now = threadCpuNanos();
+        if (this->last != 0) {
+            this->perFrame.push_back(now - this->last);
+        }
+        this->last = now;
+    }
+};
+
+/// A cycle at the bench's rate that sends one frame per step on `out`: with send(msg), as a
+/// cycle that fills a message does, or written into a loan of the output.
+template <typename M>
+class SourceCycle final : public hypha::CycleNode
+{
+  public:
+    SourceCycle(size_t bound, std::function<void(Output<M>&)> fill)
+        : out(*this, "out", BENCH_QOS, hypha::maxPayloadDynamic(bound)), fill_(std::move(fill))
+    {
+    }
+
+    Output<M> out;
+    FrameCpu  cpu;
+    int       steps{0};
+    int       limit{0};
+
+    void step(const hypha::CycleTime&) override
+    {
+        this->cpu.mark();
+        if (++this->steps > this->limit) {
+            hypha::requestStop();
+            return;
+        }
+        this->fill_(this->out);
+    }
+
+  private:
+    std::function<void(Output<M>&)> fill_;
+};
+
+int runCyclePub(const PubConfig& config);
+
 int runPub(const PubConfig& config)
 {
+    if (config.mode.starts_with("cycle")) {
+        return runCyclePub(config);
+    }
     hypha::Node  node("loan_bench_pub");
     const size_t payload = config.image ? imageBytes(config.bytes) : config.bytes / 26 * 26;
     const size_t points = payload / 26;
@@ -423,24 +485,236 @@ int runPub(const PubConfig& config)
     return run.ok() ? 0 : 1;
 }
 
+template <typename M>
+uint8_t lastByte(const M& message)
+{
+    return message.data.empty() ? 0 : message.data.back();
+}
+
+template <typename M>
+uint8_t lastByte(const hypha::ViewPtr<M>& view)
+{
+    return view->data.empty() ? 0 : view->data.back();
+}
+
+/// A cycle triggered by each frame of `/bench`: Arrivals<M>, or Arrivals<View<M>> in place.
+template <typename Port>
+class SinkCycle final : public hypha::CycleNode
+{
+  public:
+    Arrivals<Port> input{*this, "in", perStep(3), BENCH_QOS};
+    FrameCpu*      cpu{nullptr};
+    uint64_t*      received{nullptr};
+    uint64_t*      checksum{nullptr};
+
+    SinkCycle()
+    {
+        this->setTrigger(this->input);
+    }
+
+    void step(const hypha::CycleTime&) override
+    {
+        for (const auto& sample : this->input.samples()) {
+            ++*this->received;
+            *this->checksum += lastByte(sample);
+            this->cpu->mark();
+        }
+    }
+};
+
+/// A parameter file for the bench's cycles: their ports on `/bench`.
+std::string benchConfig()
+{
+    const std::string path = "/tmp/hypha_loan_bench_" + std::to_string(getpid()) + ".toml";
+    FILE*             file = std::fopen(path.c_str(), "w");
+    if (file == nullptr) {
+        throw std::runtime_error("cannot write " + path);
+    }
+    std::fprintf(
+        file,
+        "[ports.inputs.in]\ntopic='/bench'\nsilence_ms = 100000\n"
+        "[ports.outputs.out]\ntopic='/bench'\n"
+    );
+    std::fclose(file);
+    return path;
+}
+
+int runCyclePub(const PubConfig& config)
+{
+    hypha::Node  node("loan_bench_pub", benchConfig());
+    const size_t payload = config.image ? imageBytes(config.bytes) : config.bytes / 26 * 26;
+    const size_t points = payload / 26;
+    const size_t bound = payload + 4096;
+    const bool   loan = config.mode == "cycle-loan";
+    std::vector<std::vector<uint8_t>>     frames(RING, std::vector<uint8_t>(payload));
+    std::vector<std::vector<VendorPoint>> clouds(RING, std::vector<VendorPoint>(points));
+    for (size_t r = 0; r < RING; ++r) {
+        for (size_t i = 0; i < payload; ++i) {
+            frames[r][i] = static_cast<uint8_t>(i * 7 + r);
+        }
+        for (size_t i = 0; i < points; ++i) {
+            const float f = static_cast<float>(i + r);
+            clouds[r][i] = {
+                f, f + 1, f + 2, f + 3, static_cast<uint16_t>(i % 64), static_cast<double>(f) * 1e-6
+            };
+        }
+    }
+    sensor_msgs::PointCloud2 cloudHead;
+    cloudHead.header.frame_id = "lidar";
+    cloudHead.height = 1;
+    fillFields(cloudHead);
+    cloudHead.point_step = 26;
+    cloudHead.width = static_cast<uint32_t>(points);
+    cloudHead.row_step = static_cast<uint32_t>(points * 26);
+    size_t     frame = 0;
+    uint64_t   failed = 0;
+    const auto fillImage = [&](hypha::Output<sensor_msgs::Image>& out) {
+        const std::vector<uint8_t>& pixels = frames[frame++ % RING];
+        if (!loan) {
+            sensor_msgs::Image message = imageHead(config.bytes);
+            message.data.assign(pixels.begin(), pixels.end());
+            out.send(message);
+            return;
+        }
+        auto loaned = out.loan(imageHead(config.bytes), payload);
+        if (!loaned) {
+            ++failed;
+            return;
+        }
+        std::memcpy(loaned->data().data(), pixels.data(), payload);
+        out.send(std::move(*loaned));
+    };
+    const auto fillCloud = [&](hypha::Output<sensor_msgs::PointCloud2>& out) {
+        const std::vector<VendorPoint>& in = clouds[frame++ % RING];
+        if (!loan) {
+            sensor_msgs::PointCloud2 message = cloudHead;
+            message.data.resize(points * 26);
+            convertPoints(in.data(), points, reinterpret_cast<std::byte*>(message.data.data()));
+            out.send(message);
+            return;
+        }
+        sensor_msgs::PointCloud2 head = cloudHead;
+        auto                     loaned = out.loan(head, payload);
+        if (!loaned) {
+            ++failed;
+            return;
+        }
+        convertPoints(in.data(), points, loaned->data().data());
+        out.send(std::move(*loaned));
+    };
+    std::optional<SourceCycle<sensor_msgs::Image>>       imageCycle;
+    std::optional<SourceCycle<sensor_msgs::PointCloud2>> cloudCycle;
+    FrameCpu*                                            cpu = nullptr;
+    const int limit = static_cast<int>(config.seconds * config.hz) + 5;
+    if (config.image) {
+        imageCycle.emplace(bound, fillImage);
+        imageCycle->limit = limit;
+        imageCycle->setRate(hypha::Hz(config.hz));
+        cpu = &imageCycle->cpu;
+        if (!imageCycle->start(node)) {
+            return 1;
+        }
+    } else {
+        cloudCycle.emplace(bound, fillCloud);
+        cloudCycle->limit = limit;
+        cloudCycle->setRate(hypha::Hz(config.hz));
+        cpu = &cloudCycle->cpu;
+        if (!cloudCycle->start(node)) {
+            return 1;
+        }
+    }
+    const hypha_bench::RusageSample before = hypha_bench::sampleRusage();
+    const Clock::time_point         began = Clock::now();
+    const hypha::RunResult          run = node.run();
+    const double                    elapsed = static_cast<double>(nanosSince(began)) / 1e9;
+    const hypha_bench::RusageSample after = hypha_bench::sampleRusage();
+    const double                    cpuSeconds =
+        (after.userSeconds - before.userSeconds) + (after.systemSeconds - before.systemSeconds);
+    // The first steps warm the slots: they are left out as the plain publisher's are.
+    std::vector<int64_t> perFrame = cpu->perFrame;
+    if (perFrame.size() > 5) {
+        perFrame.erase(perFrame.begin(), perFrame.begin() + 5);
+    }
+    std::sort(perFrame.begin(), perFrame.end());
+    std::printf(
+        "RESULT pub %s %zu B %.0f Hz %s sent=%zu failed=%" PRIu64
+        " cpu_pct=%.1f thread_cpu_us: frame_p50=%.0f frame_p99=%.0f\n",
+        config.image ? "image" : "cloud",
+        payload,
+        config.hz,
+        config.mode.c_str(),
+        frame,
+        failed,
+        100.0 * cpuSeconds / elapsed,
+        hypha_bench::percentileNs(perFrame, 0.5) / 1e3,
+        hypha_bench::percentileNs(perFrame, 0.99) / 1e3
+    );
+    return run.ok() ? 0 : 1;
+}
+
 int runSub(bool image, double seconds, const std::string& mode)
 {
-    hypha::Node          node("loan_bench_sub");
+    const bool  cycle = mode.starts_with("cycle");
+    hypha::Node node =
+        cycle ? hypha::Node("loan_bench_sub", benchConfig()) : hypha::Node("loan_bench_sub");
     std::vector<int64_t> decodeNs;
     decodeNs.reserve(4096);
     uint64_t received = 0;
     uint64_t checksum = 0;
+    FrameCpu frameCpu;
+    frameCpu.perFrame.reserve(4096);
+    hypha::Subscriber<hypha::View<sensor_msgs::Image>>              imageViews;
+    hypha::Subscriber<hypha::View<sensor_msgs::PointCloud2>>        cloudViews;
+    std::optional<SinkCycle<sensor_msgs::Image>>                    imageCycle;
+    std::optional<SinkCycle<sensor_msgs::PointCloud2>>              cloudCycle;
+    std::optional<SinkCycle<hypha::View<sensor_msgs::Image>>>       imageViewCycle;
+    std::optional<SinkCycle<hypha::View<sensor_msgs::PointCloud2>>> cloudViewCycle;
+    const auto                                                      start = [&](auto& slot) {
+        auto& sink = slot.emplace();
+        sink.cpu = &frameCpu;
+        sink.received = &received;
+        sink.checksum = &checksum;
+        const auto started = sink.start(node);
+        if (!started) {
+            throw std::runtime_error("the cycle did not start: " + started.error());
+        }
+    };
 
     hypha::Subscriber<sensor_msgs::Image>              imageSub;
     hypha::Subscriber<sensor_msgs::PointCloud2>        cloudSub;
     std::expected<hypha::RawSubscriber, hypha::Status> raw =
         std::unexpected(hypha::Status::InvalidState);
-    if (mode == "typed" && image) {
+    if (mode == "cycle-typed") {
+        image ? start(imageCycle) : start(cloudCycle);
+    } else if (mode == "cycle-view") {
+        image ? start(imageViewCycle) : start(cloudViewCycle);
+    } else if (mode == "view" && image) {
+        imageViews = node.subscribe<hypha::View<sensor_msgs::Image>>(
+            hypha::Topic{"/bench"},
+            [&](const hypha::ViewPtr<sensor_msgs::Image>& m) {
+                ++received;
+                checksum += lastByte(m);
+                frameCpu.mark();
+            },
+            BENCH_QOS
+        );
+    } else if (mode == "view") {
+        cloudViews = node.subscribe<hypha::View<sensor_msgs::PointCloud2>>(
+            hypha::Topic{"/bench"},
+            [&](const hypha::ViewPtr<sensor_msgs::PointCloud2>& m) {
+                ++received;
+                checksum += lastByte(m);
+                frameCpu.mark();
+            },
+            BENCH_QOS
+        );
+    } else if (mode == "typed" && image) {
         imageSub = node.subscribe<sensor_msgs::Image>(
             hypha::Topic{"/bench"},
             [&](const sensor_msgs::Image::ConstPtr& m) {
                 ++received;
                 checksum += m->data.back();
+                frameCpu.mark();
             },
             BENCH_QOS
         );
@@ -450,6 +724,7 @@ int runSub(bool image, double seconds, const std::string& mode)
             [&](const sensor_msgs::PointCloud2::ConstPtr& m) {
                 ++received;
                 checksum += m->data.back();
+                frameCpu.mark();
             },
             BENCH_QOS
         );
@@ -474,6 +749,7 @@ int runSub(bool image, double seconds, const std::string& mode)
             } else {
                 checksum += sample.bytes.back();
             }
+            frameCpu.mark();
         };
         raw = hypha::subscribeRawOfType(
             "/bench",
@@ -504,9 +780,10 @@ int runSub(bool image, double seconds, const std::string& mode)
     const double                    cpu =
         (after.userSeconds - before.userSeconds) + (after.systemSeconds - before.systemSeconds);
     std::sort(decodeNs.begin(), decodeNs.end());
+    std::sort(frameCpu.perFrame.begin(), frameCpu.perFrame.end());
     std::printf(
         "RESULT sub %s %s received=%" PRIu64 " cpu_pct=%.1f cpu_ms_per_msg=%.2f decode_p50_us=%.0f "
-        "decode_p99_us=%.0f (checksum %" PRIu64 ")\n",
+        "decode_p99_us=%.0f thread_cpu_us: frame_p50=%.0f frame_p99=%.0f (checksum %" PRIu64 ")\n",
         image ? "image" : "cloud",
         mode.c_str(),
         received,
@@ -514,6 +791,8 @@ int runSub(bool image, double seconds, const std::string& mode)
         received ? 1e3 * cpu / static_cast<double>(received) : 0.0,
         hypha_bench::percentileNs(decodeNs, 0.5) / 1e3,
         hypha_bench::percentileNs(decodeNs, 0.99) / 1e3,
+        hypha_bench::percentileNs(frameCpu.perFrame, 0.5) / 1e3,
+        hypha_bench::percentileNs(frameCpu.perFrame, 0.99) / 1e3,
         checksum
     );
     return run.ok() ? 0 : 1;
