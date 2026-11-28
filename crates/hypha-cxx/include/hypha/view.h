@@ -83,7 +83,8 @@ class ViewAccess;
 /// lost and never dangles; only a std::span or pointer taken out of it lives no longer than
 /// the ViewPtr it came from. Do not read a ViewPtr on another thread before its callback or
 /// step returns: that return may move its bytes. The bytes are not aligned (the ROS 1
-/// encoding has no padding): read numbers of more than a byte with std::memcpy.
+/// encoding has no padding): sensor_msgs::PointCloud2ConstIterator reads them with
+/// std::memcpy; read the numbers of `data` in any other way with std::memcpy too.
 template <ViewableMessage M>
 class ViewPtr
 {

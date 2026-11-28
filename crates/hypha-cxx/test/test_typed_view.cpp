@@ -189,10 +189,8 @@ TEST_F(TypedViewFixture, APointCloudIteratorReadsAViewAsItReadsTheMessage)
     size_t                                          count = 0;
     for (; fromMessage != fromMessage.end(); ++fromMessage, ++fromView, ++ringOfView) {
         ASSERT_TRUE(fromView != fromView.end());
-        float expected = 0;
-        float actual = 0;
-        std::memcpy(&expected, &*fromMessage, sizeof(float));
-        std::memcpy(&actual, &*fromView, sizeof(float));
+        const float expected = *fromMessage;
+        const float actual = *fromView;
         EXPECT_EQ(std::memcmp(&expected, &actual, sizeof(float)), 0);
         ++count;
     }
