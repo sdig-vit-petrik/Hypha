@@ -168,6 +168,13 @@ class Arrivals final : public Input<M>
         return this->index_;
     }
 
+    void forgetCleared() override
+    {
+        this->sampleCount_ = 0;
+        this->verdict_ = InputVerdict::NeverArrived;
+        detail::forgetJudgement(this->facts_, this->settings_.countsForHealth);
+    }
+
     ::HyphaStatus bind(HyphaCycle* cycle) override
     {
         const size_t budget = this->settings_.perStep.value_or(HYPHA_DEFAULT_ARRIVALS_PER_STEP);

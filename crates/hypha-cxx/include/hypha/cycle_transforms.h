@@ -63,6 +63,29 @@ class Transforms final : public Port
         return this->find(target, source, std::nullopt);
     }
 
+    /// @brief Forget the dynamic transforms when the step returns, as tf2's Buffer::clear()
+    ///        does; the static ones stay, since their publishers send them once. Lookups miss
+    ///        until a new transform arrives; the rest of this step still finds the old ones.
+    /// @throws std::logic_error outside a step. std::runtime_error when the C ABI refuses.
+    void clear()
+    {
+        detail::CaptureStore* const harness = this->harnessStore();
+        if (harness != nullptr) {
+            harness->clearAfterStep(*this, nullptr);
+            return;
+        }
+        if (this->image_ == nullptr) {
+            throw std::logic_error("hypha: Transforms::clear() outside a step");
+        }
+        const ::HyphaStatus status =
+            backend::cycleImageClear(this->image_, HYPHA_CYCLE_CLEAR_TRANSFORMS, this->index_);
+        if (status != HYPHA_STATUS_OK) {
+            throw std::runtime_error(
+                "hypha: Transforms::clear() refused with status " + std::to_string(status)
+            );
+        }
+    }
+
   private:
     friend class testing::StepHarness;
 

@@ -39,6 +39,9 @@ class CaptureStore
   public:
     virtual void* storeFor(const Port& port, void* (*make)(), void (*destroy)(void*)) = 0;
     virtual const HyphaTransformBuffer* transformsFor(const Port& port, int64_t cacheNanos) = 0;
+    /// Clear @p port when the step returns: @p forget drops an input's value; nullptr for a
+    /// Transforms port.
+    virtual void clearAfterStep(Port& port, void (*forget)(Port&)) = 0;
 
   protected:
     ~CaptureStore() = default;

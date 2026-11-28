@@ -25,6 +25,7 @@
 ///    deliverStatic(): the library code of a cycle's TF input looks them up;
 ///  - the bound of perStep() on the sends of a step;
 ///  - the service ports, whose peer is the test (hypha/testing/step_harness_services.h);
+///  - clear(): later steps find an input NeverArrived, and a Transforms port static-only;
 ///  - what a disabled port does: deliver(), set(), setStale() and setStagnant() on a
 ///    disabled input are refused, since a started cycle gives it no sample and never judges
 ///    it (setNeverArrived() is true of it and stays allowed); a disabled output counts the
@@ -32,8 +33,7 @@
 /// What it leaves out:
 ///  - a port that requires its topic, or sits on a Topic literal, is enabled without a
 ///    check of its table or name, where a start refuses a missing, empty or invalid one;
-///  - an enabled output reports a subscriber (hasSubscribers() is true), since no
-///    transport counts one;
+///  - an enabled output reports a subscriber (hasSubscribers() is true): no transport counts one;
 ///  - the node, the transport (no subscriber or publisher is opened, no sample crosses a
 ///    bus), the clock, and every key of a table but `topic`, `silence_ms` and the keys of a
 ///    service port (`per_step`, `outstanding`, `timeout_ms`). A `topic` that is not text
@@ -182,15 +182,7 @@ class StepHarness final
 
     /// @brief The port has no value at all.
     template <typename M>
-    void setNeverArrived(Latest<M>& port)
-    {
-        this->forget(port);
-        this->startCountersOver(port);
-        port.hasHeld_ = false;
-        port.fresh_ = false;
-        port.verdict_ = InputVerdict::NeverArrived;
-        StepHarness::judge(port, HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, false);
-    }
+    void setNeverArrived(Latest<M>& port);
 
     /// @brief The port delivers @p samples, oldest first, to the next step only.
     /// @throws std::logic_error when the port is disabled.
@@ -222,14 +214,7 @@ class StepHarness final
 
     /// @brief The port has no sample and never had one.
     template <typename M>
-    void setNeverArrived(Arrivals<M>& port)
-    {
-        this->forget(port);
-        this->startCountersOver(port);
-        port.sampleCount_ = 0;
-        port.verdict_ = InputVerdict::NeverArrived;
-        StepHarness::judge(port, HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, false);
-    }
+    void setNeverArrived(Arrivals<M>& port);
 
     /// @brief The Transforms port receives @p transforms on `/tf`: each later step looks
     ///        them up as a started cycle's TF input does, which keeps `cache` of history
@@ -260,6 +245,7 @@ class StepHarness final
         const EndStep endStep{this};
         this->runServices(time.now, [&step, &time, this] {
             std::forward<Step>(step)(time);
+            this->applyClears();
             this->rethrowLatched();
         });
     }
@@ -267,6 +253,9 @@ class StepHarness final
     /// @brief What the last step sent on @p port, in send order.
     template <typename M>
     const std::vector<M>& sent(const Output<M>& port) const;
+
+    /// @brief True when the last step called clear() on @p port.
+    bool cleared(const Port& port) const;
 
   private:
     struct Store
@@ -305,8 +294,9 @@ class StepHarness final
     /// The transforms a Transforms port holds, in a buffer the harness feeds.
     struct FedTransforms
     {
-        const Port*                    port;
-        backend::UniqueTransformBuffer buffer;
+        const Port*                       port;
+        backend::UniqueTransformBuffer    buffer;
+        std::vector<std::vector<uint8_t>> statics;
     };
 
     struct NodeStep
@@ -341,6 +331,8 @@ class StepHarness final
     static bool startWouldEnable(const detail::TopicSource& topic);
     void*       storeFor(const Port& port, void* (*make)(), void (*destroy)(void*)) override;
     const HyphaTransformBuffer* transformsFor(const Port& port, int64_t cacheNanos) override;
+    void                        clearAfterStep(Port& port, void (*forget)(Port&)) override;
+    void                        applyClears();
     void
     feed(Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms, bool isStatic);
     template <typename M>
@@ -387,13 +379,14 @@ class StepHarness final
     void rethrowLatched();
     void endStep() noexcept;
 
-    Cycle&                     cycle_;
-    std::vector<Store>         stores_;
-    std::vector<Pending>       pending_;
-    std::vector<Pending>       running_;
-    std::vector<Delivery>      deliveries_;
-    std::vector<Intake>        intakes_;
-    std::vector<FedTransforms> transforms_;
+    Cycle&                                         cycle_;
+    std::vector<Store>                             stores_;
+    std::vector<Pending>                           pending_;
+    std::vector<Pending>                           running_;
+    std::vector<Delivery>                          deliveries_;
+    std::vector<Intake>                            intakes_;
+    std::vector<FedTransforms>                     transforms_;
+    std::vector<std::pair<Port*, void (*)(Port&)>> clears_;
 };
 
 }  // namespace hypha::testing

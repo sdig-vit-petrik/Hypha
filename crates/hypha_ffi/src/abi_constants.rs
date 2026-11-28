@@ -45,6 +45,14 @@ same_as_node!(HYPHA_TF_AFTER_BUFFER, transforms);
 pub const HYPHA_TF_REFUSED: u32 = 6;
 same_as_node!(HYPHA_TF_REFUSED, transforms);
 
+/// `hypha_cycle_image_clear`: `index` names an input binding.
+pub const HYPHA_CYCLE_CLEAR_INPUT: u32 = 0;
+same_as_node!(HYPHA_CYCLE_CLEAR_INPUT, cycle::types);
+
+/// `hypha_cycle_image_clear`: `index` names a TF input (`hypha_cycle_bind_transforms`).
+pub const HYPHA_CYCLE_CLEAR_TRANSFORMS: u32 = 1;
+same_as_node!(HYPHA_CYCLE_CLEAR_TRANSFORMS, cycle::types);
+
 /// Freshness verdict: no sample admitted since the binding was created.
 pub const HYPHA_CYCLE_VERDICT_NEVER_ARRIVED: u32 = 0;
 same_as_node!(HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, cycle::types);

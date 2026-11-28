@@ -56,11 +56,11 @@ PROD_RATCHET = {
     "apps/hypha_tools/src/bin/hypha/top/ui.rs": 1361,
     "apps/hypha_tools/src/load/coordinator.rs": 1057,
     "apps/hypha_tools/src/bin/hypha/top/intercept_ui.rs": 859,
-    "crates/hypha_cycle/src/capture.rs": 857,
+    "crates/hypha_cycle/src/capture.rs": 814,
     "apps/hypha_ros_bridge/src/automatic_runtime.rs": 844,
     "apps/hypha_tools/src/bin/hypha/top/state.rs": 840,
     "crates/hypha_node/src/subscriber.rs": 740,
-    "crates/hypha_cycle/src/runtime.rs": 682,
+    "crates/hypha_cycle/src/runtime.rs": 614,
     "apps/hypha_tools/src/bin/hypha/top/graph_ui.rs": 670,
 }
 

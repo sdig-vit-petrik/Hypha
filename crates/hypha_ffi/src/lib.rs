@@ -56,10 +56,11 @@ pub use cycle::{
     hypha_cycle_bind_transforms, hypha_cycle_binding, hypha_cycle_commit, hypha_cycle_create,
     hypha_cycle_destroy, hypha_cycle_emission_commit, hypha_cycle_emission_reserve,
     hypha_cycle_expect_participant, hypha_cycle_health, hypha_cycle_image_alive,
-    hypha_cycle_image_binding, hypha_cycle_image_held, hypha_cycle_image_lookup_transform,
-    hypha_cycle_image_reject_sample, hypha_cycle_image_sample, hypha_cycle_image_set_ignored,
-    hypha_cycle_set_class_based, hypha_cycle_set_clock_driver, hypha_cycle_set_host_clock,
-    hypha_cycle_set_trigger, hypha_input_source_create, hypha_input_source_destroy,
+    hypha_cycle_image_binding, hypha_cycle_image_clear, hypha_cycle_image_held,
+    hypha_cycle_image_lookup_transform, hypha_cycle_image_reject_sample, hypha_cycle_image_sample,
+    hypha_cycle_image_set_ignored, hypha_cycle_set_class_based, hypha_cycle_set_clock_driver,
+    hypha_cycle_set_host_clock, hypha_cycle_set_trigger, hypha_input_source_create,
+    hypha_input_source_destroy,
 };
 pub use hypha_node::config::HyphaConfig;
 pub use hypha_node::cycle::{
@@ -105,14 +106,14 @@ pub use abi_constants::{
     HYPHA_CALL_TIMEOUT, HYPHA_CALL_TOO_LARGE, HYPHA_CONFIG_SOURCE_APPLICATION,
     HYPHA_CONFIG_SOURCE_COMMAND_LINE, HYPHA_CONFIG_SOURCE_DEFAULT, HYPHA_CONFIG_SOURCE_PARAMETER,
     HYPHA_CONFIG_VALUE_BOOL, HYPHA_CONFIG_VALUE_FLOAT, HYPHA_CONFIG_VALUE_INT,
-    HYPHA_CONFIG_VALUE_TEXT, HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, HYPHA_CYCLE_VERDICT_STALE,
-    HYPHA_CYCLE_VERDICT_USABLE, HYPHA_DEFAULT_ARRIVALS_PER_STEP,
-    HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS, HYPHA_DEFAULT_TF_CACHE_NANOS, HYPHA_FAULT_STAGNANT,
-    HYPHA_FAULT_STALE, HYPHA_NOT_CHECKED, HYPHA_PORT_INPUT, HYPHA_PORT_OUTPUT,
-    HYPHA_PORT_TOPIC_OPTIONAL, HYPHA_PORT_TOPIC_REQUIRED, HYPHA_RUN_REASON_DEADLINE,
-    HYPHA_RUN_REASON_RUNTIME_FAILED, HYPHA_RUN_REASON_SETUP_FAILED, HYPHA_RUN_REASON_STOPPED,
-    HYPHA_TF_AFTER_BUFFER, HYPHA_TF_BEFORE_BUFFER, HYPHA_TF_FOUND, HYPHA_TF_INVALID_FRAME,
-    HYPHA_TF_NOT_CONNECTED, HYPHA_TF_REFUSED, HYPHA_TF_UNKNOWN_FRAME,
+    HYPHA_CONFIG_VALUE_TEXT, HYPHA_CYCLE_CLEAR_INPUT, HYPHA_CYCLE_CLEAR_TRANSFORMS,
+    HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, HYPHA_CYCLE_VERDICT_STALE, HYPHA_CYCLE_VERDICT_USABLE,
+    HYPHA_DEFAULT_ARRIVALS_PER_STEP, HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS,
+    HYPHA_DEFAULT_TF_CACHE_NANOS, HYPHA_FAULT_STAGNANT, HYPHA_FAULT_STALE, HYPHA_NOT_CHECKED,
+    HYPHA_PORT_INPUT, HYPHA_PORT_OUTPUT, HYPHA_PORT_TOPIC_OPTIONAL, HYPHA_PORT_TOPIC_REQUIRED,
+    HYPHA_RUN_REASON_DEADLINE, HYPHA_RUN_REASON_RUNTIME_FAILED, HYPHA_RUN_REASON_SETUP_FAILED,
+    HYPHA_RUN_REASON_STOPPED, HYPHA_TF_AFTER_BUFFER, HYPHA_TF_BEFORE_BUFFER, HYPHA_TF_FOUND,
+    HYPHA_TF_INVALID_FRAME, HYPHA_TF_NOT_CONNECTED, HYPHA_TF_REFUSED, HYPHA_TF_UNKNOWN_FRAME,
 };
 pub use hypha_node::parameter_constraints::HyphaNumberConstraint;
 pub use hypha_node::parameter_parse::{HyphaConfigValue, HyphaParamResult};

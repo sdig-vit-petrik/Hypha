@@ -143,6 +143,10 @@ pub(crate) fn cycle_timer_tick(
     if step_outcome.answer.is_some() {
         apply_rejections(cycle_name, inputs, &state.port_names, runtime, supervision);
         apply_supervision(&state.input_rows, &state.input_options, runtime, supervision);
+        super::image::apply_clears(cycle_name, inputs, &state.port_names, runtime, supervision);
+        for input in &mut state.transforms {
+            input.apply_clear(cycle_name);
+        }
     }
     if let Some(duration_nanos) = step_outcome.duration_nanos {
         // An overrun is a host-time fact: under simulated time a slow step slows the clock.
@@ -276,7 +280,7 @@ fn apply_rejections(
 const UNDECODABLE_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The name of one input in a log line.
-fn input_subject(cycle_name: &str, port: &str, topic: &str) -> String {
+pub(super) fn input_subject(cycle_name: &str, port: &str, topic: &str) -> String {
     if port.is_empty() {
         format!("cycle '{cycle_name}' input ({topic})")
     } else {
@@ -567,6 +571,7 @@ pub(super) fn binding_view(
             age_rejections_total: capture.counters.age_rejections_total,
             latest_unavailable_iterations: capture.counters.latest_unavailable_iterations,
             usable_to_stale_transitions: capture.counters.usable_to_stale_transitions,
+            cleared_total: capture.counters.cleared_total,
         },
         held: HyphaCycleHeldReport {
             received_total: held.received_total,

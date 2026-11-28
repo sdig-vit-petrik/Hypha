@@ -62,6 +62,8 @@ pub(super) struct SupervisionCopy {
 pub(super) struct SupervisionUpdate {
     pub(super) alive: Option<u64>,
     pub(super) ignored: Option<bool>,
+    /// The step cleared the input: applied after it returns.
+    pub(super) clear: bool,
 }
 
 impl SupervisionCopy {
@@ -338,6 +340,37 @@ pub fn image_set_ignored(
     Ok(())
 }
 
+/// Asks to clear input `index` (`HYPHA_CYCLE_CLEAR_INPUT`) or the TF input `index`
+/// (`HYPHA_CYCLE_CLEAR_TRANSFORMS`) when the step returns; a repeat in one step asks once.
+/// The rest of the step still reads what it captured.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown kind or index, or a trigger port; `InvalidState`
+/// while the binding is borrowed.
+pub fn image_clear(view: &ImageView<'_>, kind: u32, index: u32) -> Result<(), Error> {
+    match kind {
+        super::types::HYPHA_CYCLE_CLEAR_INPUT => {
+            let capture = usize::try_from(index).ok().and_then(|i| view.captures.get(i));
+            // The pending samples of a trigger port are the steps its schedule plans.
+            if capture.is_none_or(hypha_cycle::BindingCapture::is_trigger) {
+                return Err(Error::InvalidArgument);
+            }
+            let cell = supervision_copy(view, index).ok_or(Error::InvalidArgument)?;
+            cell.try_borrow_mut().map_err(|_| Error::InvalidState)?.update.clear = true;
+            Ok(())
+        }
+        super::types::HYPHA_CYCLE_CLEAR_TRANSFORMS => {
+            let input = usize::try_from(index)
+                .ok()
+                .and_then(|i| view.transforms.get(i))
+                .ok_or(Error::InvalidArgument)?;
+            input.request_clear();
+            Ok(())
+        }
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
 /// The view of input `binding_index` in the step, after any rejection of the step.
 ///
 /// # Errors
@@ -434,5 +467,27 @@ pub(super) fn binding_report(capture: &hypha_cycle::BindingCapture) -> HyphaCycl
         lost_total: capture.counters.overrun_total,
         stale_since_capture: capture.stale_since_capture,
         stale_total: capture.counters.age_rejections_total,
+    }
+}
+
+/// Clear each input the finished step asked to clear, and log it once per clear.
+pub(super) fn apply_clears(
+    cycle_name: &str,
+    inputs: &[std::sync::Arc<super::source::CycleInputSource>],
+    port_names: &[String],
+    runtime: &mut hypha_cycle::CycleRuntime,
+    copies: &mut [std::cell::RefCell<SupervisionCopy>],
+) {
+    for (index, copy) in copies.iter_mut().enumerate() {
+        if !std::mem::take(&mut copy.get_mut().update.clear) {
+            continue;
+        }
+        let Ok(dropped) = runtime.clear_binding(index) else {
+            continue;
+        };
+        let topic = inputs.get(index).map_or("", |source| source.topic.as_str());
+        let port = port_names.get(index).map_or("", String::as_str);
+        let subject = super::tick::input_subject(cycle_name, port, topic);
+        log::info!(target: "hypha", "hypha: {subject} cleared: {dropped} pending sample(s) dropped");
     }
 }
