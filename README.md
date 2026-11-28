@@ -4,43 +4,44 @@
 [![release](https://img.shields.io/github/v/release/sdig-vit-petrik/Hypha)](https://github.com/sdig-vit-petrik/Hypha/releases)
 [![license](https://img.shields.io/github/license/sdig-vit-petrik/Hypha)](LICENSE)
 
-**Single-host shared-memory middleware for C++23 robotics nodes.**
+Shared-memory middleware for C++23 robotics nodes on one host.
 
-Hypha replaces the local ROS 1 data plane on a single robot with zero-copy `iceoryx2` shared memory, ROS 1-compatible message generation, explicit input freshness/supervision, and a small set of CLI tools — with no central master. The core runtime is written in Rust and delivered as a single shared library (`libhypha_ffi`) behind a C++23 SDK.
+Hypha replaces the local ROS 1 data plane of a robot. Nodes talk through `iceoryx2` shared
+memory, with no master process. Messages are generated from ROS 1 `.msg` and `.srv` files.
+Each input has a freshness rule. The runtime is Rust, shipped as one shared library
+(`libhypha_ffi`) under a C++23 SDK.
 
 ![C++ and Rust nodes share one iceoryx2 shared-memory segment on one host with no broker; bridge processes connect it to ROS 1 and Foxglove](docs/hypha.svg)
 
-## Scope
+## What it does
 
-Hypha covers local communication on one machine:
-- shared-memory publish/subscribe (with zero-copy loans and latched topics) and typed `.srv` services;
-- periodic and event-triggered C++23 cycle nodes with built-in staleness and stagnation checks;
-- ROS 1 `.msg`/`.srv` code generation (`hypha_msggen`) and a straightforward ROS 1 C++ migration path;
-- CLI tools (`hypha topic`, `top`, `record`, `play`, `launch`, `intercept`, `clean`, `load`) and separate bridge processes for ROS 1 and Foxglove.
+- Publish and subscribe over shared memory, with zero-copy loans and latched topics.
+- Typed services from `.srv` files.
+- Periodic and triggered cycle nodes that check each input for staleness and a stuck sender.
+- Code generation from ROS 1 `.msg` and `.srv` files (`hypha_msggen`), and a guide for
+  porting ROS 1 C++ nodes.
+- CLI tools: `hypha topic`, `top`, `record`, `play`, `launch`, `intercept`, `clean`, `load`.
+- Bridge processes for ROS 1 and Foxglove.
 
-Multi-host routing, complete ROS graph compatibility, actions, lifecycle nodes, and plugin ecosystems are out of scope. Network-facing code lives in separate bridge processes.
+Out of scope: more than one host, the full ROS graph API, actions and lifecycle nodes.
+Network code runs only in the bridge processes.
 
----
+## Requirements
 
-## Prerequisites
+- Ubuntu 26.04 (amd64 or arm64). macOS works for development.
+- GCC or Clang with C++23, and CMake 3.24 or newer.
+- A Rust toolchain (`rust-toolchain.toml`), only to build Hypha itself. Applications are
+  plain C++23.
 
-- **OS:** Ubuntu 26.04 (amd64 or arm64) is the supported target; macOS works for local development.
-- **C++:** GCC or Clang with **C++23** support, **CMake ≥ 3.24**.
-- **Rust:** stable toolchain (see `rust-toolchain.toml`) — only needed to build Hypha from source; application code is plain C++23.
-
----
-
-## Install (C++ SDK + CLI tools)
-
-Build and install the C++ SDK (`hypha::sdk`, standard message headers, `hypha_generate_messages()`) and the `hypha` CLI tools:
+## Install
 
 ```bash
 git clone https://github.com/sdig-vit-petrik/Hypha.git
 cd Hypha
-./install.sh            # installs into /usr/local (pass a custom prefix as $1)
+./install.sh            # into /usr/local, or pass a prefix
 ```
 
-Or pull Hypha directly into your CMake project with `FetchContent` (no global install needed):
+Or build it inside your CMake project:
 
 ```cmake
 include(FetchContent)
@@ -51,26 +52,14 @@ set(HYPHA_BUILD_EXAMPLES OFF)
 FetchContent_MakeAvailable(hypha)
 ```
 
----
-
-## Write a C++ Node
-
-### `CMakeLists.txt`
+## A first node
 
 ```cmake
 cmake_minimum_required(VERSION 3.24)
 project(my_robot_node LANGUAGES CXX)
-set(CMAKE_CXX_STANDARD 23)
-
 find_package(hypha REQUIRED)
-
-add_executable(doubler src/doubler.cpp)
-target_link_libraries(doubler PRIVATE hypha::sdk)
+hypha_add_node(doubler src/doubler.cpp)
 ```
-
-For custom `.msg`/`.srv` packages, call `hypha_generate_messages(my_msgs ...)` and link the generated target.
-
-### `src/doubler.cpp`
 
 ```cpp
 #include <hypha/hypha.h>
@@ -97,14 +86,15 @@ int main() {
   auto out = node.advertise<std_msgs::Float64>(hypha::Topic{"/output/data"});
   const Doubler doubler{&out};
   auto in = node.subscribe<std_msgs::Float64>(hypha::Topic{"/sensors/data"}, doubler);
-
-  return node.run().ok() ? 0 : 1; // runs until SIGINT / SIGTERM
+  return node.run().ok() ? 0 : 1; // runs until SIGINT or SIGTERM
 }
 ```
 
-For periodic or triggered nodes with TOML configuration and automatic input freshness checks, inherit from `hypha::CycleNode` — see [docs/cpp-api.md](docs/cpp-api.md) and [examples/](examples/README.md).
+A node with its own messages calls `hypha_generate_messages()`. A node that runs at a rate,
+or on its inputs, with a TOML file and checked inputs, derives from `hypha::CycleNode`
+([cpp-api.md](docs/cpp-api.md), [examples](examples/README.md)).
 
-Inspect a running system with the CLI:
+Look at the running system:
 
 ```bash
 hypha top
@@ -112,36 +102,32 @@ hypha topic list
 hypha topic echo /output/data
 ```
 
----
-
-## Building and Testing This Repository
+## Work on this repository
 
 ```bash
-./build.sh [--clean]            # Release build: library, C++ SDK, CLI tools, examples, tests
-./test.sh [--clean] [rust|cpp]  # Run clippy + Rust tests and/or C++ tests + installed SDK check
-./check.sh                      # Formatting, links, generated headers, dependency & size gates
-./scripts/format.sh             # Format Rust, C++, and Python in place
+./build.sh [--clean]            # library, SDK, tools, examples, tests
+./test.sh [--clean] [rust|cpp]  # clippy and Rust tests, C++ tests, installed-SDK check
+./check.sh                      # formatting, links, generated headers, size and dependency rules
+./scripts/format.sh             # format Rust, C++ and Python
 ```
 
-Docker builder/runtime images are defined in `docker/Dockerfile` (`./docker/build.sh builder|runtime`; run any gate inside the builder image with `scripts/in-image.sh ./check.sh`). Qualification tools (`scripts/coverage.sh`, `miri.sh`, `fuzz.sh`, `sanitize.sh`, `qualify.sh`) are documented in [docs/getting-started.md](docs/getting-started.md).
-
----
+The builder and runtime images are in `docker/Dockerfile` (`./docker/build.sh
+builder|runtime`). Run a gate in the builder image with `scripts/in-image.sh ./check.sh`.
+Coverage, Miri, fuzzing and sanitizers: [getting-started.md](docs/getting-started.md).
 
 ## Documentation
 
-| Guide | What it covers |
+| Document | Covers |
 |---|---|
-| [Getting Started](docs/getting-started.md) | Building, installing, CMake integration, troubleshooting shared memory |
-| [C++ API](docs/cpp-api.md) | `CycleNode`, ports, freshness/supervision, loans, timers, parameters, TF |
-| [ROS 1 Migration Guide](docs/ros1-migration-guide.md) | Porting ROS 1 C++ nodes to Hypha |
-| [Execution Model](docs/execution-model.md) | `WaitSet`, cycles, callbacks, timers, simulated time |
-| [CLI Tools](docs/tools.md) | `hypha topic`, `top`, `record`, `play`, `launch`, `intercept`, `clean`, `load` |
-| [Architecture](docs/architecture.md) & [C ABI](docs/interface-specification.md) | Layering, `libhypha_ffi` contract, wire frame format |
-| [Examples](examples/README.md) & [Apps](apps/README.md) | Runnable C++ nodes, CLI tools, ROS 1 bridge |
-| [Full Documentation Index](docs/README.md) | Requirements, failure analysis, safety manual, release policy |
+| [Getting started](docs/getting-started.md) | Build, install, CMake, shared-memory trouble |
+| [C++ API](docs/cpp-api.md) | Nodes, cycles, ports, input checks, loans, timers, parameters, TF, services |
+| [ROS 1 migration](docs/ros1-migration-guide.md) | Porting a ROS 1 C++ node |
+| [Execution model](docs/execution-model.md) | `WaitSet`, cycles, callbacks, timers, simulated time |
+| [CLI tools](docs/tools.md) | Every `hypha` command |
+| [Architecture](docs/architecture.md), [C ABI](docs/interface-specification.md) | Layers, the `libhypha_ffi` contract, the wire frame |
+| [Examples](examples/README.md), [apps](apps/README.md) | Runnable nodes, tools, the ROS 1 bridge |
+| [Index](docs/README.md) | Everything else: requirements, safety, releases |
 
----
+## Contributing and license
 
-## Contributing & License
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)).
