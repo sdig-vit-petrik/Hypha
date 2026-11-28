@@ -504,9 +504,10 @@ fn a_triggered_cycle_falls_back_when_the_trigger_is_silent() {
     let (cycle, publisher) = triggered(&fixture, &recorder, 50 * MILLIS, 8, 1);
     // A host fallback is scheduled on the monotonic clock, not on the wall clock.
     let before = hypha_clock_steady_now_nanos();
-    run_waitset_for(fixture.waitset, 130_000_000);
+    // Until two fallbacks ran, not for a fixed 130 ms: a loaded host may give the cycle its
+    // turns later, which the scheduled times below still judge exactly.
+    assert!(run_until(fixture.waitset, POLL_BOUND, || recorder.steps().len() >= 2));
     let steps = recorder.steps();
-    assert!(steps.len() >= 2, "{steps:?}");
     assert!(steps.iter().all(|step| step.samples == 0), "{steps:?}");
     assert!(steps.iter().all(|step| step.faults & HYPHA_FAULT_STALE != 0), "{steps:?}");
     assert!(steps[0].scheduled >= before + 50 * MILLIS, "{steps:?}");
