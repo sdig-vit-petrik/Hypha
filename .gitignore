@@ -63,25 +63,19 @@ coverage/
 /.cargo/git/
 /.cargo/registry/
 
-/.claude/*
-!/.claude/agents/
-/.claude/agents/*
-!/.claude/agents/hypha-rust.md
-!/.claude/agents/hypha-cxx.md
-!/.claude/settings.json
+# Local coding-agent overlays (installed via ./scripts/agent-hooks/install.sh)
+/CLAUDE.md
+/.agent-allowed-paths
+/.claude/
+/.gemini/
+/.agents/
+/.codex/
+/.github/agents/
+/.github/hooks/
+/.github/copilot-instructions.md
 .agent-logs/
 .opencode/
-/.gemini/*
-!/.gemini/settings.json
 .continue/
-/.agents/*
-!/.agents/hooks.json
-/.codex/*
-!/.codex/agents/
-/.codex/agents/*
-!/.codex/agents/hypha-rust.toml
-!/.codex/agents/hypha-cxx.toml
-!/.codex/hooks.json
 *.rsa
 *.rsa.pub
 /ca-bundle.crt

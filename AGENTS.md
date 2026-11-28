@@ -16,7 +16,7 @@ CLI and Antigravity use these same rules.
 - Work belongs to a GitHub issue. Name the branch `<type>/<issue>-<slug>` and end each commit message with `Refs #N`, or `Fixes #N` when it finishes the issue (`docs/release-policy.md` §7).
 - Update affected API or operating documentation in the same change. Report what changed, the checks run, and any remaining risk.
 - Stay inside this repository. A path outside it needs the owner's line in `.agent-allowed-paths` or `.agent-allowed-paths.local`; ask for it.
-- Hooks enforce part of these rules (`scripts/agent-hooks/README.md`). A blocked call means: follow the message; never work around it. Once per checkout: `git config core.hooksPath .githooks`; Codex needs its hooks trusted in `/hooks`; do not use Antigravity's allow-all mode here. The Claude Code hooks are tested; the other agents' are written from their docs and untested.
+- Hooks enforce part of these rules (`scripts/agent-hooks/README.md`). A blocked call means: follow the message; never work around it. Once per checkout: `./scripts/agent-hooks/install.sh` (links vendor configs and sets `core.hooksPath`); Codex needs its hooks trusted in `/hooks`; do not use Antigravity's allow-all mode here. The Claude Code hooks are tested; the other agents' are written from their docs and untested.
 
 ## Architecture
 
