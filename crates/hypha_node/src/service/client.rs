@@ -136,7 +136,7 @@ pub fn service_client_create(
     blocking: bool,
 ) -> Result<HyphaClient, Error> {
     crate::last_error::clear();
-    let state = open_state(node, decl, None)?;
+    let state = open_state(node, decl, None, None)?;
     let listener = match state.port.as_ref() {
         Some(port) => port.open_listener().map_err(Error::from)?,
         None => return Err(Error::InvalidState),
@@ -155,17 +155,20 @@ pub fn service_client_create(
 
 /// The state of a new client of `decl` on `node`: its port, its limit of calls in flight
 /// (the table's `outstanding`, else `outstanding`, else the policy's) and its call log.
+/// `label` names the client to its server (by default the node's name): a cycle's client
+/// gives its cycle and port, so the order of requests from one node has no tie.
 pub(crate) fn open_state(
     node: &HyphaNode,
     decl: &ServiceDecl<'_>,
     outstanding: Option<usize>,
+    label: Option<&str>,
 ) -> Result<ClientState, Error> {
     let resolved = super::spec::resolve(node, decl, Role::Client)?;
     let spec = &resolved.spec;
     let limit = resolved.outstanding.or(outstanding);
     let port = node
         .transport
-        .service_client(spec, limit, None)
+        .service_client(spec, limit, label)
         .map_err(|cause| super::spec::refuse_spec(&spec.name, &cause))?;
     let client_port = if decl.literal { spec.name.as_str() } else { decl.name };
     let log = CallLog::open(node, spec, client_port);
@@ -445,7 +448,8 @@ impl ClientState {
         if waiting && port.server_available() {
             let mut kept = Vec::with_capacity(self.calls.len());
             for mut call in std::mem::take(&mut self.calls) {
-                let stamp = hypha_time::now().nanos();
+                // Stamped with the time of its call, a step's for a call a step staged.
+                let stamp = call.sent_nanos;
                 match send(port, &mut call, stamp) {
                     // Held until the server takes it, or its deadline.
                     Ok(()) | Err(CallSendError::Busy { .. }) => kept.push(call),

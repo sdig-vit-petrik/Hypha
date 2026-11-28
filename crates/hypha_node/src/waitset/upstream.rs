@@ -30,6 +30,8 @@ pub(crate) struct UpstreamHold {
     input_ids: Vec<u128>,
     service_ids: Vec<u128>,
     progress_ids: Vec<u128>,
+    /// The service peers that report progress, as last found.
+    reporters: Vec<u128>,
 }
 
 /// The limits the upstream nodes of a replay cycle give now: those of its topic edges, and
@@ -37,6 +39,9 @@ pub(crate) struct UpstreamHold {
 pub(crate) struct Limits {
     pub(crate) topic: Limit,
     pub(crate) service: Limit,
+    /// The node ids of the service peers that report progress, sorted: the cut of a step
+    /// binds their requests and answers only.
+    pub(crate) reporters: Vec<u128>,
 }
 
 impl UpstreamHold {
@@ -73,16 +78,22 @@ impl UpstreamHold {
         {
             let Ok(progress) = node.progress_subscriber.try_lock() else {
                 let topic = self.hold.limit_while_busy(clocks(node));
-                return Ok(Limits { topic, service: self.hold.service_limit(clocks(node)) });
+                let service = self.hold.service_limit(clocks(node));
+                return Ok(Limits { topic, service, reporters: self.reporters.clone() });
             };
             let Some(progress) = progress.as_deref() else {
                 self.hold.clear_resolution();
+                self.reporters.clear();
                 return Ok(self.limits(node));
             };
             progress.port.publisher_node_ids(&mut self.progress_ids);
         }
         self.progress_ids.sort_unstable();
         self.progress_ids.dedup();
+        self.reporters.clear();
+        let progress_ids = &self.progress_ids;
+        let reporting = self.service_ids.iter().filter(|id| progress_ids.binary_search(id).is_ok());
+        self.reporters.extend(reporting);
         self.hold.resolve(
             &self.input_ids,
             &self.service_ids,
@@ -98,6 +109,7 @@ impl UpstreamHold {
         Limits {
             topic: self.hold.limit(clocks(node)),
             service: self.hold.service_limit(clocks(node)),
+            reporters: self.reporters.clone(),
         }
     }
 }

@@ -45,6 +45,8 @@ pub struct ReceivedRequest {
     pub client_node: String,
     /// The client's port label (its node name unless it gave one).
     pub client_port: String,
+    /// The client's node id; 0 when it cannot be read.
+    pub client_node_id: u128,
 }
 
 /// What a server counted. Each counter wraps.
@@ -80,8 +82,8 @@ pub struct Iox2Server {
     next_generation: u32,
     server_id: u64,
     counters: ServerCounters,
-    /// Who each client is, as requests name it: its id, node name and port label.
-    identities: Vec<(iceoryx2::identifiers::UniqueClientId, String, String)>,
+    /// Who each client is, as requests name it: its id, node name, port label and node id.
+    identities: Vec<(iceoryx2::identifiers::UniqueClientId, String, String, u128)>,
     server: RrServer,
     response_notifier: Notifier<Ipc>,
     service: StreamFactory,
@@ -272,7 +274,7 @@ impl Iox2Server {
                 );
                 continue;
             };
-            let (client_node, client_port) = self.identify(request.origin());
+            let (client_node, client_port, client_node_id) = self.identify(request.origin());
             let generation = self.next_generation;
             self.next_generation = self.next_generation.wrapping_add(1);
             let received = ReceivedRequest {
@@ -286,6 +288,7 @@ impl Iox2Server {
                 transport_sent_nanos: m.transport_sent_nanos,
                 client_node,
                 client_port,
+                client_node_id,
             };
             if let Some(slot) = self.slots.get_mut(index) {
                 *slot = Some(Slot {
@@ -318,10 +321,16 @@ impl Iox2Server {
         })
     }
 
-    /// The node name and the port label of the client `origin`, cached per client.
-    fn identify(&mut self, origin: iceoryx2::identifiers::UniqueClientId) -> (String, String) {
-        if let Some((_, node, port)) = self.identities.iter().find(|(id, _, _)| *id == origin) {
-            return (node.clone(), port.clone());
+    /// The node name, the port label and the node id of the client `origin`, cached per
+    /// client; empty names and id 0 when it cannot be read.
+    fn identify(
+        &mut self,
+        origin: iceoryx2::identifiers::UniqueClientId,
+    ) -> (String, String, u128) {
+        if let Some((_, node, port, id)) =
+            self.identities.iter().find(|(client, _, _, _)| *client == origin)
+        {
+            return (node.clone(), port.clone(), *id);
         }
         let mut found = None;
         self.service.dynamic_config().list_clients(|details| {
@@ -332,7 +341,7 @@ impl Iox2Server {
             CallbackProgression::Continue
         });
         let Some((node_id, port)) = found else {
-            return (String::new(), String::new());
+            return (String::new(), String::new(), 0);
         };
         let node = match super::open::peer_node(&self.service, node_id) {
             Ok(super::open::PeerNode::Alive { name, .. }) => name,
@@ -342,8 +351,8 @@ impl Iox2Server {
         if self.identities.len() >= self.policy.admitted_clients() {
             self.identities.clear();
         }
-        self.identities.push((origin, node.clone(), port.clone()));
-        (node, port)
+        self.identities.push((origin, node.clone(), port.clone(), node_id.value()));
+        (node, port, node_id.value())
     }
 
     /// The payload of a held request.

@@ -264,7 +264,8 @@ pub fn cycle_bind_client(
     crate::last_error::clear();
     let cycle = set.cycle(cycle)?;
     let mut registration = cycle.configurable(set)?;
-    registration.services.add_client(set.node(), decl)
+    let name = cycle.name().to_owned();
+    registration.services.add_client(set.node(), decl, &name)
 }
 
 /// Adds the queued input `binding_index` to the triggers of the uncommitted, period-less

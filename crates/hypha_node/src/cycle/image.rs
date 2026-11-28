@@ -139,6 +139,14 @@ pub fn emission_next_result(
     view.services.next_result(client)
 }
 
+/// The outcomes of its client `client` that successful steps did not read and dropped.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown client.
+pub fn emission_unread_results(view: &mut EmissionView<'_, '_>, client: u32) -> Result<u64, Error> {
+    view.services.unread_results(client)
+}
+
 /// Stage a call of its client `client` with `request`, sent after the step succeeds.
 ///
 /// # Errors

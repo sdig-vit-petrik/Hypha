@@ -2115,6 +2115,18 @@ HyphaStatus hypha_cycle_call(struct HyphaCycleEmission *emission,
                              size_t len,
                              uint32_t *status);
 
+// Read how many outcomes of the step's client `client` successful steps did not read and
+// dropped, since the client was bound: `out` receives the count, which wraps. A failed
+// step drops none: what it did not read goes to the next step.
+//
+// `InvalidArgument`: a null argument or an unknown client.
+//
+// # Safety
+// `emission` is the step's emission handle, during the step; `out` is writable.
+HyphaStatus hypha_cycle_unread_results(struct HyphaCycleEmission *emission,
+                                       uint32_t client,
+                                       uint64_t *out);
+
 // Subscribe to `topic` with `options` and record `data_type` (null: empty) in the node
 // introspection. A topic carries one stream for each schema: with `expected_md5` the
 // subscriber reads that schema's stream alone, and without one (length 0) every stream of

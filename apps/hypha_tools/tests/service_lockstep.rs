@@ -112,12 +112,44 @@ struct Peer {
     triggered: bool,
     serves: Option<String>,
     calls: Option<String>,
+    /// The topic of the `tick` trigger, [`TICK`] unless set.
+    tick: Option<String>,
+    /// The topic of the `out` output, which each step sends on.
+    output: Option<String>,
+    /// The rate of the second cycle of a pair or a twin.
+    pair_rate: Option<&'static str>,
 }
 
 impl Peer {
     fn new(label: &str, role: &'static str) -> Self {
         let name = format!("svc_{label}_{}", std::process::id());
-        Self { name, role, triggered: false, serves: None, calls: None }
+        Self {
+            name,
+            role,
+            triggered: false,
+            serves: None,
+            calls: None,
+            tick: None,
+            output: None,
+            pair_rate: None,
+        }
+    }
+
+    /// Triggered by `topic` instead of [`TICK`].
+    fn triggered_by(mut self, topic: &str) -> Self {
+        self.triggered = true;
+        self.tick = Some(topic.to_owned());
+        self
+    }
+
+    fn sending(mut self, topic: &str) -> Self {
+        self.output = Some(topic.to_owned());
+        self
+    }
+
+    fn pair_rate(mut self, hz: &'static str) -> Self {
+        self.pair_rate = Some(hz);
+        self
     }
 
     fn triggered(mut self) -> Self {
@@ -138,8 +170,9 @@ impl Peer {
     fn parameters(&self) -> PathBuf {
         let mut text = format!("[node]\nname = \"{}\"\n", self.name);
         if self.triggered {
-            let _ = write!(text, "[ports.inputs.tick]\ntopic = \"{TICK}\"\nsilence_ms = 1000\n");
-        } else {
+            let tick = self.tick.as_deref().unwrap_or(TICK);
+            let _ = write!(text, "[ports.inputs.tick]\ntopic = \"{tick}\"\nsilence_ms = 1000\n");
+        } else if self.role != "plain" {
             text.push_str("[cycle]\nrate_hz = 100.0\n");
         }
         if let Some(service) = &self.serves {
@@ -148,16 +181,21 @@ impl Peer {
         if let Some(service) = &self.calls {
             let _ = write!(text, "[ports.clients.call]\nservice = \"{service}\"\n");
         }
+        if let Some(topic) = &self.output {
+            let _ = write!(text, "[ports.outputs.out]\ntopic = \"{topic}\"\n");
+        }
         let path = scratch(&format!("{}.toml", self.name));
         std::fs::write(&path, text).expect("the peer's parameter file");
         path
     }
 
-    fn environment(&self) -> [(&'static str, &'static str); 3] {
-        [
+    fn environment(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
             ("HYPHA_USE_SIM_TIME", "1"),
             ("SERVICE_PEER_ROLE", self.role),
             ("SERVICE_PEER_TRIGGERED", if self.triggered { "1" } else { "0" }),
+            ("SERVICE_PEER_OUTPUT", if self.output.is_some() { "1" } else { "0" }),
+            ("SERVICE_PEER_PAIR_RATE", self.pair_rate.unwrap_or("")),
         ]
     }
 
@@ -192,11 +230,36 @@ struct Run {
 
 /// Replay the recording once with `peers`, and return each peer's fact lines.
 fn replay(peers: &[Peer], run: Run) -> Vec<Vec<String>> {
+    replay_full(peers, &[], run, "max", &mut || {})
+}
+
+/// [`replay`] at `--rate rate`, with `outside` started first and left out of `--nodes`
+/// (they take no part in the replay), and `during` run once the player started.
+fn replay_full(
+    peers: &[Peer],
+    outside: &[Peer],
+    run: Run,
+    rate: &str,
+    during: &mut dyn FnMut(),
+) -> Vec<Vec<String>> {
     require_peer();
     let recording = scratch("tick.mcap");
     write_recording(&recording);
     let outputs: Vec<PathBuf> =
         peers.iter().map(|peer| scratch(&format!("{}.out", peer.name))).collect();
+    let outside_outputs: Vec<PathBuf> =
+        outside.iter().map(|peer| scratch(&format!("{}.out", peer.name))).collect();
+    let others: Vec<Killed> =
+        outside.iter().zip(&outside_outputs).map(|(peer, output)| peer.spawn(output)).collect();
+    for output in &outside_outputs {
+        let began = Instant::now();
+        while !std::fs::read_to_string(output).unwrap_or_default().contains("start") {
+            assert!(began.elapsed() < Duration::from_secs(10), "a peer outside did not start");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    // Its setup has begun; give its endpoints a moment.
+    std::thread::sleep(Duration::from_millis(300));
     let children: Vec<Killed> =
         peers.iter().zip(&outputs).map(|(peer, output)| peer.spawn(output)).collect();
     let echo = run.echo.then(|| {
@@ -215,13 +278,14 @@ fn replay(peers: &[Peer], run: Run) -> Vec<Vec<String>> {
         .arg("play")
         .arg("--input")
         .arg(&recording)
-        .args(["--clock", "--start-utc", START, "--rate", "max", "--chunk", &chunk])
+        .args(["--clock", "--start-utc", START, "--rate", rate, "--chunk", &chunk])
         .arg("--nodes")
         .args(&names)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .expect("hypha play");
+    during();
     let began = Instant::now();
     let status = loop {
         if let Some(status) = player.try_wait().expect("the player status") {
@@ -237,14 +301,15 @@ fn replay(peers: &[Peer], run: Run) -> Vec<Vec<String>> {
     assert!(status.success(), "hypha play failed: {status}: {stderr}");
     drop(echo);
     drop(children);
+    drop(others);
     let lines = outputs
         .iter()
         .map(|output| facts(&std::fs::read_to_string(output).unwrap_or_default()))
         .collect();
-    for path in outputs.iter().chain([&recording]) {
+    for path in outputs.iter().chain(&outside_outputs).chain([&recording]) {
         let _ = std::fs::remove_file(path);
     }
-    for peer in peers {
+    for peer in peers.iter().chain(outside) {
         let _ = std::fs::remove_file(scratch(&format!("{}.toml", peer.name)));
     }
     lines
@@ -355,6 +420,131 @@ fn a_client_and_its_server_in_one_waitset_repeat_exactly() {
     assert_strict_hops(&first[0], 1);
     let larger = replay(&peers, Run { chunk_ms: 200, echo: false });
     assert_same(&first, &larger, "between --chunk 50 and --chunk 200");
+}
+
+/// Run `peers` at `--chunk 50` and `--chunk 200` and check both print the same lines.
+fn same_across_chunks(peers: &[Peer]) -> Vec<Vec<String>> {
+    let first = replay(peers, Run { chunk_ms: 50, echo: false });
+    let larger = replay(peers, Run { chunk_ms: 200, echo: false });
+    assert_same(&first, &larger, "between --chunk 50 and --chunk 200");
+    first
+}
+
+#[test]
+fn two_nodes_that_each_serve_and_call_the_other_repeat_exactly() {
+    let (a, b) = (service("mutual_a"), service("mutual_b"));
+    let peers = vec![
+        Peer::new("mutual_a", "mutual").serving(&a).calling(&b),
+        Peer::new("mutual_b", "mutual").serving(&b).calling(&a),
+    ];
+    let first = same_across_chunks(&peers);
+    assert_strict_hops(&first[0], 1);
+    assert_strict_hops(&first[1], 1);
+}
+
+#[test]
+fn a_pair_in_one_waitset_at_two_rates_repeats_exactly() {
+    let name = service("pair_rates");
+    // The client at 100 Hz, its server at 50 Hz: an answer is read at the client's first
+    // step after the server's first step after the call.
+    let peers =
+        vec![Peer::new("pair_rates", "pair").serving(&name).calling(&name).pair_rate("50.0")];
+    let first = same_across_chunks(&peers);
+    let calls: BTreeMap<String, i64> =
+        each(&first[0], "call").into_iter().map(|(t, text)| (text, t)).collect();
+    let results = each(&first[0], "result");
+    assert!(results.len() >= 10, "too few answers: {:?}", first[0]);
+    for (read, text) in results {
+        let (request, served) = text.split_once('@').unwrap();
+        let served: i64 = served.parse().unwrap();
+        let called = calls[request];
+        let first_server_step = (called / 20 + 1) * 20;
+        assert_eq!(served, first_server_step, "{text} called at {called}");
+        assert_eq!(read, served + 10, "{text} read at {read}");
+    }
+}
+
+#[test]
+fn a_triggered_client_and_a_rate_server_in_one_waitset_repeat_exactly() {
+    let name = service("pair_triggered");
+    let peers = vec![
+        Peer::new("pair_triggered", "pair")
+            .serving(&name)
+            .calling(&name)
+            .triggered()
+            .pair_rate("100.0"),
+    ];
+    let first = same_across_chunks(&peers);
+    assert_strict_hops(&first[0], 1);
+}
+
+/// A server triggered only by its client's output: the call of the client's step at `t`
+/// and the output that triggers the server at `t` carry one stamp, and the request is cut
+/// before `t`, so the server serves it at its next trigger, the client's next step.
+#[test]
+fn a_server_triggered_by_its_clients_topic_serves_at_the_next_trigger() {
+    let name = service("by_client");
+    let topic = format!("/svc_lockstep_{}_client_out", std::process::id());
+    let peers = vec![
+        Peer::new("by_client_client", "client").calling(&name).sending(&topic),
+        Peer::new("by_client_server", "server").serving(&name).triggered_by(&topic),
+    ];
+    let first = same_across_chunks(&peers);
+    assert_strict_hops(&first[0], 1);
+}
+
+#[test]
+fn two_cycles_of_one_node_on_one_port_name_are_served_in_one_order() {
+    let name = service("twin");
+    let peers = vec![
+        Peer::new("twin_client", "twin").calling(&name).pair_rate("100.0"),
+        Peer::new("twin_server", "server").serving(&name),
+    ];
+    let first = same_across_chunks(&peers);
+    let served = each(&first[1], "serve");
+    let tied = served.windows(2).any(|pair| pair[0].0 == pair[1].0);
+    assert!(tied, "the two clients' requests share a step: {served:?}");
+}
+
+/// A server that takes no part in the replay answers a cycle's client at the step after
+/// the answer came, not by its stamp: answered, never a timeout of an answer in hand.
+#[test]
+fn a_cycle_client_reads_the_answer_of_a_plain_server() {
+    let name = service("plain");
+    let outside = [Peer::new("plain_server", "plain").serving(&name)];
+    let peers = [Peer::new("plain_client", "client").calling(&name)];
+    let run = Run { chunk_ms: 50, echo: false };
+    let lines = replay_full(&peers, &outside, run, "max", &mut || {});
+    let results = each(&lines[0], "result");
+    assert!(results.len() >= 10, "too few answers: {:?}", lines[0]);
+    assert!(results.iter().all(|(_, text)| text.ends_with("@plain")), "{results:?}");
+}
+
+/// `hypha service call` stamps its request with the host's time, after the recording's: a
+/// cycle server serves it at its first step after it came.
+#[test]
+fn the_cli_calls_a_cycle_server_during_a_replay() {
+    let name = service("cli");
+    let peers = [Peer::new("cli_server", "server").serving(&name)];
+    let mut answer = None;
+    let mut call = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_hypha"))
+            .args(["service", "call", &name, "text: shell", "--timeout", "5"])
+            .output()
+            .expect("hypha service call");
+        answer = Some(output);
+    };
+    let run = Run { chunk_ms: 50, echo: false };
+    let lines = replay_full(&peers, &[], run, "0.5", &mut call);
+    let output = answer.expect("the call ran");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("shell@"),
+        "{}: {stdout} {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(each(&lines[0], "serve").iter().any(|(_, text)| text.starts_with("shell@")));
 }
 
 /// A pass of `--loop` restarts every participant; the second pass prints the first's lines.

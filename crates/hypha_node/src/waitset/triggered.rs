@@ -139,6 +139,8 @@ impl CallbackDispatcher<'_> {
         let (limit, admit) = if sim {
             let step = cycle.step_ref()?;
             let limits = state.upstream.settle(&step.inputs, &step.services, node)?;
+            drop(step);
+            cycle.step_mut()?.services.set_reporters(limits.reporters.clone());
             let strict = limits.service.min(local).through_strict_edge();
             let admit = limits.topic.clone().min(strict);
             (limits.topic, admit)
@@ -173,6 +175,7 @@ impl CallbackDispatcher<'_> {
                 }
             };
             let result = step_triggered(cycle, set, health, time, trigger, sim)?;
+            self.steps_run = self.steps_run.wrapping_add(1);
             decision = record_action(node, &mut self.failure, attachment, result);
             if decision != Progression::Continue {
                 break;

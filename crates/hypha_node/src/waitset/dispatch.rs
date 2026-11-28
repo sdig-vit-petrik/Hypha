@@ -48,6 +48,9 @@ pub(super) struct CallbackDispatcher<'a> {
     pub(super) due: Vec<Due>,
     /// The index in `due` of the item that runs now.
     pub(super) due_index: usize,
+    /// The replay and triggered steps this run ran; a repeat of the timers that adds none
+    /// ends the repeats (`service_edges`).
+    pub(super) steps_run: u64,
     /// Registrations a callback detached during this run: never dispatched again.
     pub(super) detached: &'a std::cell::RefCell<Vec<AttachmentId>>,
 }

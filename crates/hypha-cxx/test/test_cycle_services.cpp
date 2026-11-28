@@ -246,6 +246,9 @@ struct ClientCycle
     std::vector<int>                                        calledAt;
     std::vector<std::pair<int, hypha::CallResult<SetBool>>> results;
     int                                                     steps{0};
+    bool                                                    read{true};
+    int                                                     throwOnceCalled{0};
+    uint64_t                                                unread{0};
 
     struct Step
     {
@@ -254,7 +257,13 @@ struct ClientCycle
         void operator()(const hypha::CycleTime&) const
         {
             self->steps += 1;
-            for (auto& result : self->port.results()) {
+            self->unread = self->port.unreadResults();
+            if (self->throwOnceCalled > 0 && !self->calledAt.empty()) {
+                self->throwOnceCalled -= 1;
+                throw std::runtime_error("the client step failed before it read its outcomes");
+            }
+            for (auto& result :
+                 self->read ? self->port.results() : std::vector<hypha::CallResult<SetBool>>{}) {
                 self->results.emplace_back(self->steps, std::move(result));
             }
             for (; self->callNow > 0; --self->callNow) {
@@ -351,6 +360,110 @@ TEST_F(CycleServiceFixture, AServicePortOutsideAStepIsRefused)
     EXPECT_THROW(static_cast<void>(server.port.requests()), std::logic_error);
     EXPECT_THROW(static_cast<void>(client.port.call({.data = true})), std::logic_error);
     EXPECT_THROW(static_cast<void>(client.port.result()), std::logic_error);
+}
+
+TEST_F(CycleServiceFixture, AFailedStepPassesTheOutcomesItDidNotReadToTheNextStep)
+{
+    auto server = this->node->advertiseService<SetBool>(
+        hypha::Service{this->name("cycle_carried")}, [](hypha::Request<SetBool>& request) {
+            static_cast<void>(request.reply({.success = true, .message = "carried"}));
+        }
+    );
+    ClientCycle client(this->name("cycle_carried"));
+    client.callNow = 1;
+    client.throwOnceCalled = 25;  // 50 ms of failed steps, well past the answer
+    client.start(*this->node);
+    this->runUntil([&] {
+        return !client.results.empty();
+    });
+    ASSERT_EQ(client.results.size(), 1U);
+    ASSERT_TRUE(client.results[0].second.ok()) << client.results[0].second.description();
+    EXPECT_EQ(client.results[0].second.response().message, "carried");
+    EXPECT_GT(client.results[0].first, client.calledAt[0] + 25);
+    EXPECT_EQ(client.unread, 0U);
+}
+
+TEST_F(CycleServiceFixture, AnOutcomeAStepDoesNotReadIsDroppedAndCounted)
+{
+    auto server = this->node->advertiseService<SetBool>(
+        hypha::Service{this->name("cycle_unread")}, [](hypha::Request<SetBool>& request) {
+            static_cast<void>(request.reply({.success = true}));
+        }
+    );
+    ClientCycle client(this->name("cycle_unread"));
+    client.callNow = 1;
+    client.read = false;
+    client.start(*this->node);
+    this->runUntil([&] {
+        return client.unread > 0;
+    });
+    EXPECT_EQ(client.unread, 1U);
+    client.read = true;
+    const int now = client.steps;
+    this->runUntil([&] {
+        return client.steps > now + 10;
+    });
+    EXPECT_TRUE(client.results.empty()) << "a dropped outcome is not read again";
+}
+
+/// A plain server defers; a cycle step of the node answers the Deferred. The answer
+/// leaves after that step, and a failed step answers it as failed.
+class PlainDeferredFixture : public CycleServiceFixture
+{
+  protected:
+    hypha::CallResult<SetBool> run(bool failStep)
+    {
+        std::optional<hypha::Deferred<SetBool>> held;
+        auto                                    server = this->node->advertiseService<SetBool>(
+            hypha::Service{this->name(failStep ? "plain_deferred_failed" : "plain_deferred")},
+            [&held](hypha::Request<SetBool>& request) {
+                held.emplace(request.defer());
+            }
+        );
+        hypha::Cycle answering("answering");
+        answering.setRate(hypha::Hz(500.0));
+        hypha::Status replied = hypha::Status::NotAvailable;
+
+        struct Answer
+        {
+            std::optional<hypha::Deferred<SetBool>>* held;
+            hypha::Status*                           replied;
+            bool                                     failStep;
+
+            void operator()(const hypha::CycleTime&) const
+            {
+                if (!*held || !**held) {
+                    return;
+                }
+                *replied = (*held)->reply({.success = true, .message = "from a step"});
+                if (failStep) {
+                    throw std::runtime_error("the answering step failed on purpose");
+                }
+            }
+        };
+
+        EXPECT_TRUE(answering.start(*this->node, Answer{&held, &replied, failStep}).has_value());
+        const auto result = this->callAndRun(
+            this->name(failStep ? "plain_deferred_failed" : "plain_deferred"), true
+        );
+        EXPECT_EQ(replied, hypha::Status::Ok) << "reply() in the step returns at once";
+        return result;
+    }
+};
+
+TEST_F(PlainDeferredFixture, APlainServersDeferredAnsweredInAStepLeavesAfterIt)
+{
+    const auto result = this->run(false);
+    ASSERT_TRUE(result.ok()) << result.description();
+    EXPECT_EQ(result.response().message, "from a step");
+}
+
+TEST_F(PlainDeferredFixture, APlainServersDeferredAnsweredInAFailedStepIsLost)
+{
+    const auto result = this->run(true);
+    EXPECT_EQ(result.outcome(), hypha::CallOutcome::ServerLost) << result.description();
+    EXPECT_NE(result.description().find("server step failed"), std::string::npos)
+        << result.description();
 }
 
 }  // namespace

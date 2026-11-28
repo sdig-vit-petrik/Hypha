@@ -666,3 +666,25 @@ pub unsafe extern "C" fn hypha_cycle_call(
         unsafe { write_out(status, called.code()) }
     })
 }
+
+/// Read how many outcomes of the step's client `client` successful steps did not read and
+/// dropped, since the client was bound: `out` receives the count, which wraps. A failed
+/// step drops none: what it did not read goes to the next step.
+///
+/// `InvalidArgument`: a null argument or an unknown client.
+///
+/// # Safety
+/// `emission` is the step's emission handle, during the step; `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hypha_cycle_unread_results(
+    emission: *mut HyphaCycleEmission,
+    client: u32,
+    out: *mut u64,
+) -> HyphaStatus {
+    try_guard(|| {
+        unsafe { write_out(out, 0) }?;
+        let view = unsafe { handle_mut(emission.cast::<EmissionView<'_, '_>>()) }?;
+        let unread = hypha_node::safe::emission_unread_results(view, client)?;
+        unsafe { write_out(out, unread) }
+    })
+}

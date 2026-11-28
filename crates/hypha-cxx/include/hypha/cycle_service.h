@@ -204,9 +204,10 @@ class Requests final
 ///
 /// call() stages a call, sent after the step succeeds and stamped with its time; a step
 /// that fails sends nothing and the call ends NotSent. Each sent call ends in exactly one
-/// outcome, which one later step reads with result() or results(); an outcome its step does
-/// not read is dropped and counted. The calls in flight are at most `outstanding` of the
-/// table (default 1): another call() returns Busy. The timeout is the policy's (1 s),
+/// outcome, which one later step reads with result() or results(); an outcome a successful
+/// step does not read is dropped and counted (unreadResults()), and a failed step passes it
+/// on. The calls in flight are at most `outstanding` of the table (default 1): another
+/// call() returns Busy. The timeout is the policy's (1 s),
 /// hypha::timeout() in code, or `timeout_ms` of the table, counted in framework time.
 template <typename Srv>
 class Calls final
@@ -281,6 +282,21 @@ class Calls final
             all.push_back(std::move(*next));
         }
         return all;
+    }
+
+    /// @brief The outcomes that steps which succeeded did not read and dropped, since the
+    ///        start; a failed step drops none, and its next step holds them.
+    /// @throws std::logic_error outside a step.
+    uint64_t unreadResults()
+    {
+        this->requireStep(this->liveEmission(), this->harnessStore() != nullptr, "unreadResults()");
+        uint64_t            unread = 0;
+        const ::HyphaStatus status =
+            hypha_cycle_unread_results(this->liveEmission(), this->index_, &unread);
+        if (status != HYPHA_STATUS_OK) {
+            this->failStep(status, "hypha: unreadResults() of '" + this->portName() + "' failed");
+        }
+        return unread;
     }
 
     /// What the last call() returned; Sent before the first.

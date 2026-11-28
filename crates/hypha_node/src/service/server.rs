@@ -139,11 +139,32 @@ pub(crate) fn begin_step_answers() {
 pub(crate) fn end_step_answers(succeeded: bool, stamp: i64) {
     let staged = STEP_ANSWERS.with(|answers| answers.borrow_mut().take()).unwrap_or_default();
     for StagedAnswer { server, handle, answer } in staged {
-        let _ = if succeeded {
+        let sent = if succeeded {
             send_owned(&server, handle, &answer, stamp)
         } else {
             fail_handle(&server, handle, STEP_FAILED, stamp)
         };
+        log_unsent(&server, sent);
+    }
+}
+
+/// Log an answer that could not leave after its step: the step's `reply()` had returned.
+fn log_unsent(server: &Weak<ServerCore>, sent: Option<Result<(), ReplyError>>) {
+    let name = server.upgrade().map_or_else(String::new, |core| core.name.clone());
+    match sent {
+        // Sent; or too large, refused to the client with the sizes and reported to the step
+        // at reply().
+        Some(Ok(()) | Err(ReplyError::TooLarge { .. })) => {}
+        // The client left: it has its outcome already, and the server counts it abandoned.
+        Some(Err(ReplyError::Disconnected | ReplyError::UnknownRequest)) => {
+            log::info!(target: "hypha", "hypha: service '{name}': an answer given in a step found its client gone");
+        }
+        Some(Err(ReplyError::Port(cause))) => {
+            log::warn!(target: "hypha", "hypha: service '{name}': an answer given in a step could not be sent after it: {cause}");
+        }
+        None => {
+            log::info!(target: "hypha", "hypha: service '{name}': an answer given in a step found its server gone");
+        }
     }
 }
 
@@ -189,14 +210,14 @@ impl HyphaRequest {
             return;
         }
         if !succeeded {
-            let _ = fail_handle(&self.server, self.handle, STEP_FAILED, stamp);
+            log_unsent(&self.server, fail_handle(&self.server, self.handle, STEP_FAILED, stamp));
             return;
         }
         let answer = staged.unwrap_or_else(|| {
             self.count_unanswered("a cycle step read the request and did not answer it");
             OwnedAnswer::Refuse("the server's step read the request and did not answer it".into())
         });
-        let _ = send_owned(&self.server, self.handle, &answer, stamp);
+        log_unsent(&self.server, send_owned(&self.server, self.handle, &answer, stamp));
     }
 
     fn count_unanswered(&self, why: &str) {

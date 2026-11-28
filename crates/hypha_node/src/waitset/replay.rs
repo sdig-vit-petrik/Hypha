@@ -154,6 +154,8 @@ impl CallbackDispatcher<'_> {
         let upstream = upstream_of(self.registrations, attachment)?;
         let step = cycle.step_ref()?;
         let limits = upstream.settle(&step.inputs, &step.services, node)?;
+        drop(step);
+        cycle.step_mut()?.services.set_reporters(limits.reporters);
         Ok(limits.topic.min(limits.service).min(local))
     }
 
@@ -171,6 +173,7 @@ impl CallbackDispatcher<'_> {
             return self.fail(attachment, HyphaStatus::from(status));
         }
         let result = invoke_cycle(self.health, cycle, self.set, 0);
+        self.steps_run = self.steps_run.wrapping_add(1);
         // Clearing it here keeps a step that never ran from leaking its cut.
         if let Ok(mut step) = cycle.step_mut() {
             step.input_cut = None;

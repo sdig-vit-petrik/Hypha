@@ -135,8 +135,9 @@ pub use service::{
     HyphaClientStatus, HyphaRequestView, HyphaServeCallback, HyphaServiceDesc, HyphaServicePolicy,
     hypha_client_call, hypha_client_status, hypha_client_wait_for_server, hypha_cycle_bind_client,
     hypha_cycle_bind_server, hypha_cycle_call, hypha_cycle_next_result, hypha_cycle_requests,
-    hypha_request_answer, hypha_request_defer, hypha_request_destroy, hypha_service_client_create,
-    hypha_service_client_destroy, hypha_service_server_create, hypha_service_server_destroy,
+    hypha_cycle_unread_results, hypha_request_answer, hypha_request_defer, hypha_request_destroy,
+    hypha_service_client_create, hypha_service_client_destroy, hypha_service_server_create,
+    hypha_service_server_destroy,
 };
 pub use subscriber::{
     hypha_subscribe_typed, hypha_subscriber_counters, hypha_subscriber_destroy,

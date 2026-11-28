@@ -696,6 +696,13 @@ static ROWS: &[Row] = rows! {
         assert_eq!(found, 0, "a refused read writes found first");
         assert_eq!(unsafe { hypha_cycle_next_result(null_mut(), 0, Some(done), null_mut(), null_mut()) }, INVALID);
     }
+    hypha_cycle_unread_results => |_live| {
+        let mut unread = 9_u64;
+        // SAFETY: a null emission is refused before anything is read.
+        assert_eq!(unsafe { hypha_cycle_unread_results(null_mut(), 0, &raw mut unread) }, INVALID);
+        assert_eq!(unread, 0, "a refused read writes 0 first");
+        assert_eq!(unsafe { hypha_cycle_unread_results(null_mut(), 0, null_mut()) }, INVALID);
+    }
     hypha_cycle_call => |_live| {
         let mut status = 0_u32;
         // SAFETY: a null emission is refused before the request is read.

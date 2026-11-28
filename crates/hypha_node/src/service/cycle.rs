@@ -10,6 +10,11 @@
 //! A call is an output of a step: staged in the step, sent after the step succeeds, stamped
 //! with the step's time. Its outcome is an input of a later step, cut like a request. A step
 //! that fails sends nothing: its answers end as failed (`ServerLost`), its calls `NotSent`.
+//!
+//! The cut binds only a peer that takes part in the replay, one that reports its progress:
+//! a request of a tool or a plain node, or an answer of a server that does not report, is
+//! read at the first step after it came, whatever its stamp. That is not deterministic,
+//! and it is logged once per port.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -26,6 +31,9 @@ use crate::status::Error;
 /// The requests a cycle step takes when its server's table names no `per_step`.
 pub const DEFAULT_REQUESTS_PER_STEP: usize = 8;
 
+/// The longest label a client gives its server: iceoryx2's port names.
+const MAX_CLIENT_LABEL: usize = 64;
+
 /// The calls in flight of a `Calls` port when its table names no `outstanding`.
 pub const DEFAULT_CALLS_OUTSTANDING: usize = 1;
 
@@ -36,6 +44,11 @@ pub struct CycleServices {
     clients: Vec<CycleClient>,
     /// The clock of the step that runs now; `None` between steps.
     step: Option<StepClock>,
+    /// The node ids of the service peers that take part in the replay, sorted, as the
+    /// upstream hold found them last: the cut binds their requests and answers only.
+    reporters: Vec<u128>,
+    /// Whether a service peer of this node outside the cycle's `WaitSet` was logged.
+    outside_waitset_logged: std::cell::Cell<bool>,
 }
 
 /// The clock of one step.
@@ -66,6 +79,8 @@ struct Queued {
 
 struct CycleServer {
     core: Arc<ServerCore>,
+    /// Whether a request from outside the replay was logged.
+    outside_logged: bool,
     per_step: usize,
     /// Requests received and not yet read by a step, in step order.
     queued: Vec<Queued>,
@@ -75,13 +90,17 @@ struct CycleServer {
 
 struct CycleClient {
     state: Mutex<ClientState>,
+    /// The service it calls.
+    service: String,
+    /// Whether an answer from a server outside the replay was logged.
+    outside_logged: bool,
     /// Requests the step that runs now called with.
     staged: Vec<Vec<u8>>,
     /// The outcomes the step that runs now may read, in call order.
     results: VecDeque<CallResult>,
     /// Outcomes of calls a failed step staged, for the next step.
     next: Vec<Finished>,
-    /// Outcomes no step read, dropped at the end of their step.
+    /// Outcomes a successful step did not read, dropped after it.
     unread: u64,
     unread_logged: bool,
 }
@@ -110,6 +129,7 @@ impl CycleServices {
         let index = u32::try_from(self.servers.len()).map_err(|_| Error::ResourceLimit)?;
         self.servers.push(CycleServer {
             core: ServerCore::new(name, port),
+            outside_logged: false,
             per_step,
             queued: Vec::new(),
             taken: None,
@@ -117,16 +137,28 @@ impl CycleServices {
         Ok(index)
     }
 
-    /// Add a client of `decl` on `node`; returns its index among the cycle's clients.
+    /// Add a client of `decl` on `node` to the cycle `cycle`; returns its index among the
+    /// cycle's clients. Its server knows it as `<index>/<cycle>`, at most
+    /// [`MAX_CLIENT_LABEL`] bytes: the cycle's names are unique in its `WaitSet`, so two
+    /// cycles of one node do not tie in the order of requests.
     pub(crate) fn add_client(
         &mut self,
         node: &HyphaNode,
         decl: &ServiceDecl<'_>,
+        cycle: &str,
     ) -> Result<u32, Error> {
-        let state = super::client::open_state(node, decl, Some(DEFAULT_CALLS_OUTSTANDING))?;
         let index = u32::try_from(self.clients.len()).map_err(|_| Error::ResourceLimit)?;
+        let mut label = format!("{index}/{cycle}");
+        while label.len() > MAX_CLIENT_LABEL {
+            label.pop();
+        }
+        let outstanding = Some(DEFAULT_CALLS_OUTSTANDING);
+        let state = super::client::open_state(node, decl, outstanding, Some(&label))?;
+        let service = state.name().to_owned();
         self.clients.push(CycleClient {
             state: Mutex::new(state),
+            service,
+            outside_logged: false,
             staged: Vec::new(),
             results: VecDeque::new(),
             next: Vec::new(),
@@ -146,18 +178,42 @@ impl CycleServices {
         self.servers.iter().map(|server| server.core.name())
     }
 
-    /// The services the cycle calls.
-    pub(crate) fn called(&self) -> Vec<String> {
-        self.clients.iter().map(|client| crate::locked(&client.state).name().to_owned()).collect()
+    /// The services the cycle calls, as they were bound.
+    fn called(&self) -> impl Iterator<Item = &str> {
+        self.clients.iter().map(|client| client.service.as_str())
     }
 
-    /// True when this cycle and `other` call each other's services, either way.
+    /// True when this cycle and `other` call each other's services, either way. Names
+    /// fixed at bind: no lock, no allocation.
     pub(crate) fn is_peer_of(&self, other: &Self) -> bool {
-        let serves = |a: &Self, b: &Self| {
-            let called = b.called();
-            a.served().any(|name| called.iter().any(|other| other == name))
-        };
+        let serves = |a: &Self, b: &Self| a.served().any(|name| b.called().any(|c| c == name));
         serves(self, other) || serves(other, self)
+    }
+
+    /// Keep the node ids of the service peers that take part in the replay, from the
+    /// upstream hold of the cycle's turn.
+    pub(crate) fn set_reporters(&mut self, reporters: Vec<u128>) {
+        self.reporters = reporters;
+    }
+
+    /// Whether a peer that takes part in the replay is the node with id `node`.
+    pub(crate) fn has_reporter(&self, node: u128) -> bool {
+        self.reporters.binary_search(&node).is_ok()
+    }
+
+    /// Log once that a service peer of this node is no cycle of the cycle's `WaitSet`.
+    pub(crate) fn warn_outside_waitset(&self, cycle: &str) {
+        if !self.outside_waitset_logged.replace(true) {
+            log::warn!(target: "hypha", "hypha: cycle '{cycle}': a server or a client of its services is in this node but no cycle of its WaitSet (another WaitSet, or a plain callback): no hold orders their steps, so a replay of them is not deterministic (logged once per cycle)");
+        }
+    }
+
+    /// The outcomes that successful steps of client `client` did not read and dropped.
+    ///
+    /// # Errors
+    /// `InvalidArgument` for an unknown client.
+    pub fn unread_results(&mut self, client: u32) -> Result<u64, Error> {
+        Ok(self.client(client)?.unread)
     }
 
     /// Push the node ids of the cycle's service peers now onto `ids`: the clients of its
@@ -201,7 +257,18 @@ impl CycleServices {
         }
         for client in &mut self.clients {
             let mut finished = std::mem::take(&mut client.next);
-            finished.extend(crate::locked(&client.state).drive(scheduled, Some(transport), cut));
+            let mut state = crate::locked(&client.state);
+            let mut server = Vec::new();
+            state.server_node_ids(&mut server);
+            let outside = cut.is_some()
+                && server.first().is_some_and(|id| self.reporters.binary_search(id).is_err());
+            if outside && !client.outside_logged {
+                client.outside_logged = true;
+                log::warn!(target: "hypha", "hypha: service '{}': its server takes no part in the replay, so its answers are read at the first step after they come, not by their stamp: not deterministic (logged once per port)", client.service);
+            }
+            let client_cut = if outside { None } else { cut };
+            finished.extend(state.drive(scheduled, Some(transport), client_cut));
+            drop(state);
             finished.sort_by_key(|(_, _, order)| *order);
             client.results = finished.into_iter().map(|(_, result, _)| result).collect();
         }
@@ -236,14 +303,22 @@ impl CycleServices {
                 }
             }
             drop(state);
+            if !succeeded {
+                // A failed step's outcomes go to the next step, before its own NotSent ones.
+                let carried = std::mem::take(&mut client.results)
+                    .into_iter()
+                    .map(|result| (None, result, 0))
+                    .chain(std::mem::take(&mut client.next));
+                client.next = carried.collect();
+                continue;
+            }
             let unread = client.results.len();
             client.results.clear();
             if unread > 0 {
                 client.unread = client.unread.wrapping_add(u64::try_from(unread).unwrap_or(0));
                 if !client.unread_logged {
                     client.unread_logged = true;
-                    let name = crate::locked(&client.state).name().to_owned();
-                    log::info!(target: "hypha", "hypha: cycle '{cycle}': {unread} outcomes of calls to '{name}' were not read by their step and are dropped (logged once per port)");
+                    log::warn!(target: "hypha", "hypha: cycle '{cycle}': {unread} outcomes of calls to '{}' were not read by their step and are dropped; Calls::unreadResults() counts them (logged once per port)", client.service);
                 }
             }
         }
@@ -259,27 +334,35 @@ impl CycleServices {
         let clock = self.step.ok_or(Error::InvalidState)?;
         let index = usize::try_from(server).map_err(|_| Error::InvalidArgument)?;
         let server = self.servers.get_mut(index).ok_or(Error::InvalidArgument)?;
-        let taken = server.taken.get_or_insert_with(|| {
-            let due = server
-                .queued
-                .iter()
-                .take_while(|queued| {
-                    let stamp = i64::try_from(queued.received.framework_sent_nanos).unwrap_or(0);
-                    clock.cut.is_none_or(|cut| stamp < cut)
-                })
-                .count()
-                .min(server.per_step);
-            server
-                .queued
-                .drain(..due)
-                .map(|Queued { received, payload }| StepRequest {
+        let reporters = &self.reporters;
+        if server.taken.is_none() {
+            let mut outside = false;
+            let mut taken = Vec::new();
+            let mut kept = Vec::with_capacity(server.queued.len());
+            for queued in std::mem::take(&mut server.queued) {
+                let stamp = i64::try_from(queued.received.framework_sent_nanos).unwrap_or(0);
+                let reports = reporters.binary_search(&queued.received.client_node_id).is_ok();
+                let due = clock.cut.is_none_or(|cut| stamp < cut || !reports);
+                if !due || taken.len() >= server.per_step {
+                    kept.push(queued);
+                    continue;
+                }
+                outside |= clock.cut.is_some() && !reports;
+                let Queued { received, payload } = queued;
+                taken.push(StepRequest {
                     request: Box::new(HyphaRequest::of_step(&server.core, received.handle)),
                     payload,
                     client_node: received.client_node,
-                })
-                .collect()
-        });
-        Ok(taken.as_mut_slice())
+                });
+            }
+            server.queued = kept;
+            if outside && !server.outside_logged {
+                server.outside_logged = true;
+                log::warn!(target: "hypha", "hypha: service '{}': a client that takes no part in the replay (a tool or a plain node) is served at the first step after its request came, not by its stamp: not deterministic (logged once per server)", server.core.name());
+            }
+            server.taken = Some(taken);
+        }
+        Ok(server.taken.as_mut().map_or(&mut [][..], Vec::as_mut_slice))
     }
 
     /// The next outcome of client `client` that the step that runs now reads, in call order;
@@ -326,11 +409,15 @@ impl CycleServices {
 
 /// The order in which a server's steps read requests: stamp, then client node name, then
 /// client port name, then sequence. Names, unlike ids, are the same on every run.
+///
+/// A cycle's client names itself `<index>/<cycle>`, so two cycles of one node do not tie; the
+/// client's per-run id breaks what is left, a client whose node cannot be read.
 fn step_order(a: &ReceivedRequest, b: &ReceivedRequest) -> std::cmp::Ordering {
-    (a.framework_sent_nanos, &a.client_node, &a.client_port, a.sequence).cmp(&(
+    (a.framework_sent_nanos, &a.client_node, &a.client_port, a.sequence, a.client).cmp(&(
         b.framework_sent_nanos,
         &b.client_node,
         &b.client_port,
         b.sequence,
+        b.client,
     ))
 }
