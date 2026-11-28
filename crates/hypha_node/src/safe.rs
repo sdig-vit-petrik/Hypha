@@ -28,6 +28,7 @@ pub use crate::loan::{
 };
 pub use crate::metrics::{node_metrics, subscriber_metrics};
 pub use crate::node::{HyphaNode, node_create, node_destroy, node_name, node_ok, node_shutdown};
+pub use crate::node_checks::{HyphaNodeCheck, check_row, node_set_checks};
 pub use crate::node_discovery::{
     GraphWatch, ListedNode, ListedServicePort, graph_watch, list_nodes, list_service_ports,
 };

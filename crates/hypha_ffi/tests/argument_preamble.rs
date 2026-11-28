@@ -293,6 +293,46 @@ static ROWS: &[Row] = rows! {
         );
         assert!(length > 0);
     }
+    hypha_node_set_checks => |live| {
+        let name = c_text("Device");
+        let one = HyphaNodeCheck {
+            name: name.as_ptr(),
+            name_len: 6,
+            level: 0,
+            message: null(),
+            message_len: 0,
+        };
+        assert_eq!(unsafe { hypha_node_set_checks(null(), 1, &raw const one, 1) }, INVALID);
+        assert_eq!(
+            unsafe { hypha_node_set_checks(live.node, 1, null(), 1) },
+            INVALID,
+            "a null array with a count"
+        );
+        let null_name = HyphaNodeCheck { name: null(), ..one };
+        assert_eq!(
+            unsafe { hypha_node_set_checks(live.node, 1, &raw const null_name, 1) },
+            INVALID,
+            "a null name"
+        );
+        let null_message = HyphaNodeCheck { message_len: 3, ..one };
+        assert_eq!(
+            unsafe { hypha_node_set_checks(live.node, 1, &raw const null_message, 1) },
+            INVALID,
+            "a null message with a length"
+        );
+        let not_utf8 = [0xff_u8, 0xfe];
+        let bad_text = HyphaNodeCheck { name: not_utf8.as_ptr().cast(), name_len: 2, ..one };
+        assert_eq!(
+            unsafe { hypha_node_set_checks(live.node, 1, &raw const bad_text, 1) },
+            INVALID,
+            "a name that is not UTF-8"
+        );
+        assert_eq!(
+            unsafe { hypha_node_set_checks(live.node, 1, null(), 0) },
+            HyphaStatus::Ok,
+            "no checks need no array"
+        );
+    }
     hypha_last_error => |_live| {
         assert_eq!(unsafe { hypha_last_error(null_mut(), 0, null_mut()) }, INVALID);
     }

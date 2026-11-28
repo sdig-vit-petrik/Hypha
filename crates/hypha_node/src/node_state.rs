@@ -4,10 +4,13 @@
 //! counted binding that never arrived is not ok, else `DEGRADED` while any counted
 //! binding is not ok, else `INPUTS_USABLE`. Bindings of one stream (one topic, type and
 //! MD5) give one input with the worst verdict; two schemas of one topic are two inputs.
-//! Reading the state has no side effect.
+//! A check the application reports (`node_checks`) at `ERROR` or `STALE` counts as a
+//! counted binding that is not ok: the node is `DEGRADED`, or `WAITING` when an input never
+//! arrived. A `WARN` check shows in the state and changes nothing else. Reading the state
+//! has no side effect.
 
 use hypha_core::introspection::{EndpointRow, InputBindingRow, InputRole};
-use hypha_msgs::hypha_msgs::{CycleState, NodeState, RequiredInput, TopicSchema};
+use hypha_msgs::hypha_msgs::{CycleState, NodeCheck, NodeState, RequiredInput, TopicSchema};
 
 use crate::cycle::InputCounts;
 use crate::cycle::{
@@ -59,12 +62,18 @@ struct Judged {
     other_schemas: Option<Vec<TopicSchema>>,
 }
 
-/// The state that the judged bindings imply for `node`. A stream's row takes the verdict
-/// and age of its worst binding.
-fn state_of(node: &str, judged: &[Judged]) -> NodeState {
+/// Whether a check says the node cannot do its work: `ERROR`, and `STALE` (a check that
+/// cannot say is not one that passed). A level this code does not know is a fault too.
+fn blocks_readiness(check: &NodeCheck) -> bool {
+    !matches!(check.level, NodeCheck::OK | NodeCheck::WARN)
+}
+
+/// The state that the judged bindings and the application's checks imply for `node`. A
+/// stream's row takes the verdict and age of its worst binding.
+fn state_of(node: &str, judged: &[Judged], checks: Vec<NodeCheck>) -> NodeState {
     let mut inputs: Vec<RequiredInput> = Vec::new();
     let mut waiting = false;
-    let mut degraded = false;
+    let mut degraded = checks.iter().any(blocks_readiness);
     for binding in judged {
         if !binding.ok {
             degraded = true;
@@ -118,7 +127,7 @@ fn state_of(node: &str, judged: &[Judged]) -> NodeState {
     } else {
         NodeState::INPUTS_USABLE
     };
-    NodeState { node: node.to_owned(), state, inputs, ..NodeState::default() }
+    NodeState { node: node.to_owned(), state, inputs, checks, ..NodeState::default() }
 }
 
 fn judged_from(
@@ -215,13 +224,14 @@ fn judge(
     (judged, rows)
 }
 
-/// The `~/state` message of `node` now: the input verdicts of its cycles, its callback
-/// counts, the log engine's losses and whether the process runs on simulated time.
+/// The `~/state` message of `node` now: the input verdicts of its cycles, the checks of its
+/// application, its callback counts, the log engine's losses and whether the process runs on simulated time.
 #[must_use]
 pub fn node_state(node: &HyphaNode) -> NodeState {
     let snapshot = node.introspection.snapshot();
     let (judged, cycles) = judge(node, &snapshot.input_bindings, &snapshot.subscribers);
-    let mut state = state_of(&snapshot.identity.node, &judged);
+    let checks = crate::locked(&node.checks).all();
+    let mut state = state_of(&snapshot.identity.node, &judged, checks);
     let (invoked, failures, slow) = node.health.callback_counts();
     state.callbacks_invoked = invoked;
     state.callback_failures = failures;
@@ -238,6 +248,15 @@ pub fn node_state(node: &HyphaNode) -> NodeState {
 mod tests {
     use super::*;
 
+    /// The state of a node with no application checks.
+    fn inputs_state(node: &str, judged: &[Judged]) -> NodeState {
+        state_of(node, judged, Vec::new())
+    }
+
+    fn check(name: &str, level: u8) -> NodeCheck {
+        NodeCheck { name: name.to_owned(), level, message: format!("{name} says {level}") }
+    }
+
     fn judged(rows: &[(&str, u8, bool)]) -> Vec<Judged> {
         rows.iter()
             .map(|(topic, verdict, ok)| Judged {
@@ -251,14 +270,14 @@ mod tests {
 
     #[test]
     fn a_node_without_required_inputs_is_usable() {
-        let state = state_of("n", &[]);
+        let state = inputs_state("n", &[]);
         assert_eq!(state.state, NodeState::INPUTS_USABLE);
         assert!(state.inputs.is_empty(), "{:?}", state.inputs);
     }
 
     #[test]
     fn the_worst_binding_of_a_topic_is_its_verdict_and_never_arrived_wins() {
-        let state = state_of(
+        let state = inputs_state(
             "n",
             &judged(&[
                 ("/a", RequiredInput::USABLE, true),
@@ -282,7 +301,7 @@ mod tests {
             ok,
             ..Judged::default()
         };
-        let state = state_of(
+        let state = inputs_state(
             "n",
             &[
                 version("d9d213e8c146065ec958333c617eb1a6", RequiredInput::USABLE, true),
@@ -302,7 +321,7 @@ mod tests {
 
     #[test]
     fn a_stale_input_degrades_the_node() {
-        let state = state_of(
+        let state = inputs_state(
             "n",
             &judged(&[("/a", RequiredInput::USABLE, true), ("/b", RequiredInput::STALE, false)]),
         );
@@ -311,13 +330,14 @@ mod tests {
 
     #[test]
     fn the_state_follows_the_ok_bits_not_the_verdicts() {
-        let stagnant = state_of("n", &judged(&[("/a", RequiredInput::USABLE, false)]));
+        let stagnant = inputs_state("n", &judged(&[("/a", RequiredInput::USABLE, false)]));
         assert_eq!(stagnant.state, NodeState::DEGRADED, "a usable stagnant input is not ok");
-        let ignored = state_of("n", &judged(&[("/a", RequiredInput::STALE, true)]));
+        let ignored = inputs_state("n", &judged(&[("/a", RequiredInput::STALE, true)]));
         assert_eq!(ignored.state, NodeState::INPUTS_USABLE, "an ignored stale input is ok");
         let row = ignored.inputs.first().map(|input| input.verdict);
         assert_eq!(row, Some(RequiredInput::STALE), "the row keeps its verdict");
-        let ignored_waiting = state_of("n", &judged(&[("/a", RequiredInput::NEVER_ARRIVED, true)]));
+        let ignored_waiting =
+            inputs_state("n", &judged(&[("/a", RequiredInput::NEVER_ARRIVED, true)]));
         assert_eq!(ignored_waiting.state, NodeState::INPUTS_USABLE);
     }
 
@@ -353,7 +373,7 @@ mod tests {
             dropped: 3,
             ..usable.clone()
         };
-        let node = state_of("n", &[usable, stale]);
+        let node = inputs_state("n", &[usable, stale]);
         let rows: Vec<(u8, u64, bool, bool, u64, u64, u64)> = node
             .inputs
             .iter()
@@ -365,5 +385,38 @@ mod tests {
             })
             .collect();
         assert_eq!(rows, [(RequiredInput::STALE, 900, true, false, 5, 7, 1)]);
+    }
+
+    #[test]
+    fn an_error_check_degrades_a_node_whose_inputs_are_usable() {
+        let ok = judged(&[("/a", RequiredInput::USABLE, true)]);
+        for level in [NodeCheck::ERROR, NodeCheck::STALE] {
+            let state = state_of("n", &ok, vec![check("Device", level)]);
+            assert_eq!(state.state, NodeState::DEGRADED, "level {level}");
+            assert_eq!(state.checks, [check("Device", level)], "the row is kept");
+        }
+        let no_inputs = state_of("n", &[], vec![check("Device", NodeCheck::ERROR)]);
+        assert_eq!(no_inputs.state, NodeState::DEGRADED, "a driver has no inputs to degrade");
+    }
+
+    #[test]
+    fn a_warn_or_ok_check_shows_and_leaves_the_state_alone() {
+        let checks = vec![check("Rate", NodeCheck::WARN), check("Device", NodeCheck::OK)];
+        let state = state_of("n", &[], checks.clone());
+        assert_eq!(state.state, NodeState::INPUTS_USABLE);
+        assert_eq!(state.checks, checks);
+    }
+
+    #[test]
+    fn a_level_nobody_defined_is_a_fault_not_a_pass() {
+        let state = state_of("n", &[], vec![check("Device", 9)]);
+        assert_eq!(state.state, NodeState::DEGRADED);
+    }
+
+    #[test]
+    fn an_input_that_never_arrived_stays_waiting_beside_an_error_check() {
+        let waiting = judged(&[("/a", RequiredInput::NEVER_ARRIVED, false)]);
+        let state = state_of("n", &waiting, vec![check("Device", NodeCheck::ERROR)]);
+        assert_eq!(state.state, NodeState::WAITING);
     }
 }
