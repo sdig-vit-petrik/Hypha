@@ -21,10 +21,11 @@ Stage 1c is in two parts. The first is built: the cycle ports `Requests<Srv>` an
 `Calls<Srv>` (`crates/hypha_node/src/service/cycle.rs`, `crates/hypha-cxx/include/hypha/cycle_service.h`),
 the strict cut, the two upstream edges, the §6.6 amendment, and the lockstep tests of
 section 11 (`apps/hypha_tools/tests/service_lockstep.rs`, with the C++ participant
-`crates/hypha-cxx/test/service_lockstep_peer.cpp`). `StepHarness` support and
-`hypha::Sequence` are the second part; until then a `StepHarness` step that touches a
-service port throws `std::logic_error`. Decisions of the first part where this document
-is silent:
+`crates/hypha-cxx/test/service_lockstep_peer.cpp`). The second part is built too:
+`StepHarness` support for both ports (`crates/hypha_node/src/service/step_test.rs`,
+`crates/hypha-cxx/include/hypha/testing/step_harness_services.h`) and `hypha::Sequence`
+(`crates/hypha-cxx/include/hypha/sequence.h`, `sequence_task.h`). Decisions of the first
+part where this document is silent:
 
 - **A service edge bounds which steps run, not the progress a triggered cycle reports.**
   A request or a response steps no cycle (stage 3 is not built), so a triggered cycle
@@ -68,6 +69,38 @@ is silent:
   `hypha_cycle_requests`, `hypha_cycle_next_result`, `hypha_cycle_call`,
   `hypha_cycle_unread_results`), coarse as those of 1b (#276); revision 12, the unreleased
   revision of 1b.
+
+Decisions of the second part where this document is silent, or where it changed the sketch:
+
+- **The harness calls the library's rules; it copies none (#285).** A server and a client
+  speak through an end: the bus, or a fed end that a step test fills
+  (`crates/hypha_node/src/service/port.rs`). A harness step runs the cycle's services of
+  `cycle.rs` on fed ends, as a started cycle on simulated time: which requests a step at T
+  reads, their order, `per_step`, the refusal of a request left alone, a failed step's
+  `ServerLost` and `NotSent`, the outcomes carried and counted, and a call's timeout. The
+  tables are read by the start's reader and refused as a start refuses them; a port with no
+  table keeps the defaults, as the harness enables a port without a check of its table.
+  Eight C functions (`hypha_step_services_*`), revision 12. The test is one peer that takes
+  part in the replay, so the cut binds it; a request or an outcome with no time is sent
+  just before the next step. A call the test leaves open past its timeout ends `Timeout`,
+  and the test's server lets it go, so its slot is free.
+- **`harness.answer(port, ...)` and `harness.outcome(port, ...)` end the oldest call in
+  flight**; a test of a port with several calls in flight answers them in call order.
+- **`advance(time)`, not `advance()`.** A sleep counts in the step's time, also under a
+  `StepHarness`, whose `hypha::now()` is the process clock; so a `Sequence` needs no owner
+  (`Sequence<Srv> seq_;`, not `seq_{*this}`).
+- **`co_await hypha::call(port, request)`, not `co_await port.call(request)`.**
+  `Calls::call()` returns the `CallStatus` a step compares; a second meaning of one name
+  would read `auto s = port.call(...)` two ways.
+- **A Task awaits another Task**, so a failure branch with calls of its own (turn the
+  output off, then disarm) is a Task that the takeoff `co_await`s, and its outcomes are
+  read, not dropped as `send()` above drops them.
+- **A dropped outcome is an error.** A step that does not advance a sequence whose outcome
+  came drops it (the rule of section 3); the next `advance()` throws `std::logic_error`
+  naming the port, and the sequence ends: it would otherwise wait for ever.
+- **A failure ends the sequence and refuses the request with the reason** inside the step;
+  the rethrown exception fails the step, so the client reads `ServerLost`
+  (`server step failed`), the rule of a failed step.
 
 Each decision gives its reason. Where the author checked a change
 against the code and kept a different mechanism, an **author's note** says so, with the
