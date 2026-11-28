@@ -670,7 +670,9 @@ included, uses the same `HYPHA_DOMAIN`.
 | a service whose response is a map, a path or a cloud | The data on a latched topic; the service carries a small request and its acknowledgement (cpp-api.md §8.4) |
 | `std_srvs/*` | Shipped by the SDK: `Empty`, `Trigger`, `SetBool` |
 | `nh.advertiseService(name, &C::cb, this)` in a `CycleNode` | A `Requests<Srv>` port: `for (auto& r : port.requests()) r.reply({...});` in the step, named by `[ports.servers.<port>] service` (cpp-api.md §8.5) |
-| `client.call(srv)` in a `CycleNode` | A `Calls<Srv>` port: `port.call(srv.request)` in one step, `port.result()` in a later one; a chain of calls keeps a `Deferred` and a state over steps (cpp-api.md §8.5) |
+| `client.call(srv)` in a `CycleNode` | A `Calls<Srv>` port: `port.call(srv.request)` in one step, `port.result()` in a later one (cpp-api.md §8.5) |
+| a service callback that makes a chain of blocking calls (`call()` A, then B on A's success, then reply), or sleeps between them | A `hypha::Sequence<Srv>`: `seq.start(request.defer(), this->run())` and `seq.advance(time)` in every step; `run()` is a `hypha::Task<Srv::Response>` written in the callback's order, `auto a = co_await hypha::call(portA, {...}); if (!a.ok()) co_return {...};`, `co_await hypha::sleepFor(d)` for `ros::Duration(d).sleep()`, and its `co_return` is the reply (cpp-api.md §8.6) |
+| `rosservice call` against the node under test, or a fake server node, in a test | `hypha::testing::StepHarness`: `auto r = harness.request(node.port, {...});` and after `harness.step(node, time)` `r.replied()`, `r.response()`; for a client, `harness.calls(node.port)` and `harness.answer(node.port, {...})` or `harness.outcome(node.port, hypha::CallOutcome::Timeout)`; no process, no bus (cpp-api.md §5.4, "Test a step without a bus") |
 | `ROS_INFO("%f", x)` | `HYPHA_LOG_INFO("{}", x)`: a `std::format` string |
 | `ROS_WARN_THROTTLE(1, ...)` | `HYPHA_LOG_WARN_THROTTLE(1.0, ...)` |
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(condition, false, ...)`: writes when the condition becomes true |

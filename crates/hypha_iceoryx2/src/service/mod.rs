@@ -24,7 +24,7 @@ mod server;
 
 pub use client::{CallEvent, CallId, CallReport, ClientCounters, Iox2Client, Liveness};
 pub use listing::DiscoveredServiceStream;
-pub use server::{Iox2Server, ReceivedRequest, RequestHandle, ServerCounters};
+pub use server::{Iox2Server, ReceivedRequest, RequestHandle, ServerCounters, response_too_large};
 
 use std::time::{Duration, Instant};
 

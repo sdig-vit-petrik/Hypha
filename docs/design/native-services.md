@@ -1,7 +1,7 @@
 # Native services
 
 Design for #132: typed request/response between nodes from ROS 1 `.srv` definitions.
-Status: accepted design. **Stage 1a** (transport, `crates/hypha_iceoryx2/src/service/`) and the runtime, C ABI and C++ endpoints of **Stage 1b** (`crates/hypha_node/src/service/`, `crates/hypha_ffi/src/service/`, `crates/hypha-cxx/include/hypha/service*.h`) are implemented, and so are the rest of Stage 1b: the call log (`crates/hypha_node/src/service/call_log.rs`), the servers' definitions in the schema store and `hypha service list|info|call` (`apps/hypha_tools/src/bin/hypha/service.rs`). Stage 1c part 1 is implemented too (§3.1); its part 2 (`StepHarness` support, `hypha::Sequence`) and the stages above are pending.
+Status: accepted design. **Stage 1a** (transport, `crates/hypha_iceoryx2/src/service/`) and the runtime, C ABI and C++ endpoints of **Stage 1b** (`crates/hypha_node/src/service/`, `crates/hypha_ffi/src/service/`, `crates/hypha-cxx/include/hypha/service*.h`) are implemented, and so are the rest of Stage 1b: the call log (`crates/hypha_node/src/service/call_log.rs`), the servers' definitions in the schema store and `hypha service list|info|call` (`apps/hypha_tools/src/bin/hypha/service.rs`). Stage 1c is implemented too (§3.1, §3.2); the stages above are pending.
 
 ## 1. Identity and discovery
 
@@ -52,6 +52,14 @@ Each `hypha::Request<Srv>&` is resolved by `reply(resp)`, `refuse([reason])`, or
 - **Peers outside the replay**: a request or answer of a peer that reports no progress is read at the first step after it came, so a tool can call a cycle server during a replay. A cycle client names itself `<index>/<cycle>` (at most 64 bytes).
 - **A step that fails on replay fidelity has already sent its answers and calls**, as its outputs. **`per_step`** is at most the server's slots; a `Calls` port's `outstanding` defaults to 1.
 - **ABI**: six functions (`hypha_cycle_bind_server`, `_bind_client`, `_requests`, `_next_result`, `_call`, `_unread_results`), coarse as those of 1b.
+
+### 3.2 Stage 1c part 2, as built
+
+`StepHarness` support for both ports (`crates/hypha_node/src/service/step_test.rs`, `hypha-cxx/include/hypha/testing/step_harness_services.h`) and `hypha::Sequence` (`sequence.h`, `sequence_task.h`). Decisions:
+- **The harness calls the library's rules and copies none (#285):** a server and a client speak through an end, the bus or a fed end a test fills (`service/port.rs`); a harness step runs `cycle.rs` on fed ends as a started cycle on simulated time, tables included. C ABI: `hypha_step_services_*`. A call the test leaves open past its timeout ends `Timeout` and frees its slot.
+- **`answer(port, ...)` and `outcome(port, ...)` end the oldest call in flight**, in call order.
+- **`advance(time)`, not `advance()`**: a sleep counts in step time, so a `Sequence` needs no owner. **`co_await hypha::call(port, request)`**, not `port.call()`, which keeps returning a `CallStatus`. A Task awaits another Task.
+- **A dropped outcome is an error**: the next `advance()` throws `std::logic_error` naming the port and the sequence ends. **A failure ends the sequence** and refuses the request with the reason; the rethrown exception fails the step (`ServerLost`).
 
 ## 4. Wire integrity and failure semantics
 
@@ -117,7 +125,7 @@ void        hypha_deferred_destroy(HyphaDeferred*);
 |---|---|---|
 | **1a Transport** | `hypha_iceoryx2::service`: ports, name lock, dead reclaim, role CRC sealing, slot table, liveness probe, listing | Done (`#270`) |
 | **1b Runtime, C ABI, C++, CLI** | `hypha_node` runtime, blocking clients, C ABI, `advertiseService`/`serviceClient`, `std_srvs`, call log, `hypha service` | Done (#286, #297) |
-| **1c Cycles & lockstep** | `Requests<Srv>`, `Calls<Srv>`, strict-cut lockstep + §6.6 amendment, `StepHarness`, `hypha::Sequence` | Part 1 done (#311); part 2 next |
+| **1c Cycles & lockstep** | `Requests<Srv>`, `Calls<Srv>`, strict-cut lockstep + §6.6 amendment, `StepHarness`, `hypha::Sequence` | Done (#311, #314) |
 | **1d Migration** | Port MRS host & Autoware shim; delete `mrs_bridge/Call` and `ServiceCall` | Pending |
 | **2–6 Follow-ups** | Introspection/`hypha top` (2), `Requests` trigger (3), `hypha play --serve/--call` (4), ROS 1 bridge (5), typed loans (6) | Pending |
 

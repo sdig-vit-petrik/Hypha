@@ -100,7 +100,7 @@ pub(crate) fn cycle_timer_tick(
     let emissions = &mut state.emissions;
     let cycle_name = cycle.name();
     let mut step_outcome = StepOutcome::default();
-    state.services.begin(step_nanos, replay_cut, &set.node().transport);
+    state.services.begin(step_nanos, replay_cut, Some(&set.node().transport));
     let mut step_state = StepState {
         step,
         inputs,

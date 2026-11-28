@@ -126,7 +126,7 @@ pub use schema::{
 };
 pub use service::{
     CallEvent, CallId, CallReport, ClientCounters, DiscoveredServiceStream, Iox2Client, Iox2Server,
-    Liveness, ReceivedRequest, RequestHandle, ServerCounters,
+    Liveness, ReceivedRequest, RequestHandle, ServerCounters, response_too_large,
 };
 pub use stream::stream_service_name;
 pub use subscriber::Iox2Subscriber;

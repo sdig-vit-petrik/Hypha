@@ -113,6 +113,12 @@ impl Answer {
     }
 }
 
+/// The refusal a client reads for a response of `len` bytes above the bound of `policy`.
+#[must_use]
+pub fn response_too_large(len: usize, policy: &ServicePolicy) -> String {
+    format!("response {len} B above bound {} B, policy {}", policy.max_response_bytes, policy.name)
+}
+
 impl Iox2Server {
     #[expect(clippy::too_many_arguments, reason = "the parts that only server creation assembles")]
     pub(crate) fn new(
@@ -375,11 +381,7 @@ impl Iox2Server {
     ) -> Result<(), ReplyError> {
         let limit = self.policy.max_response_bytes;
         if response.len() > limit {
-            let reason = format!(
-                "response {} B above bound {limit} B, policy {}",
-                response.len(),
-                self.policy.name
-            );
+            let reason = response_too_large(response.len(), &self.policy);
             // Shortened to the bound itself, so even a tiny bound carries the refusal.
             let reason = self.bounded_reason(&reason).to_owned();
             self.answer(handle, Answer::Refusal, reason.as_bytes(), framework_nanos)?;

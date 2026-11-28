@@ -57,6 +57,31 @@ const NO_PREAMBLE: &[(&str, &str)] = &[
     ("hypha_log_write", "a null text with a length is counted as rejected; log_boundary"),
 ];
 
+/// Step-test services with no configuration and no port, for the rows that need a live one.
+fn step_services() -> *mut HyphaStepServices {
+    let mut out = null_mut();
+    // SAFETY: a null configuration is allowed; the name and `out` are valid.
+    let status =
+        unsafe { hypha_step_services_create(null(), "c".as_ptr().cast(), 1, &raw mut out) };
+    assert_eq!(status, HyphaStatus::Ok);
+    out
+}
+
+extern "C" fn step_ok(_emission: *mut HyphaCycleEmission, _context: *mut std::ffi::c_void) -> u8 {
+    1
+}
+
+extern "C" fn request_state(_state: *const HyphaStepRequestState, _context: *mut std::ffi::c_void) {
+}
+
+extern "C" fn sent_call(
+    _request: *const u8,
+    _len: usize,
+    _sent: i64,
+    _context: *mut std::ffi::c_void,
+) {
+}
+
 /// The releases `count_release` saw, over every row.
 static RELEASED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -724,6 +749,80 @@ static ROWS: &[Row] = rows! {
         assert_eq!(unsafe { hypha_cycle_call(null_mut(), 0, null(), 0, &raw mut status) }, INVALID);
         assert_eq!(status, HYPHA_CALL_BUSY, "a refused call writes Busy first");
         assert_eq!(unsafe { hypha_cycle_call(null_mut(), 0, null(), 0, null_mut()) }, INVALID);
+    }
+    hypha_step_services_create => |live| {
+        let mut out = null_mut();
+        // SAFETY: a null output is refused before anything is read.
+        assert_eq!(unsafe { hypha_step_services_create(live.config, "c".as_ptr().cast(), 1, null_mut()) }, INVALID);
+        // SAFETY: a null name with a length is refused, and `out` is written null first.
+        assert_eq!(unsafe { hypha_step_services_create(null(), null(), 1, &raw mut out) }, INVALID);
+        assert!(out.is_null(), "a refused create writes null");
+    }
+    hypha_step_services_destroy => |_live| {
+        assert_eq!(unsafe { hypha_step_services_destroy(null_mut()) }, HyphaStatus::Ok);
+    }
+    hypha_step_services_bind => |_live| {
+        // SAFETY: every field of a description accepts all-zero bits.
+        let desc: HyphaServiceDesc = unsafe { std::mem::zeroed() };
+        let mut index = 7_u32;
+        // SAFETY: null services are refused before the description is read.
+        assert_eq!(unsafe { hypha_step_services_bind(null_mut(), &raw const desc, 0, &raw mut index) }, INVALID);
+        assert_eq!(index, 0, "a refused bind writes the index first");
+        let services = step_services();
+        // SAFETY: a null description is refused before anything is read.
+        assert_eq!(unsafe { hypha_step_services_bind(services, null(), 1, &raw mut index) }, INVALID);
+        // SAFETY: `services` is live and not used after.
+        unsafe { hypha_step_services_destroy(services) };
+    }
+    hypha_step_services_deliver => |_live| {
+        let mut id = 0_u64;
+        // SAFETY: null services are refused before the request is read.
+        let refused = unsafe { hypha_step_services_deliver(null_mut(), 0, null(), 0, null(), 0, 0, 0, &raw mut id) };
+        assert_eq!(refused, INVALID);
+        assert_eq!(id, u64::MAX, "a refused delivery writes no id");
+        let services = step_services();
+        // SAFETY: an unknown server is refused.
+        let unknown = unsafe { hypha_step_services_deliver(services, 0, null(), 0, "t".as_ptr().cast(), 1, 0, 0, &raw mut id) };
+        assert_eq!(unknown, INVALID);
+        // SAFETY: `services` is live and not used after.
+        unsafe { hypha_step_services_destroy(services) };
+    }
+    hypha_step_services_feed => |_live| {
+        // SAFETY: null services are refused before the bytes are read.
+        assert_eq!(unsafe { hypha_step_services_feed(null_mut(), 0, HYPHA_CALL_ANSWERED, null(), 0, 0, 0) }, INVALID);
+        let services = step_services();
+        // SAFETY: an unknown outcome is refused.
+        assert_eq!(unsafe { hypha_step_services_feed(services, 0, 99, null(), 0, 0, 0) }, INVALID);
+        // SAFETY: `services` is live and not used after.
+        unsafe { hypha_step_services_destroy(services) };
+    }
+    hypha_step_services_step => |_live| {
+        // SAFETY: null services are refused before the step runs.
+        assert_eq!(unsafe { hypha_step_services_step(null_mut(), 0, Some(step_ok), null_mut()) }, INVALID);
+        let services = step_services();
+        // SAFETY: a missing step is refused.
+        assert_eq!(unsafe { hypha_step_services_step(services, 0, None, null_mut()) }, INVALID);
+        // SAFETY: `services` is live and not used after.
+        unsafe { hypha_step_services_destroy(services) };
+    }
+    hypha_step_services_request => |_live| {
+        // SAFETY: null services are refused before the callback runs.
+        assert_eq!(unsafe { hypha_step_services_request(null(), 0, 0, Some(request_state), null_mut()) }, INVALID);
+        let services = step_services();
+        // SAFETY: a missing callback and an unknown server are refused.
+        assert_eq!(unsafe { hypha_step_services_request(services, 0, 0, None, null_mut()) }, INVALID);
+        assert_eq!(unsafe { hypha_step_services_request(services, 0, 0, Some(request_state), null_mut()) }, INVALID);
+        // SAFETY: `services` is live and not used after.
+        unsafe { hypha_step_services_destroy(services) };
+    }
+    hypha_step_services_calls => |_live| {
+        // SAFETY: null services are refused before the callback runs.
+        assert_eq!(unsafe { hypha_step_services_calls(null(), 0, Some(sent_call), null_mut()) }, INVALID);
+        let services = step_services();
+        // SAFETY: an unknown client is refused.
+        assert_eq!(unsafe { hypha_step_services_calls(services, 0, Some(sent_call), null_mut()) }, INVALID);
+        // SAFETY: `services` is live and not used after.
+        unsafe { hypha_step_services_destroy(services) };
     }
     hypha_node_default_waitset => |live| {
         assert_eq!(unsafe { hypha_node_default_waitset(null_mut(), &mut null_mut()) }, INVALID);

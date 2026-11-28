@@ -24,6 +24,7 @@
 ///  - the answers of a Transforms port, from the transforms given to deliver() and
 ///    deliverStatic(): the library code of a cycle's TF input looks them up;
 ///  - the bound of perStep() on the sends of a step;
+///  - the service ports, whose peer is the test (hypha/testing/step_harness_services.h);
 ///  - what a disabled port does: deliver(), set(), setStale() and setStagnant() on a
 ///    disabled input are refused, since a started cycle gives it no sample and never judges
 ///    it (setNeverArrived() is true of it and stays allowed); a disabled output counts the
@@ -34,19 +35,17 @@
 ///  - an enabled output reports a subscriber (hasSubscribers() is true), since no
 ///    transport counts one;
 ///  - the node, the transport (no subscriber or publisher is opened, no sample crosses a
-///    bus), the clock, and every key of a table but `topic` and `silence_ms`. A `topic`
-///    that is not text throws ParameterError, where a start refuses it with
-///    InvalidArgument; a start reads an array `topic` as a disabled port.
+///    bus), the clock, and every key of a table but `topic`, `silence_ms` and the keys of a
+///    service port (`per_step`, `outstanding`, `timeout_ms`). A `topic` that is not text
+///    throws ParameterError, where a start refuses it with InvalidArgument; a start reads
+///    an array `topic` as a disabled port.
 ///
-/// The parameter file is read when the harness is built, for `topic`, and in deliver(),
-/// for `silence_ms`, so a Node or a ConfigContext must hold it before the harness exists.
-/// Without a file every optionalTopic port is disabled.
-///
-/// step() moves no clock: in a harness step hypha::now() returns the process clock, so a
-/// test of code that calls it sets simulated time itself.
-///
-/// Not part of hypha/hypha.h. The harness keeps pointers to the cycle and its ports, so
-/// declare it after them. A send the step refused and caught still fails step().
+/// The parameter file is read when the harness is built (`topic`, the service tables) and
+/// in deliver() (`silence_ms`), so a Node or a ConfigContext must hold it before the harness
+/// exists; without one every optionalTopic port is disabled. step() moves no clock: in a
+/// harness step hypha::now() returns the process clock. Not part of hypha/hypha.h. The
+/// harness keeps pointers to the cycle and its ports, so declare it after them. A send the
+/// step refused and caught still fails step().
 
 #include "hypha/backend/handles.h"
 #include "hypha/backend/ros1_codec.h"
@@ -57,6 +56,7 @@
 #include "hypha/cycle_output.h"
 #include "hypha/cycle_runtime.h"
 #include "hypha/cycle_transforms.h"
+#include "hypha/testing/step_harness_services.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -73,7 +73,9 @@ namespace hypha::testing {
 ///
 /// Cycle::start() throws while a harness lives. Every send() of a step appends a copy to
 /// sent(port); the next step() clears it.
-class StepHarness final : private detail::CaptureStore
+class StepHarness final
+    : private detail::CaptureStore
+    , public detail::HarnessServices
 {
   public:
     /// @throws std::logic_error when @p cycle has started or another harness holds it.
@@ -90,6 +92,7 @@ class StepHarness final : private detail::CaptureStore
             );
         }
         this->wirePorts();
+        this->bindServices(cycle.ports_, cycle.name());
         cycle.harnessLive_ = true;
     }
 
@@ -255,8 +258,10 @@ class StepHarness final : private detail::CaptureStore
     {
         this->beginStep(time.now);
         const EndStep endStep{this};
-        std::forward<Step>(step)(time);
-        this->rethrowLatched();
+        this->runServices(time.now, [&step, &time, this] {
+            std::forward<Step>(step)(time);
+            this->rethrowLatched();
+        });
     }
 
     /// @brief What the last step sent on @p port, in send order.

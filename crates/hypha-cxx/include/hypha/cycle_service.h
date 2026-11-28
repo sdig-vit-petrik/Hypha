@@ -27,7 +27,7 @@ namespace hypha {
 namespace detail {
 
 /// @brief What a service port of a cycle shares: its declaration, its index, whether a
-///        start bound it, and the refusal of a step outside a step or in a StepHarness.
+///        start bound it, and the refusal of a call outside a step.
 class ServicePort
 {
   protected:
@@ -56,21 +56,28 @@ class ServicePort
         return bound;
     }
 
-    /// @throws std::logic_error outside a step, or in a testing::StepHarness step.
-    void requireStep(HyphaCycleEmission* emission, bool inHarness, const char* what) const
+    /// Bind to the services of a testing::StepHarness, as a server (0) or a client (1).
+    /// @throws ConfigError for a table a start refuses.
+    void bindStep(HyphaStepServices* services, uint8_t client)
     {
-        if (inHarness) {
-            throw std::logic_error(
-                std::string("hypha: ") + what + " of '" + this->portName()
-                + "': a testing::StepHarness does not drive service ports yet"
-            );
+        const HyphaServiceDesc desc = backend::descriptionOf(this->declaration_);
+        const Status bound = hypha_step_services_bind(services, &desc, client, &this->index_);
+        if (bound != Status::Ok) {
+            backend::throwServiceFailure(this->declaration_, client ? "clients" : "servers", bound);
         }
+    }
+
+    /// @throws std::logic_error outside a step.
+    void requireStep(HyphaCycleEmission* emission, const char* what) const
+    {
         if (emission == nullptr) {
             throw std::logic_error(
                 std::string("hypha: ") + what + " of '" + this->portName() + "' outside a step"
             );
         }
     }
+
+    friend class HarnessServices;
 
     backend::ServiceDeclaration declaration_;
     uint32_t                    index_{0};
@@ -116,7 +123,7 @@ class Requests final
         if (this->read_) {
             return this->requests_;
         }
-        this->requireStep(this->liveEmission(), this->harnessStore() != nullptr, "requests()");
+        this->requireStep(this->liveEmission(), "requests()");
         this->read_ = true;
         const ::HyphaStatus status =
             hypha_cycle_requests(this->liveEmission(), this->index_, &Requests::collect, this);
@@ -164,6 +171,14 @@ class Requests final
     {
         return this->bindWith(cycle, &hypha_cycle_bind_server);
     }
+
+    bool bindStepServices(HyphaStepServices* services) override
+    {
+        this->bindStep(services, 0);
+        return true;
+    }
+
+    friend class detail::HarnessServices;
 
     bool bindRefusedByConfiguration() const override
     {
@@ -232,7 +247,7 @@ class Calls final
     /// @throws std::logic_error outside a step.
     [[nodiscard]] CallStatus call(const typename Srv::Request& request)
     {
-        this->requireStep(this->liveEmission(), this->harnessStore() != nullptr, "call()");
+        this->requireStep(this->liveEmission(), "call()");
         const std::vector<uint8_t> bytes = codec::encode(request);
         uint32_t                   status = HYPHA_CALL_BUSY;
         const ::HyphaStatus        called = hypha_cycle_call(
@@ -262,7 +277,7 @@ class Calls final
     /// @throws std::logic_error outside a step.
     std::optional<CallResult<Srv>> result()
     {
-        this->requireStep(this->liveEmission(), this->harnessStore() != nullptr, "result()");
+        this->requireStep(this->liveEmission(), "result()");
         std::optional<CallResult<Srv>> next;
         uint8_t                        found = 0;
         const ::HyphaStatus            status = hypha_cycle_next_result(
@@ -289,7 +304,7 @@ class Calls final
     /// @throws std::logic_error outside a step.
     uint64_t unreadResults()
     {
-        this->requireStep(this->liveEmission(), this->harnessStore() != nullptr, "unreadResults()");
+        this->requireStep(this->liveEmission(), "unreadResults()");
         uint64_t            unread = 0;
         const ::HyphaStatus status =
             hypha_cycle_unread_results(this->liveEmission(), this->index_, &unread);
@@ -335,6 +350,14 @@ class Calls final
     {
         return this->bindWith(cycle, &hypha_cycle_bind_client);
     }
+
+    bool bindStepServices(HyphaStepServices* services) override
+    {
+        this->bindStep(services, 1);
+        return true;
+    }
+
+    friend class detail::HarnessServices;
 
     bool bindRefusedByConfiguration() const override
     {

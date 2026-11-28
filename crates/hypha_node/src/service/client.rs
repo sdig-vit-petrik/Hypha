@@ -11,11 +11,11 @@
 //! out stays counted while its server still holds it, so a later call returns `Busy`
 //! rather than overflow the server.
 
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use hypha_core::port::CallSendError;
-use hypha_iceoryx2::{CallEvent, CallId, Iox2Client, Iox2Listener, Iox2Transport, Liveness};
+use hypha_iceoryx2::{CallId, Iox2Transport, Liveness};
 
 use crate::node::HyphaNode;
 use crate::status::Error;
@@ -23,7 +23,14 @@ use crate::waitset::HyphaCallbackResult;
 
 use super::call_log::{CallLog, Entry};
 use super::outcome::{CallOutcome, CallResult, CallStatus};
+use super::port::{ClientPort, FedClient, Polled};
 use super::spec::{Role, ServiceDecl};
+
+mod handle;
+pub use handle::{
+    ClientStatus, HyphaClient, client_call, client_status, client_wait_for_server,
+    service_client_create, service_client_destroy,
+};
 
 /// What runs once with the outcome of one call. A failing result fails the run of the
 /// `WaitSet` that delivered it; a blocking call ignores it.
@@ -78,7 +85,7 @@ struct Identity {
 pub(crate) struct ClientState {
     identity: Identity,
     /// `None` once the client was destroyed.
-    port: Option<Iox2Client>,
+    port: Option<ClientPort>,
     timeout_nanos: i64,
     /// The timeout and where it came from: `1 s (policy defaultService)`.
     timeout_text: String,
@@ -90,67 +97,6 @@ pub(crate) struct ClientState {
     ready: Vec<Finished>,
     /// The call log on `<service>/calls`; `None` when it could not be opened.
     log: Option<CallLog>,
-}
-
-/// A client, owned by its caller. Dropping it drops the outcomes of its calls in flight
-/// without calling them: their callbacks belong to an owner that is gone.
-pub struct HyphaClient {
-    core: Arc<ClientCore>,
-    node: Weak<HyphaNode>,
-    /// The registration on the node's `WaitSet`; `None` for a blocking client, which owns
-    /// its listener instead.
-    attachment: Option<crate::waitset::HyphaAttachmentId>,
-    blocking: Option<Blocking>,
-}
-
-/// A blocking client's own wait: its response listener, and the lock that makes its calls
-/// one at a time.
-struct Blocking {
-    listener: Iox2Listener,
-    turn: Mutex<()>,
-}
-
-/// What `client_status` reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClientStatus {
-    /// A live server of the client's stream exists now.
-    pub ready: bool,
-    /// Calls whose outcome is still to come.
-    pub pending: usize,
-    /// Records the call log dropped: no free sample, or a record above its bound.
-    pub log_dropped: u64,
-}
-
-/// Create a client of `decl` on `node`. A `blocking` client is attached to nothing; any
-/// other is attached to the node's `WaitSet`, whose run delivers its outcomes. A server
-/// need not exist.
-///
-/// # Errors
-/// The errors of the declaration (`InvalidArgument`, `InvalidTopic`); `ResourceLimit` when
-/// the clients of the stream are at their limit; `QosMismatch` for a stream of another
-/// policy; `InvalidState` during a run; the transport's error otherwise. Each is logged
-/// with its reason and recorded for `last_error`.
-pub fn service_client_create(
-    node: &Arc<HyphaNode>,
-    decl: &ServiceDecl<'_>,
-    blocking: bool,
-) -> Result<HyphaClient, Error> {
-    crate::last_error::clear();
-    let state = open_state(node, decl, None, None)?;
-    let listener = match state.port.as_ref() {
-        Some(port) => port.open_listener().map_err(Error::from)?,
-        None => return Err(Error::InvalidState),
-    };
-    let core = Arc::new(ClientCore { state: Mutex::new(state) });
-    let mut client =
-        HyphaClient { core, node: Arc::downgrade(node), attachment: None, blocking: None };
-    if blocking {
-        client.blocking = Some(Blocking { listener, turn: Mutex::new(()) });
-    } else {
-        let target = crate::waitset::ServiceTarget::Client(Arc::clone(&client.core));
-        client.attachment = Some(crate::waitset::attach_service(node, listener, target)?);
-    }
-    Ok(client)
 }
 
 /// The state of a new client of `decl` on `node`: its port, its limit of calls in flight
@@ -172,149 +118,53 @@ pub(crate) fn open_state(
         .map_err(|cause| super::spec::refuse_spec(&spec.name, &cause))?;
     let client_port = if decl.literal { spec.name.as_str() } else { decl.name };
     let log = CallLog::open(node, spec, client_port);
-    Ok(ClientState {
-        identity: Identity {
-            name: spec.name.clone(),
-            type_name: spec.type_name.clone(),
-            md5: spec.md5.clone(),
-        },
-        outstanding: limit.unwrap_or(spec.policy.max_outstanding),
-        port: Some(port),
-        timeout_nanos: i64::try_from(resolved.timeout.as_nanos()).unwrap_or(i64::MAX),
-        timeout_text: format!("{} ({})", seconds(resolved.timeout), resolved.timeout_source),
-        calls: Vec::new(),
-        next_order: 0,
-        ready: Vec::new(),
-        log,
-    })
+    Ok(ClientState::of(&resolved, ClientPort::Bus(Box::new(port)), limit, log))
 }
 
-/// Destroy `client`: it is detached from its `WaitSet`, and the outcomes of its calls in
-/// flight are dropped uncalled.
-pub fn service_client_destroy(client: HyphaClient) {
-    drop(client);
+/// The state of a client of `decl` whose server is a test (`super::port::FedClient`): its
+/// table read from `config` as a start reads it, with no node, no bus and no call log.
+pub(crate) fn open_fed_state(
+    config: Option<&crate::config::HyphaConfig>,
+    decl: &ServiceDecl<'_>,
+    outstanding: Option<usize>,
+) -> Result<ClientState, Error> {
+    let resolved = super::spec::resolve_fed(config, decl, Role::Client)?;
+    let limit = resolved.outstanding.or(outstanding);
+    let port = ClientPort::Fed(FedClient::new(resolved.spec.policy.clone()));
+    Ok(ClientState::of(&resolved, port, limit, None))
 }
 
-impl Drop for HyphaClient {
-    fn drop(&mut self) {
-        let (calls, ready) = {
-            let mut state = crate::locked(&self.core.state);
-            state.port = None;
-            (std::mem::take(&mut state.calls), std::mem::take(&mut state.ready))
-        };
-        let dropped = calls.len().saturating_add(ready.len());
-        if dropped > 0 {
-            log::info!(target: "hypha", "hypha: a client was destroyed with {dropped} calls in flight; their outcomes are dropped");
+impl ClientState {
+    fn of(
+        resolved: &super::spec::Resolved,
+        port: ClientPort,
+        limit: Option<usize>,
+        log: Option<CallLog>,
+    ) -> Self {
+        let spec = &resolved.spec;
+        Self {
+            identity: Identity {
+                name: spec.name.clone(),
+                type_name: spec.type_name.clone(),
+                md5: spec.md5.clone(),
+            },
+            outstanding: limit.unwrap_or(spec.policy.max_outstanding),
+            port: Some(port),
+            timeout_nanos: i64::try_from(resolved.timeout.as_nanos()).unwrap_or(i64::MAX),
+            timeout_text: format!("{} ({})", seconds(resolved.timeout), resolved.timeout_source),
+            calls: Vec::new(),
+            next_order: 0,
+            ready: Vec::new(),
+            log,
         }
-        if let (Some(attachment), Some(node)) = (self.attachment, self.node.upgrade()) {
-            crate::waitset::detach_service(&node, attachment);
+    }
+
+    /// The fed end of a client whose server is a test; `None` for a client of the bus.
+    pub(crate) fn fed(&mut self) -> Option<&mut FedClient> {
+        match self.port.as_mut() {
+            Some(ClientPort::Fed(port)) => Some(port),
+            _ => None,
         }
-    }
-}
-
-/// Call with `request`. `done` receives the call's one outcome: on the `WaitSet` thread at
-/// a later turn, or, for a blocking client, on this thread before the call returns. A call
-/// refused as `Busy` or `TooLarge` sends nothing and drops `done` uncalled.
-///
-/// # Errors
-/// `InvalidState` for a blocking call on a thread that runs a `WaitSet` dispatch: that
-/// thread would have to deliver the answer it waits for (FSR-43). `done` drops uncalled.
-pub fn client_call(
-    client: &HyphaClient,
-    request: &[u8],
-    done: Box<dyn CallDone>,
-) -> Result<CallStatus, Error> {
-    let stamp = hypha_time::now().nanos();
-    let Some(blocking) = client.blocking.as_ref() else {
-        let now = hypha_time::scheduling_now().nanos();
-        return Ok(crate::locked(&client.core.state).call(request, Some(done), now, stamp));
-    };
-    refuse_in_dispatch("callAndWait")?;
-    let _one_at_a_time = crate::locked(&blocking.turn);
-    let now = hypha_time::scheduling_now().nanos();
-    let status = crate::locked(&client.core.state).call(request, Some(done), now, stamp);
-    if status != CallStatus::Sent {
-        return Ok(status);
-    }
-    let node = client.node.upgrade();
-    let transport = node.as_deref().map(|node| &node.transport);
-    loop {
-        let (finished, next) = {
-            let mut state = crate::locked(&client.core.state);
-            let finished = state.drive(hypha_time::scheduling_now().nanos(), transport, None);
-            (finished, state.next_deadline())
-        };
-        if !finished.is_empty() {
-            for (done, result, _) in finished {
-                if let Some(done) = done {
-                    let _ = done.done(&result);
-                }
-            }
-            return Ok(CallStatus::Sent);
-        }
-        let wait = next.map_or(Duration::from_millis(10), |deadline| {
-            let left = deadline.saturating_sub(hypha_time::scheduling_now().nanos()).max(0);
-            Duration::from_nanos(left.unsigned_abs()).min(Duration::from_millis(10))
-        });
-        // A response wakes the wait; a server that appears is seen at the next slice.
-        let _ = blocking.listener.timed_wait(|_| {}, wait.max(Duration::from_micros(100)));
-    }
-}
-
-/// Wait up to `timeout` for a live server of a blocking client's stream.
-///
-/// # Errors
-/// `InvalidState` for a client attached to a `WaitSet`, or on a thread that runs a dispatch.
-pub fn client_wait_for_server(client: &HyphaClient, timeout: Duration) -> Result<bool, Error> {
-    if client.blocking.is_none() {
-        return crate::last_error::refuse(
-            Err(Error::InvalidState),
-            "waitForServer is for a blocking client (hypha::blocking); a client in a node calls and reads the outcome",
-        );
-    }
-    refuse_in_dispatch("waitForServer")?;
-    let started = std::time::Instant::now();
-    loop {
-        if client_status(client).ready {
-            return Ok(true);
-        }
-        if started.elapsed() >= timeout {
-            return Ok(false);
-        }
-        std::thread::sleep(Duration::from_millis(1).min(timeout.saturating_sub(started.elapsed())));
-    }
-}
-
-/// Whether a live server exists now, and how many calls are pending.
-#[must_use]
-pub fn client_status(client: &HyphaClient) -> ClientStatus {
-    let state = crate::locked(&client.core.state);
-    ClientStatus {
-        ready: state.port.as_ref().is_some_and(Iox2Client::server_available),
-        pending: state.calls.len().saturating_add(state.ready.len()),
-        log_dropped: state.log.as_ref().map_or(0, CallLog::dropped),
-    }
-}
-
-fn refuse_in_dispatch(what: &str) -> Result<(), Error> {
-    if !crate::waitset::in_dispatch() {
-        return Ok(());
-    }
-    Err(crate::last_error::refuse(
-        Error::InvalidState,
-        &format!(
-            "{what} on the run thread would wait for the thread that must deliver its answer; \
-             use call(request, onResult) of a client of the node in a callback"
-        ),
-    ))
-}
-
-/// `1 s`, `250 ms`.
-fn seconds(duration: Duration) -> String {
-    if duration.subsec_nanos() == 0 {
-        format!("{} s", duration.as_secs())
-    } else {
-        format!("{} ms", duration.as_millis())
     }
 }
 
@@ -432,13 +282,10 @@ impl ClientState {
         }
         let mut reports = Vec::new();
         port.poll(&mut reports);
-        for report in reports.into_iter().filter(|report| !report.late) {
-            let Some(index) = self.calls.iter().position(|call| call.sent == Some(report.id))
-            else {
+        for Polled { id, outcome, stamp } in reports {
+            let Some(index) = self.calls.iter().position(|call| call.sent == Some(id)) else {
                 continue;
             };
-            let outcome = outcome_of(report.event);
-            let stamp = report.framework_sent_nanos.and_then(|stamp| i64::try_from(stamp).ok());
             match (stamp, self.calls.get_mut(index)) {
                 (Some(stamp), Some(call)) if !before_cut(stamp) => {
                     call.arrived = Some((outcome, stamp));
@@ -538,7 +385,7 @@ fn short(md5: &str) -> &str {
 }
 
 /// Send a held `call` now, stamped `stamp`; one that finds no server stays held.
-fn send(port: &mut Iox2Client, call: &mut Call, stamp: i64) -> Result<(), CallSendError> {
+fn send(port: &mut ClientPort, call: &mut Call, stamp: i64) -> Result<(), CallSendError> {
     if call.sent.is_some() {
         return Ok(());
     }
@@ -559,9 +406,9 @@ fn not_sent(cause: &CallSendError) -> CallOutcome {
 
 /// A call whose deadline passed while it was sent: lost when the probe finds its server
 /// dead or gone, else timed out. A timed-out call keeps its slot while the server holds it.
-fn expire(port: &mut Iox2Client, id: CallId, timeout_text: &str) -> CallOutcome {
-    let lost = |port: &mut Iox2Client, why: &str| {
-        let _ = port.abandon(id);
+fn expire(port: &mut ClientPort, id: CallId, timeout_text: &str) -> CallOutcome {
+    let lost = |port: &mut ClientPort, why: &str| {
+        port.abandon(id);
         CallOutcome::ServerLost(why.to_owned())
     };
     if !port.expire(id) {
@@ -576,16 +423,6 @@ fn expire(port: &mut Iox2Client, id: CallId, timeout_text: &str) -> CallOutcome 
     }
 }
 
-fn outcome_of(event: CallEvent) -> CallOutcome {
-    match event {
-        CallEvent::Answered(response) => CallOutcome::Answered(response),
-        CallEvent::Refused(reason) => CallOutcome::Refused(reason),
-        CallEvent::Failed(reason) => CallOutcome::ServerLost(reason),
-        CallEvent::Invalid(check) => CallOutcome::ServerLost(format!("invalid response: {check}")),
-        CallEvent::Lost => CallOutcome::ServerLost("the server left".to_owned()),
-    }
-}
-
 /// End `call` in `outcome`, recorded in the call log.
 fn finish(call: Call, outcome: CallOutcome, log: &mut Option<CallLog>) -> Finished {
     let done_nanos = hypha_time::now().nanos();
@@ -595,4 +432,13 @@ fn finish(call: Call, outcome: CallOutcome, log: &mut Option<CallLog>) -> Finish
         log.record(&Entry { sequence, request: &call.request, result: &result });
     }
     (call.done, result, call.order)
+}
+
+/// `1 s`, `250 ms`.
+fn seconds(duration: Duration) -> String {
+    if duration.subsec_nanos() == 0 {
+        format!("{} s", duration.as_secs())
+    } else {
+        format!("{} ms", duration.as_millis())
+    }
 }

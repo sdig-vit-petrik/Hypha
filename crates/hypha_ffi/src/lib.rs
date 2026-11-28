@@ -35,6 +35,7 @@ mod publisher;
 mod schema;
 mod service;
 mod status;
+mod step_services;
 mod subscriber;
 mod transform_buffer;
 pub mod waitset;
@@ -77,6 +78,7 @@ pub use hypha_node::node::HyphaNode;
 pub use hypha_node::node_discovery::{
     HyphaNodeCallback, HyphaNodeInfo, HyphaServicePortCallback, HyphaServicePortInfo,
 };
+pub use hypha_node::safe::HyphaStepServices;
 pub use introspection_abi::{
     hypha_config_record_config, hypha_node_introspect, hypha_node_record_config,
 };
@@ -138,6 +140,14 @@ pub use service::{
     hypha_cycle_unread_results, hypha_request_answer, hypha_request_defer, hypha_request_destroy,
     hypha_service_client_create, hypha_service_client_destroy, hypha_service_server_create,
     hypha_service_server_destroy,
+};
+pub use step_services::{
+    HYPHA_STEP_REQUEST_DEFERRED, HYPHA_STEP_REQUEST_FAILED, HYPHA_STEP_REQUEST_QUEUED,
+    HYPHA_STEP_REQUEST_REFUSED, HYPHA_STEP_REQUEST_REPLIED, HyphaStepRequestState,
+    HyphaStepRequestStateCallback, HyphaStepSentCallback, HyphaStepServicesStep,
+    hypha_step_services_bind, hypha_step_services_calls, hypha_step_services_create,
+    hypha_step_services_deliver, hypha_step_services_destroy, hypha_step_services_feed,
+    hypha_step_services_request, hypha_step_services_step,
 };
 pub use subscriber::{
     hypha_subscribe_typed, hypha_subscriber_counters, hypha_subscriber_destroy,

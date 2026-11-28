@@ -240,6 +240,14 @@ every rule of a call decided below them, once.
 | `hypha_cycle_next_result(emission, client, done, context, found)` | In a step: calls `done` with the next outcome the step holds |
 | `hypha_cycle_call(emission, client, request, len, status)` | In a step: stages a call, sent after the step |
 | `hypha_cycle_unread_results(emission, client, out)` | In a step: the outcomes successful steps did not read and dropped |
+| `hypha_step_services_create(config, cycle_name, len, out)` | Makes the services of a cycle under a step test: no node, no bus; `config` (null for none) holds the ports' tables |
+| `hypha_step_services_destroy(services)` | Ends every request they hold; null does nothing |
+| `hypha_step_services_bind(services, desc, client, out_index)` | Binds a server (`client` 0) or a client (1), as `hypha_cycle_bind_server`/`_client` do |
+| `hypha_step_services_deliver(services, server, request, len, client_node, len, sent_nanos, stamped, out_id)` | Delivers a test's request, sent at `sent_nanos` or (`stamped` 0) just before the next step |
+| `hypha_step_services_feed(services, client, outcome, bytes, len, sent_nanos, stamped)` | Ends the oldest call in flight with an outcome (`bytes`: the response, else the reason) |
+| `hypha_step_services_step(services, now_nanos, step, context)` | Runs one step at `now_nanos`: `step` gets the emission the four step functions above take, and returns 1 when it succeeded |
+| `hypha_step_services_request(services, server, id, done, context)` | What became of a delivered request: `HYPHA_STEP_REQUEST_QUEUED`, `_DEFERRED`, `_REPLIED`, `_REFUSED`, `_FAILED`, with its bytes and stamp |
+| `hypha_step_services_calls(services, client, each, context)` | The calls the client sent after the last step, in call order |
 
 - **Declaration.** `HyphaServiceDesc` names a port (`literal` 0: the `service` key of
   `[ports.servers.<port>]` or `[ports.clients.<port>]`) or the service (`literal` 1:
@@ -312,6 +320,16 @@ every rule of a call decided below them, once.
   step after they came. Deadlines are counted from the step that staged the call, on its
   scheduling clock. The three take the step's emission handle; a null one is
   `InvalidArgument`.
+- **A step test's services.** `hypha_step_services_*` hold the servers and clients of a
+  cycle that was not started, with the test as their peer (`testing::StepHarness`). The
+  step's emission comes from `hypha_step_services_step`, and the step reads, answers and
+  calls through the functions above, by the same rules, as a step on simulated time: the
+  test is a peer that reports progress, so a step at T reads the requests and outcomes
+  stamped before T. The tables are read by the start's reader and refused alike; a port
+  without one keeps the defaults. A fed outcome ends the oldest call in flight
+  (`InvalidState` when none is); a call left open past its deadline ends `TIMEOUT` and
+  frees its slot. Texts and bytes are borrowed for the call; the views a callback gets
+  are borrowed for the callback.
 
 ## Clocks and send times
 

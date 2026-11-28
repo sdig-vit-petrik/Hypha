@@ -953,7 +953,7 @@ with it; the header gives the setters and the rules. `send()` outside a step thr
 `std::logic_error("hypha: output '<port>': send() outside a step")`: a `setup()` that
 sends fails start-up, so send an initial message from the first step.
 
-A harness predicts which ports a start would enable, from the parameter file that a `Node` or a `ConfigContext` holds when the harness is built. An `optionalTopic` port is enabled when its table, `[ports.inputs.<name>]` or `[ports.outputs.<name>]`, sets a non-empty `topic`; a missing table, a missing `topic`, `topic = ""` and a harness without a file leave it disabled, so a step under test takes the branch for a port that is not wired. The constructor throws `ConfigError` for such an optional port whose `topic` is a name a start would refuse, or whose entry is a plain string (`mag = "/x"`) where a start needs a table, and `ParameterError` for a `topic` that is not text. A port that requires its topic, or sits on a `hypha::Topic{...}` literal, is enabled without a check of its table or name: a start refuses a missing, empty or invalid one, the harness does not. Wire an optional port in the test's file to test the branch behind it: `deliver()` to the input and the step reads its three verdicts (usable, stale, never arrived), and `sent()` keeps what the step sends on the output. An enabled output reports a subscriber (`hasSubscribers()` is true), since no transport counts one. On a disabled input `deliver()`, `set()`, `setStale()` and `setStagnant()` throw `std::logic_error` and name the table that lacks a `topic`: a started cycle gives it no sample and never judges it; `setNeverArrived()` stays allowed, because it is true of a disabled port. A disabled output counts the sends of the step and keeps none, as in a started cycle, so `sent()` of it is empty. The harness opens no subscriber and no publisher and checks no key of a table other than `topic` and `silence_ms`. `testing.h` lists what a harness step shares with a started cycle and what it leaves out.
+A harness predicts which ports a start would enable, from the parameter file that a `Node` or a `ConfigContext` holds when the harness is built. An `optionalTopic` port is enabled when its table, `[ports.inputs.<name>]` or `[ports.outputs.<name>]`, sets a non-empty `topic`; a missing table, a missing `topic`, `topic = ""` and a harness without a file leave it disabled, so a step under test takes the branch for a port that is not wired. The constructor throws `ConfigError` for such an optional port whose `topic` is a name a start would refuse, or whose entry is a plain string (`mag = "/x"`) where a start needs a table, and `ParameterError` for a `topic` that is not text. A port that requires its topic, or sits on a `hypha::Topic{...}` literal, is enabled without a check of its table or name: a start refuses a missing, empty or invalid one, the harness does not. Wire an optional port in the test's file to test the branch behind it: `deliver()` to the input and the step reads its three verdicts (usable, stale, never arrived), and `sent()` keeps what the step sends on the output. An enabled output reports a subscriber (`hasSubscribers()` is true), since no transport counts one. On a disabled input `deliver()`, `set()`, `setStale()` and `setStagnant()` throw `std::logic_error` and name the table that lacks a `topic`: a started cycle gives it no sample and never judges it; `setNeverArrived()` stays allowed, because it is true of a disabled port. A disabled output counts the sends of the step and keeps none, as in a started cycle, so `sent()` of it is empty. The harness opens no subscriber and no publisher and checks no key of a table other than `topic`, `silence_ms` and the keys of a service port. `testing.h` lists what a harness step shares with a started cycle and what it leaves out.
 
 `harness.deliver(port, value, sentAt)` hands a `Latest` port a value sent at `sentAt`. Each later `step(time)` judges it as a capture does: usable while `time.now - sentAt <= silence_ms` of `[ports.inputs.<name>]` (read when `deliver()` is called, so a `Node` or `ConfigContext` must hold the file), stale after; a port without `silence_ms`, without a table, or tagged `unsupervised` never goes stale. `fresh()` is true in the first step that finds the value usable. `lastKnown()` keeps a value that was usable once. A value that is stale in its first judged step is never held, as in a capture. A `sentAt` after the step time is stale with age 0 until that time; a real cycle under simulated time does not admit such a sample at all. `set()`, `setStale()` and `setNeverArrived()` state a verdict directly; a later `set()` or `deliver()` on the same port replaces the earlier state. The counters advance as on the bus: the next step counts each value given to `deliver()` or `set()` in `received()` and each one it takes as usable in `deliveredCount()`, so two values before one step are two received and one delivered; `setNeverArrived()` sets both to zero.
 
@@ -965,6 +965,44 @@ A harness predicts which ports a start would enable, from the parameter file tha
 harness.deliver(node.tf, {odomInMap});          // geometry_msgs::TransformStamped values
 harness.deliverStatic(node.tf, {lidarInBase});
 harness.step(node, time);                       // node.tf.lookup("map", "lidar", at) finds it
+```
+
+A service port's peer is the test (`hypha/testing/step_harness_services.h`): no fake
+server process, no fake client. `harness.request(port, request, {.client, .sentAt})`
+delivers a request to a `Requests` port, as `rosservice call` would, and returns a probe
+that tells what became of it: `queued()` (no step read it), `deferred()`, `replied()` with
+`response()`, `refused()` or `failed()` with `reason()`, `answeredAt()` and `describe()`
+for a test message. `harness.calls(port)` lists the requests the last step sent on a
+`Calls` port; `harness.answer(port, response)` and `harness.outcome(port,
+hypha::CallOutcome::Timeout, "after 1 s")` end its oldest call in flight (`Refused`,
+`NoServer`, `NotSent`, `ServerLost` or `Timeout`), read by the next step, or with a time
+`at` by the first step after it; with no call in flight they throw `std::logic_error`.
+The library runs a harness step's services as a started cycle's on simulated time, so the
+rules of section 8.5 hold: a step at T reads the requests sent before T (by default a
+request is sent just before the next step), in step order, at most `per_step`; answers and
+calls leave after the step; a request read and left alone is refused; a step that throws
+answers what it read as failed and ends its calls `NotSent`, and passes the outcomes it did
+not read to the next step, where a successful step drops and counts them; a call left open
+past its timeout ends `Timeout`. `per_step`, `outstanding` and `timeout_ms` are read from
+the parameter file and refused as a start refuses them; a port without a table keeps the
+defaults.
+
+```cpp
+UavManager                  node;  // section 8.6
+hypha::testing::StepHarness harness{node};
+auto takeoff = harness.request(node.takeoff, {});
+harness.step(node, at(0));
+ASSERT_EQ(harness.calls(node.switchController).size(), 1U);
+harness.answer(node.switchController, {.success = true});
+harness.step(node, at(10));
+harness.outcome(node.switchTracker, hypha::CallOutcome::Timeout, "after 1 s");
+harness.step(node, at(20));                     // disarms: toggle_output first
+harness.answer(node.toggleOutput, {.success = true});
+harness.step(node, at(30));                     // then arming
+harness.answer(node.arming, {.success = true});
+harness.step(node, at(40));
+ASSERT_TRUE(takeoff.replied()) << takeoff.describe();
+EXPECT_EQ(takeoff.response().message, "could not activate the tracker (timeout after 1 s)");
 ```
 
 The harness moves no clock. In a started cycle `hypha::now()` returns `CycleTime::now` while the step runs; in a harness step it returns the process clock. Step code reads the `CycleTime` it is given. A test of code that still calls `hypha::now()` sets simulated time itself: `hypha::enableSimTime(time.now)` once, `hypha::setSimTime(time.now)` before each `step()`, `hypha::disableSimTime()` at the end. `steadyNow()` is real elapsed time and is never set.
@@ -1418,8 +1456,7 @@ class ControlManager final : public hypha::CycleNode {
   at once. A step that then fails answers it as failed: the client reads `ServerLost`
   (`server step failed`), and the `Deferred` is used up. An answer that cannot leave after
   the step is logged. Answered on another thread, or in a plain callback, it leaves at once.
-  A chain of calls keeps the `Deferred` and one state per call over steps
-  (`docs/design/native-services.md` §8.2).
+  A chain of calls is a `hypha::Sequence` (section 8.6).
 - `call()` stages a call: `Sent`, `Busy` (the port has `outstanding` calls in flight,
   default 1, those of this step included) or `TooLarge`. A sent call leaves after the step,
   stamped with its time. A step that fails sends none: each call it staged ends `NotSent`,
@@ -1444,8 +1481,97 @@ class ControlManager final : public hypha::CycleNode {
   the first step after it came, whatever their stamps: not deterministic, logged once.
 - A step that fails on replay fidelity (a lost input) has already sent its answers and
   calls, as it has sent its outputs.
-- A `testing::StepHarness` does not drive these ports yet: a step under it that calls one
-  throws `std::logic_error`.
+- A `testing::StepHarness` drives these ports with the test as client and server (section
+  5.4, "Test a step without a bus"), by the same rules.
+
+### 8.6 A chain of calls: `hypha::Sequence`
+
+A callback that calls one service after another and then replies (MRS `uav_manager`'s
+takeoff, `docs/design/native-services.md` §8.2) is a `hypha::Task`, a C++ coroutine that a
+`hypha::Sequence` runs over steps (`hypha/sequence.h`, included by `hypha/cycle_node.h`).
+It reads in the order of the ROS callback, and each failure is a value the code handles.
+
+```cpp
+class UavManager final : public hypha::CycleNode {
+  public:
+    Requests<std_srvs::Trigger> takeoff{*this, "takeoff"};
+    Calls<mrs_msgs::String>     switchController{*this, "switch_controller"};
+    Calls<mrs_msgs::String>     switchTracker{*this, "switch_tracker"};
+    Calls<mrs_msgs::Vec1>       trackerTakeoff{*this, "tracker_takeoff"};
+    Calls<std_srvs::SetBool>    toggleOutput{*this, "toggle_output"};
+    Calls<std_srvs::SetBool>    arming{*this, "arming"};
+    Calls<std_srvs::Trigger>    eland{*this, "eland"};
+
+    void step(const hypha::CycleTime& time) override {
+        for (hypha::Request<std_srvs::Trigger>& request : this->takeoff.requests()) {
+            if (this->takeoffSeq_.running()) {
+                request.reply({.success = false, .message = "takeoff in progress"});
+            } else {
+                this->takeoffSeq_.start(request.defer(), this->runTakeoff());
+            }
+        }
+        this->takeoffSeq_.advance(time);  // in every step while it runs
+    }
+
+  private:
+    hypha::Task<std_srvs::Trigger::Response> runTakeoff() {
+        auto a = co_await hypha::call(this->switchController, {.value = "MpcController"});
+        if (!succeeded(a)) co_return co_await this->disarm("could not activate the controller", a);
+        auto b = co_await hypha::call(this->switchTracker, {.value = "LandoffTracker"});
+        if (!succeeded(b)) co_return co_await this->disarm("could not activate the tracker", b);
+        co_await hypha::sleepFor(hypha::Duration::fromMillis(300));  // the motors ramp up
+        auto c = co_await hypha::call(this->trackerTakeoff, {.goal = this->takeoffHeight_});
+        if (!succeeded(c)) {
+            auto e = co_await hypha::call(this->eland, {});
+            co_return {.success = false,
+                       .message = "takeoff was not successful (" + c.description() + "); eland: "
+                                  + e.description()};
+        }
+        co_return {.success = true, .message = "taking off"};
+    }
+
+    /// Turn the output off, then disarm, and fail the takeoff with the reason.
+    template <typename Srv>
+    hypha::Task<std_srvs::Trigger::Response> disarm(std::string what, hypha::CallResult<Srv> why) {
+        co_await hypha::call(this->toggleOutput, {.data = false});
+        co_await hypha::call(this->arming, {.data = false});
+        co_return {.success = false, .message = what + " (" + why.description() + ")"};
+    }
+
+    template <typename Srv>
+    static bool succeeded(const hypha::CallResult<Srv>& r) { return r.ok() && r.response().success; }
+
+    hypha::Sequence<std_srvs::Trigger> takeoffSeq_;
+    double                             takeoffHeight_{1.5};
+};
+```
+
+- `co_await hypha::call(port, request)` stages the call as `port.call()` does, and resumes
+  with its `CallResult` in the first step that reads the outcome: answered, refused, no
+  server, not sent, server lost or timeout. A call that returns `Busy` or `TooLarge`
+  resumes at once as `NotSent` with that status.
+- `co_await hypha::sleepFor(d)` resumes at the first `advance()` at least `d` of step time
+  later; `co_await hypha::until(pred)` once `pred()` holds, checked when reached and at
+  each `advance()`. A Task may `co_await` another Task (`disarm()` above).
+- `start(request.defer(), task)` begins the Task at the next `advance(time)`, which runs it
+  until it waits on something not ready; its `co_return` answers the request, which leaves
+  after the step. `hypha::Sequence<>` runs a Task that answers nothing, such as the work
+  after the answer. `running()`, `waitingFor()` (`the outcome of a call to
+  'switch_tracker'`, `the end of a sleep`, `a condition`) and `lastAnswer()` show where it is.
+- A Task that throws, or an `advance()` that throws, ends the sequence, refuses the request
+  with the reason and rethrows: the step fails, and its client reads `ServerLost`.
+  Destroying a running sequence refuses its request.
+- A step that does not read an outcome drops it, so call `advance()` in every step while
+  the sequence runs: otherwise the next `advance()` throws `std::logic_error` and names the
+  port. Read no other outcome of a port the sequence waits on, and keep no reference to
+  step-local data or to an input's value across a `co_await`.
+- What the sequence does follows the step's inputs and time alone, so a replay repeats
+  it. One frame is allocated per Task called; `advance()` allocates nothing of its own.
+
+`advance()` takes the step's time, not `hypha::now()`, so a sleep counts in step time also
+under a `testing::StepHarness`. `crates/hypha-cxx/test/test_sequence.cpp` tests this
+takeoff shape with every failure branch, and the example compiles in
+`test_cycle_doc_examples.cpp`.
 
 ## 9. Parameters
 

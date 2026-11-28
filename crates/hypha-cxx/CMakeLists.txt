@@ -390,13 +390,16 @@ if(HYPHA_BUILD_TESTS)
     test/test_worker_stop.cpp
     test/test_handover.cpp
     test/test_step_harness.cpp
+    test/test_step_harness_services.cpp
+    test/test_sequence.cpp
     test/test_raw_endpoints.cpp
     test/test_qos.cpp
     test/test_topic_overloading.cpp
     test/test_sensor_msgs_companions.cpp
     test/test_sensor_msgs_ros2_names.cpp
   )
-  # The services of test_services.cpp: the camera's typed setter, and a bounded echo.
+  # The services of test_services.cpp: the camera's typed setter, and a bounded echo; and
+  # String and Vec1, shaped as mrs_msgs/String and mrs_msgs/Vec1, for the takeoff sequence.
   hypha_generate_messages(PACKAGE camera_control_msgs
     SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/srv/camera_control_msgs"
     OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_generated/include")

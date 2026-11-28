@@ -73,7 +73,18 @@ struct HandleRelease<HyphaRequest>
     }
 };
 
+/// The services of a testing::StepHarness.
+template <>
+struct HandleRelease<HyphaStepServices>
+{
+    static void release(HyphaStepServices* handle)
+    {
+        hypha_step_services_destroy(handle);
+    }
+};
+
 using UniqueServer = UniqueHandle<HyphaServer>;
+using UniqueStepServices = UniqueHandle<HyphaStepServices>;
 using UniqueClient = UniqueHandle<HyphaClient>;
 using UniqueRequest = UniqueHandle<HyphaRequest>;
 

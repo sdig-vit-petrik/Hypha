@@ -19,10 +19,11 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use hypha_iceoryx2::{Iox2Transport, ReceivedRequest};
+use hypha_iceoryx2::Iox2Transport;
 
 use super::client::{ClientState, Finished};
 use super::outcome::{CallResult, CallStatus};
+use super::port::{FedServer, Received, ServerPort};
 use super::server::{HyphaRequest, ServerCore, begin_step_answers, end_step_answers};
 use super::spec::{Role, ServiceDecl};
 use crate::node::HyphaNode;
@@ -73,7 +74,7 @@ pub struct StepRequest {
 }
 
 struct Queued {
-    received: ReceivedRequest,
+    received: Received,
     payload: Vec<u8>,
 }
 
@@ -128,7 +129,7 @@ impl CycleServices {
         let per_step = resolved.per_step.unwrap_or(DEFAULT_REQUESTS_PER_STEP).min(capacity);
         let index = u32::try_from(self.servers.len()).map_err(|_| Error::ResourceLimit)?;
         self.servers.push(CycleServer {
-            core: ServerCore::new(name, port),
+            core: ServerCore::new(name, ServerPort::Bus(Box::new(port))),
             outside_logged: false,
             per_step,
             queued: Vec::new(),
@@ -166,6 +167,99 @@ impl CycleServices {
             unread_logged: false,
         });
         Ok(index)
+    }
+
+    /// Add a server whose clients are a test (`hypha::testing::StepHarness`): its table
+    /// read from `config` as [`Self::add_server`] reads it, with no node and no bus.
+    /// Returns its index among the cycle's servers.
+    pub(crate) fn add_fed_server(
+        &mut self,
+        config: Option<&crate::config::HyphaConfig>,
+        decl: &ServiceDecl<'_>,
+    ) -> Result<u32, Error> {
+        let resolved = super::spec::resolve_fed(config, decl, Role::Server)?;
+        let index = u32::try_from(self.servers.len()).map_err(|_| Error::ResourceLimit)?;
+        let port = ServerPort::Fed(FedServer::new(resolved.spec.policy.clone()));
+        self.servers.push(CycleServer {
+            core: ServerCore::new(resolved.spec.name, port),
+            outside_logged: false,
+            per_step: resolved.per_step.unwrap_or(DEFAULT_REQUESTS_PER_STEP),
+            queued: Vec::new(),
+            taken: None,
+        });
+        Ok(index)
+    }
+
+    /// Add a client whose server is a test, as [`Self::add_fed_server`] adds a server.
+    pub(crate) fn add_fed_client(
+        &mut self,
+        config: Option<&crate::config::HyphaConfig>,
+        decl: &ServiceDecl<'_>,
+    ) -> Result<u32, Error> {
+        let index = u32::try_from(self.clients.len()).map_err(|_| Error::ResourceLimit)?;
+        let state = super::client::open_fed_state(config, decl, Some(DEFAULT_CALLS_OUTSTANDING))?;
+        let service = state.name().to_owned();
+        self.clients.push(CycleClient {
+            state: Mutex::new(state),
+            service,
+            outside_logged: false,
+            staged: Vec::new(),
+            results: VecDeque::new(),
+            next: Vec::new(),
+            unread: 0,
+            unread_logged: false,
+        });
+        Ok(index)
+    }
+
+    /// Run `body` on the fed end of server `server`.
+    ///
+    /// # Errors
+    /// `InvalidArgument` for an unknown server or one of the bus.
+    pub(crate) fn with_fed_server<R>(
+        &self,
+        server: u32,
+        body: impl FnOnce(&mut FedServer) -> R,
+    ) -> Result<R, Error> {
+        let index = usize::try_from(server).map_err(|_| Error::InvalidArgument)?;
+        let server = self.servers.get(index).ok_or(Error::InvalidArgument)?;
+        let fed = server.core.with_port(|port| match port {
+            ServerPort::Fed(fed) => Some(body(fed)),
+            ServerPort::Bus(_) => None,
+        });
+        fed.flatten().ok_or(Error::InvalidArgument)
+    }
+
+    /// The fed servers' indexes.
+    pub(crate) fn server_count(&self) -> u32 {
+        u32::try_from(self.servers.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Whether request `slot` of server `server` waits in its queue for a step to read it.
+    pub(crate) fn queues(&self, server: u32, slot: super::port::Slot) -> bool {
+        let index = usize::try_from(server).unwrap_or(usize::MAX);
+        self.servers
+            .get(index)
+            .is_some_and(|server| server.queued.iter().any(|queued| queued.received.slot == slot))
+    }
+
+    /// Run `body` on the fed end of client `client`.
+    ///
+    /// # Errors
+    /// `InvalidArgument` for an unknown client or one of the bus.
+    pub(crate) fn with_fed_client<R>(
+        &mut self,
+        client: u32,
+        body: impl FnOnce(&mut super::port::FedClient) -> R,
+    ) -> Result<R, Error> {
+        let client = self.client(client)?;
+        let mut state = crate::locked(&client.state);
+        state.fed().map(body).ok_or(Error::InvalidArgument)
+    }
+
+    /// The clients' count.
+    pub(crate) fn client_count(&self) -> u32 {
+        u32::try_from(self.clients.len()).unwrap_or(u32::MAX)
     }
 
     /// True when the cycle has no server and no client.
@@ -229,10 +323,15 @@ impl CycleServices {
     }
 
     /// Prepare a step at framework time `stamp`, cut at `cut` on simulated time: receive the
-    /// requests that came, and collect the outcomes the step may read. The requests and
-    /// outcomes are cut as the step's inputs are; on host time a step's deadlines are judged
-    /// on the scheduling clock.
-    pub(crate) fn begin(&mut self, stamp: i64, cut: Option<i64>, transport: &Iox2Transport) {
+    /// requests that came (from `transport`; none without it, as in a step test), and
+    /// collect the outcomes the step may read. The requests and outcomes are cut as the
+    /// step's inputs are; on host time a step's deadlines are judged on the scheduling clock.
+    pub(crate) fn begin(
+        &mut self,
+        stamp: i64,
+        cut: Option<i64>,
+        transport: Option<&Iox2Transport>,
+    ) {
         let scheduled = cut.unwrap_or_else(|| hypha_time::scheduling_now().nanos());
         self.step = Some(StepClock { stamp, scheduled, cut });
         // A deferred request answered in this step leaves after it, whatever its server.
@@ -263,7 +362,7 @@ impl CycleServices {
                 log::warn!(target: "hypha", "hypha: service '{}': its server takes no part in the replay, so its answers are read at the first step after they come, not by their stamp: not deterministic (logged once per port)", client.service);
             }
             let client_cut = if outside { None } else { cut };
-            finished.extend(state.drive(scheduled, Some(transport), client_cut));
+            finished.extend(state.drive(scheduled, transport, client_cut));
             drop(state);
             finished.sort_by_key(|(_, _, order)| *order);
             client.results = finished.into_iter().map(|(_, result, _)| result).collect();
@@ -336,7 +435,7 @@ impl CycleServices {
             let mut taken = Vec::new();
             let mut kept = Vec::with_capacity(server.queued.len());
             for queued in std::mem::take(&mut server.queued) {
-                let stamp = i64::try_from(queued.received.framework_sent_nanos).unwrap_or(0);
+                let stamp = queued.received.stamp;
                 let reports = reporters.binary_search(&queued.received.client_node_id).is_ok();
                 let due = clock.cut.is_none_or(|cut| stamp < cut || !reports);
                 if !due || taken.len() >= server.per_step {
@@ -346,7 +445,7 @@ impl CycleServices {
                 outside |= clock.cut.is_some() && !reports;
                 let Queued { received, payload } = queued;
                 taken.push(StepRequest {
-                    request: Box::new(HyphaRequest::of_step(&server.core, received.handle)),
+                    request: Box::new(HyphaRequest::of_step(&server.core, received.slot)),
                     payload,
                     client_node: received.client_node,
                 });
@@ -408,9 +507,9 @@ impl CycleServices {
 ///
 /// A cycle's client names itself `<index>/<cycle>`, so two cycles of one node do not tie; the
 /// client's per-run id breaks what is left, a client whose node cannot be read.
-fn step_order(a: &ReceivedRequest, b: &ReceivedRequest) -> std::cmp::Ordering {
-    (a.framework_sent_nanos, &a.client_node, &a.client_port, a.sequence, a.client).cmp(&(
-        b.framework_sent_nanos,
+fn step_order(a: &Received, b: &Received) -> std::cmp::Ordering {
+    (a.stamp, &a.client_node, &a.client_port, a.sequence, a.client).cmp(&(
+        b.stamp,
         &b.client_node,
         &b.client_port,
         b.sequence,
