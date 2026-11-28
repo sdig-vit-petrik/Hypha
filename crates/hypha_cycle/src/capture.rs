@@ -352,6 +352,8 @@ impl BindingCapture {
             return false;
         };
         self.cursor = sample.sequence.wrapping_add(1);
+        // This binding reads the sample no more: bytes read in place may go back.
+        sample.payload.mark_taken();
         self.counters.age_rejections_total = self.counters.age_rejections_total.wrapping_add(1);
         true
     }
