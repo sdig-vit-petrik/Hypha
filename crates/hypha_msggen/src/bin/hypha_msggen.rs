@@ -33,13 +33,16 @@ struct Cli {
     package: String,
     msg_dir: Option<PathBuf>,
     srv_dir: Option<PathBuf>,
+    /// The definitions the package already has (an SDK package the application adds to):
+    /// read for resolution, never emitted, and not to be defined again.
+    base_dir: Option<PathBuf>,
     dependencies: Vec<Dependency>,
     out_dir: PathBuf,
     language: Language,
 }
 
 const USAGE: &str = "usage: hypha_msggen --package <name> [--msg-dir <dir>] [--srv-dir <dir>] \
-[--dependency <package>=<dir>...] --out-dir <dir> [--language cpp|rust|ros2]";
+[--base-dir <dir>] [--dependency <package>=<dir>...] --out-dir <dir> [--language cpp|rust|ros2]";
 
 /// A package name becomes a directory and a C++ namespace, so it holds no path.
 fn is_package_name(name: &str) -> bool {
@@ -61,6 +64,7 @@ fn parse_args() -> Result<Cli, Box<dyn Error>> {
     let mut package = None;
     let mut msg_dir = None;
     let mut srv_dir = None;
+    let mut base_dir = None;
     let mut dependencies = Vec::new();
     let mut out_dir = None;
     let mut language = Language::Cpp;
@@ -76,6 +80,9 @@ fn parse_args() -> Result<Cli, Box<dyn Error>> {
             }
             "--srv-dir" => {
                 srv_dir = Some(PathBuf::from(args.next().ok_or("--srv-dir needs a value")?));
+            }
+            "--base-dir" => {
+                base_dir = Some(PathBuf::from(args.next().ok_or("--base-dir needs a value")?));
             }
             "--dependency" => {
                 let value = args.next().ok_or("--dependency needs a value")?;
@@ -124,7 +131,7 @@ fn parse_args() -> Result<Cli, Box<dyn Error>> {
             );
         }
     }
-    Ok(Cli { package, msg_dir, srv_dir, dependencies, out_dir, language })
+    Ok(Cli { package, msg_dir, srv_dir, base_dir, dependencies, out_dir, language })
 }
 
 struct MessageSource {
@@ -197,6 +204,20 @@ fn run() -> Result<(), Box<dyn Error>> {
         None => Vec::new(),
     };
 
+    // The package's existing definitions: read for resolution only, and not defined again.
+    let mut base_sources = Vec::new();
+    if let Some(base_dir) = &cli.base_dir {
+        base_sources = discover_in_dir(&cli.package, base_dir, "msg")?;
+        let base_services = discover_in_dir(&cli.package, base_dir, "srv")?;
+        refuse_redefinition(
+            &cli,
+            base_dir,
+            (&sources, &service_sources),
+            &base_sources,
+            &base_services,
+        )?;
+    }
+
     // Read for resolution only; their own package emits their headers.
     let mut dependency_sources = Vec::new();
     for dependency in &cli.dependencies {
@@ -209,6 +230,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let mut specs = SpecSet::new();
     parse_into_specs(&mut specs, &sources)?;
+    parse_into_specs(&mut specs, &base_sources)?;
     parse_into_specs(&mut specs, &dependency_sources)?;
 
     let mut services: Vec<ServiceSpec> = Vec::new();
@@ -246,6 +268,41 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     generate_services(&cli, &specs, &services)?;
 
+    Ok(())
+}
+
+/// The type names one definition takes in its package: a message its own, a service its own
+/// and those of its two halves (each has a header `<package>/<name>.h`).
+fn taken_names(messages: &[MessageSource], services: &[MessageSource]) -> Vec<String> {
+    let messages = messages.iter().map(|source| source.name.clone());
+    let services = services.iter().flat_map(|source| {
+        let name = &source.name;
+        [name.clone(), format!("{name}Request"), format!("{name}Response")]
+    });
+    messages.chain(services).collect()
+}
+
+/// Defining a type of the package again would put two headers at one path, and two
+/// types of one name and MD5 in one process: refused, naming the type.
+fn refuse_redefinition(
+    cli: &Cli,
+    base_dir: &Path,
+    (messages, services): (&[MessageSource], &[MessageSource]),
+    base_messages: &[MessageSource],
+    base_services: &[MessageSource],
+) -> Result<(), Box<dyn Error>> {
+    let existing = taken_names(base_messages, base_services);
+    for name in taken_names(messages, services) {
+        if existing.contains(&name) {
+            return Err(format!(
+                "{}/{name} is already defined by '{}': a definition added to a package of \
+the SDK needs a name of its own",
+                cli.package,
+                base_dir.display()
+            )
+            .into());
+        }
+    }
     Ok(())
 }
 

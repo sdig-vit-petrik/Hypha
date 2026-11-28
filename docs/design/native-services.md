@@ -85,7 +85,7 @@ Each `hypha::Request<Srv>&` is resolved by `reply(resp)`, `refuse([reason])`, or
 **TOML tables** (missing required table → exit 78):
 - `[ports.servers.<port>]`: `service` (`""` disables with `optionalService`), `per_step` (default 8).
 - `[ports.clients.<port>]`: `service`, `timeout_ms`, `outstanding` (default 1).
-- SDK ships `std_srvs` (`Empty`, `Trigger`, `SetBool`); a deleted `call(Srv&)` overload guides ROS 1 porters.
+- SDK ships `std_srvs` (`Empty`, `Trigger`, `SetBool`) and, unchanged under their ROS names, the ROS 1 services of the packages it ships messages for (`nav_msgs/GetMap`, `sensor_msgs/SetCameraInfo`, ..., #315); a deleted `call(Srv&)` overload guides ROS 1 porters.
 
 **As built (Stage 1b):** coarser than the sketch, ten functions (interface-specification.md, Services). A server's create attaches it to the node's `WaitSet`; one `hypha_request_answer` replies or refuses, from the handler or deferred (a deferred request is the same handle, released by `hypha_request_destroy`); a client's `blocking` field decides whether its one `hypha_client_call` delivers the outcome at a later turn or before it returns; the outcome reaches a per-call callback with `may_have_run`/`safe_to_retry` decided; `ready` and `pending` are one `hypha_client_status`; a context's `release` runs exactly once. The cycle functions stay for Stage 1c.
 

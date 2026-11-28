@@ -194,7 +194,29 @@ target_link_libraries(app PRIVATE hypha::sdk app_msgs)
 ```
 
 `DEPENDS` names a standard package or one an earlier call declared; never copy or
-regenerate a standard package. Every message `M` carries the pointer typedefs of both
+regenerate a standard package.
+
+**Adding to a package of the SDK.** A package of the SDK is the SDK's, so its name in a
+call that gives definitions of the application's own adds to it: the call reads what the
+SDK ships under the package, so a `.srv` of the application can name
+`sensor_msgs/CameraInfo` without `DEPENDS`, and it emits only the application's:
+
+```cmake
+hypha_generate_messages(PACKAGE sensor_msgs
+                        SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/srv/sensor_msgs")   # SetFocusRegion.srv
+target_link_libraries(app PRIVATE hypha::sdk sensor_msgs_additions)
+```
+
+The headers land at `<OUT_DIR>/sensor_msgs/SetFocusRegion.h`, beside the SDK's headers of
+the package and not among them (an application's install names its own list,
+`HYPHA_GENERATED_HEADERS` of the target). The target is `<package>_additions`: the package's
+own target is the SDK's. A definition of a name the package has, a message or a service or
+a half of a service (`SetCameraInfoRequest`), is refused naming it: ROS's definitions
+are not redefined, and the application defines its service under a name of its own, or
+in a package of its own. `PACKAGE` in its own `DEPENDS` is refused. One call adds to a
+package. `DEPENDS` on the package in a later call names the SDK's definitions of it, not
+the added ones; `hypha_generate_ros2_headers()` for the package covers both.
+`test/package_consumer` adds to `sensor_msgs` from an installed prefix. Every message `M` carries the pointer typedefs of both
 ROS generations: `M::Ptr` and `M::ConstPtr` (ROS 1), `M::SharedPtr`, `M::ConstSharedPtr`
 and `M::UniquePtr` (ROS 2), and `M_<Allocator>` names `M` as ROS 2's allocator template does. Each field `f` names its type `M::_f_type`, as both
 generations' C++ does, and has ROS 2's fluent setter `M& set__f(const M::_f_type&)`. Messages compare with `==`
@@ -1274,9 +1296,19 @@ server, across every version of its type; a call ends in exactly one outcome. Se
 8.1 to 8.3 cover plain nodes and `ApplicationNode`s; section 8.5 the ports of a cycle,
 `Requests<Srv>` and `Calls<Srv>`.
 
-The SDK ships `std_srvs` (`Empty`, `Trigger`, `SetBool`); `hypha_generate_messages()`
-with `SRV_DIR` generates an application's own (`<pkg>/<Name>.h`, with `Request`,
-`Response`, `TYPE_NAME` and `MD5`).
+The SDK ships `std_srvs` (`Empty`, `Trigger`, `SetBool`) and the standard services of
+ROS 1 Noetic for the packages whose messages it ships, each as `<package>/<Name>.h` with
+`Request`, `Response`, `TYPE_NAME` and `MD5`, and the `.srv` unchanged, so the MD5 is
+ROS's: `nav_msgs/GetMap` (`6cdd0a18...`), `GetPlan`, `LoadMap`, `SetMap`;
+`sensor_msgs/SetCameraInfo` (`bef1df59...`); `diagnostic_msgs/AddDiagnostics`, `SelfTest`;
+`tf2_msgs/FrameGraph`. A ROS client through the bridge, a recorded call and a port written
+against `nav_msgs::GetMap` meet them as they are in ROS. Every other package of ROS 1
+that the SDK ships has no service (`std_msgs`, `geometry_msgs`, `rosgraph_msgs`).
+`hypha_generate_messages()` with `SRV_DIR` generates an application's own, and its call
+for a package of the SDK adds to it (section 1.1, "Adding to a package of the SDK"). A
+map does not fit the default 4 KiB bound of a service (section 8.4): the server and its
+clients include one header that specializes `hypha::ServicePolicyOf<nav_msgs::GetMap>`
+with bounds for their map, 64 MiB at most.
 
 ### 8.1 A server
 

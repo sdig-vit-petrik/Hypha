@@ -334,6 +334,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_subscriber.cpp
     test/test_services.cpp
     test/test_cycle_services.cpp
+    test/test_standard_services.cpp
     test/subscriber_latest_pair_is_consistent.cpp
     test/test_parameters.cpp
     test/test_parameter_lists.cpp
@@ -412,6 +413,14 @@ if(HYPHA_BUILD_TESTS)
     target_compile_definitions(test_hypha PRIVATE
       HYPHA_TEST_HYPHA_TOOL="$<TARGET_FILE:hypha::hypha>")
   endif()
+  # A service and a message of the application's own, added to the SDK's package
+  # sensor_msgs (test_standard_services.cpp): the package's own definitions are read, not
+  # emitted again, and the target is sensor_msgs_additions.
+  hypha_generate_messages(PACKAGE sensor_msgs
+    MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/msg/sensor_msgs"
+    SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/srv/sensor_msgs"
+    OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_generated/include")
+  target_link_libraries(test_hypha PRIVATE sensor_msgs_additions)
   # The ROS 2 names of sensor_msgs, for test_sensor_msgs_ros2_names.cpp.
   hypha_generate_ros2_headers(test_hypha_ros2_headers PACKAGES sensor_msgs)
   target_link_libraries(test_hypha PRIVATE test_hypha_ros2_headers)

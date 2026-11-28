@@ -1,4 +1,4 @@
-//! Build script for `hypha_msgs`: generates Rust modules for every `.msg` in `msg/`.
+//! Build script for `hypha_msgs`: generates Rust modules for every `.msg` and `.srv` in `msg/`.
 
 use std::env;
 use std::error::Error;
@@ -6,9 +6,9 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
-use hypha_msgdef::parse::parse_message;
-use hypha_msgdef::resolve::{SpecSet, message_identity};
-use hypha_msgdef::spec::TypeName;
+use hypha_msgdef::parse::{parse_message, parse_service};
+use hypha_msgdef::resolve::{SpecSet, message_identity, service_identity};
+use hypha_msgdef::spec::{ServiceSpec, TypeName};
 use hypha_msggen::naming::camel_to_snake;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let msg_root = manifest_dir.join("msg");
 
     let mut specs = SpecSet::new();
+    let mut services: Vec<ServiceSpec> = Vec::new();
     let mut packages = Vec::new();
 
     let entries = fs::read_dir(&msg_root)?;
@@ -33,16 +34,28 @@ fn main() -> Result<(), Box<dyn Error>> {
             for msg_entry in msg_files {
                 let msg_entry = msg_entry?;
                 let msg_path = msg_entry.path();
-                if msg_path.extension().is_some_and(|ext| ext == "msg") {
-                    let Some(stem) = msg_path.file_stem() else {
-                        continue;
-                    };
-                    let name = stem.to_string_lossy().to_string();
-                    let type_name = TypeName::new(&pkg_name, &name);
-                    let content = fs::read_to_string(&msg_path)?;
-                    let spec = parse_message(type_name, &content)
-                        .map_err(|e| format!("parsing {}: {e:?}", msg_path.display()))?;
-                    specs.insert(spec);
+                let extension = msg_path.extension().and_then(|ext| ext.to_str());
+                let Some(stem) = msg_path.file_stem() else {
+                    continue;
+                };
+                let name = stem.to_string_lossy().to_string();
+                let type_name = TypeName::new(&pkg_name, &name);
+                match extension {
+                    Some("msg") => {
+                        let content = fs::read_to_string(&msg_path)?;
+                        let spec = parse_message(type_name, &content)
+                            .map_err(|e| format!("parsing {}: {e:?}", msg_path.display()))?;
+                        specs.insert(spec);
+                    }
+                    Some("srv") => {
+                        let content = fs::read_to_string(&msg_path)?;
+                        let service = parse_service(type_name, &content)
+                            .map_err(|e| format!("parsing {}: {e:?}", msg_path.display()))?;
+                        specs.insert(service.request.clone());
+                        specs.insert(service.response.clone());
+                        services.push(service);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -58,8 +71,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         let _ = writeln!(lib_generated, "/// Standard `{pkg}` messages.\npub mod {pkg} {{");
 
-        let mut pkg_specs: Vec<_> =
-            specs.values().filter(|s| s.type_name.package == *pkg).collect();
+        // The halves of a service are emitted with it, not as messages.
+        let is_half = |name: &TypeName| {
+            services.iter().any(|service| {
+                service.request.type_name == *name || service.response.type_name == *name
+            })
+        };
+        let mut pkg_specs: Vec<_> = specs
+            .values()
+            .filter(|s| s.type_name.package == *pkg && !is_half(&s.type_name))
+            .collect();
         pkg_specs.sort_by(|a, b| a.type_name.name.cmp(&b.type_name.name));
 
         for spec in pkg_specs {
@@ -73,6 +94,31 @@ fn main() -> Result<(), Box<dyn Error>> {
             let _ = writeln!(lib_generated, "    #[path = \"{}\"]", out_file.display());
             let _ = writeln!(lib_generated, "    pub mod {snake_name};");
             let _ = writeln!(lib_generated, "    pub use {snake_name}::{};", spec.type_name.name);
+        }
+
+        let mut pkg_services: Vec<_> =
+            services.iter().filter(|service| service.type_name.package == *pkg).collect();
+        pkg_services.sort_by(|a, b| a.type_name.name.cmp(&b.type_name.name));
+        for service in pkg_services {
+            let identity = service_identity(&specs, service)?;
+            let output = hypha_msggen::emit_rust::emit_service(service, &identity);
+            let name = &service.type_name.name;
+            let snake_name = camel_to_snake(name);
+            let halves = [
+                (format!("{snake_name}_request"), output.request),
+                (format!("{snake_name}_response"), output.response),
+                (snake_name.clone(), output.service),
+            ];
+            for (module, source) in halves {
+                let out_file = pkg_out_dir.join(format!("{module}.rs"));
+                fs::write(&out_file, source)?;
+                let _ = writeln!(lib_generated, "    #[path = \"{}\"]", out_file.display());
+                let _ = writeln!(lib_generated, "    pub mod {module};");
+            }
+            let _ = writeln!(
+                lib_generated,
+                "    pub use {snake_name}::{{{name}, {name}Request, {name}Response}};"
+            );
         }
 
         lib_generated.push_str("}\n\n");
