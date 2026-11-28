@@ -154,3 +154,146 @@ fn service_call_prints_the_response_and_exits_with_a_code_per_outcome() {
         }
     });
 }
+
+/// Answers every request with the same encoded response.
+struct Fixed(Vec<u8>);
+
+impl ServeHandler for Fixed {
+    fn serve(
+        &mut self,
+        request: &mut HyphaRequest,
+        _view: &RequestView<'_>,
+    ) -> HyphaCallbackResult {
+        request_answer(request, Answer::Reply(&self.0)).expect("reply");
+        HyphaCallbackResult::continue_run()
+    }
+}
+
+/// A service with a half of no fields: the half is an empty definition, not a missing one.
+struct Shape {
+    type_name: &'static str,
+    md5: &'static str,
+    request: &'static str,
+    response: &'static str,
+    /// The encoded response the server answers with.
+    reply: Vec<u8>,
+}
+
+/// Serve `shape` as `name` on a fresh node while `body` runs.
+fn serving_shape(shape: &Shape, name: &str, body: impl FnOnce()) {
+    let node = hypha_node::safe::node_create(&unique_name("shape_node"), None, None).expect("node");
+    let decl = ServiceDecl {
+        name,
+        literal: true,
+        type_name: shape.type_name,
+        md5: shape.md5,
+        request_definition: shape.request,
+        response_definition: shape.response,
+        policy: None,
+        timeout: None,
+    };
+    let _server =
+        service_serve(&node, &decl, Box::new(Fixed(shape.reply.clone()))).expect("server");
+    let node = &node;
+    std::thread::scope(|scope| {
+        let (sender, shared) = std::sync::mpsc::channel();
+        let run = scope.spawn(move || {
+            let lease = hypha_node::safe::node_default_waitset(node).expect("waitset");
+            let waitset = lease.waitset().expect("lent");
+            sender.send(Arc::clone(&waitset.shared)).expect("send");
+            waitset_run(waitset, Some(Duration::from_secs(60)))
+        });
+        let shared = shared.recv().expect("the run's WaitSet");
+        body();
+        shared.request_stop().expect("stop");
+        let _ = run.join();
+    });
+}
+
+#[test]
+fn a_service_with_an_empty_request_is_called_without_a_body() {
+    // std_srvs/Trigger: the request has no fields, the response two.
+    let mut reply = vec![1_u8];
+    reply.extend_from_slice(&2_u32.to_le_bytes());
+    reply.extend_from_slice(b"ok");
+    let trigger = Shape {
+        type_name: "std_srvs/Trigger",
+        md5: "937c9679a518e3a18d831e57125ea522",
+        request: "",
+        response: "bool success\nstring message",
+        reply,
+    };
+    let name = format!("/{}", unique_name("trigger"));
+    serving_shape(&trigger, &name, || {
+        let called = hypha(&["call", &name]);
+        assert_eq!(called.status.code(), Some(0), "{}", text(&called.stderr));
+        assert_eq!(text(&called.stdout), "success: true\nmessage: \"ok\"\n");
+        let braces = hypha(&["call", &name, "{}"]);
+        assert_eq!(braces.status.code(), Some(0), "{}", text(&braces.stderr));
+        let field = hypha(&["call", &name, "{nope: 1}"]);
+        assert_eq!(field.status.code(), Some(1));
+        assert!(text(&field.stderr).contains("has no field 'nope'"), "{}", text(&field.stderr));
+        let info = hypha(&["info", &name]);
+        let info = text(&info.stdout);
+        assert!(info.contains("  request (std_srvs/TriggerRequest):\n  response"), "{info}");
+    });
+}
+
+#[test]
+fn a_service_with_an_empty_response_answers_with_no_fields() {
+    let setter = Shape {
+        type_name: "hypha_tests/SetLimit",
+        md5: "8b94c1b53db61fb6aed406028ad6332a",
+        request: "uint32 limit",
+        response: "",
+        reply: Vec::new(),
+    };
+    let name = format!("/{}", unique_name("set_limit"));
+    serving_shape(&setter, &name, || {
+        let called = hypha(&["call", &name, "limit: 7"]);
+        assert_eq!(called.status.code(), Some(0), "{}", text(&called.stderr));
+        assert_eq!(text(&called.stdout), "{}\n");
+        let template = hypha(&["call", &name]);
+        assert_eq!(text(&template.stdout), "limit: 0\n");
+    });
+}
+
+#[test]
+fn a_service_with_two_empty_halves_is_called_and_answers() {
+    // std_srvs/Empty: its MD5 is that of the empty text.
+    let empty = Shape {
+        type_name: "std_srvs/Empty",
+        md5: "d41d8cd98f00b204e9800998ecf8427e",
+        request: "",
+        response: "",
+        reply: Vec::new(),
+    };
+    let name = format!("/{}", unique_name("empty"));
+    serving_shape(&empty, &name, || {
+        let called = hypha(&["call", &name]);
+        assert_eq!(called.status.code(), Some(0), "{}", text(&called.stderr));
+        assert_eq!(text(&called.stdout), "{}\n");
+    });
+}
+
+#[test]
+fn a_server_that_gave_no_definitions_is_named_as_such() {
+    // Not the empty service: its MD5 says a half has fields, and none were given.
+    let silent = Shape {
+        type_name: "std_srvs/SetBool",
+        md5: SET_BOOL_MD5,
+        request: "",
+        response: "",
+        reply: Vec::new(),
+    };
+    let name = format!("/{}", unique_name("silent"));
+    serving_shape(&silent, &name, || {
+        let called = hypha(&["call", &name, "data: true"]);
+        assert_eq!(called.status.code(), Some(1));
+        assert!(
+            text(&called.stderr).contains("registered no definitions"),
+            "{}",
+            text(&called.stderr)
+        );
+    });
+}

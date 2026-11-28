@@ -17,7 +17,8 @@ use hypha_core::port::{PortError, SchemaSelector, TopicSpec};
 
 use crate::stream::Stream;
 use hypha_wire::schema_record::{
-    MAX_SCHEMA_RECORD_LEN, parse_schema_record, schema_record_frame_len, write_schema_record,
+    MAX_SCHEMA_RECORD_LEN, ParsedSchemaRecord, SchemaRecordError, parse_half_record,
+    parse_schema_record, schema_record_frame_len, write_half_record, write_schema_record,
 };
 use std::fs::TryLockError;
 
@@ -389,6 +390,17 @@ pub fn lookup_schema(
     wanted: SchemaSelector,
     timeout: StdDuration,
 ) -> Result<Option<Vec<u8>>, PortError> {
+    lookup_record(topic, wanted, timeout, parse_schema_record)
+}
+
+/// [`lookup_schema`] with the parser that verifies the record: the one of a service half
+/// accepts an empty definition.
+fn lookup_record(
+    topic: &str,
+    wanted: SchemaSelector,
+    timeout: StdDuration,
+    parse: fn(&[u8]) -> Result<ParsedSchemaRecord<'_>, SchemaRecordError>,
+) -> Result<Option<Vec<u8>>, PortError> {
     let schema_hash = match &wanted {
         SchemaSelector::Hash(hash) => *hash,
         SchemaSelector::Md5(md5) => {
@@ -404,7 +416,7 @@ pub fn lookup_schema(
             match std::fs::read(&path) {
                 // A stream whose endpoints gave no definition: nothing to resolve yet.
                 Ok(bytes) if bytes.is_empty() => {}
-                Ok(bytes) => match parse_schema_record(&bytes) {
+                Ok(bytes) => match parse(&bytes) {
                     Ok(record) => {
                         let hash_matches =
                             hypha_wire::schema_hash_from_md5(record.md5()) == Some(schema_hash);
@@ -533,21 +545,28 @@ fn service_record_frame(data_type: &str, md5: &str, definition: &str) -> Result<
         ));
     }
     let mut frame = vec![0_u8; requested];
-    let size = write_schema_record(&mut frame, data_type, md5, definition)
+    let size = write_half_record(&mut frame, data_type, md5, definition)
         .map_err(|cause| format!("{cause:?}"))?;
     frame.truncate(size);
     Ok(frame)
 }
 
+/// The MD5 of a service whose two halves have no fields (`std_srvs/Empty`): that of the
+/// empty text, since the service MD5 is taken over the texts of both halves.
+const EMPTY_SERVICE_MD5: &str = "d41d8cd98f00b204e9800998ecf8427e";
+
 /// Writes the records of both halves of `spec`'s stream, for a server that just took the
-/// name. `Ok(None)` for a server that gave no definitions.
+/// name. A half of no fields is an empty definition and has its record. `Ok(None)` for a
+/// server that gave no definitions: both halves empty under the MD5 of a service that has
+/// fields, since the empty service alone has the MD5 of the empty text.
 ///
 /// # Errors
 /// The reason when a record cannot be built or written; the server stands without one.
 pub(crate) fn write_service_schema(
     spec: &hypha_core::port::ServiceSpec,
 ) -> Result<Option<ServiceSchemaRelease>, String> {
-    if spec.request_definition.is_empty() || spec.response_definition.is_empty() {
+    let none_given = spec.request_definition.is_empty() && spec.response_definition.is_empty();
+    if none_given && spec.md5 != EMPTY_SERVICE_MD5 {
         return Ok(None);
     }
     let schema_hash =
@@ -587,15 +606,14 @@ pub fn lookup_service_schema(
 ) -> Result<Option<ServiceSchema>, PortError> {
     let wanted = || SchemaSelector::Md5(md5.to_owned());
     let request_key = service_schema_key(service, ServiceHalf::Request);
-    let Some(request) = lookup_schema(&request_key, wanted(), timeout)? else {
+    let Some(request) = lookup_record(&request_key, wanted(), timeout, parse_half_record)? else {
         return Ok(None);
     };
     let response_key = service_schema_key(service, ServiceHalf::Response);
-    let Some(response) = lookup_schema(&response_key, wanted(), timeout)? else {
+    let Some(response) = lookup_record(&response_key, wanted(), timeout, parse_half_record)? else {
         return Ok(None);
     };
-    let (Ok(request), Ok(response)) =
-        (parse_schema_record(&request), parse_schema_record(&response))
+    let (Ok(request), Ok(response)) = (parse_half_record(&request), parse_half_record(&response))
     else {
         INVALID_RECORDS.fetch_add(1, Ordering::Relaxed);
         return Ok(None);

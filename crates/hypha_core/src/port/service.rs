@@ -105,10 +105,12 @@ pub struct ServiceSpec {
     /// The limits.
     pub policy: ServicePolicy,
     /// The definition text of the request half (`<type>Request`), as a `.msg` with its
-    /// dependencies; empty when the server gives none. A server registers it in the schema
-    /// store so a tool can encode a request it did not compile.
+    /// dependencies; empty for a half of no fields, or when the server gives none. A server
+    /// registers it in the schema store so a tool can encode a request it did not compile.
+    /// Both halves empty count as none unless `md5` is that of the empty text, the MD5 of
+    /// `std_srvs/Empty`.
     pub request_definition: String,
-    /// The definition text of the response half (`<type>Response`); empty for none.
+    /// The definition text of the response half (`<type>Response`); empty as the request's.
     pub response_definition: String,
 }
 

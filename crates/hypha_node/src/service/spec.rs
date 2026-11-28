@@ -26,10 +26,12 @@ pub struct ServiceDecl<'a> {
     pub type_name: &'a str,
     /// The `.srv` MD5 over both halves.
     pub md5: &'a str,
-    /// The definition of the request half with its dependencies; empty for none. A server
-    /// registers both definitions so the tools can encode a request; a client's are unused.
+    /// The definition of the request half with its dependencies; empty for a half of no
+    /// fields, or for none (both halves empty, unless the MD5 is that of the empty text). A
+    /// server registers both definitions so the tools can encode a request; a client's are
+    /// unused.
     pub request_definition: &'a str,
-    /// The definition of the response half; empty for none.
+    /// The definition of the response half; empty as the request's.
     pub response_definition: &'a str,
     /// The policy, or `None` for `defaultService`.
     pub policy: Option<ServicePolicy>,
