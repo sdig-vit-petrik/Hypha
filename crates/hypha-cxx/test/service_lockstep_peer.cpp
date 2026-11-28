@@ -220,10 +220,11 @@ class PlainServer final : public hypha::ApplicationNode
   public:
     void setup(hypha::Node& node) override
     {
-        print("start plain");
         this->server_ = node.advertiseService<Echo>("serve", [](hypha::Request<Echo>& request) {
             static_cast<void>(request.reply({.text = request->text + "@plain"}));
         });
+        // After the server exists: the harness starts the replay once it reads this.
+        print("start plain");
     }
 
   private:

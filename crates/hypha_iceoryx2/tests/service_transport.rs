@@ -577,6 +577,49 @@ fn a_server_registers_its_definitions_for_the_tools_while_it_stands() {
 }
 
 #[test]
+fn a_half_of_no_fields_is_an_empty_definition_that_is_registered() {
+    let tool = new_transport();
+    let wait = Duration::from_millis(200);
+    // std_srvs/Trigger: an empty request.
+    let name = service_name();
+    let trigger = ServiceSpec::new(&name, "std_srvs/Trigger", "937c9679a518e3a18d831e57125ea522")
+        .with_definitions("", "bool success\nstring message");
+    let trigger_side = new_transport();
+    let _trigger = trigger_side.serve(&trigger).expect("a server");
+    let schema = tool
+        .service_schema(&name, &trigger.md5, wait)
+        .expect("the store")
+        .expect("an empty request is registered");
+    assert_eq!(schema.request_type, "std_srvs/TriggerRequest");
+    assert_eq!(schema.request_definition, "");
+    assert_eq!(schema.response_definition, "bool success\nstring message");
+
+    // An empty response.
+    let name = service_name();
+    let setter = ServiceSpec::new(&name, "pkg/SetLimit", "8b94c1b53db61fb6aed406028ad6332a")
+        .with_definitions("uint32 limit", "");
+    let setter_side = new_transport();
+    let _setter = setter_side.serve(&setter).expect("a server");
+    let schema = tool
+        .service_schema(&name, &setter.md5, wait)
+        .expect("the store")
+        .expect("an empty response is registered");
+    assert_eq!(schema.request_definition, "uint32 limit");
+    assert_eq!(schema.response_definition, "");
+
+    // std_srvs/Empty: both halves empty, under the MD5 of the empty text.
+    let name = service_name();
+    let empty = ServiceSpec::new(&name, "std_srvs/Empty", "d41d8cd98f00b204e9800998ecf8427e");
+    let empty_side = new_transport();
+    let _empty = empty_side.serve(&empty).expect("a server");
+    let schema = tool
+        .service_schema(&name, &empty.md5, wait)
+        .expect("the store")
+        .expect("the empty service is registered");
+    assert_eq!((schema.request_definition.as_str(), schema.response_definition.as_str()), ("", ""));
+}
+
+#[test]
 fn a_stream_opened_with_another_policy_is_refused() {
     let name = service_name();
     let transport = new_transport();

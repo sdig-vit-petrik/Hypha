@@ -846,6 +846,14 @@ This matters when a slow callback blocks the sweep. In ROS 1 you might see
 a burst of timer callbacks afterwards. Here you see one call and a missed
 count.
 
+**A second rate inside a step is a `CycleTimer`, not a timer.** A `hypha::CycleTimer`
+([cpp-api.md](cpp-api.md) §5.4, "A second rate in a step") is no registration: the step
+polls it with `CycleTime`, and it ticks on a grid anchored at its first poll (or its
+`start(time)`) on the step's time, simulated in a replay, so a replay repeats its ticks. A
+poll gives the count of grid instants passed since the previous poll; the step runs its body
+once and reads the missed periods, or once per period. It wakes nothing: a tick runs in the
+first step at or after its instant.
+
 **A timer does not follow framework time backwards.** On simulated time a
 `timer` timer is due against `/clock` time. When `/clock` moves back, the
 timer fires nothing and its run ends with `ClockRewound`; `runNode` restarts the
@@ -870,7 +878,8 @@ host:
   first clock value that the cycle sees, so its phase does not depend on when
   the node started. A clock value is a `/clock` sample, a `setSimTime` or
   `advanceSimTime`, or an `enableSimTime` with a start. The zero that a node
-  starts with is a placeholder, not a value, and does not set the phase.
+  starts with is a placeholder, not a value, and does not set the phase;
+  `hypha::isClockValid()` is false until the clock has a value.
 - **One step per expired deadline.** When the clock moves past deadlines
   `D1 < D2 < … ≤ now`, the inputs are drained once, and the cycle then runs one
   step for each deadline. Each step has `now = Di`,

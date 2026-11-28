@@ -190,7 +190,7 @@ fn a_call_log_is_never_replayed() {
         topic: topic.to_owned(),
         stream: hypha_node::sdk::StreamKey { topic: topic.to_owned(), schema_hash: 1 },
         data_type: data_type.to_owned(),
-        md5: "f8a32b50b7a5021bca3170f3447d5385".to_owned(),
+        md5: "519557d6aa957923d9ae2d47cdc96a2c".to_owned(),
         definition: String::new(),
         max_payload: None,
     };

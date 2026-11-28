@@ -1,7 +1,9 @@
 //! Managed input sources: bounded history fed by one `WaitSet` receiver.
 
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Instant;
 
+use super::registration::Cycle;
 use crate::status::Error;
 use crate::subscriber::HyphaSubscriber;
 use crate::waitset::{HyphaWaitSet, WaitSetShared};
@@ -258,7 +260,7 @@ fn check_input_source<'set>(
     if endpoint.is_some_and(|endpoint| endpoint.owner_node != node) {
         return Err(Error::InvalidArgument);
     }
-    let topic = endpoint.map_or_default(|endpoint| endpoint.topic.clone());
+    let topic = endpoint.map(|endpoint| endpoint.topic.clone()).unwrap_or_default();
     // The source drains the subscriber alone.
     if let Some(endpoint) = endpoint {
         let previous = endpoint.claim(crate::subscriber::MODE_SOURCE)?;
@@ -326,6 +328,65 @@ pub fn input_source_destroy(
     }
     drop(source);
     drop(claimed);
+    Ok(())
+}
+
+/// Drain each physical source of `cycle` once into its history for `clock`, for the
+/// dispatcher: before a step it cuts itself, and on every turn under simulated time.
+/// `InvalidState` inside a step.
+pub(crate) fn drain_inputs(cycle: &Cycle, clock: DrainClock) -> Result<(), Error> {
+    drain_sources(&cycle.step_ref()?.inputs, clock)
+}
+
+/// Check the stream of each input of `cycle` that has a subscriber, at host time
+/// `now_nanos`, from the housekeeping of a turn: never inside its step. A cycle whose step
+/// runs is skipped. On simulated time (`replay`), warn too of an input with a second
+/// publisher, at most once per second per input.
+pub(crate) fn check_input_publishers(cycle: &Cycle, now_nanos: u64, replay: bool) {
+    let Ok(step) = cycle.step_ref() else { return };
+    for source in &step.inputs {
+        let Some(subscriber) = source.subscriber.as_deref() else { continue };
+        subscriber.check_no_publisher_warning(now_nanos);
+        if replay {
+            warn_of_several_publishers(source, subscriber);
+        }
+    }
+}
+
+/// Warn when the replay input `source` has more than one live publisher: the order of
+/// their samples depends on turn timing (`replay-flow-control.md` section 6.7).
+fn warn_of_several_publishers(source: &CycleInputSource, subscriber: &crate::HyphaSubscriber) {
+    let mut fidelity = crate::locked(&source.fidelity);
+    if !fidelity.publishers_due(Instant::now()) {
+        return;
+    }
+    match crate::subscriber::subscriber_publisher_count(subscriber) {
+        Ok(count) => {
+            if let Some(text) = fidelity.record_publishers(&source.topic, count) {
+                log::warn!(target: "hypha", "hypha: {text}");
+            }
+        }
+        Err(error) => {
+            log::warn!(target: "hypha", "hypha: cannot count the publishers of {}: {error:?}", source.topic);
+        }
+    }
+}
+
+/// Drain each physical source once into its history.
+///
+/// Several bindings and cycles can share a source, whose history is their common snapshot.
+pub(super) fn drain_sources(
+    inputs: &[Arc<CycleInputSource>],
+    clock: DrainClock,
+) -> Result<(), Error> {
+    for (index, source) in inputs.iter().enumerate() {
+        let already_drained = inputs
+            .get(..index)
+            .is_some_and(|previous| previous.iter().any(|item| Arc::ptr_eq(item, source)));
+        if !already_drained {
+            source.drain(clock)?;
+        }
+    }
     Ok(())
 }
 

@@ -248,7 +248,7 @@ every rule of a call decided below them, once.
   (`timeout_nanos`, 0 for the policy's; the table's `timeout_ms` wins), for a client,
   `blocking`, and, for a server, the definitions of the `.srv`'s two halves
   (`request_definition`, `response_definition` with their lengths; null with length 0
-  for none). A server registers those definitions in the schema store while it stands,
+  for none; a half of no fields is an empty text, and two empty texts register only under the MD5 of the empty service, `d41d8cd98f00b204e9800998ecf8427e`). A server registers those definitions in the schema store while it stands,
   so a tool encodes a request of a type it was not built with; a server without them
   serves. A client's definitions are unused. Its texts are borrowed for the call. A port without a table is
   `InvalidArgument`, and `hypha_last_error` gives the stanza to add; an invalid name is

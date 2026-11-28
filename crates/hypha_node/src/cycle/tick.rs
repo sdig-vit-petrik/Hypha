@@ -18,8 +18,7 @@ use super::types::{
     HyphaCycleTime, HyphaSupervisionReport,
 };
 use crate::loan::{HyphaLoan, take_sequence};
-use crate::status::Error;
-use crate::status::HyphaStatus;
+use crate::status::{Error, HyphaStatus};
 use crate::waitset::{
     HYPHA_ACTION_CONTINUE, HYPHA_ACTION_FAIL, HYPHA_ACTION_STOP, HyphaCallbackResult,
 };
@@ -48,62 +47,6 @@ struct StepState<'a> {
     waitset: &'a crate::waitset::HyphaWaitSet,
 }
 
-/// Drain each physical source of `cycle` once into its history for `clock`, for the
-/// dispatcher: before a step it cuts itself, and on every turn under simulated time.
-/// `InvalidState` inside a step.
-pub(crate) fn drain_inputs(cycle: &Cycle, clock: DrainClock) -> Result<(), Error> {
-    drain_sources(&cycle.step_ref()?.inputs, clock)
-}
-
-/// Check the stream of each input of `cycle` that has a subscriber, at host time
-/// `now_nanos`, from the housekeeping of a turn: never inside its step. A cycle whose step
-/// runs is skipped. On simulated time (`replay`), warn too of an input with a second
-/// publisher, at most once per second per input.
-pub(crate) fn check_input_publishers(cycle: &Cycle, now_nanos: u64, replay: bool) {
-    let Ok(step) = cycle.step_ref() else { return };
-    for source in &step.inputs {
-        let Some(subscriber) = source.subscriber.as_deref() else { continue };
-        subscriber.check_no_publisher_warning(now_nanos);
-        if replay {
-            warn_of_several_publishers(source, subscriber);
-        }
-    }
-}
-
-/// Warn when the replay input `source` has more than one live publisher: the order of
-/// their samples depends on turn timing (`replay-flow-control.md` section 6.7).
-fn warn_of_several_publishers(source: &CycleInputSource, subscriber: &crate::HyphaSubscriber) {
-    let mut fidelity = crate::locked(&source.fidelity);
-    if !fidelity.publishers_due(Instant::now()) {
-        return;
-    }
-    match crate::subscriber::subscriber_publisher_count(subscriber) {
-        Ok(count) => {
-            if let Some(text) = fidelity.record_publishers(&source.topic, count) {
-                log::warn!(target: "hypha", "hypha: {text}");
-            }
-        }
-        Err(error) => {
-            log::warn!(target: "hypha", "hypha: cannot count the publishers of {}: {error:?}", source.topic);
-        }
-    }
-}
-
-/// Drain each physical source once into its history.
-///
-/// Several bindings and cycles can share a source, whose history is their common snapshot.
-fn drain_sources(inputs: &[Arc<CycleInputSource>], clock: DrainClock) -> Result<(), Error> {
-    for (index, source) in inputs.iter().enumerate() {
-        let already_drained = inputs
-            .get(..index)
-            .is_some_and(|previous| previous.iter().any(|item| Arc::ptr_eq(item, source)));
-        if !already_drained {
-            source.drain(clock)?;
-        }
-    }
-    Ok(())
-}
-
 /// One timer firing of a committed cycle.
 ///
 /// A replay step finds its inputs drained by the dispatcher and its data-time cut in
@@ -126,7 +69,7 @@ pub(crate) fn cycle_timer_tick(
     let trigger_step = state.trigger_step.take();
     if replay_cut.is_none()
         && trigger_step.is_none()
-        && let Err(status) = drain_sources(&state.inputs, DrainClock::Host)
+        && let Err(status) = super::source::drain_sources(&state.inputs, DrainClock::Host)
     {
         return HyphaCallbackResult::fail(status as i32);
     }
@@ -157,11 +100,7 @@ pub(crate) fn cycle_timer_tick(
     let emissions = &mut state.emissions;
     let cycle_name = cycle.name();
     let mut step_outcome = StepOutcome::default();
-    // The requests and outcomes of the step, cut as its inputs are; on host time a step's
-    // deadlines are judged on the scheduling clock.
-    let scheduled = replay_cut.unwrap_or_else(|| hypha_time::scheduling_now().nanos());
-    let services = &mut state.services;
-    services.begin(step_nanos, scheduled, replay_cut, &set.node().transport);
+    state.services.begin(step_nanos, replay_cut, &set.node().transport);
     let mut step_state = StepState {
         step,
         inputs,
@@ -171,7 +110,7 @@ pub(crate) fn cycle_timer_tick(
         cycle_name,
         outputs,
         outcome: &mut step_outcome,
-        services,
+        services: &mut state.services,
         is_replay,
         waitset: set,
     };
@@ -187,13 +126,10 @@ pub(crate) fn cycle_timer_tick(
         },
         |index, loan| send_output(outputs, index, loan, step_nanos, &mut send_stamps),
     );
-    // Answers and calls leave after the step's outputs; a step that sent no output (failed,
-    // stopped, or continued with a status) sends none of them either (FSR-38).
-    let step_sent = result.is_ok()
-        && step_outcome
-            .answer
-            .is_some_and(|answer| answer.action == HYPHA_ACTION_CONTINUE && answer.status == 0);
-    state.services.finish(step_sent, cycle_name);
+    // Answers and calls leave after the outputs, and only from a step that sent them (FSR-38).
+    let answers_leave =
+        result.is_ok() && step_outcome.answer.is_some_and(|answer| answer.sends_outputs());
+    state.services.finish(answers_leave, cycle_name);
 
     // A replay step that lost samples is not faithful, so it fails, after its
     // supervision and health are applied. Outside the lockstep nothing paces the inputs,
@@ -255,14 +191,7 @@ fn run_step(
             .ingest(state.cycle_name, captures, replay_losses(time, state.waitset))
             .map_err(|status| status as i32)?;
     }
-    let mut emission = EmissionView {
-        emissions,
-        outputs: state.outputs,
-        budget,
-        open: false,
-        error: None,
-        services: state.services,
-    };
+    let mut emission = EmissionView::new(emissions, state.outputs, budget, state.services);
     let image = ImageView::new(
         captures,
         state.inputs,

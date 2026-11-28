@@ -116,6 +116,18 @@ pub struct EmissionView<'a, 'b> {
     pub(super) services: &'a mut crate::service::CycleServices,
 }
 
+impl<'a, 'b> EmissionView<'a, 'b> {
+    /// The view of a step that has staged nothing yet.
+    pub(super) fn new(
+        emissions: &'a mut Vec<StagedMessage<Option<HyphaLoan>>>,
+        outputs: &'a [CycleOutput],
+        budget: &'a mut EmissionBudget<'b>,
+        services: &'a mut crate::service::CycleServices,
+    ) -> Self {
+        Self { emissions, outputs, budget, open: false, error: None, services }
+    }
+}
+
 /// The requests the step reads from its server `server` (`docs/design/native-services.md`
 /// §2): on the first call of the step, those due; the same ones on a later call.
 ///

@@ -1,9 +1,9 @@
 //! `hypha service` -- the services of the bus: list, info and call.
 //!
-//! `call` encodes the request from YAML or JSON against the definition the server
-//! registered, calls with a blocking client of this tool's node (an observer slot, never a
-//! declared client's), prints the response as `hypha topic echo` prints a message, and
-//! exits with a code per outcome.
+//! `call` encodes the request from TOML against the definition the server registered,
+//! calls with a blocking client of this tool's node (an observer slot, never a declared
+//! client's), prints the response as TOML in the same form, and exits with a code per
+//! outcome.
 
 use std::fmt::Write as _;
 use std::process::ExitCode;
@@ -13,8 +13,8 @@ use clap::{Parser, Subcommand};
 use hypha_node::sdk::{
     BusNode, CallOutcome, ListedService, ServiceDefinitions, ServicePolicy, call_log_topic,
 };
-use hypha_tools::msg_reflect::{MessageSchema, decode_message};
-use hypha_tools::msg_text::{encode_message, parse_text, template};
+use hypha_tools::msg_reflect::MessageSchema;
+use hypha_tools::msg_toml::{decode_message, encode_message, parse_request, template};
 
 use crate::cli::{connect, parse_cli};
 
@@ -45,14 +45,15 @@ enum Verb {
         /// The service, as `/camera/set_exposure`.
         service: String,
     },
-    /// Call a service with a request written in YAML or JSON, and print the response.
+    /// Call a service with a request written in TOML, and print the response as TOML.
     ///
     /// Without a request, print the request's template; a request of no fields is called.
     Call {
         /// The service, as `/camera/set_enabled`.
         service: String,
-        /// The request: `"data: true"`, `'{data: true}'` or `'{"data": true}'`.
-        request: Option<String>,
+        /// The request, TOML: `'data = true'`, `'goal = { x = 1.0, y = 2.0 }'` or
+        /// `'goal.x = 1.0'`. Several arguments are several lines: `'a = 1' 'b = 2'`.
+        request: Vec<String>,
         /// Seconds to wait for the outcome; by default the service policy's timeout.
         #[arg(long, value_name = "s", value_parser = parse_seconds)]
         timeout: Option<Duration>,
@@ -256,7 +257,7 @@ fn schema(type_name: &str, definition: &str) -> Result<MessageSchema, ExitCode> 
 fn run_call(
     bus: &BusNode,
     service: &str,
-    request: Option<&str>,
+    request: &[String],
     timeout: Option<Duration>,
 ) -> ExitCode {
     let name = resolved(service);
@@ -271,18 +272,16 @@ fn run_call(
             Ok(schema) => schema,
             Err(code) => return code,
         };
-    let request_text = if let Some(text) = request {
-        text
-    } else {
+    if request.is_empty() {
         let shown = template(&mut request_schema, &definitions.request_type);
-        if shown != "{}\n" {
+        if !shown.is_empty() {
             print!("{shown}");
             return ExitCode::SUCCESS;
         }
-        ""
-    };
-    let encoded = parse_text(request_text)
-        .and_then(|value| encode_message(&mut request_schema, &definitions.request_type, &value));
+    }
+    let request_text = request.join("\n");
+    let encoded = parse_request(&request_text)
+        .and_then(|table| encode_message(&mut request_schema, &definitions.request_type, &table));
     let encoded = match encoded {
         Ok(bytes) => bytes,
         Err(cause) => {
@@ -319,17 +318,24 @@ fn run_call(
             Ok(schema) => schema,
             Err(code) => return code,
         };
-    let mut out = String::new();
-    if !decode_message(&mut out, &definitions.response_type, &mut response_schema, response) {
-        print!("{out}");
-        eprintln!("{TOOL}: the response does not decode as {}", definitions.response_type);
-        return ExitCode::from(EXIT_FAILURE);
+    match decode_message(&mut response_schema, &definitions.response_type, response) {
+        Ok(out) if out.is_empty() => {
+            // A TOML comment: the printed response stays a TOML document.
+            println!("# answered: {} has no fields", definitions.response_type);
+            ExitCode::SUCCESS
+        }
+        Ok(out) => {
+            print!("{out}");
+            ExitCode::SUCCESS
+        }
+        Err(cause) => {
+            eprintln!(
+                "{TOOL}: the response does not decode as {}: {cause}",
+                definitions.response_type
+            );
+            ExitCode::from(EXIT_FAILURE)
+        }
     }
-    if out.is_empty() {
-        out.push_str("{}\n");
-    }
-    print!("{out}");
-    ExitCode::SUCCESS
 }
 
 /// Runs the tool; `args` is the whole command line, `args[0]` the name it shows.
@@ -345,8 +351,6 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
     match cli.verb {
         Verb::List => run_list(&bus),
         Verb::Info { service } => run_info(&bus, &service),
-        Verb::Call { service, request, timeout } => {
-            run_call(&bus, &service, request.as_deref(), timeout)
-        }
+        Verb::Call { service, request, timeout } => run_call(&bus, &service, &request, timeout),
     }
 }

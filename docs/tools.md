@@ -43,7 +43,7 @@ truecolor terminal and no special font. State is shown in form as well as colour
 ### `hypha topic` — what is being published
 
 ```text
-hypha topic list [--timeout <seconds>]    topics seen publishing, one line per type (default: 1.0s)
+hypha topic list [-v]                     every topic of the bus, one line per type; -v: publishers and subscribers
 hypha topic echo <topic> [-p] [--count <n>] [--type <type>] [--md5 <prefix>]
                                           print each message, decoded
 hypha topic hz <topic> [--window <n>] [--type <type>] [--md5 <prefix>]
@@ -52,12 +52,20 @@ hypha topic bw <topic> [--type <type>] [--md5 <prefix>]
                                           bandwidth and mean message size of each stream
 ```
 
-`list` reports only topics that publish while it is watching, and `hz`/`bw`
-cannot measure a topic that is not currently publishing: there is no separate
-topic registry on this bus, only observed traffic. A topic that has never
-published will not appear. Each line names the type and the first eight hex digits of
-its MD5, `/odom  [nav_msgs/Odometry (cd5e73d1)]`: a topic that carries two types, or two
-versions of one type, is two lines (topic name overloading, cpp-api.md §5).
+`list` reads the transport's service listing once and returns at once: it listens to
+nothing. A topic is listed from the moment a publisher, or a subscriber that declared its
+policy, has opened it, whether or not a sample has been sent, so a node whose topics are
+silent shows its topics. A line names the topic and its message type,
+`/odom  [nav_msgs/Odometry]`; a topic that carries two types, or two versions of one type, is
+two lines, each with the first eight hex digits of its MD5, `/odom  [nav_msgs/Odometry
+(cd5e73d1)]` (topic name overloading, cpp-api.md §5). A stream whose publisher gave no
+definition shows its schema hash, `[? (0123456789abcdef)]`. `-v` adds what the listing counts
+for free, the endpoints of each stream, `/odom  [nav_msgs/Odometry]  1 publisher, 2
+subscribers`; a crashed publisher is counted until its node is reclaimed. A bus with no
+topic prints nothing on standard output and `no topics on the bus` on standard error. The
+listing opens each stream for an instant, which takes one node slot of the stream while it
+lasts (interface-specification.md), and reads every service of the domain, so it takes
+longer on a bus of many streams. `hz` and `bw` cannot measure a topic that is not currently publishing.
 
 **A topic of several streams.** A topic name carries one stream for each schema, and
 `echo`, `hz` and `bw` read all of them: each stream is followed on its own, and one that
@@ -265,32 +273,57 @@ detail, the tool prints that it is unavailable rather than inventing a value.
 ```text
 hypha service list                               one line per service: name, type, MD5, server, clients
 hypha service info <service>                     its type, server, clients, policy, call log and definitions
-hypha service call <service> '<yaml or json>'    call it and print the response
+hypha service call <service> '<toml>' ...        call it and print the response
 hypha service call <service>                     print the request's template
 ```
 
-`call` is `rosservice call`: the request is YAML or JSON, as one line or several, and
-a field it leaves out takes its zero value.
+`call` is `rosservice call` with the request in TOML, the format of every hypha file:
+the keys are the request's fields, and a field the request leaves out takes its zero
+value. Several arguments are several lines of one document (`'a = 1' 'b = 2'`); one
+argument may also hold several lines.
 
 ```text
-$ hypha service call /camera/set_enabled "data: true"
-success: true
-message: "streaming"
-$ hypha service call /camera/set_exposure '{target_exposure: 20000}'
-reached_exposure: 10000
-success: false
-$ hypha service call /camera/set_enabled "data: false"
+$ hypha service call /camera/set_enabled 'data = true'
+success = true
+message = "streaming"
+$ hypha service call /camera/set_exposure 'target_exposure = 20000'
+reached_exposure = 10000.0
+success = false
+$ hypha service call /camera/set_enabled 'data = false'
 hypha service: refused: not armed                      (exit 2)
 $ hypha service call /camera/set_exposure
-target_exposure: 0.0
+target_exposure = 0.0
+$ hypha service call /move_to 'goal = { x = 1.0, y = 2.0 }' 'speed = 0.5'
+$ hypha service call /move_to 'goal.x = 1.0' 'goal.y = 2.0'
 ```
+
+| Field | TOML | Example |
+|---|---|---|
+| `bool` | a boolean | `data = true` |
+| an integer type | an integer, range-checked (`_`, `0x` allowed); a `uint64` above 2^63 - 1 cannot be written | `count = 3` |
+| `float32`, `float64` | a float or an integer; `nan`, `inf` | `gain = 0.5` |
+| `string` | a quoted string, TOML escapes | `name = "left \"cam\""` |
+| `time`, `duration` | `{ secs, nsecs }`, a part left out 0 | `stamp = { secs = 7, nsecs = 500 }` |
+| a nested message | an inline table or dotted keys | `goal = { x = 1.0 }`, `goal.x = 1.0` |
+| an array, `T[N]` | an array; a fixed one of exactly N values | `ids = [1, 2]` |
+| an array of messages | an array of inline tables, or `[[field]]` tables | `path = [{ x = 1.0 }, { x = 2.0 }]` |
+| `uint8[]`, `byte[]`, `char[]` | an array of integers, or a string of its bytes | `blob = [104, 105]`, `blob = "hi"` |
+
+A value of another TOML type than its field's (`data = "true"`, `count = 1.5`) is
+refused, naming the field: `data: expected true or false, found the string "true"`. The
+YAML and JSON of `rosservice` are not read: `"data: true"` is refused with the TOML
+reason and its line.
 
 The tool encodes the request with the definition that the service's server registered
 when it started (a C++ server registers both halves of its `.srv`), so it calls a type
 it was never built with. A request of no fields (`std_srvs/Trigger`, `std_srvs/Empty`)
-is called without a body. The response is printed as `hypha topic echo` prints a
-message; anything else is printed to standard error with its reason, and the exit code
-says which outcome it was:
+is called without a body, and a response of no fields prints the TOML comment
+`# answered: <type> has no fields`; a half of no fields is registered as an empty
+definition, so it is not a server that registered none. The response and the template
+are printed as TOML in one form: a nested message as dotted keys, an array and an array
+of messages inline, every element of it, so either is a request of its type again.
+Anything else is printed to standard error with its reason, and the exit code says which
+outcome it was:
 
 | Exit | Outcome |
 |---|---|
@@ -320,10 +353,14 @@ request's sequence, the outcome and its reason, the sent and done stamps, and th
 and response bytes. A record is encoded only while the topic has a subscriber, which
 costs one read of a subscriber count per call. It never holds a call up: a record that
 finds no free sample is dropped and counted, logged as it happens, and the readers see
-the gap in the frame sequence. A record is bounded by the policy, 2 KiB plus the request
-and response bounds (10 KiB under `defaultService`); a reader keeps at most 4 records
-queued, and each client's log holds 26 of them in shared memory, 260 KiB under
-`defaultService`. Read it with
+the gap in the frame sequence. A record carries the first 16 KiB of the request and of
+the response, whatever the policy allows, so a log never costs a payload bound:
+`request_len` and `response_len` are the lengths before the cut and `truncated` is set
+when either half was cut (a cut half is not a decodable message). A record is at most
+2 KiB plus the two halves as the policy bounds them or 16 KiB each (10 KiB under
+`defaultService`, 34 KiB under a policy of 4 MiB each way); a reader keeps at most 4
+records queued, and each client's log holds 26 of them in shared memory, 260 KiB under
+`defaultService` and 884 KiB under that 4 MiB policy. Read it with
 `hypha topic echo /camera/set_enabled/calls`. `hypha record` records it as any topic,
 and `hypha play` never publishes it again: a recording never calls a live server, and the
 request-response services themselves are not recorded.
@@ -377,11 +414,10 @@ counter it named, and at 1 kHz 135 to 599 (`record_late_streams.rs`, runs on a l
 machine; before the count existed the same late streams were recorded from 22 to 55 and from
 1397 with no word).
 
-**Not followers.** `hypha topic list` listens on `**` for its `--timeout` and names the
-streams that publish while it listens, among those that exist when it starts: a stream that
-starts later in the window is not listed. `hypha intercept` relays one named input and
-subscribes to the streams that exist when it starts; it relays one type, and a change of the
-type is the configuration's to make. Neither follows a stream that joins later.
+**Not followers.** `hypha topic list` lists the streams that exist when it runs, once.
+`hypha intercept` relays one named input and subscribes to the streams that exist when it
+starts; it relays one type, and a change of the type is the configuration's to make. Neither
+follows a stream that joins later.
 
 ---
 

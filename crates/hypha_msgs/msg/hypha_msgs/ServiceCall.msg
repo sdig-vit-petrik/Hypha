@@ -24,7 +24,12 @@ string reason
 # The client's framework time at the call and at its outcome.
 time sent
 time done
-# The encoded request and, for an answered call, the encoded response. Each is
-# bounded by the service policy (request_bytes, response_bytes).
+# The encoded request and, for an answered call, the encoded response. Each is cut
+# to its first 16384 bytes, whatever the service policy allows.
 uint8[] request
 uint8[] response
+# The lengths of the request and the response before the cut, and whether either was
+# cut (request_len or response_len above the bytes it carries).
+uint64 request_len
+uint64 response_len
+bool truncated

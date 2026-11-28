@@ -228,16 +228,12 @@ impl CycleServices {
         }
     }
 
-    /// Prepare a step at framework time `stamp` and scheduling time `scheduled`, cut at
-    /// `cut` on simulated time: receive the requests that came, and collect the outcomes
-    /// the step may read.
-    pub(crate) fn begin(
-        &mut self,
-        stamp: i64,
-        scheduled: i64,
-        cut: Option<i64>,
-        transport: &Iox2Transport,
-    ) {
+    /// Prepare a step at framework time `stamp`, cut at `cut` on simulated time: receive the
+    /// requests that came, and collect the outcomes the step may read. The requests and
+    /// outcomes are cut as the step's inputs are; on host time a step's deadlines are judged
+    /// on the scheduling clock.
+    pub(crate) fn begin(&mut self, stamp: i64, cut: Option<i64>, transport: &Iox2Transport) {
+        let scheduled = cut.unwrap_or_else(|| hypha_time::scheduling_now().nanos());
         self.step = Some(StepClock { stamp, scheduled, cut });
         // A deferred request answered in this step leaves after it, whatever its server.
         begin_step_answers();

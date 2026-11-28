@@ -41,7 +41,8 @@ pub use types::{
 
 pub(crate) use hypha_cycle::TIME_BASE_BOUND_PERIODS;
 pub(crate) use source::CycleInputSource;
+pub(crate) use source::{check_input_publishers, drain_inputs};
 pub(crate) use state::{Cycle, InputCounts};
 pub use state::{CycleId, CycleSnapshots, CycleStepHandler};
 pub use tick::cycle_tick;
-pub(crate) use tick::{check_input_publishers, cycle_timer_tick, drain_inputs, report_time_base};
+pub(crate) use tick::{cycle_timer_tick, report_time_base};

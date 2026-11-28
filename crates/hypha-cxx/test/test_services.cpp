@@ -255,7 +255,6 @@ TEST_F(ServiceFixture, ADeferredRequestIsAnsweredFromAnotherThread)
     auto        server = this->node->advertiseService<SetBool>(
         hypha::Service{this->name("worker")}, [&worker](hypha::Request<SetBool>& request) {
             worker = std::thread([deferred = request.defer()]() mutable {
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 EXPECT_EQ(
                     deferred.reply({.success = true, .message = "worker"}), hypha::Status::Ok
                 );
@@ -519,11 +518,12 @@ TEST_F(ServiceFixture, AnOperatorCallsTheCameraSettersFromTheShell)
     ToolRun           exposed;
     ToolRun           refusedText;
     std::thread       operatorThread([&] {
-        enabled = runTool("call " + testTopic("/camera/set_enabled") + " 'data: true'");
+        enabled = runTool("call " + testTopic("/camera/set_enabled") + " 'data = true'");
         exposed =
-            runTool("call " + testTopic("/camera/set_exposure") + " '{target_exposure: 20000}'");
-        refusedText =
-            runTool("call " + testTopic("/camera/set_exposure") + " 'target_exposure: fast' 2>&1");
+            runTool("call " + testTopic("/camera/set_exposure") + " 'target_exposure = 20000'");
+        refusedText = runTool(
+            "call " + testTopic("/camera/set_exposure") + " \"target_exposure = 'fast'\" 2>&1"
+        );
         done = true;
     });
     const auto        until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
@@ -532,12 +532,16 @@ TEST_F(ServiceFixture, AnOperatorCallsTheCameraSettersFromTheShell)
     }
     operatorThread.join();
     EXPECT_EQ(enabled.code, 0) << enabled.out;
-    EXPECT_EQ(enabled.out, "success: true\nmessage: \"streaming\"\n");
+    EXPECT_EQ(enabled.out, "success = true\nmessage = \"streaming\"\n");
     EXPECT_EQ(exposed.code, 0) << exposed.out;
-    EXPECT_EQ(exposed.out, "reached_exposure: 10000\nsuccess: false\n");
+    EXPECT_EQ(exposed.out, "reached_exposure = 10000.0\nsuccess = false\n");
     EXPECT_EQ(refusedText.code, 1);
-    EXPECT_NE(refusedText.out.find("target_exposure: 'fast' is not a float32"), std::string::npos)
-        << refusedText.out;
+    EXPECT_NE(
+        refusedText.out.find(
+            "target_exposure: expected a number (float32), found the string \"fast\""
+        ),
+        std::string::npos
+    ) << refusedText.out;
 }
 #endif
 
