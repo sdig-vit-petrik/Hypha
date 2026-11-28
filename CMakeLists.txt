@@ -27,6 +27,22 @@ if(DEFINED ENV{CARGO_BUILD_TARGET})
     "directory this project does not look in.")
 endif()
 
+# Where cargo writes its output: the one place every CMake file takes it from, and the
+# directory the cargo call is given with --target-dir, so the path CMake looks in and the
+# one cargo writes to cannot differ (CARGO_TARGET_DIR, a build.target-dir of a cargo
+# config). The environment's CARGO_TARGET_DIR when set, else <source>/target.
+if(DEFINED ENV{CARGO_TARGET_DIR} AND NOT "$ENV{CARGO_TARGET_DIR}" STREQUAL "")
+  set(HYPHA_CARGO_TARGET_DIR "$ENV{CARGO_TARGET_DIR}")
+  if(NOT IS_ABSOLUTE "${HYPHA_CARGO_TARGET_DIR}")
+    message(FATAL_ERROR
+      "CARGO_TARGET_DIR is the relative path '${HYPHA_CARGO_TARGET_DIR}'. Cargo would "
+      "resolve it against the directory of each call; give an absolute path.")
+  endif()
+else()
+  set(HYPHA_CARGO_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target")
+endif()
+cmake_path(NORMAL_PATH HYPHA_CARGO_TARGET_DIR)
+
 option(HYPHA_BUILD_TESTS "Build tests" ON)
 option(HYPHA_BUILD_APPS "Build and install the command line tools" ON)
 option(HYPHA_BUILD_EXAMPLES "Build and install the C++ examples" ON)
