@@ -229,6 +229,44 @@ fn reserve_output<'cycle>(
     Ok(OutputSlot { registration, index, policy })
 }
 
+/// Adds the server of `decl` to the uncommitted cycle `cycle` of `set`, as a `Requests`
+/// port whose requests the cycle's steps read (`docs/design/native-services.md` §2);
+/// returns its index among the cycle's servers. The cycle owns the server: destroying the
+/// cycle ends every request it holds.
+///
+/// # Errors
+/// The errors of a server's creation (`service_serve`); `InvalidArgument` for a cycle `set`
+/// does not hold; `InvalidState` for a committed cycle or a running `WaitSet`.
+pub fn cycle_bind_server(
+    set: &HyphaWaitSet,
+    cycle: CycleId,
+    decl: &crate::service::ServiceDecl<'_>,
+) -> Result<u32, Error> {
+    crate::last_error::clear();
+    let cycle = set.cycle(cycle)?;
+    let mut registration = cycle.configurable(set)?;
+    registration.services.add_server(set.node(), decl)
+}
+
+/// Adds a client of `decl` to the uncommitted cycle `cycle` of `set`, as a `Calls` port
+/// whose calls the cycle's steps make and whose outcomes later steps read
+/// (`docs/design/native-services.md` §3); returns its index among the cycle's clients. Its
+/// limit of calls in flight is the table's `outstanding`, else one.
+///
+/// # Errors
+/// The errors of a client's creation (`service_client_create`); `InvalidArgument` for a
+/// cycle `set` does not hold; `InvalidState` for a committed cycle or a running `WaitSet`.
+pub fn cycle_bind_client(
+    set: &HyphaWaitSet,
+    cycle: CycleId,
+    decl: &crate::service::ServiceDecl<'_>,
+) -> Result<u32, Error> {
+    crate::last_error::clear();
+    let cycle = set.cycle(cycle)?;
+    let mut registration = cycle.configurable(set)?;
+    registration.services.add_client(set.node(), decl)
+}
+
 /// Adds the queued input `binding_index` to the triggers of the uncommitted, period-less
 /// cycle `cycle` of `set`: the cycle runs one step per sample of any trigger. A repeat
 /// adds nothing.

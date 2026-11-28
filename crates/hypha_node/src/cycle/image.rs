@@ -112,6 +112,43 @@ pub struct EmissionView<'a, 'b> {
     /// True between a reserve and its commit.
     pub(super) open: bool,
     pub(super) error: Option<Error>,
+    /// The cycle's servers and clients, for the step's requests, outcomes and calls.
+    pub(super) services: &'a mut crate::service::CycleServices,
+}
+
+/// The requests the step reads from its server `server` (`docs/design/native-services.md`
+/// §2): on the first call of the step, those due; the same ones on a later call.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown server.
+pub fn emission_requests<'view>(
+    view: &'view mut EmissionView<'_, '_>,
+    server: u32,
+) -> Result<&'view mut [crate::service::StepRequest], Error> {
+    view.services.requests(server)
+}
+
+/// The next outcome of its client `client` that the step reads; `None` when none is left.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown client.
+pub fn emission_next_result(
+    view: &mut EmissionView<'_, '_>,
+    client: u32,
+) -> Result<Option<crate::service::CallResult>, Error> {
+    view.services.next_result(client)
+}
+
+/// Stage a call of its client `client` with `request`, sent after the step succeeds.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown client.
+pub fn emission_call(
+    view: &mut EmissionView<'_, '_>,
+    client: u32,
+    request: &[u8],
+) -> Result<crate::service::CallStatus, Error> {
+    view.services.call(client, request)
 }
 
 fn sample_view(sample: &hypha_cycle::HistorySample) -> HyphaCycleSampleView {

@@ -133,8 +133,9 @@ pub use schema::hypha_schema_lookup;
 pub use service::{
     HYPHA_ANSWER_REFUSE, HYPHA_ANSWER_REPLY, HyphaCallDoneCallback, HyphaCallResult,
     HyphaClientStatus, HyphaRequestView, HyphaServeCallback, HyphaServiceDesc, HyphaServicePolicy,
-    hypha_client_call, hypha_client_status, hypha_client_wait_for_server, hypha_request_answer,
-    hypha_request_defer, hypha_request_destroy, hypha_service_client_create,
+    hypha_client_call, hypha_client_status, hypha_client_wait_for_server, hypha_cycle_bind_client,
+    hypha_cycle_bind_server, hypha_cycle_call, hypha_cycle_next_result, hypha_cycle_requests,
+    hypha_request_answer, hypha_request_defer, hypha_request_destroy, hypha_service_client_create,
     hypha_service_client_destroy, hypha_service_server_create, hypha_service_server_destroy,
 };
 pub use subscriber::{

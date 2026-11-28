@@ -42,6 +42,7 @@ struct StepState<'a> {
     /// The cycle's outputs. A reserve takes its loan from the output's publisher.
     outputs: &'a [CycleOutput],
     outcome: &'a mut StepOutcome,
+    services: &'a mut crate::service::CycleServices,
     is_replay: bool,
     /// The `WaitSet` of the cycle: a failure the application requested holds the step's outputs.
     waitset: &'a crate::waitset::HyphaWaitSet,
@@ -156,6 +157,11 @@ pub(crate) fn cycle_timer_tick(
     let emissions = &mut state.emissions;
     let cycle_name = cycle.name();
     let mut step_outcome = StepOutcome::default();
+    // The requests and outcomes of the step, cut as its inputs are; on host time a step's
+    // deadlines are judged on the scheduling clock.
+    let scheduled = replay_cut.unwrap_or_else(|| hypha_time::scheduling_now().nanos());
+    let services = &mut state.services;
+    services.begin(step_nanos, scheduled, replay_cut, &set.node().transport);
     let mut step_state = StepState {
         step,
         inputs,
@@ -165,6 +171,7 @@ pub(crate) fn cycle_timer_tick(
         cycle_name,
         outputs,
         outcome: &mut step_outcome,
+        services,
         is_replay,
         waitset: set,
     };
@@ -180,6 +187,13 @@ pub(crate) fn cycle_timer_tick(
         },
         |index, loan| send_output(outputs, index, loan, step_nanos, &mut send_stamps),
     );
+    // Answers and calls leave after the step's outputs; a step that sent no output (failed,
+    // stopped, or continued with a status) sends none of them either (FSR-38).
+    let step_sent = result.is_ok()
+        && step_outcome
+            .answer
+            .is_some_and(|answer| answer.action == HYPHA_ACTION_CONTINUE && answer.status == 0);
+    state.services.finish(step_sent, cycle_name);
 
     // A replay step that lost samples is not faithful, so it fails, after its
     // supervision and health are applied. Outside the lockstep nothing paces the inputs,
@@ -241,8 +255,14 @@ fn run_step(
             .ingest(state.cycle_name, captures, replay_losses(time, state.waitset))
             .map_err(|status| status as i32)?;
     }
-    let mut emission =
-        EmissionView { emissions, outputs: state.outputs, budget, open: false, error: None };
+    let mut emission = EmissionView {
+        emissions,
+        outputs: state.outputs,
+        budget,
+        open: false,
+        error: None,
+        services: state.services,
+    };
     let image = ImageView::new(
         captures,
         state.inputs,

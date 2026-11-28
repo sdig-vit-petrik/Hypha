@@ -145,11 +145,16 @@ impl CallbackDispatcher<'_> {
         super::dispatch::fail_with(&mut self.failure, attachment, status)
     }
 
-    /// Resolve the upstream names of `cycle`, and return the limit they give now.
+    /// Resolve the upstream names of `cycle`, and return the limit they give now: of its
+    /// topic edges, of its request and response edges (a deadline `D` needs those
+    /// upstreams at `D - 1 ns`, as a topic's), and of its service peers in this `WaitSet`.
     fn upstream_limit(&mut self, attachment: AttachmentId, cycle: &Cycle) -> Result<Limit, Error> {
+        let local = self.local_service_limit(attachment, cycle)?;
         let node = self.node;
         let upstream = upstream_of(self.registrations, attachment)?;
-        upstream.settle(&cycle.step_ref()?.inputs, node)
+        let step = cycle.step_ref()?;
+        let limits = upstream.settle(&step.inputs, &step.services, node)?;
+        Ok(limits.topic.min(limits.service).min(local))
     }
 
     /// Run one replay step at `deadline`, with the inputs cut at that deadline.

@@ -48,6 +48,7 @@ impl RunDriver for NativeRun<'_> {
         }
         let due = Vec::with_capacity(registrations.len());
         let mut dispatcher = CallbackDispatcher {
+            due_index: 0,
             registrations: &mut registrations,
             cycles: &cycles,
             waitset: std::ptr::from_ref(set) as usize,

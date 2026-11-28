@@ -27,6 +27,7 @@ pub use registrations::{
 pub(crate) use registrations::{attach_cycle_timer, attach_triggered_cycle};
 pub mod run;
 pub use run::{waitset_request_stop, waitset_run};
+mod service_edges;
 mod services;
 pub(crate) use services::{ServiceTarget, attach_service, detach_service};
 pub mod timer_control;

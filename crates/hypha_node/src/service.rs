@@ -8,6 +8,7 @@
 
 mod call_log;
 mod client;
+mod cycle;
 mod listing;
 mod outcome;
 mod server;
@@ -19,6 +20,7 @@ pub use client::{
     service_client_create, service_client_destroy,
 };
 pub(crate) use client::{ClientCore, Finished};
+pub use cycle::{CycleServices, DEFAULT_CALLS_OUTSTANDING, DEFAULT_REQUESTS_PER_STEP, StepRequest};
 pub use listing::{ListedService, ServiceDefinitions, list_services, service_definitions};
 pub use outcome::{
     CallOutcome, CallResult, CallStatus, HYPHA_CALL_ANSWERED, HYPHA_CALL_BUSY,

@@ -124,19 +124,32 @@ impl CallbackDispatcher<'_> {
         let detached = self.detached;
         let id = triggered_state(self.registrations, attachment)?.cycle;
         let cycle: &Cycle = self.cycle(id)?;
+        let local = if sim {
+            self.local_service_limit(attachment, cycle)?
+        } else {
+            Limit { at: None, blocking: None }
+        };
         // The steps reach the dispatcher's other fields directly, never the dispatcher as a whole.
         let state = triggered_state(self.registrations, attachment)?;
         state.observe(cycle, now)?;
-        let limit = if sim {
-            state.upstream.settle(&cycle.step_ref()?.inputs, node)?
+        // A step at `t` reads its topics through `t`, so their upstreams must have reported
+        // `t`; requests and responses are cut before `t`, so those upstreams need only
+        // `t - 1 ns` (execution-model.md §6.6 item 5). Requests and responses step no cycle,
+        // so they bound the steps that may run, not the progress the cycle reports.
+        let (limit, admit) = if sim {
+            let step = cycle.step_ref()?;
+            let limits = state.upstream.settle(&step.inputs, &step.services, node)?;
+            let strict = limits.service.min(local).through_strict_edge();
+            let admit = limits.topic.clone().min(strict);
+            (limits.topic, admit)
         } else {
-            Limit { at: None, blocking: None }
+            (Limit { at: None, blocking: None }, Limit { at: None, blocking: None })
         };
         let drain = if sim { DrainClock::Simulated } else { DrainClock::Host };
         crate::cycle::drain_inputs(cycle, drain)?;
         state.read_pending(cycle)?;
         let clock = if sim {
-            TriggerClock::Sim { now, limit: &limit }
+            TriggerClock::Sim { now, limit: &admit }
         } else {
             TriggerClock::Host { wall, steady: now }
         };

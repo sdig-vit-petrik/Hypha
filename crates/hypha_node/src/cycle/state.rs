@@ -111,6 +111,8 @@ pub(crate) struct CycleStep {
     pub(crate) trigger_step: Option<hypha_cycle::TriggerStep>,
     /// The `/clock` driver settings of a simulator cycle. `None` for any other cycle.
     pub(crate) driver: Option<super::DriverSetup>,
+    /// The cycle's servers (`Requests` ports) and clients (`Calls` ports).
+    pub(crate) services: crate::service::CycleServices,
 }
 
 impl Cycle {

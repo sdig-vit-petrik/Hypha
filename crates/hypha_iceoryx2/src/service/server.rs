@@ -186,6 +186,15 @@ impl Iox2Server {
         self.service.dynamic_config().number_of_clients()
     }
 
+    /// Push the node id of each client of the stream now onto `ids`: the upstreams of a
+    /// server in a replay (`docs/design/native-services.md` §4).
+    pub fn client_node_ids(&self, ids: &mut Vec<u128>) {
+        self.service.dynamic_config().list_clients(|details| {
+            ids.push(details.node_id.value());
+            CallbackProgression::Continue
+        });
+    }
+
     /// Open a listener on the event that clients notify after each request, for a
     /// `WaitSet`. The server holds none itself.
     ///
