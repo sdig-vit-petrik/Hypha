@@ -18,9 +18,9 @@ ENV RUSTUP_HOME=/usr/local/rustup
 ENV CARGO_HOME=/usr/local/cargo
 ENV PATH=/usr/local/cargo/bin:$PATH
 
-# Rust is not pinned: the image takes the latest stable when it is built, as
-# rust-toolchain.toml selects it everywhere else.
-ARG HYPHA_RUST_VERSION=stable
+# The exact version rust-toolchain.toml selects everywhere else; check.sh fails when
+# the two differ. Moving it changes docker/, so the image is built once under a new tag.
+ARG HYPHA_RUST_VERSION=1.100.0
 ARG HYPHA_CHISEL_VERSION=v1.5.0
 # scripts/format.sh accepts exactly this clang-format major. The PyPI wheel
 # tracks the LLVM release on every host, the apt package does not.

@@ -15,6 +15,9 @@ if [[ "${1:-}" == "--clean" ]]; then
 fi
 suite="${1:-all}"
 
+# The compiler of rust-toolchain.toml, in the log next to the result.
+rustc --version
+
 ./build.sh --tests "${clean[@]}"
 # Every test process runs in a bus domain of its own under the test root t_, so the
 # domains of the runs that ended are all there is to clear: a system running on this

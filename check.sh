@@ -6,6 +6,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# The compiler of rust-toolchain.toml, in the log next to the result.
+rustc --version
+
 ./scripts/gen-ffi-header.sh --verify
 ./scripts/gen-mcap-reader-header.sh --verify
 # docs/traceability.md is generated; every requirement has an entry and every test
@@ -18,10 +21,20 @@ python3 -I examples/autoware/tools/test_port.py
 ./scripts/check-features.sh
 git ls-files '*.sh' | xargs shellcheck --severity=warning --external-sources
 
-# The image installs the toolchain rust-toolchain.toml selects.
+# One compiler everywhere (#131): the image installs the version rust-toolchain.toml
+# pins, and rust-version is its major.minor, so what Cargo promises is what is tested.
 toolchain="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+if [[ ! "$toolchain" =~ ^([0-9]+\.[0-9]+)\.[0-9]+$ ]]; then
+  echo "rust-toolchain.toml channel is not an exact version (x.y.z): $toolchain" >&2
+  exit 1
+fi
+msrv="${BASH_REMATCH[1]}"
 if ! grep -q "^ARG HYPHA_RUST_VERSION=${toolchain}\$" docker/Dockerfile; then
   echo "docker/Dockerfile HYPHA_RUST_VERSION differs from rust-toolchain.toml ($toolchain)" >&2
+  exit 1
+fi
+if ! grep -q "^rust-version = \"${msrv}\"\$" Cargo.toml; then
+  echo "Cargo.toml rust-version differs from the major.minor of rust-toolchain.toml ($msrv)" >&2
   exit 1
 fi
 
