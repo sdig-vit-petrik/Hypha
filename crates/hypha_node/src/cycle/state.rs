@@ -41,6 +41,8 @@ pub struct CycleSnapshots {
     pub(crate) period_nanos: i64,
     pub(crate) committed: AtomicBool,
     pub(crate) health: Mutex<HyphaCycleHealth>,
+    /// The distribution of the step durations, which `~/state` reports.
+    pub(crate) step_times: Mutex<hypha_cycle::StepTimes>,
     pub(crate) bindings: Mutex<Vec<HyphaCycleBindingView>>,
     /// The source counters of each input, in binding order, at the last step.
     pub(crate) input_counts: Mutex<Vec<InputCounts>>,

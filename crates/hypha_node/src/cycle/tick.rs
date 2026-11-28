@@ -199,6 +199,8 @@ pub(crate) fn cycle_timer_tick(
         let host_rate = !hypha_time::is_sim_time() && !is_replay;
         let period = if host_rate { u64::try_from(cycle.period_nanos()).unwrap_or(0) } else { 0 };
         runtime.record_step(duration_nanos, period);
+        crate::locked(&cycle.snapshots.step_times)
+            .record(duration_nanos, u64::try_from(timing.capture_steady_nanos).unwrap_or(0));
     }
     log_judgement_events(cycle_name, inputs, &state.port_names, input_options, runtime);
     store_health(cycle, inputs, input_options, runtime, is_replay);

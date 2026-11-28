@@ -11,5 +11,12 @@ repository.workspace = true
 [dependencies]
 log = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "step_times"
+harness = false
+
 [lints]
 workspace = true

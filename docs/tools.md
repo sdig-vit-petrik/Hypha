@@ -48,6 +48,8 @@ hypha topic echo <topic> [-p] [--count <n>] [--type <type>] [--md5 <prefix>]
                                           print each message, decoded
 hypha topic hz <topic> [--window <n>] [--type <type>] [--md5 <prefix>]
                                           publish rate of each stream
+hypha topic delay <input> <output> [--window <n>]
+                                          time from an input topic to an output topic
 hypha topic bw <topic> [--type <type>] [--md5 <prefix>]
                                           bandwidth and mean message size of each stream
 ```
@@ -132,6 +134,31 @@ name, an md5 digest, or a definition.
 frame, not from when this process happened to read it, so a slow reader does
 not distort the reported rate.
 
+**`delay`: how long a node takes from an input to its output.** `hypha topic delay <input>
+<output>` is the `rostopic delay` of a node that has no header to compare: it follows both
+topics and, for each frame of the output, takes the time since the newest frame of the input
+sent at or before it. Both times are the host monotonic send stamps in the frame headers, so
+it needs nothing from the node, decodes no payload (a 1.6 MB cloud costs what an `Int32`
+costs: the sample is dropped after its header is read) and does not depend on the reader's
+speed. Once a second it prints the last `--window` outputs (default 100):
+
+```text
+$ hypha topic delay /points /points_filtered
+delay: median 1.412 ms, p99 2.903 ms, max 3.104 ms (min 0.912 ms) over 100 outputs
+```
+
+For a triggered node it is the time from the trigger sample to the output, the step's own
+time included: a cycle output takes its transport stamp when the step sends it, after the step
+ran. For a rate node it is the age of the newest input when the output leaves, so it holds the
+wait for the next step (half a period at the median). A node that reads several inputs has
+one delay for each: name the input whose delay is wanted. The tool keeps the input stamps of
+the last 5 s (at most 65 536); an output sent before every one of them has no delay, and is
+counted in the line: `, 3 outputs had no input before them`. Every stream of a topic name
+counts, and `<input>` and `<output>` must differ. Both topics must be sent on this host: the
+stamps of two hosts are not one clock. A replay measures the real time the node takes, not
+the recorded one. The step times of the node alone, with no second topic, are in `~/state`:
+`hypha top` shows them (below).
+
 ### `hypha top` — live bus monitor
 
 ```
@@ -152,8 +179,9 @@ retained schema record before showing the message type and fields. A `/<node>/st
 that `hypha_msgs` type; a topic of another type with the same name is ignored. A
 recording made before `hypha_msgs/NodeState` gained its cycle and counter fields carries
 the old hash, so a replay of it shows its nodes without a state. The node details show
-one line per cycle (steps, missed periods, last and max step in ms, overruns, output
-drops), the log counters, and per input the words `STAGNANT` and `IGNORED` and the
+one line per cycle (steps, missed periods, the step time in ms as median, 99th percentile
+and maximum since the start and over the last 10 to 20 seconds, the last step, overruns,
+output drops), the log counters, and per input the words `STAGNANT` and `IGNORED` and the
 `DROP/REJ/UNDEC` counts. A topic of several streams is one row for each, each with its type
 and the start of its MD5 (`nav_msgs/Odometry (cd5e73d1)`), and one that joins later is
 followed by the graph event, not by listing the names again. An input binding shows its

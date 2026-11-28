@@ -1478,6 +1478,7 @@ dependencies = [
 name = "hypha_cycle"
 version = "0.3.0"
 dependencies = [
+ "criterion",
  "log",
 ]
 
