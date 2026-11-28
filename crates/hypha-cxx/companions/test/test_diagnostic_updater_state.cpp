@@ -11,6 +11,7 @@
 #include "hypha/testing.h"
 #include <hypha_msgs/NodeState.h>
 
+#include "diagnostic_fixtures.h"
 #include "test_types.h"
 
 #include <diagnostic_msgs/DiagnosticArray.h>
@@ -26,14 +27,12 @@ namespace {
 
 using diagnostic_msgs::DiagnosticArray;
 using diagnostic_msgs::DiagnosticStatus;
+using diagnostic_test::at;
+using diagnostic_test::Collect;
+using diagnostic_test::Driver;
 using hypha::DiagnosticStatusWrapper;
 using hypha::DiagnosticUpdater;
 using hypha::Time;
-
-Time at(double seconds)
-{
-    return Time::fromSeconds(seconds);
-}
 
 }  // namespace
 

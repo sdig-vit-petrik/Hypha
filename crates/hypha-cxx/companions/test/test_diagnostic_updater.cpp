@@ -10,6 +10,7 @@
 #include "hypha/testing.h"
 #include <hypha_msgs/NodeState.h>
 
+#include "diagnostic_fixtures.h"
 #include "test_types.h"
 
 #include <diagnostic_msgs/DiagnosticArray.h>
@@ -25,25 +26,12 @@ namespace {
 
 using diagnostic_msgs::DiagnosticArray;
 using diagnostic_msgs::DiagnosticStatus;
+using diagnostic_test::at;
+using diagnostic_test::Collect;
+using diagnostic_test::Driver;
 using hypha::DiagnosticStatusWrapper;
 using hypha::DiagnosticUpdater;
 using hypha::Time;
-
-Time at(double seconds)
-{
-    return Time::fromSeconds(seconds);
-}
-
-/// What the updater sends to, in place of a port.
-struct Collect
-{
-    std::vector<DiagnosticArray> sent;
-
-    void send(const DiagnosticArray& array)
-    {
-        this->sent.push_back(array);
-    }
-};
 
 std::string valueOf(const DiagnosticStatus& status, const std::string& key)
 {
@@ -424,43 +412,6 @@ TEST(DiagnosticUpdater, WithoutANameAndWithoutANodeTheUpdateIsRefused)
     });
     EXPECT_THROW(updater.forceUpdate(at(1.0)), std::logic_error);
 }
-
-namespace {
-
-/// A node as a port writes it: the updater sends on the Output of the cycle.
-class Driver final : public hypha::CycleNode
-{
-  public:
-    Output<DiagnosticArray> diagnostics{*this, "diagnostics"};
-    DiagnosticUpdater       updater{this->diagnostics, "driver"};
-    bool                    connected{true};
-
-    Driver()
-    {
-        this->updater.setHardwareID("hesai");
-        this->updater.add("Connection", this, &Driver::diagnoseConnection);
-        this->updater.add("Cycle", [](DiagnosticStatusWrapper& status) {
-            status.summary(DiagnosticStatus::OK, "stepping");
-        });
-    }
-
-    void step(const hypha::CycleTime& time) override
-    {
-        this->updater.update(time.now);
-    }
-
-  private:
-    void diagnoseConnection(DiagnosticStatusWrapper& status)
-    {
-        if (this->connected) {
-            status.summary(DiagnosticStatus::OK, "connected");
-        } else {
-            status.summary(DiagnosticStatus::ERROR, "device absent");
-        }
-    }
-};
-
-}  // namespace
 
 TEST(DiagnosticUpdater, ACycleNodeSendsTheArrayOnItsOutputInTheStepThatIsDue)
 {
