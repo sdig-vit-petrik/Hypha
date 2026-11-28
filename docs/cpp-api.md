@@ -317,6 +317,45 @@ wrapper for `integrity.*`, `loan.*`). On host time a `node.last_sweep_end_nanos`
 stops moving shows that no thread runs the node's `WaitSet`; under simulated time it
 follows the replay clock, so on its own it shows nothing.
 
+### 2.5 A worker thread ends at the node's stop
+
+An application that owns a thread (a device driver's grab loop) takes the node's stop
+with `this->stopToken()`, a `std::stop_token` that `runNode` stops when the run ends,
+whatever ended it: `hypha::requestStop()`, SIGINT or SIGTERM, `failRun()`, a refused
+start-up. It is stopped before the application's destructor runs, so the destructor only
+joins. `hypha/worker.h` gives the thread what `ros::ok()`, `ros::Duration::sleep()` and
+`ros::Rate` gave:
+
+```cpp
+void grabLoop(std::stop_token stop)             // this->stopToken(), copied into the thread
+{
+    hypha::Rate rate(30.0, stop);               // ros::Rate rate(30)
+    do {
+        grabAndPublish();
+    } while (rate.sleep());                     // false: the node stopped
+    // after a failed grab: if (!hypha::sleepFor(stop, std::chrono::milliseconds(100))) return;
+}
+```
+
+- `sleepFor(stop, span)` and `sleepUntil(stop, steadyDeadline)` return true when the whole
+  time passed and false when the stop ended the sleep or was already there. They are
+  `[[nodiscard]]` because a stopped sleep returns at once each time: a loop that ignores
+  the answer spins. `span` is a `std::chrono` duration or a `hypha::Duration`.
+- `Rate(hz, stop)` or `Rate(Duration, stop)` keeps a grid: the first tick is one period
+  after construction, work shortens the wait and never moves the grid. `sleep()` returns
+  true after the tick, false at the stop (not, as in ROS, at an overrun). A pass that
+  ran past a tick returns from `sleep()` at once; one that ran past whole periods skips
+  them without a burst and adds them to `missedCount()`, as `Timer::missedCount()` does.
+  `reset()` starts the grid again. A rate outside 1 ns to 24 h throws
+  `std::invalid_argument`.
+- Time here is host (steady clock) time, also under simulated time: framework time moves
+  with `/clock`, which a thread has no wait for. A loop that has to follow simulated time
+  is a timer or a cycle.
+- The token also ends a `std::condition_variable_any::wait(lock, stop, predicate)` on the
+  worker's own queue, and a `std::stop_callback` can wake any other blocking wait.
+- Reference: `hypha/worker.h`, `hypha/application_node.h`; the thread rules in
+  [ros1-migration-guide.md](ros1-migration-guide.md#106-threads).
+
 ## 3. Time and clock
 
 Pace periodic work with a cycle (section 5.4) or `Node::timer()`; there is no blocking
@@ -1314,7 +1353,8 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hyph
 | Header                                                                   | Holds                                                                                                                                                                                                |
 | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `hypha/node.h`                                                         | `Node`, `RunResult`, `StopReason`, `Timer`, `ok`, `nodeName`, `requestStop`                                                                                                            |
-| `hypha/application_node.h`                                             | `ApplicationNode`, `runNode`, `failRun`, the exit codes                                                                                                                                        |
+| `hypha/application_node.h`                                             | `ApplicationNode`, `runNode`, `failRun`, `stopToken`, the exit codes                                                                                                                                        |
+| `hypha/worker.h`                                                       | `sleepFor`, `sleepUntil`, `Rate`: a worker thread's sleep and rate, ended by the node's stop                                                                                                           |
 | `hypha/callback.h`, `hypha/topic.h`                                  | `bind<&Class::method>(object)`; `Topic`, `validateTopicName`                                                                                                                                   |
 | `hypha/options.h`, `hypha/qos.h`                                     | The option tags; `Qos`, `QosOf`, `defaultQos`, `tfQos`                                                                                                                                       |
 | `hypha/publisher.h`, `hypha/subscriber.h`                            | `Publisher<M>`, `Subscriber<M>`, `MessagePtr<M>`                                                                                                                                               |
