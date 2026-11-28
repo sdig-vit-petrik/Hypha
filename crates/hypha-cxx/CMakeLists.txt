@@ -163,6 +163,11 @@ endforeach()
 install(FILES "${HYPHA_MESSAGES_MODULE}"
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/hypha)
 
+# hypha_add_node(), which links a node executable with hypha::sdk and sets its install RPATH.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/hyphaNode.cmake")
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/hyphaNode.cmake"
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/hypha)
+
 # hypha_add_test(), which runs an application's test in a bus domain of its own.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/hyphaTesting.cmake")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/hyphaTesting.cmake"

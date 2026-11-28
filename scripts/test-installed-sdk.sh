@@ -227,15 +227,15 @@ cmake -S "${LOG_CONSUMER_DIR}" -B "${WORK_DIR}/log-consumer" \
 cmake --build "${WORK_DIR}/log-consumer"
 "${WORK_DIR}/log-consumer/hypha_log_consumer"
 
-echo "==> Building and running a runNode program from the install prefix..."
+echo "==> Building, installing, and running a hypha_add_node() program from the install prefix..."
 readonly RUN_NODE_DIR="${WORK_DIR}/run-node-src"
 mkdir -p "${RUN_NODE_DIR}"
 cat >"${RUN_NODE_DIR}/CMakeLists.txt" <<'EOF_RUN_NODE'
 cmake_minimum_required(VERSION 3.20)
 project(hypha_run_node_probe LANGUAGES CXX)
 find_package(hypha CONFIG REQUIRED)
-add_executable(run_node_probe main.cpp)
-target_link_libraries(run_node_probe PRIVATE hypha::sdk)
+hypha_add_node(run_node_probe main.cpp)
+install(TARGETS run_node_probe RUNTIME DESTINATION bin)
 EOF_RUN_NODE
 cat >"${RUN_NODE_DIR}/main.cpp" <<'EOF_RUN_NODE'
 #include <hypha/hypha.h>
@@ -283,9 +283,10 @@ int main(int argc, char** argv)
 EOF_RUN_NODE
 cmake -S "${RUN_NODE_DIR}" -B "${WORK_DIR}/run-node" -DCMAKE_PREFIX_PATH="${PREFIX}"
 cmake --build "${WORK_DIR}/run-node"
-"${WORK_DIR}/run-node/run_node_probe"
+cmake --install "${WORK_DIR}/run-node" --prefix "${WORK_DIR}/run-node-installed"
+"${WORK_DIR}/run-node-installed/bin/run_node_probe"
 set +e
-"${WORK_DIR}/run-node/run_node_probe" first.toml extra.toml >/dev/null 2>&1
+"${WORK_DIR}/run-node-installed/bin/run_node_probe" first.toml extra.toml >/dev/null 2>&1
 readonly RUN_NODE_USAGE=$?
 set -e
 if [ "${RUN_NODE_USAGE}" -ne 2 ]; then

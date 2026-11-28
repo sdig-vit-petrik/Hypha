@@ -43,6 +43,16 @@ cmake --build build/consumer
 The install prefix holds only the versioned library. Rebuild every consumer against
 an install whose library revision differs from the one the consumer was built with.
 
+A node executable registers with `hypha_add_node()`, which links `hypha::sdk` (C++23,
+headers, and `libhypha_ffi`) and sets `INSTALL_RPATH_USE_LINK_PATH` so an installed
+binary finds `libhypha_ffi` without manual `INSTALL_RPATH` boilerplate:
+
+```cmake
+find_package(hypha CONFIG REQUIRED)
+hypha_add_node(my_node src/main.cpp)
+install(TARGETS my_node RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+```
+
 A test that uses the bus registers with `hypha_add_test()`, which the SDK installs beside
 `hypha_generate_messages()`. It runs the test in a bus domain of its own,
 `t_<pid of ctest>_<n>`, so parallel tests, the tests of another build tree and a system
