@@ -526,8 +526,8 @@ Reference: `hypha/node.h`, `hypha/publisher.h`, `hypha/topic.h`, `hypha/options.
   message; a larger one is `TooLarge`. A growable publisher reserves its pool at its first
   slot size, 4096 bytes per sample: give small messages the policy's `initialPayload`
   (a hint, not a bound; a larger message still grows the segment) to keep the topic's
-  shared memory small (engineering-traps.md). Sizing an image or cloud pool is the
-  developer's job (`examples/large_payload`).
+  shared memory small (engineering-traps.md). An image or a cloud names its bound and a
+  policy, and section 7.1 sizes its pool; `examples/large_payload` is the raw version.
 - A large message is written once, in its slot: `loan(head, capacityBytes)` reserves it
   for `head`'s small fields and gives a `Loan<M>` whose `data()` is the loaned field's
   bytes in shared memory (reference `hypha/loan.h`). The loaned field is the message's
@@ -1150,7 +1150,8 @@ struct hypha::QosOf<my_msgs::Image>
   and the node's own report types `NodeState` (`~/state`) and `NodeIntrospection`
   (`~/introspection`) to `reportQos` (2 publishers, 2 subscribers, depth 1, 1 KiB
   first slot: only tools read them, from the observer slots). An application cannot
-  remap them.
+  remap them. For a large message hypha offers `hypha::imageQos` and `hypha::cloudQos` as
+  options of the port, and maps no type to them (section 7.1).
 - A policy's node slots are its `max_publishers` plus the subscribers it admits, plus 2 kept
   for the moment a node's refresh of the other versions of a topic opens the stream, and for
   the check of its record when an endpoint drops: neither takes a slot an endpoint needs, and
@@ -1182,6 +1183,78 @@ struct hypha::QosOf<my_msgs::Image>
   `loanBudget`, `loanHeld` and `loanRefused` describe its owning samples. Both read
   from any thread while the node runs, and give zeros for a disabled subscriber
   (`loanBudget` included). A `RawSubscriber` has the same two; a cycle port has none.
+
+### 7.1 Sizing the pool of a large message
+
+An image or a point cloud is megabytes, and a publisher's pool holds that many of them, so its
+policy and its payload bound decide the shared memory of the topic. The rule has three steps.
+
+1. **The message size**, in serialized bytes: `hypha::serializedSize(head, n)` (`hypha/message_size.h`)
+   gives the size of a message whose single array holds `n` bytes, from a `head` that names its
+   other fields (`frame_id`, `encoding`, a cloud's `fields`). The array of `head` is not read, so
+   it stays empty. An `Image` is `37 + frame_id + encoding` bytes around its pixels (48 for
+   `"camera"` and `"mono8"`), a `PointCloud2` is 100 to 200 bytes of its field list around its
+   points. For a cloud whose point count varies, `n` is the point count you accept
+   times `point_step`: a larger cloud is refused with `TooLarge`, by the bound.
+2. **The pool**, of one publisher:
+
+   ```text
+   slots = (subscribers + 3) x (maxDepth + 2) + 1 + 2
+   bytes = slots x (message + 104, rounded up to a multiple of 8)
+   ```
+
+   `subscribers` and `maxDepth` are the policy's. The 3 are the observer slots of tools and
+   bridges, the 2 of `maxDepth + 2` the samples a subscriber holds at once (a callback, or a
+   received sample kept), the 1 the latch, and the last 2 the publisher's loans. `slots` is
+   `qos::pool_samples` in Rust; the default policy (8 publishers, 16 subscribers, depth 32) is
+   649 of them. A slot is resident once it was written, and the pool is the most a publisher takes,
+   reached when every subscriber's queue is full; a topic with `publishers > 1` takes that much
+   for each publisher that runs.
+3. **The policy** is as small as the application is: its subscribers are the readers that exist,
+   its `maxDepth` the frames a reader may queue. `imageQos` (1 publisher, 2 subscribers, depth 2:
+   23 slots) and `cloudQos` (1, 2, depth 3: 28 slots) are such policies. Both ends of the topic name
+   the policy as the option of the port, and each names its own topic, so two cameras need no
+   header of their own:
+
+   ```cpp
+   hypha::Output<sensor_msgs::Image> image{
+       *this, "image", hypha::imageQos, hypha::maxPayloadDynamic(bound)};
+   hypha::Latest<sensor_msgs::Image> frame{*this, "image", hypha::imageQos};
+   ```
+
+   A reader that names no policy gets `QosMismatch` at start, with both policies in the log. A
+   third subscriber is refused too: declare a policy of your own, in the header of section 7.
+
+   No type is mapped to these policies, as `TFMessage` is to `tfQos`. A type is mapped once for
+   the whole application, so two lidars could not differ, and `hypha play` or a bridge would create
+   the topic with `default` and refuse the typed reader that came after.
+
+What a pool costs is printed without code: `hypha topic pool --payload <bytes> --publishers 1
+--subscribers 2 --depth 2` (a limit left out is the `default` policy's), and every publisher whose pool is a
+megabyte or more logs it at start:
+`topic '/image' publisher pool: 23 samples of 5039000 bytes, 115897000 bytes of shared memory when
+every subscriber's queue is full; policy ..., 2 loans`.
+
+| Topic | Message | `imageQos` or `cloudQos` | One pool |
+| --- | --- | --- | --- |
+| 5 MP mono8 camera, 2592 x 1944 | `serializedSize(head, 5'038'848)` = 5,038,896 | `imageQos`, 23 slots of 5,039,000 | 115,897,000 bytes (110.5 MiB) |
+| 5 MP rgb8 camera, 3 bytes a pixel | `serializedSize(head, 15'116'544)` = 15,116,591 | `imageQos`, 23 slots of 15,116,696 | 347,684,008 bytes (331.6 MiB) |
+| 64,000-point lidar, 26 bytes a point | `serializedSize(head, 64'000 * 26)` = 1,664,156 | `cloudQos`, 28 slots of 1,664,264 | 46,599,392 bytes (44.4 MiB) |
+
+The same lidar on the `default` policy, with a bound of 1,800,000 bytes, is 649 slots of
+1,800,104: 1,168,267,496 bytes (1.09 GiB).
+
+A depth of 1 in the policy (a reader that wants the newest frame only) takes the camera pool of
+the table to 18 slots, 90.7 MB for the mono8. A publisher that names no bound is
+growable: it reserves its pool at its first slot size (4096 bytes, or the policy's `initialPayload`),
+and its later segments are never checked: name the bound.
+
+**/dev/shm.** The pools of a domain are files in `/dev/shm`, and a write past its free space stops the
+process with SIGBUS. The sum of the pools of its topics must fit, with room for the rest of the
+system: in a container, `shm_size` is that sum and more. At start, on Linux, a publisher whose
+pool is larger than the free space logs `may need <n> bytes of shared memory` (and refuses in a
+bounded deployment), and one that takes more than half of the whole `/dev/shm` logs a warning that
+names the share. A growable publisher is not checked.
 
 A policy with a deeper queue, such as an IMU at `maxDepth = 200`:
 [ros1-migration-guide.md](ros1-migration-guide.md#105-queue-depth).
@@ -1556,7 +1629,8 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h`, `hypha/t
 | `hypha/worker.h`                                                       | `sleepFor`, `sleepUntil`, `Rate`: a worker thread's sleep and rate, ended by the node's stop                                                                                                           |
 | `hypha/handover.h`                                                     | `Handover<Kinds...>`: the bounded queue from threads the node does not own to the worker that publishes, with counted drop-oldest                                                                                                           |
 | `hypha/callback.h`, `hypha/topic.h`                                  | `bind<&Class::method>(object)`; `Topic`, `validateTopicName`                                                                                                                                   |
-| `hypha/options.h`, `hypha/qos.h`                                     | The option tags; `Qos`, `QosOf`, `defaultQos`, `tfQos`                                                                                                                                       |
+| `hypha/options.h`, `hypha/qos.h`                                     | The option tags; `Qos`, `QosOf`, `defaultQos`, `tfQos`, `imageQos`, `cloudQos`                                                                                                                                     |
+| `hypha/message_size.h`                                               | `serializedSize(message)`, `serializedSize(head, loanedBytes)`: the bound of a payload                                                                                                                             |
 | `hypha/publisher.h`, `hypha/subscriber.h`                            | `Publisher<M>`, `Subscriber<M>`, `MessagePtr<M>`                                                                                                                                               |
 | `hypha/cycle.h`                                                        | `Hz`, `CycleTime`, `InputVerdict`, `CycleHealth`, `BindingHealth`                                                                                                                          |
 | `hypha/cycle_node.h`                                                   | `CycleNode`; it includes `cycle_runtime.h` (`Cycle`), `cycle_latest.h`, `cycle_arrivals.h` (with `cycle_arrivals_merge.h`: `visitArrivalsInOrder`), `cycle_output.h`, `cycle_input.h` (with `cycle_sharing.h`: `sharing`), `cycle_supervision.h`, `cycle_port.h` |

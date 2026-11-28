@@ -24,6 +24,7 @@
 #include "hypha/cycle_timer.h"
 #include "hypha/handover.h"
 #include "hypha/introspection.h"
+#include "hypha/message_size.h"
 #include "hypha/message_stamp.h"
 #include "hypha/metrics.h"
 #include "hypha/node.h"

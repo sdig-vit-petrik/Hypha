@@ -101,6 +101,27 @@ pub mod schema;
 mod status;
 pub mod waitset;
 
+/// The pool of one publisher of a topic whose policy has these limits, for messages of at most
+/// `payload` serialized bytes, holding `loaned_samples` loans: the rule of the transport
+/// (`hypha_iceoryx2::qos::pool_size`), the numbers of the "may need" warning and of the
+/// start-up line of a publisher. The topic is an ordinary one: the subscribers include the
+/// slots reserved for observers.
+///
+/// # Errors
+/// A message that names the first limit outside what a policy admits.
+pub fn pool_size(
+    max_publishers: usize,
+    max_subscribers: usize,
+    max_depth: usize,
+    loaned_samples: usize,
+    payload: usize,
+) -> Result<PoolSize, String> {
+    let policy =
+        hypha_core::port::QosPolicy::new("pool", max_publishers, max_subscribers, max_depth);
+    policy.validate()?;
+    Ok(hypha_iceoryx2::qos::pool_size("/topic", &policy, loaned_samples, payload))
+}
+
 /// The operating-system calls a tool needs that only `unsafe` code can make, reached
 /// through `hypha_sys`.
 pub mod sys {
@@ -125,9 +146,12 @@ pub use waitset::{AttachmentId, Delivery, RunResult, StopReason, WaitSet};
 pub use hypha_core::message;
 /// The parameter-file loader a node uses: includes, `${NAME}`, duplicate refusal.
 pub use hypha_core::parameters;
+/// What a publisher's pool reserves, and how many loans a publisher holds by default.
+pub use hypha_core::port::PUBLISHER_LOANED_SAMPLES as DEFAULT_LOANED_SAMPLES;
 /// The queue depth of hypha's `default` policy, which a publisher that declares no policy
 /// creates its topic with: what a subscriber depth of 0 keeps on such a topic.
 pub use hypha_iceoryx2::qos::DEFAULT_MAX_DEPTH;
+pub use hypha_iceoryx2::qos::PoolSize;
 /// Subscribers a topic admits beyond its policy from endpoints that declare no policy:
 /// tools, bridges, `hypha load` workers. A further undeclared subscriber is refused.
 pub use hypha_iceoryx2::qos::RESERVED_OBSERVER_SUBSCRIBERS as UNDECLARED_SUBSCRIBER_SLOTS;

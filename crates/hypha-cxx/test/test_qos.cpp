@@ -10,13 +10,17 @@
 
 #include <geometry_msgs/Pose.h>
 #include <gtest/gtest.h>
+#include <sensor_msgs/Image.h>
+#include <sensor_msgs/PointCloud2.h>
 #include <std_msgs/ColorRGBA.h>
+#include <std_msgs/Float32MultiArray.h>
 #include <std_msgs/Float64.h>
 #include <std_msgs/String.h>
 #include <std_msgs/UInt8MultiArray.h>
 #include <tf2_msgs/TFMessage.h>
 
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -464,3 +468,113 @@ TEST_F(QosFixture, ARawEndpointAdoptsTheTopicUnlessItNamesAPolicy)
 }
 
 }  // namespace
+
+// The sizing of a large message (issue 241): serializedSize gives the bound a payload makes,
+// imageQos and cloudQos the policy both ends of a camera or lidar topic name.
+
+namespace {
+
+sensor_msgs::Image cameraHead(const char* encoding)
+{
+    sensor_msgs::Image head{};
+    head.header.frame_id = "camera";
+    head.encoding = encoding;
+    head.height = 4;
+    head.width = 8;
+    head.step = 8;
+    return head;
+}
+
+}  // namespace
+
+TEST(MessageSize, AnImageIsItsFieldsAndItsBytes)
+{
+    // 4 seq, 8 stamp, 4 + 6 frame_id, 4 height, 4 width, 4 + 5 encoding, 1 is_bigendian,
+    // 4 step, 4 length of data: 48 bytes around the pixels.
+    const sensor_msgs::Image head = cameraHead("mono8");
+    EXPECT_EQ(hypha::serializedSize(head), 48U);
+    EXPECT_EQ(hypha::serializedSize(head, 0), 48U);
+    // The 5 MP camera of the sizing rule: 2592 x 1944 mono8.
+    EXPECT_EQ(hypha::serializedSize(head, 2592U * 1944U), 5'038'896U);
+    // The field is replaced, not added to: a head that already holds bytes gives the same size.
+    sensor_msgs::Image full = head;
+    full.data.assign(32, 0);
+    EXPECT_EQ(hypha::serializedSize(full), 48U + 32U);
+    EXPECT_EQ(hypha::serializedSize(full, 100), 48U + 100U);
+    // The number is the encoding of a message that holds the bytes.
+    sensor_msgs::Image real = head;
+    real.data.assign(1000, 0);
+    EXPECT_EQ(hypha::serializedSize(head, 1000), hypha::codec::encodedLength(real));
+}
+
+TEST(MessageSize, ACloudCountsItsFieldsDescriptionsAndPoints)
+{
+    sensor_msgs::PointCloud2 head{};
+    head.header.frame_id = "lidar";
+    head.fields.resize(4);
+    const size_t             points = 64'000;
+    sensor_msgs::PointCloud2 real = head;
+    real.data.assign(points * 26, 0);
+    EXPECT_EQ(hypha::serializedSize(head, points * 26), hypha::codec::encodedLength(real));
+}
+
+TEST(MessageSize, BytesThatAreNotWholeElementsAreRefused)
+{
+    std_msgs::Float32MultiArray head{};
+    EXPECT_THROW(static_cast<void>(hypha::serializedSize(head, 6)), std::invalid_argument);
+    EXPECT_NO_THROW(static_cast<void>(hypha::serializedSize(head, 8)));
+}
+
+TEST_F(QosFixture, ALargeImageOnImageQosIsBoundedByItsSerializedSize)
+{
+    const std::string topic = testTopic("/camera_image");
+    const size_t      bound = hypha::serializedSize(cameraHead("mono8"), 4096);
+    auto              publisher = this->node->advertise<sensor_msgs::Image>(
+        hypha::Topic{topic}, hypha::imageQos, hypha::maxPayloadDynamic(bound)
+    );
+    ASSERT_TRUE(publisher.enabled());
+
+    auto loan = publisher.loan(cameraHead("mono8"), 4096);
+    ASSERT_TRUE(loan.has_value()) << loan.error().name();
+    std::memset(loan->data().data(), 0x11, loan->data().size());
+    EXPECT_TRUE(publisher.publish(std::move(*loan)));
+
+    auto larger = publisher.loan(cameraHead("mono8"), 4097);
+    ASSERT_FALSE(larger.has_value());
+    EXPECT_EQ(larger.error(), hypha::Status::TooLarge);
+}
+
+TEST_F(QosFixture, TheEndsOfACameraTopicAgreeOnImageQosAndRefuseTheDefault)
+{
+    const std::string topic = testTopic("/camera_agree");
+    auto              publisher = this->node->advertise<sensor_msgs::Image>(
+        hypha::Topic{topic}, hypha::imageQos, hypha::maxPayloadDynamic(1 << 20)
+    );
+    ASSERT_TRUE(publisher.enabled());
+    EXPECT_NO_THROW(
+        static_cast<void>(
+            this->node->subscribe<sensor_msgs::Image>(hypha::Topic{topic}, {}, hypha::imageQos)
+        )
+    );
+    // A reader that names no policy declares the default one, which the topic does not carry:
+    // the refusal is at start (the log names both policies).
+    const std::string refusal = refusalOf([&topic, this] {
+        static_cast<void>(this->node->subscribe<sensor_msgs::Image>(hypha::Topic{topic}));
+    });
+    EXPECT_NE(refusal.find("QosMismatch"), std::string::npos) << refusal;
+}
+
+TEST_F(QosFixture, ACloudPolicyIsNotTheImagePolicy)
+{
+    const std::string topic = testTopic("/cloud_policy");
+    auto              publisher = this->node->advertise<sensor_msgs::PointCloud2>(
+        hypha::Topic{topic}, hypha::cloudQos, hypha::maxPayloadDynamic(1 << 20)
+    );
+    ASSERT_TRUE(publisher.enabled());
+    const std::string refusal = refusalOf([&topic, this] {
+        static_cast<void>(this->node->subscribe<sensor_msgs::PointCloud2>(
+            hypha::Topic{topic}, {}, hypha::imageQos
+        ));
+    });
+    EXPECT_NE(refusal.find("QosMismatch"), std::string::npos) << refusal;
+}

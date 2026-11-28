@@ -107,6 +107,36 @@ pub fn pool_samples(policy: &QosPolicy, subscribers: usize, loaned_samples: usiz
         .saturating_add(loaned_samples)
 }
 
+/// What the pool of one publisher reserves: its samples and their size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolSize {
+    /// Samples in the pool ([`pool_samples`]).
+    pub samples: usize,
+    /// Bytes of one sample carrying the payload bound: the headers and the payload, aligned.
+    pub sample_bytes: usize,
+    /// `samples * sample_bytes`: the shared memory a full pool takes. A sample is resident
+    /// once written, so it is the most a publisher takes, reached when every subscriber's
+    /// queue is full.
+    pub bytes: u64,
+}
+
+/// The pool of one publisher of `policy` whose messages are at most `payload` bytes
+/// serialized, holding `loaned_samples` loans: [`pool_samples`] samples of
+/// `payload` plus the headers of a sample.
+#[must_use]
+pub fn pool_size(
+    topic: &str,
+    policy: &QosPolicy,
+    loaned_samples: usize,
+    payload: usize,
+) -> PoolSize {
+    let subscribers = subscriber_capacity(topic, policy);
+    let samples = pool_samples(policy, subscribers, loaned_samples);
+    let sample_bytes = crate::shm_capacity::sample_bytes(payload);
+    let bytes = u64::try_from(samples.saturating_mul(sample_bytes)).unwrap_or(u64::MAX);
+    PoolSize { samples, sample_bytes, bytes }
+}
+
 /// The node slots a service keeps beyond its endpoints, for the two ways a node opens a stream
 /// for an instant without an endpoint: the probe that reads its live publishers, and the check
 /// of its schema record when an endpoint drops. Each is a node of its own while it lasts, so
@@ -346,7 +376,7 @@ mod tests {
     use super::{
         FRAMEWORK_TOPICS, QOS_ATTRIBUTE, RESERVED_OBSERVER_SUBSCRIBERS, SubscriberSlots,
         check_stamped, creation_policy, declared_slots, default_policy, framework_policy,
-        observer_slots, parse_stamp, policy_of_service, pool_samples, resolve_payload,
+        observer_slots, parse_stamp, policy_of_service, pool_samples, pool_size, resolve_payload,
         stamp_specifier, subscriber_capacity, undeclared_creation_policy,
     };
     use hypha_core::port::{PayloadCapacity, PortError, QosPolicy, QosRequest, TopicSpec};
@@ -432,6 +462,25 @@ mod tests {
         let framework = subscriber_capacity("/clock", &framework_policy());
         assert_eq!(framework, 32, "a framework topic reserves no observer slots");
         assert_eq!(pool_samples(&framework_policy(), framework, 2), 32 * (32 + 2) + 1 + 2);
+    }
+
+    #[test]
+    fn a_pool_reserves_its_samples_of_payload_and_headers() {
+        // The Arena camera port, by hand in issue 241: 1 publisher, 2 subscribers, depth 2.
+        let camera = QosPolicy::new("camera", 1, 2, 2);
+        let mono = pool_size("/image", &camera, 2, 5_000_048);
+        assert_eq!(mono.samples, (2 + RESERVED_OBSERVER_SUBSCRIBERS) * (2 + 2) + 1 + 2);
+        assert_eq!(mono.samples, 23);
+        assert_eq!(mono.sample_bytes, 5_000_152, "104 bytes of headers, aligned to 8");
+        assert_eq!(mono.bytes, 115_003_496);
+        // The same topic of 15 MB rgb8 frames.
+        assert_eq!(pool_size("/image", &camera, 2, 15_000_048).bytes, 345_003_496);
+        // The default policy holds 649 samples: a megabyte-sized message takes 650 MB.
+        let default = pool_size("/cloud", &default_policy(), 2, 1_000_000);
+        assert_eq!(default.samples, 649);
+        assert_eq!(default.bytes, 649 * 1_000_104);
+        // A framework topic reserves no observer slots.
+        assert_eq!(pool_size("/clock", &framework_policy(), 2, 8).samples, 32 * (32 + 2) + 1 + 2);
     }
 
     #[test]
