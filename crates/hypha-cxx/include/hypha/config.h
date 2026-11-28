@@ -361,8 +361,6 @@ class ConfigView
     const HyphaConfig* config_{nullptr};
 };
 
-};
-
 inline ConfigView config(const std::string& prefix = {})
 {
     return ConfigView(prefix);

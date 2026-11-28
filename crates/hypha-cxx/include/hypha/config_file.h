@@ -42,46 +42,46 @@ class ConfigContext
 
   private:
     bool ownsConfig_{false};
+};
 
-    /// A TOML file read through ConfigView apart from the configuration of the process, such
-    /// as a camera calibration: the parameter-file loader reads it (`include`, `${NAME}`), its
-    /// reads mark its keys read for unreadKeys(), and they are not recorded as parameters of
-    /// the node. path() resolves against the directory of the file. The views borrow the file:
-    /// they must not outlive it.
-    class ConfigFile
+/// A TOML file read through ConfigView apart from the configuration of the process, such
+/// as a camera calibration: the parameter-file loader reads it (`include`, `${NAME}`), its
+/// reads mark its keys read for unreadKeys(), and they are not recorded as parameters of
+/// the node. path() resolves against the directory of the file. The views borrow the file:
+/// they must not outlive it.
+class ConfigFile
+{
+  public:
+    /// @throws ConfigError naming @p path when the file is missing, unreadable or not a
+    ///         parameter file the loader accepts (it logs the reason, with the line).
+    explicit ConfigFile(const std::string& path)
     {
-      public:
-        /// @throws ConfigError naming @p path when the file is missing, unreadable or not a
-        ///         parameter file the loader accepts (it logs the reason, with the line).
-        explicit ConfigFile(const std::string& path)
-        {
-            const Status status = backend::loadConfigFile(path, &this->config_);
-            if (status != Status::Ok) {
-                throw ConfigError(
-                    "hypha: '" + path
-                    + "' cannot be read as a TOML file (the reason is logged above)"
-                );
-            }
+        const Status status = backend::loadConfigFile(path, &this->config_);
+        if (status != Status::Ok) {
+            throw ConfigError(
+                "hypha: '" + path + "' cannot be read as a TOML file (the reason is logged above)"
+            );
         }
+    }
 
-        ~ConfigFile()
-        {
-            backend::destroyConfigFile(this->config_);
-        }
+    ~ConfigFile()
+    {
+        backend::destroyConfigFile(this->config_);
+    }
 
-        ConfigFile(const ConfigFile&) = delete;
-        ConfigFile& operator=(const ConfigFile&) = delete;
-        ConfigFile(ConfigFile&&) = delete;
-        ConfigFile& operator=(ConfigFile&&) = delete;
+    ConfigFile(const ConfigFile&) = delete;
+    ConfigFile& operator=(const ConfigFile&) = delete;
+    ConfigFile(ConfigFile&&) = delete;
+    ConfigFile& operator=(ConfigFile&&) = delete;
 
-        /// @brief The table @p prefix of the file, or the whole file.
-        ConfigView view(const std::string& prefix = {}) const
-        {
-            return ConfigView(this->config_, prefix);
-        }
+    /// @brief The table @p prefix of the file, or the whole file.
+    ConfigView view(const std::string& prefix = {}) const
+    {
+        return ConfigView(this->config_, prefix);
+    }
 
-      private:
-        HyphaConfig* config_{nullptr};
-    };
+  private:
+    HyphaConfig* config_{nullptr};
+};
 
 }  // namespace hypha
