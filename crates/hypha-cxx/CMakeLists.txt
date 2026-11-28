@@ -37,6 +37,8 @@ target_include_directories(hypha INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/log/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/base/include>
+  # Tier-2 robotics companions: opt-in headers over the SDK, with no C ABI of their own.
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/companions/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_compile_features(hypha INTERFACE cxx_std_23)
@@ -118,6 +120,7 @@ endif()
 install(DIRECTORY "${HYPHA_COMMON_MSGS_INCLUDE_DIR}/" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY log/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY base/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY companions/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 # The library does not exist at configure time, so it is resolved at install time:
 # install(FILES) of a symlink would install the symlink, not the library.
@@ -394,6 +397,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_step_harness.cpp
     test/test_step_harness_services.cpp
     test/test_sequence.cpp
+    companions/test/test_diagnostic_updater.cpp
     test/test_raw_endpoints.cpp
     test/test_qos.cpp
     test/test_topic_overloading.cpp

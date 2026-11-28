@@ -47,6 +47,7 @@ Put new code in the one layer that owns its concern; never bolt parallel policy 
 | Node runtime, WaitSet, safe Rust API & SDK | `hypha_node` (`safe`, `sdk`) | `hypha_ffi` (C wrappers only) |
 | C ABI shims & raw-pointer conversion | `hypha_ffi` (thin wrappers, ≤300 lines/file) | policy, state machines, or retry loops |
 | C++23 ergonomics | `crates/hypha-cxx` (thin facade, ≤400 lines/header) | runtime logic or OS threads |
+| Robotics companions (tier 2: `DiagnosticUpdater`, PointCloud2 helpers) | `crates/hypha-cxx/companions/` (opt-in headers on the public SDK, no C ABI) | `hypha/backend/`, `hypha_ffi.h`, `hypha/hypha.h` |
 | CLI tools, loadgen, ROS bridge, OS threads | `apps/*` (via `hypha_node::sdk` only) | `crates/*/src/` (no `thread::spawn`) |
 
 ## Rust style
