@@ -648,8 +648,10 @@ included, uses the same `HYPHA_DOMAIN`.
 | `ros::service::waitForExistence(name, t)`, `client.waitForExistence(t)` | In a node: nothing; a call waits for its server until its timeout. In a test or a tool: `blockingClient.waitForServer(t)` |
 | `client.exists()` | `client.exists()` (`ready()`) |
 | `serviceClient(name, true)` (persistent) | The default: every client stays connected |
-| a service whose response is a map, a path or a cloud | The data on a latched topic; the service carries a small request and its acknowledgement (cpp-api.md §8.4) |
+| a service whose response is a map, a path or a cloud | `nav_msgs/GetMap` and `GetPlan` are shipped: serve them with a `ServicePolicyOf` whose response bound fits the map (64 MiB at most). A bigger or continuing stream of data goes on a latched topic (cpp-api.md §8.4) |
 | `std_srvs/*` | Shipped by the SDK: `Empty`, `Trigger`, `SetBool` |
+| `nav_msgs/GetMap`, `GetPlan`, `LoadMap`, `SetMap`, `sensor_msgs/SetCameraInfo`, `diagnostic_msgs/AddDiagnostics`, `SelfTest`, `tf2_msgs/FrameGraph` | Shipped by the SDK under their ROS names and with ROS's MD5: `node.advertiseService<nav_msgs::GetMap>(...)`. Do not copy the `.srv` into a package of the node's own (`map_server_msgs/GetMap`): its type name and MD5 would no longer be ROS's. A map is larger than the default bound: specialize `hypha::ServicePolicyOf<nav_msgs::GetMap>` (cpp-api.md §8.4) |
+| a service of a package the SDK ships that ROS 1 does not have (the node's own `sensor_msgs/Foo.srv`) | `hypha_generate_messages(PACKAGE sensor_msgs SRV_DIR ...)` adds it beside the SDK's (cpp-api.md §1.1, "Adding to a package of the SDK"); link `sensor_msgs_additions` |
 | `ros::ServiceServer` or `ros::ServiceClient::call` in a `CycleNode` | Not yet (stage 1c): an `Arrivals<Srv::Request>` port on a request topic and an `Output<Srv::Response>` on a reply topic, matched by an identifier, the step tracking its own deadline (cpp-api.md §8.4) |
 | `ROS_INFO("%f", x)` | `HYPHA_LOG_INFO("{}", x)`: a `std::format` string |
 | `ROS_WARN_THROTTLE(1, ...)` | `HYPHA_LOG_WARN_THROTTLE(1.0, ...)` |
@@ -730,7 +732,9 @@ field. The SDK ships no Boost, so the node's
 own build must provide the Boost headers that its logic includes.
 
 A message type that hypha does not ship becomes a `.msg` file of the node and
-a `hypha_generate_messages()` call. Copy the `.msg` file without changes.
+a `hypha_generate_messages()` call. Copy the `.msg` file without changes. A standard
+service that hypha ships (`nav_msgs/GetMap`, `sensor_msgs/SetCameraInfo`, ...) is not
+copied: it is used under its ROS name.
 
 A `bool` field decodes as ROS 1 decodes it: a zero byte is `false`, and every
 other byte is `true`. Some ROS 1 producers send a nonzero byte other than 1

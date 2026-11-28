@@ -925,9 +925,9 @@ instead answer in the handler under a mutex: `request.reply({...})`.
 
 ### 8.4 `std_srvs`
 
-The SDK ships `std_srvs` (`Empty`, `Trigger`, `SetBool`) as it ships `std_msgs`. Today
-it ships no `.srv` type, and the MRS example declares its own `std_srvs`
-(`examples/mrs/msg/std_srvs/srv/`). Designated initializers keep the calls short:
+The SDK ships `std_srvs` (`Empty`, `Trigger`, `SetBool`) as it ships `std_msgs`, and the
+standard services of ROS 1 for the packages it ships messages for (`nav_msgs/GetMap`,
+`sensor_msgs/SetCameraInfo`, ..., #315), unchanged. Designated initializers keep the calls short:
 
 ```cpp
 request.reply({.success = true, .message = "armed"});   // Trigger, SetBool
@@ -1111,7 +1111,7 @@ keeping one hypha client per ROS service.
 | `serviceClient(name, true)` (persistent) | The default. Every client stays connected |
 | a service called from inside a callback | A state over steps, or `hypha::Sequence` (§8.2), not a nested wait |
 | a service whose response is a map, a path or a cloud | The data on a latched topic. The service carries a small request and its acknowledgement (§6, large messages) |
-| `std_srvs/*` | Shipped by the SDK |
+| `std_srvs/*`, `nav_msgs/GetMap`, `sensor_msgs/SetCameraInfo`, ... | Shipped by the SDK under their ROS names |
 | `rosservice call` | `hypha service call` |
 
 The two rows that point at `cpp-api.md` §8 (request and reply topics with an identifier)
