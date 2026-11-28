@@ -77,6 +77,7 @@ Put new code in the one layer that owns its concern; never bolt parallel policy 
 
 ## Verification
 
+- **Fast local loops:** `./check.sh` (seconds, no build), `cargo test -p <crate>` (pure core crates run in <2 s), `ctest --test-dir build -R <regex>` (single C++ suite), `./scripts/mutants.sh --diff` (PR mutation check), `./scripts/repo-health.sh` (health dashboard).
 - During edits, run the smallest relevant test or build. Use `./scripts/format.sh` to format and `./check.sh` for style and generated-file checks.
 - For a local code change, run its affected build and test. Run `./test.sh rust` for Rust workspace or FFI changes. For integration, transport, ABI, build-system, or release changes, run the full gate: `./test.sh --clean` and `./check.sh`. Report skipped checks; reserve “all green” for the full gate.
 - Transport tests need writable iceoryx2 shared-memory paths. On Linux these include `/dev/shm` and `/tmp/iceoryx2`; on macOS, `/tmp/iceoryx2`. After a capacity change, clear stale segments with `./clean-shm.sh`.

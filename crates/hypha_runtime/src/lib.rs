@@ -1,4 +1,13 @@
-//! Safe, backend-independent state and orchestration used by the C ABI.
+//! Safe, backend-independent state and orchestration used below the C ABI.
+//!
+//! # Module map
+//! - `schema`: process-wide schema identity and definition cache
+//! - `port_limits`: input supervision requirement checks (`silence_ms`, `unsupervised`, `advisory`)
+//! - `tf_buffer`: coordinate-frame transform buffer, interpolation, and refusal tracking
+//! - `timer_schedule` / `trigger_schedule`: deadline grids and triggered-cycle scheduling
+//! - `clock_barrier` / `replay_progress` / `replay_steps` / `upstream_hold` / `upstream_reports`: lockstep `/clock` replay rules
+//! - `process_restart`: `HYPHA_REJOIN_AFTER_NANOS` rewind-restart coordination
+//! - `execution` / `executor`: execution counters, snapshots, and run-state helpers
 
 /// Acknowledgement rules of a lockstep `/clock`: the player and the clock driver.
 pub mod clock_barrier;
