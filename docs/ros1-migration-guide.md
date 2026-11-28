@@ -165,8 +165,10 @@ If the table has an item of section 7, stop and ask.
 Map the inventory to one cycle for each timer rate or for its event inputs. A node with
 one timer has one rate cycle. A node with no timer, whose work runs in the callbacks of
 one or several subscriptions, has one triggered cycle with those inputs as its
-triggers. One process has one `CycleNode`; a second rate is a composed `hypha::Cycle`
-with its own name.
+triggers. A second timer whose callback works on the node's state (a slower loop, a
+status publish, a gains update) is a `hypha::CycleTimer` that the step polls first. One
+process has one `CycleNode`; a second step with inputs of its own is a composed
+`hypha::Cycle` with its own name.
 
 | ROS 1 | hypha cycle |
 |---|---|
@@ -179,6 +181,9 @@ with its own name.
 | Constant tuning (`gain`, limits) | Members of the cycle node, read from TOML in the constructor or `setup()`. |
 | Own staleness check (`now - stamp > timeout`) | Replace it with the port's `silence_ms` (carry the old timeout's value) and read `usable()` or `stale()`. Delete the timeout parameter. A use of the source time as data stays (logic). |
 | A store-then-take buffer between callback and timer (input image, slot, double buffer) | Delete it: the `Latest` port is the buffer. Read `*port` when `fresh()`; `lastKnown()` holds the old value. |
+| A second `ros::Timer` in the node (a 10 Hz status beside a 100 Hz loop, a gains timer) | A `hypha::CycleTimer` member at the timer's rate. The first lines of `step()` poll it: `if (const auto tick = timer.poll(time)) { onTimer(tick); }`, or `for (auto n = timer.poll(time).periods; n > 0; --n) { onTimer(); }` where the body must run once per period to equal upstream. The step then reads its ports ([cpp-api.md](cpp-api.md) §5.4, "A second rate in a step"). |
+| `timer.start()`, `timer.stop()`; `createTimer(..., autostart = false)` | `timer.start(time)`, `timer.stop()`; `stop()` in the constructor for `autostart = false`. |
+| `ros::TimerEvent` of that timer | `CycleTimer::Tick`: `expected` is `current_expected`; `elapsed` is `current_real - last_real`, empty for the first tick after a start; `missed()` counts the periods the poll covered beyond the first. |
 
 `silence_ms` judges the age from the time the sender sent the sample, not from
 `header.stamp`. When the old timeout and `silence_ms` differ, the old timeout
@@ -632,7 +637,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | `nh.subscribe` with work for each message | `hypha::Arrivals<T>` port |
 | `message_filters` synchroniser | `Arrivals` ports; match `header.stamp` in the step. Trigger on the input that is published last: its step holds the partner samples sent before it, or with it by one step of one node ([execution-model.md](execution-model.md) §6.6). A partner sent after the trigger sample is not in that step |
 | `nh.advertise` + `publish` | `hypha::Output<T>` port: call `send(message)`. A step sends one message per Output. A step that sends two declares the Output with `hypha::perStep(2)`: `hypha::Output<T> name{*this, "name", hypha::perStep(2)};` |
-| `nh.createTimer` | The cycle rate, `rate_hz` under `[cycle]` |
+| `nh.createTimer` | The cycle rate, `rate_hz` under `[cycle]`; a second timer, a `hypha::CycleTimer` polled first in the step (Step 2) |
 | `ros::TimerEvent` | `const hypha::CycleTime&`: `dt` (no value in the first step), `missed` |
 | `ros::ok()` in the loop of a worker thread | `stop.stop_requested()`, `stop` being `this->stopToken()`, the `std::stop_token` that `runNode` stops when the run ends ([section 10.6](#106-threads)). The loop ends there, or at the `false` of a sleep or a rate below. Every other blocking read in the loop takes a timeout that returns to this check, or a `std::stop_callback` that wakes it: a read with no way back never sees the stop, and the join then waits forever |
 | `ros::Rate rate(hz)` and `rate.sleep()` in a worker thread | `hypha::Rate rate(hz, stop)` from `<hypha/worker.h>`; `do { work(); } while (rate.sleep());`. `sleep()` returns `false` when the node stopped, not, as in ROS, when the pass overran: overruns count in `rate.missedCount()`. The grid and the skip of missed periods: [cpp-api.md](cpp-api.md#25-a-worker-thread-ends-at-the-nodes-stop). Host time, also under simulated time |
@@ -747,8 +752,9 @@ or 1.
 - **Do not keep a pointer to a sample of `Arrivals::samples()`.** Samples are
   valid until the step returns. Copy what must outlive the step into a member.
   A `Latest` port keeps its value between steps (`*port`).
-- **No timer of your own beside the cycle for the same work.** One rate, one
-  cycle.
+- **No `Node::timer` beside the cycle for the step's work.** Its callback runs
+  between steps, in an order the step cannot see. A second rate over the step's state
+  is a `hypha::CycleTimer`, polled first in the step.
 - **`INPUTS_USABLE` is not readiness.** It means only that the inputs are
   fresh. Publish an application readiness topic when the system needs one.
 - **One `[log]` table for each process.** A second node in the same process
