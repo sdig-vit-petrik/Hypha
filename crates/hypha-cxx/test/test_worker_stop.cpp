@@ -304,7 +304,48 @@ TEST(WorkerStop, ASleepOfAnEndlessSpanIsRefusedByNothingAndEndsAtTheStop)
     stopper.join();
 }
 
-TEST(WorkerStop, ARateKeepsItsGridAndDoesNotDrift)
+// The grid itself, on time points the test chooses (#331): no host speed is assumed.
+TEST(WorkerStop, ARateTickStaysOnItsGridWhileAPassFitsInAPeriod)
+{
+    const Clock::time_point start{};
+    const milliseconds      period(20);
+    uint64_t                missed = 0;
+    // A pass of 12 ms after the first tick: the wait shortens, the tick stays at 40 ms.
+    EXPECT_EQ(
+        hypha::detail::dueTick(start + period * 2, start + milliseconds(32), period, missed),
+        start + period * 2
+    );
+    // A pass that ends 19 ms past its tick still returns for that tick, at once.
+    EXPECT_EQ(
+        hypha::detail::dueTick(start + period * 2, start + milliseconds(59), period, missed),
+        start + period * 2
+    );
+    EXPECT_EQ(missed, 0U);
+}
+
+TEST(WorkerStop, ARateTickSkipsAndCountsTheWholePeriodsAPassOverran)
+{
+    const Clock::time_point start{};
+    const milliseconds      period(20);
+    uint64_t                missed = 0;
+    // Next tick at 40 ms, the pass ends at 95: the ticks at 40 and 60 are skipped and
+    // counted, the one at 80 is late and is the one returned.
+    EXPECT_EQ(
+        hypha::detail::dueTick(start + milliseconds(40), start + milliseconds(95), period, missed),
+        start + milliseconds(80)
+    );
+    EXPECT_EQ(missed, 2U);
+    // Exactly one period behind is one skipped tick.
+    EXPECT_EQ(
+        hypha::detail::dueTick(
+            start + milliseconds(100), start + milliseconds(120), period, missed
+        ),
+        start + milliseconds(120)
+    );
+    EXPECT_EQ(missed, 3U);
+}
+
+TEST(WorkerStop, ARateWaitsAtLeastItsPeriodsOnTheHostClock)
 {
     std::stop_source source;
     hypha::Rate      rate(50.0, source.get_token());
@@ -312,32 +353,10 @@ TEST(WorkerStop, ARateKeepsItsGridAndDoesNotDrift)
     const Clock::time_point start = Clock::now();
     for (int i = 0; i < 10; ++i) {
         EXPECT_TRUE(rate.sleep());
-        // A pass of work of 12 ms in each period, which must not stretch the period: a
-        // sleep of a whole period after the work would take 10 x 32 ms.
-        std::this_thread::sleep_for(milliseconds(12));
     }
-    // Ten periods of 20 ms from the start, the last one's work included.
+    // A sleep never ends early: ten ticks are at least ten periods. How late a loaded host
+    // returns is not asserted (#64).
     EXPECT_GE(elapsedMillis(start), 200);
-    EXPECT_LT(elapsedMillis(start), 290);
-    EXPECT_EQ(rate.missedCount(), 0U);
-}
-
-TEST(WorkerStop, ARateCountsThePeriodsAPassOverranAndSkipsThem)
-{
-    std::stop_source source;
-    hypha::Rate      rate(50.0, source.get_token());
-    EXPECT_TRUE(rate.sleep());
-    // The first tick was at 20 ms. 75 ms of work then ends at about 95 ms: the ticks at 40
-    // and 60 ms are skipped and counted, the one at 80 ms is late and not counted.
-    std::this_thread::sleep_for(milliseconds(75));
-    const Clock::time_point start = Clock::now();
-    EXPECT_TRUE(rate.sleep());
-    EXPECT_LT(elapsedMillis(start), 10) << "an overrun returns at once, with no burst to follow";
-    EXPECT_GE(rate.missedCount(), 2U);
-    EXPECT_LE(rate.missedCount(), 3U);
-    // The next wait is for the next grid point, not for a whole period from now.
-    EXPECT_TRUE(rate.sleep());
-    EXPECT_LE(elapsedMillis(start), 40);
 }
 
 TEST(WorkerStop, ARateEndsAtTheStopAndStaysEnded)

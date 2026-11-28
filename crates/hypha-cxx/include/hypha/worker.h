@@ -36,6 +36,23 @@ inline constexpr std::chrono::hours kLongestSleep{24 * 365 * 100};
 /// The longest period of a Rate. A longer one is no rate a worker keeps a grid for.
 inline constexpr std::chrono::hours kLongestPeriod{24};
 
+/// The tick a Rate waits for at @p now, on the grid whose next tick is @p next: the ticks a
+/// whole @p period or more behind @p now are skipped and added to @p missed.
+inline std::chrono::steady_clock::time_point dueTick(
+    std::chrono::steady_clock::time_point next,
+    std::chrono::steady_clock::time_point now,
+    std::chrono::nanoseconds              period,
+    uint64_t&                             missed
+)
+{
+    if (now - next >= period) {
+        const auto skipped = (now - next) / period;
+        next += skipped * period;
+        missed += static_cast<uint64_t>(skipped);
+    }
+    return next;
+}
+
 }  // namespace detail
 
 /// @brief Sleep until @p deadline on the steady clock, or until @p stop is requested.
@@ -125,11 +142,7 @@ class Rate
     [[nodiscard]] bool sleep()
     {
         const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-        if (now - this->next_ >= this->period_) {
-            const auto skipped = (now - this->next_) / this->period_;
-            this->next_ += skipped * this->period_;
-            this->missed_ += static_cast<uint64_t>(skipped);
-        }
+        this->next_ = detail::dueTick(this->next_, now, this->period_, this->missed_);
         if (!sleepUntil(this->stop_, this->next_)) {
             return false;
         }
