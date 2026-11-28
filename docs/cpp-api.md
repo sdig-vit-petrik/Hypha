@@ -403,13 +403,69 @@ while (auto item = queue.pop()) {               // the worker; ends at the node'
 ### 2.7 Application status: `DiagnosticUpdater`
 
 `~/state` judges the inputs of a node. The conditions that only the application knows
-(the device is absent, the fix is lost, a rate is low) are named status tasks, as in ROS's
-`diagnostic_updater`, and go out as one `diagnostic_msgs/DiagnosticArray`: what a ROS
-`diagnostic_aggregator` reads on `/diagnostics`. `hypha/diagnostic_updater.h` (the updater
-and its tasks), `hypha/diagnostic_status.h` (the status a task fills) and
+(the device is absent, the fix is lost, a rate is low) are named checks, written as in
+ROS's `diagnostic_updater`: a status task with a name, a level and a message. A node
+declares a check once, and the updater tells two readers. **`~/state`** gets one row for each
+check (`NodeState.checks`), the node's state follows it (below) and `hypha top` shows it.
+**`/diagnostics`** gets the same checks as one `diagnostic_msgs/DiagnosticArray`, which a ROS
+`diagnostic_aggregator` reads, when the updater is built over a sink. `hypha/diagnostic_updater.h`
+(the updater and its tasks), `hypha/diagnostic_status.h` (the status a task fills) and
 `hypha/diagnostic_functions.h` (rate and stamp checks) are not in `hypha/hypha.h`; include
-what the node uses. Why this and not `~/state`: [features.md](features.md) section 4,
+what the node uses. Why one mechanism and not two: [features.md](features.md) section 4,
 "Application status".
+
+An application that has no aggregator to feed (most drivers) builds the updater without a
+sink and declares no `/diagnostics` port:
+
+```cpp
+#include <hypha/hypha.h>
+#include <hypha/diagnostic_updater.h>
+
+class ArenaCamera final : public hypha::ApplicationNode
+{
+  public:
+    ArenaCamera()
+    {
+        updater_.add("Device", this, &ArenaCamera::diagnoseDevice);
+    }
+
+    void setup(hypha::Node& node) override
+    {
+        // The timer is the period; its task runs on the run thread.
+        timer_ = node.timer(hypha::Duration::fromSeconds(1.0), [this] { updater_.forceUpdate(); });
+    }
+
+    void started(hypha::Node&) override
+    {
+        updater_.forceUpdate();  // the first row at once, not after a period
+        // ... start the worker that sets connected_ and noImage_
+    }
+
+  private:
+    // Reads what the worker publishes; never waits for the device.
+    void diagnoseDevice(hypha::DiagnosticStatusWrapper& status)
+    {
+        if (connected_) {
+            status.summary(diagnostic_msgs::DiagnosticStatus::OK, "camera connected");
+        } else {
+            status.summary(diagnostic_msgs::DiagnosticStatus::ERROR, "camera absent");
+        }
+        status.add("grabs without image", noImage_.load());
+    }
+
+    hypha::DiagnosticUpdater updater_;
+    hypha::Timer             timer_;
+    std::atomic<bool>        connected_{false};
+    std::atomic<uint64_t>    noImage_{0};
+};
+```
+
+With the camera absent `~/state` says `DEGRADED` with the row `Device: ERROR camera absent`
+and `hypha top` shows it under the node; once the worker sets `connected_` the next update
+says `OK` and the node is usable again.
+
+With a sink (an `Output<DiagnosticArray>` or a `Publisher<DiagnosticArray>`), the same
+tasks also go out on `/diagnostics`:
 
 ```cpp
 #include <hypha/hypha.h>
@@ -451,7 +507,25 @@ class Driver final : public hypha::CycleNode
 - **The sink.** The updater sends on an `Output<DiagnosticArray>` (in the step that calls
   `update()`) or a `Publisher<DiagnosticArray>`; its topic is a line of the parameter file,
   as for every port. A refused `Publisher::publish` throws `std::runtime_error` with the
-  status. An `ApplicationNode` calls `forceUpdate()` from `node.timer(...)`.
+  status. An `ApplicationNode` calls `forceUpdate()` from `node.timer(...)`, whose period is then the
+  period. `DiagnosticUpdater updater;` has no sink: its checks go to `~/state` only.
+- **`~/state`.** Each update replaces the rows of the updater in `NodeState.checks`: the
+  task's name (without the node's, which `NodeState.node` has), its level (`OK`, `WARN`,
+  `ERROR`, `STALE`, as `diagnostic_msgs/DiagnosticStatus`) and its message. The key/value
+  pairs stay on `/diagnostics`: put a number that matters in the message. A message over 256
+  bytes is cut and ends in `...`. A node reports at most 64 checks, a name has 1 to 128
+  bytes; the update that would pass them throws `std::runtime_error` (the array still
+  leaves, and no row of that update is kept). The node publishes its state every second, so
+  a row is as old as the last update: shorten the period for a fault that must not wait. An updater that is destroyed takes its rows away; `removeByName` drops a row at
+  the next update. Without a `Node` (a test of a task) nothing is reported.
+- **Level to state.** `ERROR` and `STALE` make the node `DEGRADED`, as a required input that
+  is not ok does (`WAITING` still wins while an input never arrived); `WARN` and `OK` show
+  and change nothing else. A check that throws, sets nothing or gives an unknown level is an
+  `ERROR`. `STALE` is `ERROR`: a check that cannot say is not one that passed.
+- **Cost.** The tasks run in the thread that calls `update()` or `forceUpdate()` (the step, or the timer
+  on the run thread), once a period; they read what a worker publishes and never wait on a device. The
+  report to the node is one call that copies at most 64 short rows under a lock the state
+  reader takes for the same time. Nothing runs on the run thread between two updates.
 - **Names.** Each status is named `<node name>: <task name>` and carries the
   `hardware_id` ("unspecified" until `setHardwareID`), as ROS writes them: a `GenericAnalyzer`
   matches on that. The array's `header.stamp` is the framework time of the update.
@@ -1812,8 +1886,9 @@ Reference: `hypha/config.h`, `hypha/config_list.h` and `hypha/config_matrix.h`, 
 `hypha::introspect()` returns this node as a `hypha_msgs::NodeIntrospection`: its
 identity, the configuration rows, and every live endpoint, cycle and cycle input
 binding with its effective settings. `hypha::nodeState()` returns the
-`hypha_msgs::NodeState` that `runNode` publishes on `~/state`; section 2 gives the rule
-that judges `state`. Each `CycleState` row carries the distribution of the cycle's step times: the median, the 90th and the 99th percentile of every step since the commit (`step_p50_nanos`, `step_p90_nanos`, `step_p99_nanos`) and of the last 10 to 20 seconds with their longest (`recent_step_*`), beside `last_step_nanos` and `max_step_nanos`, in host monotonic nanoseconds. A quantile is the upper edge of a bucket of a fixed histogram (16 buckets per power of two): at most 1/16 above the true value, never below. `hypha topic delay <input> <output>` gives the time from an input to an output instead ([tools.md](tools.md)). A program with its own `main()` publishes both itself. No example
+`hypha_msgs::NodeState` that `runNode` publishes on `~/state`: `state` is `WAITING` while a
+required input never arrived, else `DEGRADED` while one is not ok or a check of the
+application is at `ERROR` or `STALE` (section 2.7), else `INPUTS_USABLE`. Each `CycleState` row carries the distribution of the cycle's step times: the median, the 90th and the 99th percentile of every step since the commit (`step_p50_nanos`, `step_p90_nanos`, `step_p99_nanos`) and of the last 10 to 20 seconds with their longest (`recent_step_*`), beside `last_step_nanos` and `max_step_nanos`, in host monotonic nanoseconds. A quantile is the upper edge of a bucket of a fixed histogram (16 buckets per power of two): at most 1/16 above the true value, never below. `hypha topic delay <input> <output>` gives the time from an input to an output instead ([tools.md](tools.md)). A program with its own `main()` publishes both itself. No example
 calls them; `hypha node` and `hypha top` ([tools.md](tools.md)) show them. The fields
 are in `crates/hypha_msgs/msg/hypha_msgs/NodeIntrospection.msg`, `NodeState.msg` and
 the row messages; the row rules and counters in `hypha/introspection.h`. Its C ABI

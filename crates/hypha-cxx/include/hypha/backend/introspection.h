@@ -96,6 +96,36 @@ inline std::expected<std::vector<uint8_t>, Status> readNodeState(HyphaNode* node
     return readEncoded(&hypha_node_state, node);
 }
 
+/// One check of the application as the node reports it: a name, the level of
+/// `diagnostic_msgs/DiagnosticStatus` (0 OK, 1 WARN, 2 ERROR, 3 STALE) and a message.
+struct CheckText
+{
+    std::string name;
+    uint8_t     level = 0;
+    std::string message;
+};
+
+/// Replace the checks that @p owner reported to `node` with @p checks; none removes them.
+/// Refused with InvalidArgument (a name of 0 or over 128 bytes, a level over 3) and with
+/// TooLarge (over 64 checks in all); a refusal changes nothing.
+inline Status setChecks(HyphaNode* node, uint64_t owner, const std::vector<CheckText>& checks)
+{
+    std::vector<::HyphaNodeCheck> rows;
+    rows.reserve(checks.size());
+    for (const CheckText& check : checks) {
+        rows.push_back(
+            ::HyphaNodeCheck{
+                .name = check.name.data(),
+                .name_len = check.name.size(),
+                .level = check.level,
+                .message = check.message.data(),
+                .message_len = check.message.size()
+            }
+        );
+    }
+    return Status(::hypha_node_set_checks(node, owner, rows.data(), rows.size()));
+}
+
 struct MetricCallback
 {
     static void onMetric(const char* name, size_t nameLength, uint64_t value, void* user_data)

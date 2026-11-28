@@ -69,6 +69,7 @@ T hypha_node_metrics
 T hypha_node_name
 T hypha_node_ok
 T hypha_node_record_config
+T hypha_node_set_checks
 T hypha_node_shutdown
 T hypha_node_state
 T hypha_param_topic

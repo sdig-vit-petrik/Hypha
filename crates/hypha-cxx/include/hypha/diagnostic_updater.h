@@ -1,8 +1,11 @@
 #pragma once
 
 /// @file
-/// DiagnosticUpdater: the named status tasks of a node, published as one
-/// `diagnostic_msgs/DiagnosticArray` for a ROS `diagnostic_aggregator`. It is ROS's
+/// DiagnosticUpdater: the named checks of a node, each a status task. Every update runs
+/// them and (1) puts each into `~/state` (`NodeState.checks`), where an ERROR or STALE check
+/// makes the node DEGRADED and `hypha top` shows it, and (2) when the updater has a sink,
+/// publishes them as one `diagnostic_msgs/DiagnosticArray` for a ROS
+/// `diagnostic_aggregator`. A node declares a check once. It is ROS's
 /// `diagnostic_updater::Updater` without the timer and the node handle: the node calls
 /// update() in its step, and the array leaves on a port the node declares, so its topic
 /// (`/diagnostics`) is a line of the parameter file, as every topic is. See
@@ -10,15 +13,17 @@
 ///
 /// ```cpp
 /// hypha::Output<diagnostic_msgs::DiagnosticArray> diagnostics{*this, "diagnostics"};
-/// hypha::DiagnosticUpdater                        updater{diagnostics};
+/// hypha::DiagnosticUpdater                        updater{diagnostics};  // or: updater;
 /// // setup():  updater.setHardwareID("lidar");
 /// //           updater.add("Connection", this, &Node::diagnoseConnection);
 /// // step():   updater.update();
 /// ```
 
+#include "hypha/backend/introspection.h"
 #include "hypha/diagnostic_status.h"
 #include "hypha/message_stamp.h"
 #include "hypha/node.h"
+#include "hypha/status.h"
 #include "hypha_base/clock.h"
 #include "hypha_base/time.h"
 
@@ -117,10 +122,16 @@ class CompositeDiagnosticTask : public DiagnosticTask
 ///
 /// One thread calls add(), update() and the other members: the step. A task that
 /// another thread feeds (FrequencyStatus::tick()) is safe against that.
+///
+/// An update also replaces the rows of this updater in `NodeState.checks`: one for each task,
+/// by its name, level and message (cpp-api.md section 2.7). Without a Node nothing is reported.
 class DiagnosticUpdater
 {
   public:
     using Function = FunctionDiagnosticTask::Function;
+
+    /// @brief The checks go to `~/state` only; no `/diagnostics` is published.
+    DiagnosticUpdater() = default;
 
     /// @brief Publish on @p sink: an `Output<DiagnosticArray>` (it sends in the step that
     ///        calls update()), or a `Publisher<DiagnosticArray>` (a refused publish throws
@@ -147,6 +158,15 @@ class DiagnosticUpdater
 
     DiagnosticUpdater(const DiagnosticUpdater&) = delete;
     DiagnosticUpdater& operator=(const DiagnosticUpdater&) = delete;
+
+    /// @brief Takes this updater's rows out of `~/state`.
+    ~DiagnosticUpdater()
+    {
+        HyphaNode* node = backend::nodeHandle();
+        if (node != nullptr) {
+            static_cast<void>(backend::setChecks(node, this->owner(), {}));
+        }
+    }
 
     /// @brief The `hardware_id` of every status; ROS's default is "unspecified".
     void setHardwareID(std::string hardwareId)
@@ -223,16 +243,22 @@ class DiagnosticUpdater
         this->update(hypha::now());
     }
 
-    /// @brief Run the tasks and send the array now.
+    /// @brief Run the tasks, put their rows into `~/state` and send the array now.
+    /// @throws std::runtime_error when `~/state` refuses the rows (more than 64 checks in
+    ///         all, a name over 128 bytes) or the sink refuses the array; the other still
+    ///         happens.
     void forceUpdate(Time now)
     {
         diagnostic_msgs::DiagnosticArray array;
         array.header.stamp = toRosTime(now);
+        std::vector<backend::CheckText> rows;
         for (const Entry& entry : this->tasks_) {
-            array.status.push_back(this->runTask(entry, now));
+            diagnostic_msgs::DiagnosticStatus status = this->runTask(entry, now);
+            rows.push_back(row(entry, status));
+            array.status.push_back(std::move(status));
         }
         this->next_ = now + this->period_;
-        this->send_(array);
+        this->deliver(array, rows);
     }
 
     void forceUpdate()
@@ -246,13 +272,16 @@ class DiagnosticUpdater
     {
         diagnostic_msgs::DiagnosticArray array;
         array.header.stamp = toRosTime(now);
+        std::vector<backend::CheckText> rows;
         for (const Entry& entry : this->tasks_) {
             DiagnosticStatusWrapper status;
             this->fill(status, entry, now);
             status.summary(level, message);
-            array.status.push_back(this->checked(std::move(status)));
+            diagnostic_msgs::DiagnosticStatus checked = this->checked(std::move(status));
+            rows.push_back(row(entry, checked));
+            array.status.push_back(std::move(checked));
         }
-        this->send_(array);
+        this->deliver(array, rows);
     }
 
     void broadcast(int8_t level, const std::string& message)
@@ -267,8 +296,15 @@ class DiagnosticUpdater
         Function    function;
     };
 
+    /// Without a sink the names stay the tasks' own: no aggregator reads them.
     void fill(DiagnosticStatusWrapper& status, const Entry& entry, Time now)
     {
+        status.hardware_id = this->hardwareId_;
+        status.setNow(now);
+        if (!this->send_) {
+            status.name = entry.name;
+            return;
+        }
         if (this->nodeName_.empty()) {
             this->nodeName_ = hypha::nodeName();
         }
@@ -278,8 +314,43 @@ class DiagnosticUpdater
             );
         }
         status.name = this->nodeName_ + ": " + entry.name;
-        status.hardware_id = this->hardwareId_;
-        status.setNow(now);
+    }
+
+    static backend::CheckText
+    row(const Entry& entry, const diagnostic_msgs::DiagnosticStatus& status)
+    {
+        return backend::CheckText{
+            .name = entry.name,
+            .level = static_cast<uint8_t>(status.level),
+            .message = status.message
+        };
+    }
+
+    /// The key of this updater's rows in the node.
+    uint64_t owner() const
+    {
+        return static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(this));
+    }
+
+    /// Both destinations get the result, whatever the other does.
+    void deliver(
+        const diagnostic_msgs::DiagnosticArray& array, const std::vector<backend::CheckText>& rows
+    )
+    {
+        Status     reported = Status::Ok;
+        HyphaNode* node = backend::nodeHandle();
+        if (node != nullptr) {
+            reported = backend::setChecks(node, this->owner(), rows);
+        }
+        if (this->send_) {
+            this->send_(array);
+        }
+        if (reported != Status::Ok) {
+            throw std::runtime_error(
+                "hypha: diagnostics: ~/state refused the checks: " + std::string(reported.name())
+                + " (see the log)"
+            );
+        }
     }
 
     /// A level outside the four of the message is the task's fault, not a level.

@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 17
+#define HYPHA_ABI_REVISION 18
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -737,6 +737,22 @@ typedef void (*HyphaMetricCallback)(const char *name,
                                     size_t name_len,
                                     uint64_t value,
                                     void *user_data);
+
+// One check as the C ABI passes it: borrowed for the call that receives it and copied
+// before that call returns. A null pointer is allowed only for a length of zero.
+typedef struct HyphaNodeCheck {
+  // The name bytes: UTF-8, not NUL-terminated, 1 to `MAX_NAME_BYTES` (128) bytes.
+  const char *name;
+  // The byte count of `name`.
+  size_t name_len;
+  // 0 `OK`, 1 `WARN`, 2 `ERROR`, 3 `STALE`, the levels of `diagnostic_msgs`.
+  uint8_t level;
+  // The message bytes: UTF-8, not NUL-terminated; empty allowed. At most 256 bytes: a
+  // longer message is cut, at a character boundary, and ends in `...`.
+  const char *message;
+  // The byte count of `message`.
+  size_t message_len;
+} HyphaNodeCheck;
 
 // Node information reported by `hypha_list_nodes`.
 typedef struct HyphaNodeInfo {
@@ -1836,6 +1852,29 @@ int32_t hypha_node_ok(const struct HyphaNode *node);
 // # Safety
 // `node` must come from `hypha_node_create`, or be null.
 void hypha_node_shutdown(struct HyphaNode *node);
+
+// Report the checks of `owner` to `node`: named facts of the application (the device is
+// connected, the fix is held), each with a level and a message, which `~/state` carries
+// in `hypha_msgs/NodeState.checks`. A check at `ERROR` or `STALE` makes the state of the
+// node `DEGRADED`, as a required input that is not ok does; `WARN` and `OK` show and
+// change nothing else.
+//
+// The call replaces the whole set that `owner` reported before; `count` 0 removes it. An
+// owner is any number its caller picks and keeps (`hypha::DiagnosticUpdater` uses its
+// own address); owners do not see each other's checks, and a name may repeat. At most 64
+// checks in all, each name 1 to 128 bytes and each message at most 256 bytes, a longer one
+// cut and ended in `...`. `InvalidArgument`: a null `node`, a null `checks` with a count,
+// a null text with a length, text that is not UTF-8, an empty or too long name or a level
+// above 3. `TooLarge`: more than 64 checks in all. A refused call changes nothing and
+// records its reason for `hypha_last_error`. The texts are copied; the caller keeps them.
+//
+// # Safety
+// `node` is live. `checks` is null or `count` readable `HyphaNodeCheck`, each with its
+// `name` and `message` pointing to as many readable bytes as their lengths say.
+HyphaStatus hypha_node_set_checks(const struct HyphaNode *node,
+                                  uint64_t owner,
+                                  const struct HyphaNodeCheck *checks,
+                                  size_t count);
 
 // List every node registered on the bus: `callback` runs once for each, before the
 // call returns. `InvalidArgument`: a null `callback`. `Backend`: the node registry

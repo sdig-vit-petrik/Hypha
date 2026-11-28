@@ -14,3 +14,6 @@ hypha_msgs/CycleState[] cycles
 uint64 log_lines_dropped
 uint64 log_write_failures
 bool sim_time
+# The checks the application reports (hypha::DiagnosticUpdater), as it last did. An ERROR or
+# STALE one makes the state DEGRADED; a WARN one does not change it.
+hypha_msgs/NodeCheck[] checks

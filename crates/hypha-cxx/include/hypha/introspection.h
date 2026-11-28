@@ -73,9 +73,11 @@ void recordConfig(const std::string& key, const T& value)
     );
 }
 
-/// @brief The state of this node, judged now from the inputs' ok bits: `WAITING` while
-///        a required input never arrived, else `DEGRADED` while one is not ok (stale,
-///        stagnant), else `INPUTS_USABLE`. Call it on the thread that runs the node.
+/// @brief The state of this node, judged now from the inputs' ok bits and the checks of the
+///        application (`DiagnosticUpdater`): `WAITING` while a required input never arrived,
+///        else `DEGRADED` while one is not ok (stale, stagnant) or a check is at ERROR or
+///        STALE, else `INPUTS_USABLE`. `checks` lists the checks as last reported. Call it on
+///        the thread that runs the node.
 /// @throws std::runtime_error before a Node exists.
 inline std::expected<hypha_msgs::NodeState, Status> nodeState()
 {

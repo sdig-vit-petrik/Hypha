@@ -601,17 +601,20 @@ fn draw_node_details_panel(
     let node_intro = state.node_introspection(&sel.name);
     let scoped = state.node_scoped_topics(&sel.name);
 
+    let checks = node_st.map_or(0, |(st, _)| check_lines(st).len());
+    let card_height = u16::try_from(checks).map_or(u16::MAX, |extra| extra.saturating_add(7));
     if let Some(intro) = node_intro {
         let vertical = Layout::default().direction(Direction::Vertical);
         if intro.input_bindings.is_empty() {
-            let [card, endpoints] =
-                vertical.constraints([Constraint::Length(7), Constraint::Min(3)]).areas(area);
+            let [card, endpoints] = vertical
+                .constraints([Constraint::Length(card_height), Constraint::Min(3)])
+                .areas(area);
             draw_node_summary_card(f, card, sel, node_st, Some(intro));
             draw_node_endpoints_table(f, endpoints, intro, state);
         } else {
             let [card, bindings, endpoints] = vertical
                 .constraints([
-                    Constraint::Length(7),
+                    Constraint::Length(card_height),
                     Constraint::Percentage(45),
                     Constraint::Percentage(55),
                 ])
@@ -623,7 +626,7 @@ fn draw_node_details_panel(
     } else {
         let [card, topics] = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(6), Constraint::Min(3)])
+            .constraints([Constraint::Length(card_height.saturating_sub(1)), Constraint::Min(3)])
             .areas(area);
 
         draw_node_summary_card(f, card, sel, node_st, None);
@@ -692,17 +695,18 @@ fn draw_node_summary_card(
 
     if let Some((st, last_seen)) = node_st {
         let (badge, badge_style) = match st.state {
-            hypha_node::sdk::msgs::hypha_msgs::NodeState::INPUTS_USABLE => {
-                ("[● ALL INPUTS USABLE]", Style::default().fg(OK).add_modifier(Modifier::BOLD))
-            }
-            hypha_node::sdk::msgs::hypha_msgs::NodeState::WAITING => {
-                ("[▲ WAITING FOR INPUTS]", Style::default().fg(WARN).add_modifier(Modifier::BOLD))
-            }
-            hypha_node::sdk::msgs::hypha_msgs::NodeState::DEGRADED => (
-                "[✖ DEGRADED / STALE INPUTS]",
-                Style::default().fg(ERR).add_modifier(Modifier::BOLD),
+            hypha_node::sdk::msgs::hypha_msgs::NodeState::INPUTS_USABLE => (
+                "[● ALL INPUTS USABLE]".to_owned(),
+                Style::default().fg(OK).add_modifier(Modifier::BOLD),
             ),
-            _ => ("[UNKNOWN STATE]", Style::default().fg(MUTED)),
+            hypha_node::sdk::msgs::hypha_msgs::NodeState::WAITING => (
+                "[▲ WAITING FOR INPUTS]".to_owned(),
+                Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+            ),
+            hypha_node::sdk::msgs::hypha_msgs::NodeState::DEGRADED => {
+                (degraded_badge(st), Style::default().fg(ERR).add_modifier(Modifier::BOLD))
+            }
+            _ => ("[UNKNOWN STATE]".to_owned(), Style::default().fg(MUTED)),
         };
 
         let age_sec = last_seen.elapsed().as_secs_f64();
@@ -714,6 +718,8 @@ fn draw_node_summary_card(
             Span::raw("   Monitored: "),
             Span::styled(format!("{} inputs", st.inputs.len()), Style::default().fg(FG)),
         ]));
+
+        lines.extend(check_lines(st));
 
         let fail_style = if st.callback_failures > 0 {
             Style::default().fg(ERR).add_modifier(Modifier::BOLD)
@@ -891,6 +897,90 @@ fn input_flags_text(input: &hypha_node::sdk::msgs::hypha_msgs::RequiredInput) ->
 /// One detail line per cycle: steps, missed periods, the step time in ms as median, 99th
 /// percentile and maximum since the start and over the recent window, the last step,
 /// overruns and output drops.
+/// The most checks shown line by line; the rest are counted.
+const CHECK_LINES_SHOWN: usize = 4;
+
+/// The word of a check level, as `diagnostic_msgs` names it.
+fn check_level_word(level: u8) -> String {
+    use hypha_node::sdk::msgs::hypha_msgs::NodeCheck;
+    match level {
+        NodeCheck::OK => "OK".to_owned(),
+        NodeCheck::WARN => "WARN".to_owned(),
+        NodeCheck::ERROR => "ERROR".to_owned(),
+        NodeCheck::STALE => "STALE".to_owned(),
+        other => format!("LEVEL {other}"),
+    }
+}
+
+/// Whether the state counts the check against the node: any level but `OK` and `WARN`.
+fn check_blocks(check: &hypha_node::sdk::msgs::hypha_msgs::NodeCheck) -> bool {
+    use hypha_node::sdk::msgs::hypha_msgs::NodeCheck;
+    !matches!(check.level, NodeCheck::OK | NodeCheck::WARN)
+}
+
+/// One line of a check that is not `OK`: its name, level and message.
+fn check_line_text(check: &hypha_node::sdk::msgs::hypha_msgs::NodeCheck) -> String {
+    let word = check_level_word(check.level);
+    if check.message.is_empty() {
+        format!("{}: {word}", check.name)
+    } else {
+        format!("{}: {word} {}", check.name, check.message)
+    }
+}
+
+/// The lines of the application's checks on the node card: each check that is not `OK`
+/// (the failing ones first, at most [`CHECK_LINES_SHOWN`]) and a count of the rest; one
+/// line when every check is `OK`; none when the node reports none.
+fn check_lines(state: &hypha_node::sdk::msgs::hypha_msgs::NodeState) -> Vec<Line<'static>> {
+    use hypha_node::sdk::msgs::hypha_msgs::NodeCheck;
+    let label = || Span::styled(" Check: ", Style::default().add_modifier(Modifier::BOLD));
+    if state.checks.is_empty() {
+        return Vec::new();
+    }
+    let mut unwell: Vec<&NodeCheck> =
+        state.checks.iter().filter(|check| check.level != NodeCheck::OK).collect();
+    if unwell.is_empty() {
+        let text = format!("{} OK", state.checks.len());
+        return vec![Line::from(vec![label(), Span::styled(text, Style::default().fg(OK))])];
+    }
+    unwell.sort_by_key(|check| !check_blocks(check));
+    let mut lines: Vec<Line<'static>> = unwell
+        .iter()
+        .take(CHECK_LINES_SHOWN)
+        .map(|check| {
+            let color = if check_blocks(check) { ERR } else { WARN };
+            let style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+            Line::from(vec![label(), Span::styled(check_line_text(check), style)])
+        })
+        .collect();
+    if let Some(more) = unwell.len().checked_sub(CHECK_LINES_SHOWN).filter(|more| *more > 0) {
+        lines
+            .push(Line::styled(format!(" Check: ... and {more} more"), Style::default().fg(MUTED)));
+    }
+    lines
+}
+
+/// The badge of a `DEGRADED` node, with what degrades it: an input that is not usable, a
+/// check at `ERROR` or `STALE`.
+fn degraded_badge(state: &hypha_node::sdk::msgs::hypha_msgs::NodeState) -> String {
+    use hypha_node::sdk::msgs::hypha_msgs::RequiredInput;
+    let input_not_ok = state
+        .inputs
+        .iter()
+        .any(|input| !input.ignored && (input.verdict != RequiredInput::USABLE || input.stagnant));
+    let mut reasons = Vec::new();
+    if input_not_ok {
+        reasons.push("STALE INPUTS");
+    }
+    if state.checks.iter().any(check_blocks) {
+        reasons.push("FAILED CHECK");
+    }
+    if reasons.is_empty() {
+        return "[✖ DEGRADED]".to_owned();
+    }
+    format!("[✖ DEGRADED / {}]", reasons.join(", "))
+}
+
 fn cycle_line_text(cycle: &hypha_node::sdk::msgs::hypha_msgs::CycleState) -> String {
     let ms = |nanos: u64| approx_f64(nanos) / 1_000_000.0;
     format!(
@@ -1560,5 +1650,129 @@ mod tests {
         // An input without a limit stays usable on its last value: the other version is the news.
         waiting.verdict = Input::USABLE;
         assert_eq!(shown(&node(vec![waiting])), "1/1 OK, 1 OTHER VERSION");
+    }
+
+    #[test]
+    fn the_card_lists_failing_checks_first_and_counts_what_it_does_not_show() {
+        type Check = hypha_node::sdk::msgs::hypha_msgs::NodeCheck;
+        let check = |name: &str, level: u8, message: &str| Check {
+            name: name.to_owned(),
+            level,
+            message: message.to_owned(),
+        };
+        let state = |checks: Vec<Check>| hypha_node::sdk::msgs::hypha_msgs::NodeState {
+            checks,
+            ..hypha_node::sdk::msgs::hypha_msgs::NodeState::default()
+        };
+        let text_color = |lines: &[Line<'_>], at: usize| {
+            lines.get(at).and_then(|line| line.spans.get(1)).and_then(|span| span.style.fg)
+        };
+        let text = |lines: &[Line<'_>]| -> Vec<String> {
+            lines
+                .iter()
+                .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+                .collect()
+        };
+
+        assert!(check_lines(&state(Vec::new())).is_empty(), "a node with no checks has no line");
+        assert_eq!(
+            text(&check_lines(&state(vec![
+                check("A", Check::OK, "fine"),
+                check("B", Check::OK, "")
+            ]))),
+            [" Check: 2 OK"]
+        );
+
+        let mixed = state(vec![
+            check("Rate", Check::WARN, "8 Hz"),
+            check("Device", Check::ERROR, "serial port absent"),
+            check("Fix", Check::STALE, ""),
+            check("Calibration", Check::OK, "loaded"),
+        ]);
+        let lines = check_lines(&mixed);
+        assert_eq!(
+            text(&lines),
+            [
+                " Check: Device: ERROR serial port absent",
+                " Check: Fix: STALE",
+                " Check: Rate: WARN 8 Hz",
+            ],
+            "the failing checks first, the OK one not at all"
+        );
+        assert_eq!(text_color(&lines, 0), Some(ERR));
+        assert_eq!(text_color(&lines, 2), Some(WARN), "a WARN is not red");
+
+        let many =
+            state((0..7).map(|index| check(&format!("c{index}"), Check::ERROR, "")).collect());
+        let shown = text(&check_lines(&many));
+        assert_eq!(shown.len(), CHECK_LINES_SHOWN + 1);
+        assert_eq!(shown.last().map(String::as_str), Some(" Check: ... and 3 more"));
+        assert_eq!(check_line_text(&check("X", 9, "")), "X: LEVEL 9");
+    }
+
+    #[test]
+    fn the_badge_of_a_degraded_node_names_the_input_the_check_or_both() {
+        type State = hypha_node::sdk::msgs::hypha_msgs::NodeState;
+        type Check = hypha_node::sdk::msgs::hypha_msgs::NodeCheck;
+        let failed = Check { level: Check::ERROR, ..Check::default() };
+        let degraded = |inputs: Vec<Input>, checks: Vec<Check>| State {
+            state: State::DEGRADED,
+            inputs,
+            checks,
+            ..State::default()
+        };
+        let stale = input("/a", "b3087778e93fcd34cc8d65bc54e850d1", Input::STALE);
+        let usable = input("/a", "b3087778e93fcd34cc8d65bc54e850d1", Input::USABLE);
+        assert_eq!(
+            degraded_badge(&degraded(vec![stale.clone()], vec![])),
+            "[✖ DEGRADED / STALE INPUTS]"
+        );
+        assert_eq!(
+            degraded_badge(&degraded(vec![usable.clone()], vec![failed.clone()])),
+            "[✖ DEGRADED / FAILED CHECK]"
+        );
+        assert_eq!(
+            degraded_badge(&degraded(vec![], vec![failed.clone()])),
+            "[✖ DEGRADED / FAILED CHECK]"
+        );
+        assert_eq!(
+            degraded_badge(&degraded(vec![stale], vec![failed])),
+            "[✖ DEGRADED / STALE INPUTS, FAILED CHECK]"
+        );
+    }
+
+    #[test]
+    fn the_node_card_draws_a_failing_check_under_its_health_line() {
+        let node = NodeInfo {
+            name: "driver".to_owned(),
+            executable: "driver".to_owned(),
+            pid: 1,
+            is_alive: true,
+        };
+        let state = hypha_node::sdk::msgs::hypha_msgs::NodeState {
+            node: "driver".to_owned(),
+            state: hypha_node::sdk::msgs::hypha_msgs::NodeState::DEGRADED,
+            checks: vec![hypha_node::sdk::msgs::hypha_msgs::NodeCheck {
+                name: "Device".to_owned(),
+                level: hypha_node::sdk::msgs::hypha_msgs::NodeCheck::ERROR,
+                message: "serial port absent".to_owned(),
+            }],
+            ..hypha_node::sdk::msgs::hypha_msgs::NodeState::default()
+        };
+        let node_st = (state, Instant::now());
+        let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
+        terminal
+            .draw(|f| draw_node_summary_card(f, f.area(), &node, Some(&node_st), None))
+            .unwrap();
+        let rows: Vec<String> = terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(100)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+            .collect();
+        let shown = rows.join("\n");
+        assert!(shown.contains("DEGRADED / FAILED CHECK"), "{shown}");
+        assert!(shown.contains("Check: Device: ERROR serial port absent"), "{shown}");
     }
 }
