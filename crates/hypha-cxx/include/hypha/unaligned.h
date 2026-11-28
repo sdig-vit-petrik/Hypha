@@ -28,7 +28,11 @@ class UnalignedRef
     {
     }
 
-    UnalignedRef(const UnalignedRef&) noexcept = default;
+    /// Not defaulted, so the proxy is not trivially copyable: passing it to printf's `...`
+    /// (`printf("%f", *it)`) is a compile error instead of printing the proxy's bytes.
+    UnalignedRef(const UnalignedRef& other) noexcept : where_(other.where_)
+    {
+    }
 
     /// The value in the buffer.
     operator T() const noexcept

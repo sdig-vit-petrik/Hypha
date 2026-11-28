@@ -179,7 +179,7 @@ examples/autoware/tools/port.py verify` (run by `./check.sh`) checks them.
 `T` and takes `=`, `+=`, `++` and the like, so `*it = 1.0F`, `float x = *it`, `it[1]`,
 `++it`, `it != it.end()` read as in ROS, at any alignment. What ROS allows and this does
 not: a `T&` or a `T*` of an element (`float& r = *it`, `&*it`), `std::max(*it, 1.0F)` on a
-mutable iterator (name the type: `std::max<float>`), and `printf("%f", *it)` (read it into a
+mutable iterator (name the type: `std::max<float>`), and `printf("%f", *it)`, which does not compile (read it into a
 `float` first). `auto v = *it` on a mutable iterator is the reference, not a copy.
 `point_field_conversion.h` needs `<sensor_msgs/PointField.h>` (or `PointCloud2.h`) before
 it, as upstream does. Left out: `fill_image.h` and `point_cloud_conversion.h` (the second

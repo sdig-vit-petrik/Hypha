@@ -320,6 +320,14 @@ if(HYPHA_BUILD_TESTS)
   set_tests_properties(typed_loan_of_a_message_without_an_array_is_refused PROPERTIES
     PASS_REGULAR_EXPRESSION "this message has no single top-level array of numbers to write in place")
 
+  # A mutable iterator's field passed to printf must stop the build, not print garbage.
+  add_library(unaligned_ref_not_varargs OBJECT EXCLUDE_FROM_ALL test/unaligned_ref_not_varargs.cpp)
+  target_link_libraries(unaligned_ref_not_varargs PRIVATE hypha)
+  add_test(NAME unaligned_ref_through_printf_is_refused
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target unaligned_ref_not_varargs)
+  set_tests_properties(unaligned_ref_through_printf_is_refused PROPERTIES
+    PASS_REGULAR_EXPRESSION "non-trivial|non-trivially")
+
   add_executable(test_hypha
     test/test_main.cpp
     test/wall_clock_listener.cpp
