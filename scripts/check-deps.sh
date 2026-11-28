@@ -18,10 +18,20 @@ RULES=(
     "hypha_sys      hypha_node"
     "hypha_ffi      -"
     "hypha_node     hypha_ffi hypha_tools hypha_ros_bridge"
+    "hypha_runtime  hypha_node hypha_ffi"
+    "hypha_cycle    hypha_runtime hypha_node hypha_ffi"
     "hypha_testing_mcap -"
 )
-# The test-only MCAP reader of the C++ testing component stands alone.
-LEAF_CRATES=("hypha_testing_mcap")
+# Leaf crates depend on no workspace crate.
+LEAF_CRATES=(
+    "hypha_cycle"
+    "hypha_msgdef"
+    "hypha_sys"
+    "hypha_testing_mcap"
+    "hypha_testkit"
+    "hypha_time"
+    "hypha_wire"
+)
 # The workspace crates an application or tool may use: hypha_node (its Rust SDK is
 # hypha_node::sdk), and the test helpers.
 APP_CRATES=("hypha_node" "hypha_testkit")

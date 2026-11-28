@@ -9,6 +9,8 @@ CLI and Antigravity use these same rules.
 
 - Start with the task and the relevant code. In this indexed checkout, use `codegraph explore` before text search when locating code; skip it when `.codegraph/` is absent.
 - Make the smallest complete change. Read the linked document only when its topic applies. Do not run a review protocol, install skills, or delegate by default.
+- Before writing code for a feature, new file, or ABI change, answer four placement questions: (1) which existing crate, module, and type owns this (verify with `codegraph explore`), (2) why extending it will not suffice if adding a sibling type, module, or symbol, (3) which layer holds the logic vs. the thin wrapper, and (4) what existing helpers are reused and what old code is removed. Stop for the owner's approval on that short plan before editing when adding a new module, a public C ABI symbol, or more than ~200 lines.
+- Guard against bloat: prefer extending an existing or table-driven test over adding a new test file or duplicating setup helpers; keep bug-fix regression tests focused; keep `docs/design/` notes concise (≤300 lines) and fold or delete them once implemented. File-size ceilings and boundary rules are enforced by `scripts/check-size-and-boundaries.sh` via `./check.sh`.
 - Optional `hypha-rust` and `hypha-cxx` specialists may take bounded, independent assignments. The orchestrator sets file ownership and the C ABI contract first, then owns integration and the final checks.
 - Preserve the user's unrelated changes. Do not commit unless asked.
 - Work belongs to a GitHub issue. Name the branch `<type>/<issue>-<slug>` and end each commit message with `Refs #N`, or `Fixes #N` when it finishes the issue (`docs/release-policy.md` §7).
@@ -27,6 +29,25 @@ CLI and Antigravity use these same rules.
 - Each installed include directory has one owner. Message headers sit at `<package>/<Name>.h`: `hypha-cxx` owns the directory of each standard package it ships (`std_msgs/`, ..., `hypha_msgs/`); an application owns the directories of the packages it declares with `hypha_generate_messages()`.
 - Fail explicitly on invalid or stale data. Do not invent values or silently discard a fallible result. Rust code under `crates/` forbids unsafe: `unsafe` only in `hypha_ffi` (the C boundary), `hypha_sys` (OS calls), the test-only module `hypha_testkit/src/env.rs` and the C boundary module `hypha_testing_mcap/src/ffi.rs` of the test-only MCAP reader; the Rust SDK `hypha_node::sdk` calls its safe functions (`hypha_node::safe`) and forbids `unsafe`; shipped paths obey the workspace panic and arithmetic lints.
 - For iceoryx2, use the thread-safe service, shared QoS builders and bounded service-open retry. Build a `WaitSet` once per run loop. Wildcard subscriptions resolve once at creation.
+
+### Single-owner map
+
+Put new code in the one layer that owns its concern; never bolt parallel policy onto a caller or wrapper.
+
+| Concern | Single owning crate / module | Never put in |
+|---|---|---|
+| Wire frame, codec, CRC | `hypha_wire` | `hypha_iceoryx2`, `hypha_node`, `hypha-cxx` |
+| Time, duration, cadence, clocks | `hypha_time` | ad-hoc clock math in `hypha_ffi` / `hypha-cxx` / `apps/` |
+| `.msg`/`.srv` parsing, MD5, codegen | `hypha_msgdef`, `hypha_msggen` | runtime crates or `apps/` |
+| Frame validation, params, ports, introspection | `hypha_core` | `hypha_ffi`, `hypha-cxx`, `apps/` |
+| Cycle history, capture, input supervision | `hypha_cycle` | `hypha_ffi`, `hypha-cxx` |
+| Schema cache, replay rules, TF buffer | `hypha_runtime` | `hypha_ffi`, `hypha-cxx`, `apps/` |
+| Logging engine | `hypha_log` | `hypha_ffi`, `apps/` |
+| iceoryx2 services, QoS, loans | `hypha_iceoryx2` | any other crate or `apps/` |
+| Node runtime, WaitSet, safe Rust API & SDK | `hypha_node` (`safe`, `sdk`) | `hypha_ffi` (C wrappers only) |
+| C ABI shims & raw-pointer conversion | `hypha_ffi` (thin wrappers, ≤300 lines/file) | policy, state machines, or retry loops |
+| C++23 ergonomics | `crates/hypha-cxx` (thin facade, ≤400 lines/header) | runtime logic or OS threads |
+| CLI tools, loadgen, ROS bridge, OS threads | `apps/*` (via `hypha_node::sdk` only) | `crates/*/src/` (no `thread::spawn`) |
 
 ## Rust style
 

@@ -59,6 +59,8 @@ fi
 
 ./scripts/check-links.sh
 
+./scripts/check-size-and-boundaries.sh
+
 ./scripts/check-deps.sh
 # The gate refuses a forbidden edge: a tool that depends on the transport.
 forbidden_edge='

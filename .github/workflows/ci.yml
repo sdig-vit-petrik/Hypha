@@ -41,6 +41,73 @@ jobs:
             exit 1
           fi
 
+  # Guard against unreviewed PR bloat into develop (release PRs into main are excluded).
+  # Add the `large-pr-approved` label to allow an intentionally larger change.
+  pr-size:
+    if: github.event_name == 'pull_request' && github.base_ref == 'develop'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Check net diff size and ABI surface delta
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          python3 -I - <<'PY'
+          import os, re, subprocess, sys
+
+          base, head = os.environ["BASE_SHA"], os.environ["HEAD_SHA"]
+          labels = set(filter(None, os.environ.get("LABELS", "").split(",")))
+          out = subprocess.check_output(["git", "diff", "--numstat", f"{base}...{head}"], text=True)
+
+          prod = tests = docs = other = 0
+          for line in out.splitlines():
+              parts = line.split("\t")
+              if len(parts) != 3 or parts[0] == "-":
+                  continue
+              net = int(parts[0]) - int(parts[1])
+              p = parts[2]
+              if p.startswith(("crates/hypha-cxx/upstream/", "examples/autoware/")):
+                  continue
+              if p.startswith("docs/"):
+                  docs += net
+              elif "/tests/" in p or "/test/" in p or p.startswith("test/") or p.endswith(("_test.cpp", "_tests.rs")):
+                  tests += net
+              elif p.startswith(("crates/", "apps/")):
+                  prod += net
+              else:
+                  other += net
+
+          total = prod + tests + docs + other
+
+          def abi_count(rev):
+              txt = subprocess.check_output(["git", "show", f"{rev}:crates/hypha_ffi/include/hypha/hypha_ffi.h"], text=True)
+              return len(set(re.findall(r"\b(hypha_[a-z0-9_]+)\(", txt)))
+
+          abi_delta = abi_count(head) - abi_count(base)
+          summary = (
+              f"### PR size & surface\n"
+              f"- **Net LOC**: `{total:+d}` (prod `{prod:+d}`, tests `{tests:+d}`, docs `{docs:+d}`, other `{other:+d}`)\n"
+              f"- **C ABI functions delta**: `{abi_delta:+d}`\n"
+          )
+          print(summary)
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if step_summary:
+              with open(step_summary, "a", encoding="utf-8") as f:
+                  f.write(summary)
+
+          if (total > 800 or prod > 400) and "large-pr-approved" not in labels:
+              print(
+                  f"::error::PR exceeds size budget (net {total:+d} > 800 or prod {prod:+d} > 400). "
+                  f"Slice the PR, trim bloat, or apply the 'large-pr-approved' label.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          PY
+
   gate:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
