@@ -248,13 +248,13 @@ TEST_F(ConfigViewFixture, AListRefusesAMissingNameAScalarAndAnIndexPastTheEnd)
     EXPECT_TRUE(contains(past, "sensors[3]")) << past;
 }
 
-TEST_F(ConfigViewFixture, AListInsideAListEntryIsRefused)
+TEST_F(ConfigViewFixture, AListNotSetInAListEntryIsNamedByItsEntry)
 {
     const hypha::ConfigList sensors = hypha::config().list("sensors");
     const std::string       text = refusal([&sensors]() {
         sensors.at(0).list("inner");
     });
-    EXPECT_TRUE(contains(text, "nested lists are not supported")) << text;
+    EXPECT_TRUE(contains(text, "required list not set: sensors[0].inner")) << text;
 }
 
 TEST(ConfigConstraints, NumberConstraintsRefuseNonFiniteAndOutOfRangeValues)

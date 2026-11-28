@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 11
+#define HYPHA_ABI_REVISION 12
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -999,6 +999,26 @@ const struct HyphaConfig *hypha_node_config(const struct HyphaNode *node);
 // `config` is live. `prefix` holds `prefix_len` bytes when that is nonzero. `out` is
 // null or `out_capacity` writable bytes. `out_len` points to a writable `usize`.
 HyphaStatus hypha_config_unread_keys(const struct HyphaConfig *config,
+                                     const char *prefix,
+                                     size_t prefix_len,
+                                     char *out,
+                                     size_t out_capacity,
+                                     size_t *out_len);
+
+// Write the names of the tables directly under `prefix` of `config` (the top level for a
+// zero `prefix_len`; `sensors[0]` is a table element), sorted and joined by `'\n'`, to
+// `out`: `a\nb` under `ports.inputs` for `[ports.inputs.a]` and `[ports.inputs.b]`. A name
+// that holds a scalar or a list is no table, a table with no key is not listed, and a
+// prefix that is no table gives empty text. Nothing is marked as read. `TooLarge` when
+// `out_capacity` is too small; `out_len` then holds the byte length.
+//
+// `InvalidArgument`: a null `config` or `out_len`, a null `prefix` with a nonzero length,
+// or a `prefix` that is not UTF-8.
+//
+// # Safety
+// `config` is live. `prefix` holds `prefix_len` bytes when that is nonzero. `out` is
+// null or `out_capacity` writable bytes. `out_len` points to a writable `usize`.
+HyphaStatus hypha_config_table_names(const struct HyphaConfig *config,
                                      const char *prefix,
                                      size_t prefix_len,
                                      char *out,

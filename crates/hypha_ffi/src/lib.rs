@@ -46,7 +46,7 @@ pub use clock::{
 };
 pub use config::{
     hypha_config_create, hypha_config_destroy, hypha_config_ignore, hypha_config_resolve_key,
-    hypha_config_unread_keys, hypha_node_config,
+    hypha_config_table_names, hypha_config_unread_keys, hypha_node_config,
 };
 pub use cycle::{HyphaCycle, cycle_timer_tick};
 pub use cycle::{

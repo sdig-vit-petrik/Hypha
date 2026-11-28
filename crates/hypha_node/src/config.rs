@@ -132,6 +132,14 @@ pub fn config_unread_keys(config: &HyphaConfig, prefix: &str) -> String {
     config.parameters.unread_keys_under(prefix).join("\n")
 }
 
+/// The names of the tables directly under `prefix` of `config`, sorted and joined by
+/// `'\n'`: `a\nb` for `[ports.inputs.a]` and `[ports.inputs.b]` under `ports.inputs`. An
+/// empty `prefix` is the top level and `sensors[0]` a table element. Reads nothing.
+#[must_use]
+pub fn config_table_names(config: &HyphaConfig, prefix: &str) -> String {
+    config.parameters.table_names(prefix).join("\n")
+}
+
 /// The file name that the text parameter `key` holds, resolved against the directory
 /// of the file that wrote `key`. Marks `key` read.
 ///

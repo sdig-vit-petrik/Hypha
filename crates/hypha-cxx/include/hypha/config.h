@@ -21,6 +21,8 @@
 namespace hypha {
 
 class ConfigList;
+template <typename T>
+struct Matrix;
 
 /// A scalar configuration scope, or one indexed table entry.
 class ConfigView
@@ -47,6 +49,16 @@ class ConfigView
             result += "." + key;
         }
         return result;
+    }
+
+    /// @brief The last segment of this scope's name, `cmd_vel` for
+    ///        `config("ports.inputs.cmd_vel")`; the index in brackets for a list entry.
+    std::string key() const
+    {
+        if (this->index_) {
+            return "[" + std::to_string(*this->index_) + "]";
+        }
+        return this->prefix_.substr(this->prefix_.rfind('.') + 1);
     }
 
     template <typename T, typename Constraint = detail::Unconstrained>
@@ -114,9 +126,16 @@ class ConfigView
         return *resolved;
     }
 
-    /// @brief The list @p key. @throws ParameterError when not a list, or unset (list() only).
+    /// @brief The list @p key, of scalars or of tables, also inside a list entry.
+    /// @throws ParameterError when not a list, or unset (list() only).
     ConfigList                list(const std::string& key) const;
     std::optional<ConfigList> optionalList(const std::string& key) const;
+
+    /// @brief The tables directly under this scope, by name order: `config("ports.inputs")`
+    ///        gives `[ports.inputs.a]` and `[ports.inputs.b]`, each a scope with its own
+    ///        key(). A key that holds a value or a list is no table, and a table with no
+    ///        key is not there. Reading nothing, it leaves every key unread.
+    std::vector<ConfigView> tables() const;
 
     /// @brief The array @p key of scalars, in file order, each read as required<T> reads.
     /// @throws ParameterError when unset, when not an array, or when an element is not a T;
@@ -166,6 +185,48 @@ class ConfigView
         return detail::toArray<T, N>(*values);
     }
 
+    /// @brief The key @p key as a list of T, given either as one value or as an array of
+    ///        them (`topic = "/a"` or `topic = ["/a", "/b"]`), the ROS idiom of a parameter
+    ///        that takes one or many. An array is read as requiredArray<T>().
+    /// @throws ParameterError when unset, or for an element that is not a T.
+    template <typename T>
+        requires detail::ConfigValueType<T>
+    std::vector<T> requiredScalarOrArray(const std::string& key) const
+    {
+        std::optional<std::vector<T>> values = this->optionalScalarOrArray<T>(key);
+        if (!values) {
+            throw ParameterError("hypha: required parameter not set: " + this->name(key));
+        }
+        return std::move(*values);
+    }
+
+    /// @brief requiredScalarOrArray<T>(), or no value when @p key is not set.
+    template <typename T>
+        requires detail::ConfigValueType<T>
+    std::optional<std::vector<T>> optionalScalarOrArray(const std::string& key) const
+    {
+        const std::expected<size_t, Status> length = detail::paramListLength(this->name(key));
+        const bool isScalar = !length && length.error() == Status::InvalidArgument;
+        if (!isScalar) {
+            return this->readArray<T>(key, std::nullopt);
+        }
+        const std::expected<T, Status> value = this->read<T>(key);
+        if (!value) {
+            this->refuse(key, value.error());
+        }
+        detail::recordRequiredParameter(this->name(key), *value);
+        return std::vector<T>{*value};
+    }
+
+    /// @brief The array @p key as a matrix of @p rows x @p cols, row by row: the flat list
+    ///        of a ROS matrix parameter. A 0 for @p rows or @p cols takes it from the length
+    ///        (`requiredMatrix<double>("mixer", 0, 6)`: any number of rows of 6). See
+    ///        config_matrix.h. @throws ParameterError as requiredArray(), and when the length
+    ///        does not fit.
+    template <typename T>
+        requires detail::ConfigValueType<T>
+    Matrix<T> requiredMatrix(const std::string& key, size_t rows, size_t cols) const;
+
     /// @brief The keys under this view that nothing read and nothing ignored, sorted.
     std::vector<std::string> unreadKeys() const
     {
@@ -190,9 +251,6 @@ class ConfigView
     std::optional<std::vector<T>>
     readArray(const std::string& key, std::optional<size_t> expected) const
     {
-        if (this->index_) {
-            throw ParameterError("hypha: nested lists are not supported: " + this->name(key));
-        }
         const std::string                   listName = this->name(key);
         const std::expected<size_t, Status> length = detail::paramListLength(listName);
         if (!length) {
@@ -257,106 +315,6 @@ class ConfigView
     std::optional<size_t> index_;
 };
 
-/// Immutable list views retain TOML order and label failures with the entry index.
-class ConfigList
-{
-  public:
-    class Iterator
-    {
-      public:
-        using value_type = ConfigView;
-        using difference_type = std::ptrdiff_t;
-        using iterator_category = std::input_iterator_tag;
-
-        Iterator(std::string list, size_t index) : list_(std::move(list)), index_(index)
-        {
-        }
-
-        ConfigView operator*() const
-        {
-            return ConfigView(this->list_, this->index_);
-        }
-
-        Iterator& operator++()
-        {
-            ++this->index_;
-            return *this;
-        }
-
-        void operator++(int)
-        {
-            ++*this;
-        }
-
-        bool operator==(const Iterator& other) const
-        {
-            return this->index_ == other.index_;
-        }
-
-      private:
-        std::string list_;
-        size_t      index_;
-    };
-
-    explicit ConfigList(std::string name) : name_(std::move(name))
-    {
-        const std::expected<size_t, Status> length = detail::paramListLength(this->name_);
-        if (!length) {
-            if (length.error() == Status::NotAvailable) {
-                throw ParameterError("hypha: required list not set: " + this->name_);
-            }
-            throw ParameterError("hypha: parameter '" + this->name_ + "' is not a list");
-        }
-        this->size_ = *length;
-    }
-
-    size_t size() const
-    {
-        return this->size_;
-    }
-
-    ConfigView at(size_t index) const
-    {
-        if (index >= this->size_) {
-            const std::string entry = this->name_ + "[" + std::to_string(index) + "]";
-            throw ParameterError("hypha: list entry not set: " + entry);
-        }
-        return ConfigView(this->name_, index);
-    }
-
-    Iterator begin() const
-    {
-        return Iterator(this->name_, 0);
-    }
-
-    Iterator end() const
-    {
-        return Iterator(this->name_, this->size_);
-    }
-
-  private:
-    std::string name_;
-    size_t      size_{0};
-};
-
-inline ConfigList ConfigView::list(const std::string& key) const
-{
-    if (this->index_) {
-        throw ParameterError("hypha: nested lists are not supported: " + this->name(key));
-    }
-    return ConfigList(this->name(key));
-}
-
-inline std::optional<ConfigList> ConfigView::optionalList(const std::string& key) const
-{
-    const std::expected<size_t, Status> length = detail::paramListLength(this->name(key));
-    const bool                          notSet = !length && length.error() == Status::NotAvailable;
-    if (notSet) {
-        return std::nullopt;
-    }
-    return this->list(key);
-}
-
 /// A standalone parameter configuration scope that does not join the bus.
 class ConfigContext
 {
@@ -396,3 +354,6 @@ inline ConfigView config(const std::string& prefix = {})
 }
 
 }  // namespace hypha
+
+#include "hypha/config_list.h"
+#include "hypha/config_matrix.h"

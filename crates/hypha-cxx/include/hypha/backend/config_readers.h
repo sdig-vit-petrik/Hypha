@@ -63,6 +63,26 @@ inline HyphaParamResult paramListLength(const std::string& name, size_t* outLen)
     return ::hypha_config_list_len(configHandle(), name.data(), name.size(), outLen);
 }
 
+/// The lines of @p text, which is empty for no line.
+inline std::vector<std::string> splitLines(const std::string& text)
+{
+    std::vector<std::string> lines;
+    if (text.empty()) {
+        return lines;
+    }
+    size_t start = 0;
+    while (start <= text.size()) {
+        const size_t newline = text.find('\n', start);
+        if (newline == std::string::npos) {
+            lines.push_back(text.substr(start));
+            break;
+        }
+        lines.push_back(text.substr(start, newline - start));
+        start = newline + 1;
+    }
+    return lines;
+}
+
 /// @brief Every unread key under @p prefix in the active configuration, sorted.
 inline std::vector<std::string> unreadParameterKeys(const std::string& prefix)
 {
@@ -71,22 +91,19 @@ inline std::vector<std::string> unreadParameterKeys(const std::string& prefix)
         return {};
     }
     const std::expected<std::string, Status> text = readUnreadKeys(config, prefix);
-    const bool                               hasKeys = text && !text->empty();
-    if (!hasKeys) {
+    return text ? splitLines(*text) : std::vector<std::string>{};
+}
+
+/// @brief The names of the tables directly under @p prefix, sorted; none without a
+///        configuration.
+inline std::vector<std::string> tableNames(const std::string& prefix)
+{
+    const HyphaConfig* config = configHandle();
+    if (config == nullptr) {
         return {};
     }
-    std::vector<std::string> keys;
-    size_t                   start = 0;
-    while (start <= text->size()) {
-        const size_t newline = text->find('\n', start);
-        if (newline == std::string::npos) {
-            keys.push_back(text->substr(start));
-            break;
-        }
-        keys.push_back(text->substr(start, newline - start));
-        start = newline + 1;
-    }
-    return keys;
+    const std::expected<std::string, Status> text = readTableNames(config, prefix);
+    return text ? splitLines(*text) : std::vector<std::string>{};
 }
 
 /// @brief Marks @p key, a key or a table, as set on purpose and not read, for @p reason.
