@@ -146,7 +146,14 @@ recording made before `hypha_msgs/NodeState` gained its cycle and counter fields
 the old hash, so a replay of it shows its nodes without a state. The node details show
 one line per cycle (steps, missed periods, last and max step in ms, overruns, output
 drops), the log counters, and per input the words `STAGNANT` and `IGNORED` and the
-`DROP/REJ/UNDEC` counts. A topic of several streams is one row for each, each with its type
+`DROP/REJ/UNDEC` counts. The checks that the application reports
+(`hypha::DiagnosticUpdater`, `NodeState.checks`) show under the health line: one
+`Check: <name>: <LEVEL> <message>` line for each check that is not `OK`, the `ERROR` and
+`STALE` ones first and in red, a `WARN` one in yellow, and `... and n more` past four; all
+`OK` is one line, `Check: 3 OK`, and a node that reports none shows no line. A node whose
+state is degraded by a check says so in the badge (`DEGRADED / FAILED CHECK`, or `STALE
+INPUTS, FAILED CHECK` with an input that is not usable too), and the node list and the
+Graph tab show it `DEGR` and `✖`: a `WARN` check changes neither. A topic of several streams is one row for each, each with its type
 and the start of its MD5 (`nav_msgs/Odometry (cd5e73d1)`), and one that joins later is
 followed by the graph event, not by listing the names again. An input binding shows its
 type and MD5, is judged by its own stream, and shows in `OTHER SCHEMAS` what its node found

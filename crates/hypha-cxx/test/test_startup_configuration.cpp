@@ -1,3 +1,4 @@
+#include "hypha/diagnostic_updater.h"
 #include "hypha/hypha.h"
 #include <hypha_msgs/NodeIntrospection.h>
 #include <hypha_msgs/NodeState.h>
@@ -333,6 +334,63 @@ TEST(ApplicationReport, RunNodePublishesTheStateAndTheManifestOfTheNode)
     // started() sees the complete manifest; hypha logs no manifest text.
     EXPECT_EQ(ReportReaderApp::startedPublishers, publishers.size());
     EXPECT_EQ(log.find("node report_reader"), std::string::npos) << log;
+}
+
+/// A driver whose device is absent: its one check reaches `~/state` on the bus.
+class AbsentDeviceApp final : public hypha::ApplicationNode
+{
+  public:
+    struct OnState
+    {
+        void operator()(const hypha::MessagePtr<hypha_msgs::NodeState>& message) const
+        {
+            if (!message->checks.empty()) {
+                state = *message;
+                hypha::requestStop();
+            }
+        }
+    };
+
+    AbsentDeviceApp()
+    {
+        this->updater.add("Device", [](hypha::DiagnosticStatusWrapper& status) {
+            status.summary(diagnostic_msgs::DiagnosticStatus::ERROR, "serial port absent");
+        });
+    }
+
+    void setup(hypha::Node& node) override
+    {
+        this->reader = node.subscribe<hypha_msgs::NodeState>(hypha::Topic{"~/state"}, OnState{});
+    }
+
+    void started(hypha::Node&) override
+    {
+        this->updater.forceUpdate();
+    }
+
+    hypha::DiagnosticUpdater                 updater;
+    hypha::Subscriber<hypha_msgs::NodeState> reader;
+
+    static inline std::optional<hypha_msgs::NodeState> state;
+};
+
+TEST(ApplicationReport, ACheckOfTheApplicationIsOnItsStateOnTheBusAndTheNodeIsDegraded)
+{
+    const std::filesystem::path file = configFile("");
+    AbsentDeviceApp::state.reset();
+    testing::internal::CaptureStderr();
+
+    const int result = runWithConfig<AbsentDeviceApp>(file, "absent_device");
+
+    const std::string log = testing::internal::GetCapturedStderr();
+    std::filesystem::remove(file);
+    ASSERT_EQ(result, 0) << log;
+    ASSERT_TRUE(AbsentDeviceApp::state.has_value());
+    EXPECT_EQ(AbsentDeviceApp::state->state, hypha_msgs::NodeState::DEGRADED);
+    ASSERT_EQ(AbsentDeviceApp::state->checks.size(), 1U);
+    EXPECT_EQ(AbsentDeviceApp::state->checks[0].name, "Device");
+    EXPECT_EQ(AbsentDeviceApp::state->checks[0].level, hypha_msgs::NodeCheck::ERROR);
+    EXPECT_EQ(AbsentDeviceApp::state->checks[0].message, "serial port absent");
 }
 
 /// Where the application under test reads one key of a port table.
