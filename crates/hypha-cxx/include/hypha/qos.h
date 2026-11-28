@@ -20,6 +20,12 @@
 ///
 /// A type without a specialisation has the policy `hypha::defaultQos`. `/clock` and
 /// `/clock_progress` have fixed limits: a policy declared on one of them is ignored.
+///
+/// A large message, an image or a point cloud, takes `imageQos` or `cloudQos` as the option of
+/// its port on both ends (`Output<sensor_msgs::Image> image{*this, "image", hypha::imageQos,
+/// maxPayloadDynamic(bound)}`): the default policy would reserve 649 slots of the bound. The
+/// bound is `hypha::serializedSize`, the pool it reserves `hypha topic pool` (docs/cpp-api.md
+/// section 7).
 
 #include "hypha/hypha_ffi.h"
 
@@ -74,6 +80,18 @@ inline constexpr Qos tfQos{.name = "tf", .publishers = 32, .subscribers = 32, .m
 inline constexpr Qos reportQos{
     .name = "report", .publishers = 2, .subscribers = 2, .maxDepth = 1, .initialPayload = 1024
 };
+
+/// @brief The policy of a large message with a queue of a frame or two, an image, or an
+///        occupancy grid: one publisher, two subscribers, depth 2. With the 3 observer slots
+///        a publisher's pool holds (2 + 3) x (2 + 2) + 1 + 2 loans = 23 messages. It is not
+///        the policy of any type: the port names it on both ends, so two cameras of the
+///        application may have one each. A topic of this policy refuses a third subscriber;
+///        an application with more readers declares a policy of its own.
+inline constexpr Qos imageQos{.name = "image", .publishers = 1, .subscribers = 2, .maxDepth = 2};
+
+/// @brief The policy of a point cloud: as `imageQos` with depth 3, so a pool holds
+///        (2 + 3) x (3 + 2) + 1 + 2 loans = 28 messages.
+inline constexpr Qos cloudQos{.name = "cloud", .publishers = 1, .subscribers = 2, .maxDepth = 3};
 
 /// @brief The policy of the message type @p M; the application specialises it.
 template <typename M>

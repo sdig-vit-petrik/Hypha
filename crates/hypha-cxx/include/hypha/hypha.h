@@ -22,6 +22,7 @@
 #include "hypha/config.h"
 #include "hypha/cycle_node.h"
 #include "hypha/introspection.h"
+#include "hypha/message_size.h"
 #include "hypha/message_stamp.h"
 #include "hypha/metrics.h"
 #include "hypha/node.h"

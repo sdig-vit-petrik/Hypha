@@ -667,6 +667,15 @@ its largest message with `maxPayloadDynamic(bytes)` (on `advertise` or an `Outpu
 its policy does (`Qos::maxPayloadDynamic`), which bounds the publisher's shared memory.
 A fixed-size message is bounded to its own size whatever is named.
 
+**An image or a point cloud** is megabytes, and the pool of its publisher holds a queue of it for
+every subscriber the policy admits, so a ROS node that published one with `queue_size` 1 needs
+two things the port names: a policy (`hypha::imageQos` or `hypha::cloudQos` as the option of the
+port on both ends, or one of your own) and the bound,
+`hypha::maxPayloadDynamic(hypha::serializedSize(head, maxPoints * pointStep))`; a cloud whose
+point count varies names the count it accepts, and a larger one is `TooLarge`. The `default`
+policy would reserve 649 slots of that bound, over a gigabyte for a 1.7 MB cloud. The pool formula, the
+worked numbers and `hypha topic pool` are in cpp-api.md §7.1.
+
 **`Header` in a new message type:** a ported ROS type keeps its `Header`; removing it
 changes the definition and its MD5. A message type written for hypha carries a `Header`
 only when it needs the time the data describes (a measurement time for TF lookup,

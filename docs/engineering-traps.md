@@ -214,6 +214,11 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   Budget for the whole pool: with subscribers that drain at different rates every slot was
   written, so a large-message topic needs the whole pool resident. Give a variable-size
   topic of known size a byte limit on its endpoints. Growable publishers are not checked.
+  A bounded publisher whose full pool takes more than half of the whole `/dev/shm` logs a
+  warning too, though it fits what is free: the topics of a domain share it. A bounded
+  publisher whose pool is a megabyte or more logs it at start (`publisher pool: <n> samples
+  of <b> bytes, <t> bytes`), and `hypha topic pool` gives the number before a node exists.
+  The rule and worked numbers for an image or a cloud are in `docs/cpp-api.md` §7.1.
 - **A sample's slice is not its message.** Since `IOX7` the message is the first
   `payload_len` bytes of the iceoryx2 slice; the slice keeps the size the publisher loaned,
   so a shrunk loan (`hypha_loan_shrink`) leaves bytes past the message (zeros, never an
