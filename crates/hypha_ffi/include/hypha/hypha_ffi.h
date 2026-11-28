@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 12
+#define HYPHA_ABI_REVISION 13
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -225,6 +225,13 @@ enum HyphaCycleInputMode
   HYPHA_CYCLE_INPUT_MODE_LATEST = 0,
   // Consume retained samples with an independent cursor.
   HYPHA_CYCLE_INPUT_MODE_QUEUED = 1,
+  // Queued, newest only: a step examines the newest pending sample and drops the older
+  // ones as work-limit drops. A trigger in this mode steps on the newest of the samples
+  // due together and passes the older ones, counted the same way: on host time every
+  // sample pending in a turn, under simulated time the samples of one stamp
+  // (execution-model.md §6.6). `max_samples_per_iteration` is the queue the binding
+  // keeps between steps.
+  HYPHA_CYCLE_INPUT_MODE_NEWEST = 2,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -418,7 +425,8 @@ typedef struct HyphaCycleBindingReport {
   // Queued retained samples still pending through the high-water mark. Zero for a
   // latest binding.
   size_t backlog_samples;
-  // The oldest excess pending samples discarded in this step.
+  // The oldest excess pending samples discarded in this step, and the samples a
+  // newest-only trigger passed for a newer one since its last step.
   uint64_t work_limit_drops;
   // Samples overwritten before this binding examined them since last capture.
   uint64_t lost_since_capture;
@@ -437,7 +445,8 @@ typedef struct HyphaCycleBindingHealth {
   // Cumulative history losses and, for a queued binding, transport sequence gaps; a
   // latest binding counts neither.
   uint64_t overrun_total;
-  // Cumulative samples intentionally discarded by queued work policies.
+  // Cumulative samples intentionally discarded by queued work policies, newest-only
+  // passes included.
   uint64_t work_limit_drops_total;
   // Cumulative age rejections.
   uint64_t age_rejections_total;
@@ -634,7 +643,9 @@ typedef struct HyphaCycleBindingOptions {
   // `HYPHA_STATUS_INVALID_ARGUMENT`.
   uint32_t mode;
   // Queued samples examined per iteration. Must be nonzero for queued mode. A queued
-  // binding with more pending samples than its share drops the oldest of them.
+  // binding with more pending samples than its share drops the oldest of them. In
+  // newest mode, nonzero too: the samples the binding keeps pending between steps; a
+  // step examines one.
   size_t max_samples_per_iteration;
   // Nonzero excludes the binding from node health. A disabled input is never judged.
   uint8_t optional;

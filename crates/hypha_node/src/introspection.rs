@@ -18,10 +18,14 @@ pub(crate) use hypha_core::introspection::{IntrospectionRegistry, IntrospectionR
 
 /// The capture mode of an input binding, from its ABI options.
 pub(crate) fn input_mode(options: &HyphaCycleBindingOptions) -> InputMode {
-    if options.mode == HyphaCycleInputMode::Queued as u32 {
-        return InputMode::Queued { max_samples_per_iteration: options.max_samples_per_iteration };
+    match HyphaCycleInputMode::try_from(options.mode) {
+        Ok(HyphaCycleInputMode::Queued) => {
+            InputMode::Queued { max_samples_per_iteration: options.max_samples_per_iteration }
+        }
+        // A newest-only input examines one sample per step.
+        Ok(HyphaCycleInputMode::Newest) => InputMode::Queued { max_samples_per_iteration: 1 },
+        Ok(HyphaCycleInputMode::Latest) | Err(()) => InputMode::Latest,
     }
-    InputMode::Latest
 }
 
 /// The failure handling of a cycle output, from its ABI tag.

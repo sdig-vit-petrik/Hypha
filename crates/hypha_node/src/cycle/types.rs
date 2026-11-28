@@ -63,6 +63,13 @@ pub enum HyphaCycleInputMode {
     Latest = 0,
     /// Consume retained samples with an independent cursor.
     Queued = 1,
+    /// Queued, newest only: a step examines the newest pending sample and drops the older
+    /// ones as work-limit drops. A trigger in this mode steps on the newest of the samples
+    /// due together and passes the older ones, counted the same way: on host time every
+    /// sample pending in a turn, under simulated time the samples of one stamp
+    /// (execution-model.md §6.6). `max_samples_per_iteration` is the queue the binding
+    /// keeps between steps.
+    Newest = 2,
 }
 
 impl TryFrom<u32> for HyphaCycleInputMode {
@@ -72,6 +79,7 @@ impl TryFrom<u32> for HyphaCycleInputMode {
         match value {
             0 => Ok(Self::Latest),
             1 => Ok(Self::Queued),
+            2 => Ok(Self::Newest),
             _ => Err(()),
         }
     }
@@ -111,7 +119,9 @@ pub struct HyphaCycleBindingOptions {
     /// `HYPHA_STATUS_INVALID_ARGUMENT`.
     pub mode: u32,
     /// Queued samples examined per iteration. Must be nonzero for queued mode. A queued
-    /// binding with more pending samples than its share drops the oldest of them.
+    /// binding with more pending samples than its share drops the oldest of them. In
+    /// newest mode, nonzero too: the samples the binding keeps pending between steps; a
+    /// step examines one.
     pub max_samples_per_iteration: usize,
     /// Nonzero excludes the binding from node health. A disabled input is never judged.
     pub optional: u8,
@@ -188,7 +198,8 @@ pub struct HyphaCycleBindingReport {
     /// Queued retained samples still pending through the high-water mark. Zero for a
     /// latest binding.
     pub backlog_samples: usize,
-    /// The oldest excess pending samples discarded in this step.
+    /// The oldest excess pending samples discarded in this step, and the samples a
+    /// newest-only trigger passed for a newer one since its last step.
     pub work_limit_drops: u64,
     /// Samples overwritten before this binding examined them since last capture.
     pub lost_since_capture: u64,
@@ -243,7 +254,8 @@ pub struct HyphaCycleBindingHealth {
     /// Cumulative history losses and, for a queued binding, transport sequence gaps; a
     /// latest binding counts neither.
     pub overrun_total: u64,
-    /// Cumulative samples intentionally discarded by queued work policies.
+    /// Cumulative samples intentionally discarded by queued work policies, newest-only
+    /// passes included.
     pub work_limit_drops_total: u64,
     /// Cumulative age rejections.
     pub age_rejections_total: u64,

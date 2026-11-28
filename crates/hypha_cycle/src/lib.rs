@@ -21,7 +21,7 @@ mod trigger;
 
 pub use capture::{
     BindingCapture, BindingCounters, BindingOptions, CaptureClock, CaptureMode, HeldReport,
-    InputVerdict, QueueOverflowPolicy, held_report, judge_value,
+    InputVerdict, Passed, QueueOverflowPolicy, held_report, judge_value,
 };
 pub use history::{CycleHistory, HistorySample, HistoryStats, SampleOrigin};
 pub use judgement::{JudgementEvent, judgement_line};
