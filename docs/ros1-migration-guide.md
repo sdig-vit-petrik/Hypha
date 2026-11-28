@@ -659,8 +659,18 @@ included, uses the same `HYPHA_DOMAIN`.
 | Hand-written message age check (decides whether an input may be used) | The port's `silence_ms`, verdict `Stale`. A use of the source time as data stays logic |
 | `ros::Time::now()` for a stamp | In a cycle step `time.stamp`; elsewhere `hypha::toRosTime(hypha::now())`. See cpp-api.md §3 |
 | `header.seq` | The publisher writes it |
-| `ros::ServiceServer` | An `Arrivals<Srv::Request>` port on a request topic and an `Output<Srv::Response>` on a reply topic, matched by an identifier (cpp-api.md §8) |
-| `ros::ServiceClient::call` | An `Output` of requests and an `Arrivals` of replies; the step tracks the pending request and its own deadline (cpp-api.md §8) |
+| `nh.advertiseService` in a plain or application node | `auto s = node.advertiseService<Srv>("<port>", [](hypha::Request<Srv>& r) { r.reply({...}); });` and `[ports.servers.<port>] service = "~/<name>"` (cpp-api.md §8.1) |
+| a service callback `return false` | `r.refuse()` or `r.refuse("why")` |
+| a service callback that works over time, or on another thread's device | `r.defer()`, then answer the `hypha::Deferred<Srv>` from the thread that finishes it; one destroyed unanswered refuses |
+| `nh.serviceClient<Srv>(name)` in a plain or application node | `node.serviceClient<Srv>("<port>")`; the timeout is the policy's (1 s), or `timeout_ms` in `[ports.clients.<port>]` |
+| `client.call(srv)` in a callback | `client.call(srv.request, onResult)`: `onResult` runs at a later turn with a `CallResult`. A blocking call on the run thread is refused (`InvalidState`) |
+| `client.call(srv)` in a worker thread, a test or a tool | `node.serviceClient<Srv>(name, hypha::blocking)`, then `callAndWait(request)` |
+| `ros::service::waitForExistence(name, t)`, `client.waitForExistence(t)` | In a node: nothing; a call waits for its server until its timeout. In a test or a tool: `blockingClient.waitForServer(t)` |
+| `client.exists()` | `client.exists()` (`ready()`) |
+| `serviceClient(name, true)` (persistent) | The default: every client stays connected |
+| a service whose response is a map, a path or a cloud | The data on a latched topic; the service carries a small request and its acknowledgement (cpp-api.md §8.4) |
+| `std_srvs/*` | Shipped by the SDK: `Empty`, `Trigger`, `SetBool` |
+| `ros::ServiceServer` or `ros::ServiceClient::call` in a `CycleNode` | Not yet (stage 1c): an `Arrivals<Srv::Request>` port on a request topic and an `Output<Srv::Response>` on a reply topic, matched by an identifier, the step tracking its own deadline (cpp-api.md §8.4) |
 | `ROS_INFO("%f", x)` | `HYPHA_LOG_INFO("{}", x)`: a `std::format` string |
 | `ROS_WARN_THROTTLE(1, ...)` | `HYPHA_LOG_WARN_THROTTLE(1.0, ...)` |
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(condition, false, ...)`: writes when the condition becomes true |
@@ -739,8 +749,8 @@ A step stamps its messages with `time.stamp`. Outside a step,
 `hypha::toRosTime(hypha::now())` converts the node's time; it throws only for a time
 no clock gives (negative, or after 2106).
 
-A service name does not resolve from the ports tables. Read it with
-`hypha::config().required<std::string>("<key>")` and pass the value.
+A service name resolves from the ports tables: `[ports.servers.<port>]` and
+`[ports.clients.<port>]`, key `service` (cpp-api.md §8).
 
 ---
 
@@ -861,8 +871,10 @@ hypha has no equivalent for these. Stop and ask the user before you continue:
 - `actionlib`.
 - `nodelet` and in-process zero-copy between nodes. hypha nodes are processes;
   shared memory gives zero-copy between them.
-- A service whose caller blocks on the reply. hypha has no RPC: the call becomes a
-  request topic and a reply topic, and the caller a state over steps.
+- A service called from inside a cycle step, or one whose caller blocks on the reply
+  inside a callback. A plain node calls with `call(request, onResult)`; a cycle has no
+  service port yet (stage 1c), so the call becomes a request topic and a reply topic,
+  and the caller a state over steps.
 - Missing or stale input with no rule in the ROS node. Ask which output is
   safe.
 - A per-message latency requirement that a triggered step does not meet on the
@@ -885,8 +897,8 @@ Report these:
 - **Blocker:** the node cannot be migrated without the missing item. Example:
   a lookup that must wait for its transform.
 - **Gap:** the migration is possible, but a hypha feature would make it
-  smaller or safer. Example: a service name
-  that does not resolve from the ports tables.
+  smaller or safer. Example: a service called from a cycle step, which needs the
+  request and reply topics until the cycle ports exist.
 - **Defect:** hypha does not do what its documentation says. Example: a
   verdict, a status code or a rate that differs from the documented one.
 - **Documentation fault:** a page in `docs/` that describes an API that does

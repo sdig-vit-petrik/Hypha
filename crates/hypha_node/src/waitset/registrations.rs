@@ -106,6 +106,11 @@ pub(crate) enum Request {
     TriggerWake {
         listener: Box<hypha_iceoryx2::Iox2Listener>,
     },
+    /// A server or a client, woken by `listener`.
+    Service {
+        listener: Box<hypha_iceoryx2::Iox2Listener>,
+        target: super::ServiceTarget,
+    },
 }
 
 impl Request {
@@ -328,6 +333,10 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
         Request::TriggerWake { listener } => {
             let id = set.native_attach(vec![*listener], Trigger::Event)?;
             Ok((id, Target::TriggerWake))
+        }
+        Request::Service { listener, target } => {
+            let id = set.native_attach(vec![*listener], Trigger::Event)?;
+            Ok((id, Target::Service(target)))
         }
     }
 }

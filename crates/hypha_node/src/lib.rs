@@ -32,6 +32,7 @@ pub mod safe;
 pub mod sample;
 pub mod schema;
 pub mod sdk;
+pub mod service;
 pub mod status;
 pub mod subscriber;
 mod topic_streams;
