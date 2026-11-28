@@ -119,13 +119,13 @@ class StepHarness final
     /// @throws ParameterError when `silence_ms` is missing, or is neither 0 (no limit) nor
     ///         a whole number of milliseconds from 1 to the limitMax() of the port.
     template <typename M>
-    void deliver(Latest<M>& port, M value, Time sentAt)
+    void deliver(Latest<M>& port, detail::MessageOf<M> value, Time sentAt)
     {
         StepHarness::requireEnabled(port, "deliver()");
         const int64_t silenceNanos = StepHarness::silenceOf(port);
         this->forget(port);
         this->accept(port, 1);
-        port.candidate_ = std::move(value);
+        port.candidate_ = detail::sampleOf<M>(std::move(value));
         port.supervision_.silenceNanos_ = silenceNanos;
         this->deliveries_.push_back(
             Delivery{&port, sentAt, silenceNanos, true, &StepHarness::judgeDelivery<M>}
@@ -135,7 +135,7 @@ class StepHarness final
     /// @brief The port receives @p samples, oldest first, for the next step only; the newest
     ///        was sent at @p newestSentAt. The refusals are those of deliver(Latest&).
     template <typename M>
-    void deliver(Arrivals<M>& port, std::vector<M> samples, Time newestSentAt)
+    void deliver(Arrivals<M>& port, std::vector<detail::MessageOf<M>> samples, Time newestSentAt)
     {
         StepHarness::requireEnabled(port, "deliver()");
         const int64_t silenceNanos = StepHarness::silenceOf(port);
@@ -143,7 +143,7 @@ class StepHarness final
         this->accept(port, samples.size());
         port.sampleCount_ = samples.size();
         port.stamps_.assign(samples.size(), detail::SampleStamp{});
-        port.samples_ = std::move(samples);
+        port.samples_ = detail::samplesOf<M>(std::move(samples));
         port.supervision_.silenceNanos_ = silenceNanos;
         this->deliverOnce(port);
         this->deliveries_.push_back(
@@ -154,12 +154,12 @@ class StepHarness final
     /// @brief The port holds @p value: usable, and fresh in the next step only.
     /// @throws std::logic_error when the port is disabled.
     template <typename M>
-    void set(Latest<M>& port, M value)
+    void set(Latest<M>& port, detail::MessageOf<M> value)
     {
         StepHarness::requireEnabled(port, "set()");
         this->forget(port);
         this->accept(port, 1);
-        port.held_ = std::move(value);
+        port.held_ = detail::sampleOf<M>(std::move(value));
         port.heldStamp_ = detail::SampleStamp{};
         port.hasHeld_ = true;
         port.verdict_ = InputVerdict::Usable;
@@ -187,14 +187,14 @@ class StepHarness final
     /// @brief The port delivers @p samples, oldest first, to the next step only.
     /// @throws std::logic_error when the port is disabled.
     template <typename M>
-    void set(Arrivals<M>& port, std::vector<M> samples)
+    void set(Arrivals<M>& port, std::vector<detail::MessageOf<M>> samples)
     {
         StepHarness::requireEnabled(port, "set()");
         this->forget(port);
         this->accept(port, samples.size());
         port.sampleCount_ = samples.size();
         port.stamps_.assign(samples.size(), detail::SampleStamp{});
-        port.samples_ = std::move(samples);
+        port.samples_ = detail::samplesOf<M>(std::move(samples));
         port.verdict_ = InputVerdict::Usable;
         StepHarness::judge(port, HYPHA_CYCLE_VERDICT_USABLE, false);
         this->setOnce(port);

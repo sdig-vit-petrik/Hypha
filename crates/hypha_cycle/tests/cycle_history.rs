@@ -57,11 +57,11 @@ fn queued_capture_keeps_backlog_and_consumes_only_examined_samples() {
     assert_eq!(binding.samples.len(), 2);
     assert_eq!(binding.backlog_samples, 3);
     assert_eq!(binding.verdict, InputVerdict::Usable);
-    assert_eq!(binding.samples[0].payload.as_ref(), &[0]);
+    assert_eq!(binding.samples[0].payload.to_vec(), &[0]);
 
     binding.capture(&history, queued(2), 10);
     assert_eq!(binding.samples.len(), 2);
-    assert_eq!(binding.samples[0].payload.as_ref(), &[2]);
+    assert_eq!(binding.samples[0].payload.to_vec(), &[2]);
     assert_eq!(binding.backlog_samples, 1);
 }
 
@@ -142,10 +142,10 @@ fn shared_history_is_unlocked_during_step_and_both_bindings_capture() {
         |captures, _| {
             assert!(history.try_lock().is_ok(), "history guard must be released before step");
             assert_eq!(captures[0].samples.len(), 1);
-            assert_eq!(captures[0].samples[0].payload.as_ref(), &[2]);
+            assert_eq!(captures[0].samples[0].payload.to_vec(), &[2]);
             assert_eq!(captures[1].samples.len(), 2);
-            assert_eq!(captures[1].samples[0].payload.as_ref(), &[1]);
-            assert_eq!(captures[1].samples[1].payload.as_ref(), &[2]);
+            assert_eq!(captures[1].samples[0].payload.to_vec(), &[1]);
+            assert_eq!(captures[1].samples[1].payload.to_vec(), &[2]);
             Ok(Vec::new())
         },
         |_, _| Ok(()),
@@ -206,7 +206,7 @@ fn production_driver_injects_time_and_dispatches_outputs_in_send_order() {
             assert_eq!(time.callback_start_nanos, 110);
             assert_eq!(time.capture_steady_nanos, 120);
             assert!(!time.has_elapsed);
-            assert_eq!(bindings[0].samples[0].payload.as_ref(), &[42]);
+            assert_eq!(bindings[0].samples[0].payload.to_vec(), &[42]);
             Ok(vec![(0, vec![1]), (1, vec![2])])
         },
         |index, payload| {

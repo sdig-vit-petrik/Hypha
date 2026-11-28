@@ -33,6 +33,7 @@
 #include "hypha/service_client.h"
 #include "hypha/status.h"
 #include "hypha/subscriber.h"
+#include "hypha/view.h"
 #include "hypha/worker.h"
 #include "hypha_base/clock.h"
 #include "hypha_base/short_namespace.h"

@@ -56,8 +56,12 @@ fn step(runtime: &mut CycleRuntime, time: CycleTime) -> Seen {
             |captures, _| {
                 let capture = &captures[0];
                 seen = Some(Seen {
-                    payloads: capture.samples.iter().map(|sample| sample.payload[0]).collect(),
-                    held: capture.held().map(|sample| sample.payload[0]),
+                    payloads: capture
+                        .samples
+                        .iter()
+                        .map(|sample| sample.payload.with_bytes(|bytes| bytes[0]))
+                        .collect(),
+                    held: capture.held().map(|sample| sample.payload.with_bytes(|bytes| bytes[0])),
                     verdict: capture.verdict,
                     stale: capture.stale(),
                 });

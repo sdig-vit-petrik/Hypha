@@ -66,7 +66,7 @@ if [[ -n "$long_headers" ]]; then
 fi
 
 # C++ public headers: no default lambda capture and no decltype(auto) (named state).
-sdk_roots=(crates/hypha-cxx/include/hypha crates/hypha-cxx/base/include crates/hypha-cxx/log/include)
+sdk_roots=(crates/hypha-cxx/include/hypha crates/hypha-cxx/base/include crates/hypha-cxx/log/include crates/hypha-cxx/companions/include)
 if grep -rnE '\[[&=][[:space:]]*[],]' "${sdk_roots[@]}"; then
   echo "C++ headers with a default lambda capture ([&] or [=]): name each capture" >&2
   exit 1

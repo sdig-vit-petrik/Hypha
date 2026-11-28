@@ -26,6 +26,7 @@ pub mod loan;
 pub mod log;
 pub mod metrics;
 pub mod node;
+pub mod node_checks;
 pub mod node_discovery;
 pub mod node_health;
 pub mod node_progress;

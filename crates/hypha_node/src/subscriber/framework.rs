@@ -59,8 +59,11 @@ fn create_framework_subscriber(
     // A framework input declares no policy: it adopts the topic's service.
     let spec = TopicSpec::new(topic).keeping(depth).with_type(data_type).with_md5(md5);
     let port = transport.subscribe(&spec).map_err(Error::from)?;
-    let budget =
-        Arc::new(LoanBudget { budget: 1, held: AtomicUsize::new(0), refused: AtomicU64::new(0) });
+    let budget = Arc::new(LoanBudget {
+        budget: AtomicUsize::new(1),
+        held: AtomicUsize::new(0),
+        refused: AtomicU64::new(0),
+    });
     Ok(Box::new(HyphaSubscriber {
         owner_node: 0,
         topic: topic.to_owned(),

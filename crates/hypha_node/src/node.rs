@@ -52,6 +52,8 @@ pub struct HyphaNode {
     pub(crate) slow_callback_ms: Option<u32>,
     /// Execution counters every `WaitSet` on this node adds to.
     pub(crate) health: std::sync::Arc<crate::node_health::ExecutionHealth>,
+    /// The checks the application reports about itself, for `~/state`.
+    pub(crate) checks: std::sync::Mutex<crate::node_checks::NodeChecks>,
     /// The rows of the node introspection. Endpoints keep a handle to it.
     pub(crate) introspection: std::sync::Arc<crate::introspection::IntrospectionRegistry>,
     /// Set once by [`node_destroy`]: the node has left the bus. Every publisher of the node
@@ -402,6 +404,7 @@ pub fn node_create(
         schema: crate::schema::SchemaState::default(),
         slow_callback_ms,
         health: std::sync::Arc::default(),
+        checks: std::sync::Mutex::default(),
         introspection,
         left: std::sync::Arc::default(),
         topic_streams: crate::topic_streams::Registry::default(),

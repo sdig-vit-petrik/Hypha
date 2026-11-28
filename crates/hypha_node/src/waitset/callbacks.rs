@@ -8,22 +8,30 @@ use super::{
 };
 
 /// Deliver one validated sample. `received_nanos` is the host time validation
-/// read for it, or zero when validation read no clock.
+/// read for it, or zero when validation read no clock. A C callback may keep the sample
+/// within `budget` (`hypha_delivery_retain`); otherwise it is released on return.
 pub(super) fn invoke_data(
     health: &ExecutionHealth,
     callback: &mut DataCallback,
-    sample: &hypha_iceoryx2::Iox2Sample,
+    sample: hypha_iceoryx2::Iox2Sample,
     received_nanos: u64,
     set: &HyphaWaitSet,
+    budget: &std::sync::Arc<crate::subscriber::loan_budget::LoanBudget>,
 ) -> HyphaCallbackResult {
-    let view = sample_delivery(sample, received_nanos);
     let answer = match callback {
         DataCallback::Foreign(None) => return HyphaCallbackResult::continue_run(),
         DataCallback::Foreign(Some(foreign)) => {
-            let delivery = HyphaDelivery::from_view(&view);
+            // The C view copies the addresses: the payload and the topic stay where they
+            // are when the holder hands the sample to the callback.
+            let mut delivery = HyphaDelivery::from_view(&sample_delivery(&sample, received_nanos));
+            let holder =
+                crate::sample::HyphaDeliveryHolder::new(sample, std::sync::Arc::clone(budget));
+            delivery.holder = &raw const holder;
             foreign.deliver(&delivery)
         }
-        DataCallback::Native(handler) => handler.deliver(&view, set).as_result(),
+        DataCallback::Native(handler) => {
+            handler.deliver(&sample_delivery(&sample, received_nanos), set).as_result()
+        }
     };
     health.recorded(answer)
 }
@@ -102,6 +110,7 @@ impl HyphaDelivery {
             payload_len: delivery.payload.len(),
             transport_age_nanos: delivery.transport_age_nanos,
             identity: HyphaSampleIdentity::from_view(&delivery.identity),
+            holder: std::ptr::null(),
         }
     }
 }

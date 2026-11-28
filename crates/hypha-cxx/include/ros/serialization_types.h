@@ -6,7 +6,9 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace ros::serialization {
@@ -274,6 +276,38 @@ struct Serializer<std::array<T, N>>
             }
             return len;
         }
+    }
+};
+
+/// The bytes of a view's array (hypha::View), read in place: the span points into the
+/// buffer being read, which must outlive it. Only one-byte elements, whose bytes need no
+/// alignment.
+template <typename T>
+    requires(sizeof(T) == 1 && std::is_arithmetic_v<T>)
+struct Serializer<std::span<const T>>
+{
+    template <typename Stream>
+    inline static void write(Stream& stream, const std::span<const T>& v)
+    {
+        const uint32_t size = static_cast<uint32_t>(v.size());
+        stream.write(&size, 4);
+        if (size > 0U) {
+            stream.write(v.data(), size);
+        }
+    }
+
+    inline static void read(IStream& stream, std::span<const T>& v)
+    {
+        uint32_t size = 0;
+        stream.read(&size, 4);
+        requireRemaining(stream, size);
+        v = std::span<const T>(reinterpret_cast<const T*>(stream.getData()), size);
+        stream.skip(size);
+    }
+
+    inline static uint32_t serializedLength(const std::span<const T>& v)
+    {
+        return 4U + static_cast<uint32_t>(v.size());
     }
 };
 

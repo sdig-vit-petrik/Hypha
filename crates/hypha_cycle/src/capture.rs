@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 mod clear;
 mod clock;
+mod report;
+pub use report::{HeldReport, held_report, judge_value};
 mod evictions;
 use clear::{Cleared, LastTake};
 pub use clock::CaptureClock;
@@ -387,6 +389,8 @@ impl BindingCapture {
             return false;
         };
         self.cursor = sample.sequence.wrapping_add(1);
+        // This binding reads the sample no more: bytes read in place may go back.
+        sample.payload.mark_taken();
         let total = match why {
             Passed::Late => &mut self.counters.age_rejections_total,
             Passed::Superseded => {
@@ -679,7 +683,14 @@ impl BindingCapture {
             let Some(drop_through) = drop_through else {
                 return;
             };
-            self.cursor = drop_through.sequence.wrapping_add(1);
+            let dropped_end = drop_through.sequence.wrapping_add(1);
+            for skipped in history.samples().range(start..) {
+                if !before(skipped.sequence, dropped_end) {
+                    break;
+                }
+                skipped.payload.mark_taken();
+            }
+            self.cursor = dropped_end;
         }
 
         let mut examined = 0usize;
@@ -700,6 +711,8 @@ impl BindingCapture {
             }
             examined = examined.saturating_add(1);
             self.cursor = sample.sequence.wrapping_add(1);
+            // This binding reads the sample no more: bytes read in place may go back.
+            sample.payload.mark_taken();
             // A sample a reader rejected is neither delivered nor an age rejection.
             if history.is_rejected(sample.sequence) {
                 continue;
@@ -765,41 +778,6 @@ enum Examine {
     WithinLimit,
     /// Every one: the sample of a trigger step, which the schedule judged.
     Every,
-}
-
-/// The facts of one binding's held report.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HeldReport {
-    /// Samples the source had accepted at the capture. Wraps.
-    pub received_total: u64,
-    /// Usable samples that became the held sample. Wraps.
-    pub delivered_total: u64,
-    /// Sequence of the held sample, when one exists.
-    pub held_sequence: Option<u64>,
-}
-
-/// The held report of `capture`.
-#[must_use]
-pub fn held_report(capture: &BindingCapture) -> HeldReport {
-    HeldReport {
-        received_total: capture.received_total(),
-        delivered_total: capture.delivered_total(),
-        held_sequence: capture.held().map(|sample| sample.sequence),
-    }
-}
-
-/// Judge the newest value of one input at `at_nanos` on the host monotonic
-/// clock. A zero silence limit keeps every earlier value usable.
-#[must_use]
-pub fn judge_value(silence_nanos: u64, sent_nanos: Option<u64>, at_nanos: u64) -> InputVerdict {
-    let Some(sent) = sent_nanos else {
-        return InputVerdict::NeverArrived;
-    };
-    if value_usable_within(silence_nanos, sent, at_nanos) {
-        InputVerdict::Usable
-    } else {
-        InputVerdict::Stale
-    }
 }
 
 fn before(sequence: u64, high_water: u64) -> bool {

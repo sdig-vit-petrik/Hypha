@@ -37,6 +37,8 @@ target_include_directories(hypha INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/log/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/base/include>
+  # Tier-2 robotics companions: opt-in headers over the SDK, with no C ABI of their own.
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/companions/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_compile_features(hypha INTERFACE cxx_std_23)
@@ -118,6 +120,7 @@ endif()
 install(DIRECTORY "${HYPHA_COMMON_MSGS_INCLUDE_DIR}/" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY log/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY base/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY companions/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 # The library does not exist at configure time, so it is resolved at install time:
 # install(FILES) of a symlink would install the symlink, not the library.
@@ -331,11 +334,21 @@ if(HYPHA_BUILD_TESTS)
   set_tests_properties(typed_loan_of_a_message_without_an_array_is_refused PROPERTIES
     PASS_REGULAR_EXPRESSION "this message has no single top-level array of numbers to write in place")
 
+  # A mutable iterator's field passed to printf must stop the build, not print garbage.
+  add_library(unaligned_ref_not_varargs OBJECT EXCLUDE_FROM_ALL companions/test/unaligned_ref_not_varargs.cpp)
+  target_link_libraries(unaligned_ref_not_varargs PRIVATE hypha)
+  add_test(NAME unaligned_ref_through_printf_is_refused
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target unaligned_ref_not_varargs)
+  set_tests_properties(unaligned_ref_through_printf_is_refused PROPERTIES
+    PASS_REGULAR_EXPRESSION "non-trivial|non-trivially")
+
   add_executable(test_hypha
     test/test_main.cpp
     test/wall_clock_listener.cpp
     test/test_publisher.cpp
     test/test_typed_loan.cpp
+    test/test_typed_view.cpp
+    test/test_cycle_view.cpp
     test/test_subscriber.cpp
     test/test_services.cpp
     test/test_cycle_services.cpp
@@ -399,11 +412,14 @@ if(HYPHA_BUILD_TESTS)
     test/test_step_harness.cpp
     test/test_step_harness_services.cpp
     test/test_sequence.cpp
+    companions/test/test_diagnostic_updater.cpp
+    companions/test/test_diagnostic_updater_state.cpp
     test/test_raw_endpoints.cpp
     test/test_qos.cpp
     test/test_topic_overloading.cpp
     test/test_sensor_msgs_companions.cpp
     test/test_camera_info.cpp
+    companions/test/test_point_cloud2_unaligned.cpp
     test/test_sensor_msgs_ros2_names.cpp
   )
   # The services of test_services.cpp: the camera's typed setter, and a bounded echo; and
@@ -415,6 +431,8 @@ if(HYPHA_BUILD_TESTS)
     SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/srv/hypha_test_srvs"
     OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_generated/include")
   target_link_libraries(test_hypha PRIVATE camera_control_msgs hypha_test_srvs)
+  # The companions' tests share the fixtures of test/ (test_types.h).
+  target_include_directories(test_hypha PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/test")
   # The camera proof from the shell calls the setters with `hypha service call`.
   if(HYPHA_BUILD_APPS)
     target_compile_definitions(test_hypha PRIVATE
@@ -555,12 +573,15 @@ if(HYPHA_BUILD_TESTS)
   endforeach()
 endif()
 
-# The typed loan's tests under AddressSanitizer and UBSan, on request: a moved-from loan,
-# a loan that outlives its publisher or its node, a span past the publish.
+# The typed loan's and the views' tests under AddressSanitizer and UBSan, on request: a
+# moved-from loan, a loan that outlives its publisher, its node or its step, a span past
+# the publish, a view kept past its callback or its step, a cloud iterator over a field at an
+# odd offset.
 option(HYPHA_TYPED_LOAN_SANITIZE "Build test_typed_loan_sanitized with ASan and UBSan" OFF)
 if(HYPHA_BUILD_TESTS AND HYPHA_TYPED_LOAN_SANITIZE)
   add_executable(test_typed_loan_sanitized
-    test/test_main.cpp test/test_typed_loan.cpp test/test_typed_loan_contract.cpp)
+    test/test_main.cpp test/test_typed_loan.cpp test/test_typed_loan_contract.cpp
+    test/test_typed_view.cpp test/test_cycle_view.cpp companions/test/test_point_cloud2_unaligned.cpp)
   target_link_libraries(test_typed_loan_sanitized PRIVATE hypha GTest::gtest)
   target_compile_definitions(test_typed_loan_sanitized PRIVATE HYPHA_NO_LOGGING)
   target_compile_options(test_typed_loan_sanitized PRIVATE

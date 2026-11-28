@@ -17,9 +17,9 @@ pub(crate) use driver::DriverSetup;
 pub use driver::{cycle_expect_participant, cycle_set_clock_driver};
 pub use image::{
     EmissionView, HyphaCycleEmission, HyphaCycleImage, ImageView, emission_call, emission_commit,
-    emission_next_result, emission_requests, emission_reserve, emission_unread_results,
-    image_alive, image_binding, image_clear, image_held, image_reject_sample, image_sample,
-    image_set_ignored, with_service_emission,
+    emission_lend, emission_next_result, emission_requests, emission_reserve, emission_return,
+    emission_send, emission_unread_results, image_alive, image_binding, image_clear, image_held,
+    image_reject_sample, image_sample, image_set_ignored, with_service_emission,
 };
 pub use input_supervision::{
     HyphaInputSupervisionRequest, HyphaInputSupervisionResult, cycle_bind_input_supervision,
@@ -29,7 +29,9 @@ pub use registration::{
     cycle_bind_input, cycle_bind_output, cycle_commit, cycle_create, cycle_destroy,
     cycle_set_class_based, cycle_set_host_clock, cycle_set_trigger,
 };
-pub use source::{HyphaInputSource, input_source_create, input_source_destroy};
+pub use source::{
+    HyphaInputSource, input_source_create, input_source_destroy, input_source_in_place,
+};
 pub use transforms::{cycle_bind_transforms, image_lookup_transform};
 pub use types::{
     HYPHA_CYCLE_CLEAR_INPUT, HYPHA_CYCLE_CLEAR_TRANSFORMS, HYPHA_CYCLE_VERDICT_NEVER_ARRIVED,

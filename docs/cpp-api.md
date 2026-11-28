@@ -171,9 +171,17 @@ the messages, in the same directory, so a port includes them as it did:
 `typeAsPointFieldType`), `<sensor_msgs/image_encodings.h>` (the encoding names and
 `bitDepth`, `numChannels`, `isColor`, `isMono`, `isBayer`, `hasAlpha`) and
 `<sensor_msgs/distortion_models.h>`. They are the files of ROS 1 `ros/common_msgs` tag
-1.13.2 (BSD 3-Clause), unchanged, in `crates/hypha-cxx/upstream/common_msgs` with their
-licence headers and the SHA-256 of each in `vendor.toml`; `python3 -I
+1.13.2 (BSD 3-Clause), in `crates/hypha-cxx/upstream/common_msgs`, unchanged but for edits
+marked `hypha port:` (the iterators take a view, and read and write a field with
+`std::memcpy`, section 1.1), with their licence headers and the SHA-256 of each in `vendor.toml`; `python3 -I
 examples/autoware/tools/port.py verify` (run by `./check.sh`) checks them.
+`*it` and `it[i]` of a `PointCloud2ConstIterator<T>` give the value `T`; of a
+`PointCloud2Iterator<T>` a `hypha::UnalignedRef<T>` (`hypha/unaligned.h`), which converts to
+`T` and takes `=`, `+=`, `++` and the like, so `*it = 1.0F`, `float x = *it`, `it[1]`,
+`++it`, `it != it.end()` read as in ROS, at any alignment. What ROS allows and this does
+not: a `T&` or a `T*` of an element (`float& r = *it`, `&*it`), `std::max(*it, 1.0F)` on a
+mutable iterator (name the type: `std::max<float>`), and `printf("%f", *it)`, which does not compile (read it into a
+`float` first). `auto v = *it` on a mutable iterator is the reference, not a copy.
 `point_field_conversion.h` needs `<sensor_msgs/PointField.h>` (or `PointCloud2.h`) before
 it, as upstream does. Left out: `fill_image.h` and `point_cloud_conversion.h` (the second
 needs the deprecated `sensor_msgs/PointCloud`, which hypha does not ship). The SDK has no
@@ -414,6 +422,171 @@ while (auto item = queue.pop()) {               // the worker; ends at the node'
 - Reference: `hypha/handover.h`; the thread rules in
   [ros1-migration-guide.md](ros1-migration-guide.md#106-threads).
 
+### 2.7 Application status: `DiagnosticUpdater`
+
+`~/state` judges the inputs of a node. The conditions that only the application knows
+(the device is absent, the fix is lost, a rate is low) are named checks, written as in
+ROS's `diagnostic_updater`: a status task with a name, a level and a message. A node
+declares a check once, and the updater tells two readers. **`~/state`** gets one row for each
+check (`NodeState.checks`), the node's state follows it (below) and `hypha top` shows it.
+**`/diagnostics`** gets the same checks as one `diagnostic_msgs/DiagnosticArray`, which a ROS
+`diagnostic_aggregator` reads, when the updater is built over a sink. `hypha/diagnostic_updater.h`
+(the updater and its tasks), `hypha/diagnostic_status.h` (the status a task fills) and
+`hypha/diagnostic_functions.h` (rate and stamp checks) are not in `hypha/hypha.h`; include
+what the node uses. Why one mechanism and not two: [features.md](features.md) section 4,
+"Application status".
+
+The updater is a tier-2 companion (`crates/hypha-cxx/companions/`): it reports its rows
+through the public `hypha::reportChecks(owner, checks)` of `hypha/introspection.h`, which a
+driver may call itself without the updater. `owner` keys one reporter's rows (a second
+report replaces them, an empty one removes them); each `hypha::HealthCheck` has a name (1
+to 128 bytes), a level 0 to 3 (`OK`, `WARN`, `ERROR`, `STALE`) and a message. It returns
+`InvalidArgument` or `TooLarge` (over 64 checks in all) and then changes nothing.
+
+An application that has no aggregator to feed (most drivers) builds the updater without a
+sink and declares no `/diagnostics` port:
+
+```cpp
+#include <hypha/hypha.h>
+#include <hypha/diagnostic_updater.h>
+
+class ArenaCamera final : public hypha::ApplicationNode
+{
+  public:
+    ArenaCamera()
+    {
+        updater_.add("Device", this, &ArenaCamera::diagnoseDevice);
+    }
+
+    void setup(hypha::Node& node) override
+    {
+        // The timer is the period; its task runs on the run thread.
+        timer_ = node.timer(hypha::Duration::fromSeconds(1.0), [this] { updater_.forceUpdate(); });
+    }
+
+    void started(hypha::Node&) override
+    {
+        updater_.forceUpdate();  // the first row at once, not after a period
+        // ... start the worker that sets connected_ and noImage_
+    }
+
+  private:
+    // Reads what the worker publishes; never waits for the device.
+    void diagnoseDevice(hypha::DiagnosticStatusWrapper& status)
+    {
+        if (connected_) {
+            status.summary(diagnostic_msgs::DiagnosticStatus::OK, "camera connected");
+        } else {
+            status.summary(diagnostic_msgs::DiagnosticStatus::ERROR, "camera absent");
+        }
+        status.add("grabs without image", noImage_.load());
+    }
+
+    hypha::DiagnosticUpdater updater_;
+    hypha::Timer             timer_;
+    std::atomic<bool>        connected_{false};
+    std::atomic<uint64_t>    noImage_{0};
+};
+```
+
+With the camera absent `~/state` says `DEGRADED` with the row `Device: ERROR camera absent`
+and `hypha top` shows it under the node; once the worker sets `connected_` the next update
+says `OK` and the node is usable again.
+
+With a sink (an `Output<DiagnosticArray>` or a `Publisher<DiagnosticArray>`), the same
+tasks also go out on `/diagnostics`:
+
+```cpp
+#include <hypha/hypha.h>
+#include <hypha/diagnostic_functions.h>
+#include <hypha/diagnostic_updater.h>
+
+class Driver final : public hypha::CycleNode
+{
+  public:
+    // [ports.outputs.diagnostics] topic = "/diagnostics"
+    Output<diagnostic_msgs::DiagnosticArray> diagnostics{*this, "diagnostics"};
+    hypha::DiagnosticUpdater                 updater{diagnostics};
+
+    Driver()
+    {
+        updater.setHardwareID("lidar");
+        updater.setPeriod(hypha::config().optional<double>("diagnostic_period", 1.0));
+        updater.add("Connection", this, &Driver::diagnoseConnection);
+    }
+
+    void step(const hypha::CycleTime&) override
+    {
+        updater.update();
+    }
+
+    void diagnoseConnection(hypha::DiagnosticStatusWrapper& status)
+    {
+        if (connected) {
+            status.summary(diagnostic_msgs::DiagnosticStatus::OK, "connected");
+        } else {
+            status.summary(diagnostic_msgs::DiagnosticStatus::ERROR, "device absent");
+        }
+        status.add("peer", peer);
+    }
+    // ...
+};
+```
+
+- **The sink.** The updater sends on an `Output<DiagnosticArray>` (in the step that calls
+  `update()`) or a `Publisher<DiagnosticArray>`; its topic is a line of the parameter file,
+  as for every port. A refused `Publisher::publish` throws `std::runtime_error` with the
+  status. An `ApplicationNode` calls `forceUpdate()` from `node.timer(...)`, whose period is then the
+  period. `DiagnosticUpdater updater;` has no sink: its checks go to `~/state` only.
+- **`~/state`.** Each update replaces the rows of the updater in `NodeState.checks`: the
+  task's name (without the node's, which `NodeState.node` has), its level (`OK`, `WARN`,
+  `ERROR`, `STALE`, as `diagnostic_msgs/DiagnosticStatus`) and its message. The key/value
+  pairs stay on `/diagnostics`: put a number that matters in the message. A message over 256
+  bytes is cut and ends in `...`. A node reports at most 64 checks, a name has 1 to 128
+  bytes; the update that would pass them throws `std::runtime_error` (the array still
+  leaves, and no row of that update is kept). The node publishes its state every second, so
+  a row is as old as the last update: shorten the period for a fault that must not wait. An updater that is destroyed takes its rows away; `removeByName` drops a row at
+  the next update. Without a `Node` (a test of a task) nothing is reported.
+- **Level to state.** `ERROR` and `STALE` make the node `DEGRADED`, as a required input that
+  is not ok does (`WAITING` still wins while an input never arrived); `WARN` and `OK` show
+  and change nothing else. A check that throws, sets nothing or gives an unknown level is an
+  `ERROR`. `STALE` is `ERROR`: a check that cannot say is not one that passed.
+- **Cost.** The tasks run in the thread that calls `update()` or `forceUpdate()` (the step, or the timer
+  on the run thread), once a period; they read what a worker publishes and never wait on a device. The
+  report to the node is one call that copies at most 64 short rows under a lock the state
+  reader takes for the same time. Nothing runs on the run thread between two updates.
+- **Names.** Each status is named `<node name>: <task name>` and carries the
+  `hardware_id` ("unspecified" until `setHardwareID`), as ROS writes them: a `GenericAnalyzer`
+  matches on that. The array's `header.stamp` is the framework time of the update.
+- **Time.** `update()` runs the tasks when a period has passed (default 1 s). The first
+  call only starts the period, as ROS's timer does; `forceUpdate()` runs at once.
+  `update(Time)` takes the time (`CycleTime::now`); `update()` reads `hypha::now()`, which in
+  a step is the step's time, so a replay and a simulated clock decide it. Time that goes
+  back starts the period again.
+- **Failures are statuses.** A task that sets nothing reports ERROR "No message was set"; a
+  task that throws, ERROR "Exception in diagnostic task: <what>" with the values it had
+  added dropped; a level outside OK, WARN, ERROR, STALE, ERROR "invalid level n: ...". The
+  other tasks still run. A task that reports STALE reports it as itself.
+- **Tasks.** `add(name, function)`, `add(name, object, &Class::method)`, `add(task)` (a
+  `DiagnosticTask`, `FunctionDiagnosticTask` or `CompositeDiagnosticTask`; it must outlive the
+  updater), `removeByName`, `broadcast(level, message)`. `DiagnosticStatusWrapper` has
+  `summary`, `summaryf`, `mergeSummary`, `clearSummary`, `add` (a bool reads `True` or
+  `False`), `addf`, `clear`, and `now()`, the time of the update.
+- **Rate and stamp.** `FrequencyStatus` (`tick()` per event; ERROR with no event in the window,
+  WARN outside `[min * (1 - tolerance), max * (1 + tolerance)]`), `TimeStampStatus`
+  (`tick(stamp)`: the age of each stamp since the last update), `TopicDiagnostic` and
+  `HeaderlessTopicDiagnostic` (both, added to the updater): `scan.tick(msg.header.stamp)`
+  before `send`. `FrequencyStatusParam` takes pointers to the limits, as ROS does, so a
+  parameter may change them; they must outlive it. `DiagnosedPublisher` has no counterpart.
+- **One thread** calls the updater. `tick()` of a task may come from another.
+- **Policy.** `/diagnostics` has many publishers, so the type maps to `hypha::diagnosticsQos`
+  (64 publishers, 8 subscribers, depth 128, messages bounded to 64 KiB), as `/tf` does:
+  an aggregator's input needs a `perStep` for the burst of all publishers (section 5.4).
+
+Test a node with `testing::StepHarness`: `harness.sent(node.diagnostics)` holds the array
+of the step, and `update(Time)` or a `CycleTime` drives the clock
+(`crates/hypha-cxx/test/test_diagnostic_updater.cpp`).
+
 ## 3. Time and clock
 
 Pace periodic work with a cycle (section 5.4) or `Node::timer()`; there is no blocking
@@ -519,6 +692,27 @@ Reference: `hypha/node.h`, `hypha/publisher.h`, `hypha/topic.h`, `hypha/options.
   loan->message().row_step = count * sizeof(CloudPoint);
   (void)points.publish(std::move(*loan), count * sizeof(CloudPoint));
   ```
+- A cycle step writes a large output in place the same way: `Output<M>::loan(head,
+  capacityBytes)` reserves a slot of this step, and `output.send(std::move(*loan),
+  usedBytes)` registers it, shrunk; it goes out after a successful step, in the order of the
+  step's sends, with the bytes `send(const M&)` sends (`hypha/cycle_output.h`). The step may
+  hold several loans, of several outputs, and send other messages meanwhile. A loan counts
+  against `perStep()` from the loan; dropped unsent it gives its slot and its count back.
+  A loan kept past its step returns its slot at the step's end, and a send of it in a later
+  step throws `std::logic_error`. A refused loan (`PoolExhausted`, `LoanLimit`,
+  `ResourceLimit` past `perStep()`, `TooLarge`) does not fail the step. In a
+  `testing::StepHarness` the loan is memory of its own and `sent(output)` holds the message.
+
+  ```cpp
+  void step(const hypha::CycleTime&) override {
+      for (const hypha::ViewPtr<PointCloud2>& cloud : this->input.samples()) {
+          auto loan = this->output.loan(headOf(*cloud), cloud->data.size());
+          if (!loan) { continue; }                       // no slot free: nothing lost
+          const size_t used = downsample(*cloud, loan->data());   // writes the points
+          this->output.send(std::move(*loan), used);
+      }
+  }
+  ```
 - `subscriberCount()` counts subscribers of every node on the machine at that instant.
   It is not delivery; check it first when a message is costly and nobody may listen.
   It returns `std::optional<size_t>`: empty means the count is unavailable (a disabled
@@ -573,6 +767,61 @@ hypha: topic '/odom' has publishers, none of type pkg/Odometry (581e4b1b): publi
 
 The `~/state` row of an input names its `data_type` and `md5`: two types of one topic are
 two rows ([interface-specification.md](interface-specification.md#streams)).
+
+### 5.0 Reading a large message in place
+
+A camera frame or a lidar cloud is read where it arrived, in the publisher's shared-memory
+slot, after the one CRC check of the receive, with no copy: subscribe to `hypha::View<M>`
+instead of `M` (`hypha/view.h`). `View<M>` has the fields of `M`, decoded, its array of
+bytes (`Image::data`, `PointCloud2::data`) a `std::span<const uint8_t>` of the slot; the
+generator emits it for every message whose loaned field (section 4) is an array of bytes:
+`Image`, `CompressedImage`, `PointCloud2`, `OccupancyGrid`, `UInt8MultiArray`,
+`Int8MultiArray`, `ByteMultiArray`, and an application's own. `hypha::ViewPtr<M>` owns
+a view as `M::ConstPtr` owns a message, so ported code reads unchanged: `msg->width`,
+`msg->data.size()`, `msg->data[i]`, `sensor_msgs::PointCloud2ConstIterator<float> x(*msg,
+"x")`, `sensor_msgs::image_encodings::bitDepth(msg->encoding)`.
+
+```cpp
+void onCloud(const hypha::ViewPtr<sensor_msgs::PointCloud2>& msg) {
+    sensor_msgs::PointCloud2ConstIterator<float> x(*msg, "x");   // reads the slot
+    for (; x != x.end(); ++x) { /* ... */ }
+    this->latest_ = msg;               // keeps the slot (one per subscriber), no copy
+}
+auto sub = node.subscribe<hypha::View<sensor_msgs::PointCloud2>>("points", onCloud);
+```
+
+A cycle input reads views the same way: `Arrivals<View<M>>::samples()` gives a
+`ViewPtr<M>` per sample and `Latest<View<M>>` a `View<M>` (`*port`, `port->width`) and its
+ViewPtr (`port.sample()`), the bytes of the step's input. On host time the input keeps a
+message of 64 KiB or more in the subscriber's slot, not in a copy; under simulated time, or
+for a smaller message, the bytes the step reads are the input's copy, read in place all the
+same. A `std::shared_ptr<const M>` converts to a `ViewPtr<M>` over the message's own
+array, so an upstream test that passes a message to code that now takes a view compiles
+unchanged, and a `testing::StepHarness` feeds a view port with messages (`deliver(port,
+std::vector<M>{...})`).
+
+The lifetime is the ViewPtr's, and it is bounded:
+
+- Copies share one view; the bytes are valid while any copy lives. A `std::span` or a
+  pointer taken out of a view lives no longer than the ViewPtr it came from.
+- A copy still held when its callback returns keeps the slot, within the subscriber's
+  loan budget: one slot (`metrics().loanBudget`, `loanHeld`), since one stays free for the
+  next delivery. So `latest_ = msg;` in each callback keeps every frame in place. Past the
+  budget the bytes of the held copy are copied once at that return, logged (at most once in
+  10 s) and counted in `metrics().loanRefused`. Nothing is dropped, nothing dangles.
+- A copy still held when a cycle step returns owns a copy of its bytes from there, logged.
+  A cycle input whose step takes fewer samples than arrive copies the oldest out of its
+  slot to receive the next, logged with its count.
+- `hypha::toMessage(*msg)` copies a view into an `M`, for code that takes `const M&`.
+- The bytes are where the ROS 1 encoding puts them, not aligned. `PointCloud2ConstIterator`
+  and `PointCloud2Iterator` read and write a field with `std::memcpy`, so they are safe on a
+  view and on any cloud (section 1.1); code that takes a pointer into `data` itself
+  (`reinterpret_cast<const float*>(msg->data.data())`) must read a number of more than a
+  byte with `std::memcpy` instead: the cast is undefined behaviour, which UBSan reports as a
+  misaligned access.
+- Do not read a ViewPtr on another thread before its callback or step returns: that
+  return may move the bytes into a copy. A subscriber of views keeps no
+  `latestSample()` (it would hold the budget's slot).
 
 ### 5.1 Freshness and the latest value
 
@@ -1201,7 +1450,8 @@ struct hypha::QosOf<my_msgs::Image>
 ```
 
 - Every typed endpoint declares a policy: the `hypha::Qos` option of the port, else
-  `QosOf<M>::value`. hypha maps three types itself: `tf2_msgs/TFMessage` to `tfQos`,
+  `QosOf<M>::value`. hypha maps four types itself: `tf2_msgs/TFMessage` to `tfQos`,
+  `diagnostic_msgs/DiagnosticArray` to `diagnosticsQos`,
   and the node's own report types `NodeState` (`~/state`) and `NodeIntrospection`
   (`~/introspection`) to `reportQos` (2 publishers, 2 subscribers, depth 1, 1 KiB
   first slot: only tools read them, from the observer slots). An application cannot
@@ -1842,8 +2092,9 @@ Reference: `hypha/config.h`, `hypha/config_list.h` and `hypha/config_matrix.h`, 
 `hypha::introspect()` returns this node as a `hypha_msgs::NodeIntrospection`: its
 identity, the configuration rows, and every live endpoint, cycle and cycle input
 binding with its effective settings. `hypha::nodeState()` returns the
-`hypha_msgs::NodeState` that `runNode` publishes on `~/state`; section 2 gives the rule
-that judges `state`. Each `CycleState` row carries the distribution of the cycle's step times: the median, the 90th and the 99th percentile of every step since the commit (`step_p50_nanos`, `step_p90_nanos`, `step_p99_nanos`) and of the last 10 to 20 seconds with their longest (`recent_step_*`), beside `last_step_nanos` and `max_step_nanos`, in host monotonic nanoseconds. A quantile is the upper edge of a bucket of a fixed histogram (16 buckets per power of two): at most 1/16 above the true value, never below. `hypha topic delay <input> <output>` gives the time from an input to an output instead ([tools.md](tools.md)). A program with its own `main()` publishes both itself. No example
+`hypha_msgs::NodeState` that `runNode` publishes on `~/state`: `state` is `WAITING` while a
+required input never arrived, else `DEGRADED` while one is not ok or a check of the
+application is at `ERROR` or `STALE` (`hypha::reportChecks`, section 2.7), else `INPUTS_USABLE`. Each `CycleState` row carries the distribution of the cycle's step times: the median, the 90th and the 99th percentile of every step since the commit (`step_p50_nanos`, `step_p90_nanos`, `step_p99_nanos`) and of the last 10 to 20 seconds with their longest (`recent_step_*`), beside `last_step_nanos` and `max_step_nanos`, in host monotonic nanoseconds. A quantile is the upper edge of a bucket of a fixed histogram (16 buckets per power of two): at most 1/16 above the true value, never below. `hypha topic delay <input> <output>` gives the time from an input to an output instead ([tools.md](tools.md)). A program with its own `main()` publishes both itself. No example
 calls them; `hypha node` and `hypha top` ([tools.md](tools.md)) show them. The fields
 are in `crates/hypha_msgs/msg/hypha_msgs/NodeIntrospection.msg`, `NodeState.msg` and
 the row messages; the row rules and counters in `hypha/introspection.h`. Its C ABI
@@ -2061,7 +2312,7 @@ The reference is the doc comments of the public headers; no build runs Doxygen
 (`docs/Doxyfile` renders them for a reader who has it). Every result type prints as a
 name: `Status::name()`, and `hypha::name()` of a `TransformError`, an `InputVerdict` or
 a `StopReason`; a value outside the enum reads `"Unknown"`. `<hypha/hypha.h>` includes
-all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hypha/testing.h`.
+all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h`, `hypha/testing.h` and the three `hypha/diagnostic_*.h`.
 
 | Header                                                                   | Holds                                                                                                                                                                                                |
 | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -2077,6 +2328,7 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hyph
 | `hypha/cycle_node.h`                                                   | `CycleNode`; it includes `cycle_runtime.h` (`Cycle`), `cycle_latest.h`, `cycle_arrivals.h` (with `cycle_arrivals_merge.h`: `visitArrivalsInOrder`), `cycle_output.h`, `cycle_input.h` (with `cycle_sharing.h`: `sharing`), `cycle_supervision.h`, `cycle_port.h` |
 | `hypha/cycle_transforms.h`, `hypha/transform_buffer.h`, `hypha/transform_types.h`, `hypha/testing.h` | `Transforms`; `TransformBuffer`, `StaticTransformBroadcaster`; `TransformError`, `TransformTopics`; `testing::StepHarness` |
 | `hypha/raw_api.h`, `hypha/raw.h`                                     | Raw endpoints, `lookupDefinition`, `listNodes`; `RawSample`, `NodeInfo`, `Metric`, `SubscriberMetrics`                                                                                                          |
+| `hypha/diagnostic_updater.h`, `hypha/diagnostic_status.h`, `hypha/diagnostic_functions.h` | `DiagnosticUpdater`, `DiagnosticTask` and its two kinds; `DiagnosticStatusWrapper`; `FrequencyStatus`, `TimeStampStatus`, `TopicDiagnostic`, `HeaderlessTopicDiagnostic` |
 | `hypha/status.h`                                                       | `Status`, `ConfigError`, `require`                                                                                                                                                             |
 | `hypha/config.h`                                                       | `config()`, `ConfigView`, `ParameterError`; it includes `config_file.h` (`ConfigContext`, `ConfigFile`), `config_list.h` (`ConfigList`), `config_matrix.h` (`Matrix`) and `constraints.h` (`constraints`)                                                                                                 |
 | `hypha/camera_info.h`                                                  | `readCameraInfo`, `readCameraInfoIfPresent`, `writeCameraInfo`: the camera calibration in TOML as `sensor_msgs::CameraInfo`                                                              |

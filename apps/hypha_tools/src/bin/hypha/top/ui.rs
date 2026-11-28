@@ -1,5 +1,6 @@
 //! Rendering: header, gauges, per-tab content, footer, and the message inspector modal.
 
+use crate::top::checks::{check_lines, state_badge};
 use crate::top::inspector::{SchemaCache, decode_lines};
 use crate::top::intercept::{Layout as InterceptLayout, layout_for};
 use crate::top::intercept_ui::{draw_body, draw_hints, draw_too_small};
@@ -601,17 +602,20 @@ fn draw_node_details_panel(
     let node_intro = state.node_introspection(&sel.name);
     let scoped = state.node_scoped_topics(&sel.name);
 
+    let checks = node_st.map_or(0, |(st, _)| check_lines(st).len());
+    let card_height = u16::try_from(checks).map_or(u16::MAX, |extra| extra.saturating_add(7));
     if let Some(intro) = node_intro {
         let vertical = Layout::default().direction(Direction::Vertical);
         if intro.input_bindings.is_empty() {
-            let [card, endpoints] =
-                vertical.constraints([Constraint::Length(7), Constraint::Min(3)]).areas(area);
+            let [card, endpoints] = vertical
+                .constraints([Constraint::Length(card_height), Constraint::Min(3)])
+                .areas(area);
             draw_node_summary_card(f, card, sel, node_st, Some(intro));
             draw_node_endpoints_table(f, endpoints, intro, state);
         } else {
             let [card, bindings, endpoints] = vertical
                 .constraints([
-                    Constraint::Length(7),
+                    Constraint::Length(card_height),
                     Constraint::Percentage(45),
                     Constraint::Percentage(55),
                 ])
@@ -623,7 +627,7 @@ fn draw_node_details_panel(
     } else {
         let [card, topics] = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(6), Constraint::Min(3)])
+            .constraints([Constraint::Length(card_height.saturating_sub(1)), Constraint::Min(3)])
             .areas(area);
 
         draw_node_summary_card(f, card, sel, node_st, None);
@@ -691,19 +695,7 @@ fn draw_node_summary_card(
     }
 
     if let Some((st, last_seen)) = node_st {
-        let (badge, badge_style) = match st.state {
-            hypha_node::sdk::msgs::hypha_msgs::NodeState::INPUTS_USABLE => {
-                ("[● ALL INPUTS USABLE]", Style::default().fg(OK).add_modifier(Modifier::BOLD))
-            }
-            hypha_node::sdk::msgs::hypha_msgs::NodeState::WAITING => {
-                ("[▲ WAITING FOR INPUTS]", Style::default().fg(WARN).add_modifier(Modifier::BOLD))
-            }
-            hypha_node::sdk::msgs::hypha_msgs::NodeState::DEGRADED => (
-                "[✖ DEGRADED / STALE INPUTS]",
-                Style::default().fg(ERR).add_modifier(Modifier::BOLD),
-            ),
-            _ => ("[UNKNOWN STATE]", Style::default().fg(MUTED)),
-        };
+        let (badge, badge_style) = state_badge(st);
 
         let age_sec = last_seen.elapsed().as_secs_f64();
         lines.push(Line::from(vec![
@@ -714,6 +706,8 @@ fn draw_node_summary_card(
             Span::raw("   Monitored: "),
             Span::styled(format!("{} inputs", st.inputs.len()), Style::default().fg(FG)),
         ]));
+
+        lines.extend(check_lines(st));
 
         let fail_style = if st.callback_failures > 0 {
             Style::default().fg(ERR).add_modifier(Modifier::BOLD)

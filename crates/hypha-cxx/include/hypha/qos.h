@@ -29,6 +29,8 @@
 
 #include "hypha/hypha_ffi.h"
 
+#include <ros/message_traits.h>
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -36,6 +38,10 @@
 namespace tf2_msgs {
 struct TFMessage;
 }  // namespace tf2_msgs
+
+namespace diagnostic_msgs {
+struct DiagnosticArray;
+}  // namespace diagnostic_msgs
 
 namespace hypha_msgs {
 struct NodeState;
@@ -76,6 +82,17 @@ inline constexpr Qos defaultQos{
 /// @brief The policy of `/tf` and `/tf_static`.
 inline constexpr Qos tfQos{.name = "tf", .publishers = 32, .subscribers = 32, .maxDepth = 32};
 
+/// @brief The policy of `/diagnostics`: every node with a status task publishes there, and one
+///        aggregator reads the burst of all of them. The message varies in size, so the policy
+///        bounds it.
+inline constexpr Qos diagnosticsQos{
+    .name = "diagnostics",
+    .publishers = 64,
+    .subscribers = 8,
+    .maxDepth = 128,
+    .maxPayloadDynamic = 65536
+};
+
 /// @brief The policy of a node's own `~/state` and `~/introspection`.
 inline constexpr Qos reportQos{
     .name = "report", .publishers = 2, .subscribers = 2, .maxDepth = 1, .initialPayload = 1024
@@ -100,11 +117,24 @@ struct QosOf
     static constexpr Qos value = defaultQos;
 };
 
+/// @brief A view (hypha/view.h) has the policy of its message.
+template <typename M>
+struct QosOf<View<M>> : QosOf<M>
+{
+};
+
 /// @brief A policy hypha maps itself.
 template <>
 struct QosOf<tf2_msgs::TFMessage>
 {
     static constexpr Qos value = tfQos;
+};
+
+/// @brief A policy hypha maps itself.
+template <>
+struct QosOf<diagnostic_msgs::DiagnosticArray>
+{
+    static constexpr Qos value = diagnosticsQos;
 };
 
 /// @brief A policy hypha maps itself.

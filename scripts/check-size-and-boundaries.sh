@@ -53,13 +53,13 @@ CAPS = {
 # Production files above their cap: strict shrink-only ratchet (hard failure on growth).
 PROD_RATCHET = {
     "apps/hypha_tools/src/bin/hypha/top/intercept.rs": 1554,
-    "apps/hypha_tools/src/bin/hypha/top/ui.rs": 1361,
+    "apps/hypha_tools/src/bin/hypha/top/ui.rs": 1355,
     "apps/hypha_tools/src/load/coordinator.rs": 1057,
     "apps/hypha_tools/src/bin/hypha/top/intercept_ui.rs": 859,
-    "crates/hypha_cycle/src/capture.rs": 814,
+    "crates/hypha_cycle/src/capture.rs": 792,
     "apps/hypha_ros_bridge/src/automatic_runtime.rs": 844,
     "apps/hypha_tools/src/bin/hypha/top/state.rs": 840,
-    "crates/hypha_node/src/subscriber.rs": 740,
+    "crates/hypha_node/src/subscriber.rs": 681,
     "crates/hypha_cycle/src/runtime.rs": 614,
     "apps/hypha_tools/src/bin/hypha/top/graph_ui.rs": 670,
 }
@@ -180,6 +180,9 @@ sleep_re = re.compile(r"\b(sleep|sleep_for|usleep|sleep_ms)\s*\(")
 # A C++ test of header-only code that starts no node, touches no bus and calls no C function
 # is that code's lowest layer (#336): it says so with UNIT_MARKER and then counts at the pure
 # layer. The script holds it to that: a marked file that uses any of UNIT_FORBIDDEN fails.
+# Tier-2 robotics companions (opt-in headers, no C ABI): their tests are outside the core's
+# pyramid ratio, and they may not reach below the public SDK (checked below).
+COMPANION_DIR = "crates/hypha-cxx/companions/"
 UNIT_MARKER = "// test-layer: unit"
 UNIT_FORBIDDEN = re.compile(
     r"\b(Node|runNode|CycleNode|ApplicationNode|StepHarness|ConfigContext|ConfigFile)\b"
@@ -204,6 +207,14 @@ def unit_cpp_test(path, text):
 allow_re = re.compile(r"#!?\[allow\(")
 
 ratchet_errors = []
+for path in files:
+    if path.startswith(COMPANION_DIR):
+        text = open(path, "r", encoding="utf-8", errors="ignore").read()
+        found = re.search(r'#include\s*[<"](hypha/backend/[^>"]*|hypha/hypha_ffi\.h|hypha_ffi\.h)', text)
+        if found:
+            ratchet_errors.append(
+                f"  {path}: a companion includes {found.group(1)}; it is built on the public SDK only"
+            )
 total_test_lines = 0
 top_test_lines = 0
 test_sleeps = 0
@@ -215,10 +226,14 @@ for path in files:
         raw = open(path, "rb").read()
         n = raw.count(b"\n")
         total_test_lines += n
-        top_layer = path.startswith(("crates/hypha_ffi/", "crates/hypha-cxx/", "apps/hypha_tools/"))
         text = raw.decode("utf-8", errors="ignore")
-        if top_layer and not unit_cpp_test(path, text):
-            top_test_lines += n
+        if path.startswith(COMPANION_DIR):
+            # Tier 2: a companion's tests are its own lowest layer, outside the core's ratio.
+            total_test_lines -= n
+        else:
+            top_layer = path.startswith(("crates/hypha_ffi/", "crates/hypha-cxx/", "apps/hypha_tools/"))
+            if top_layer and not unit_cpp_test(path, text):
+                top_test_lines += n
         if path not in SLEEP_ALLOWLIST:
             test_sleeps += len(sleep_re.findall(raw.decode("utf-8", errors="ignore")))
     elif cat in ("rust_prod", "ffi_src"):

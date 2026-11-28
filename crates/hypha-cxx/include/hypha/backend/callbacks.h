@@ -81,6 +81,7 @@ inline HyphaCallbackResult deliver(const HyphaDelivery* delivery, void* userData
             hypha::Time::fromNanos(static_cast<int64_t>(delivery->identity.framework_sent_nanos));
         sample.transportAge =
             hypha::Duration::fromNanos(static_cast<int64_t>(delivery->transport_age_nanos));
+        sample.delivery = delivery;
         subscription->callback(sample);
     } catch (...) {
         subscription->callbackFailures.note(

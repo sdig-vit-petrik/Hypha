@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 19
+#define HYPHA_ABI_REVISION 21
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -399,6 +399,10 @@ typedef struct HyphaCycleEmission HyphaCycleEmission;
 // One callback-scoped frozen input image. Opaque to callers.
 typedef struct HyphaCycleImage HyphaCycleImage;
 
+// The sample a subscription callback is delivered, which the callback may keep.
+// Opaque to C: `HyphaDelivery::holder` names it for the call only.
+typedef struct HyphaDeliveryHolder HyphaDeliveryHolder;
+
 // An owned managed input source. Opaque to callers.
 typedef struct HyphaInputSource HyphaInputSource;
 
@@ -421,6 +425,12 @@ typedef struct HyphaNode HyphaNode;
 
 // A sending endpoint. Opaque to the caller.
 typedef struct HyphaPublisher HyphaPublisher;
+
+// An owning sample returned by [`crate::subscriber::subscriber_receive`].
+//
+// It holds one transport sample until it is dropped, may outlive its subscriber,
+// and may be released on another thread.
+typedef struct HyphaReceivedSample HyphaReceivedSample;
 
 // A request of a server: borrowed by a handler for its call or by a cycle step, or
 // deferred and owned by its caller, who may answer it from any thread. Dropped open, it
@@ -747,6 +757,22 @@ typedef void (*HyphaMetricCallback)(const char *name,
                                     uint64_t value,
                                     void *user_data);
 
+// One check as the C ABI passes it: borrowed for the call that receives it and copied
+// before that call returns. A null pointer is allowed only for a length of zero.
+typedef struct HyphaNodeCheck {
+  // The name bytes: UTF-8, not NUL-terminated, 1 to `MAX_NAME_BYTES` (128) bytes.
+  const char *name;
+  // The byte count of `name`.
+  size_t name_len;
+  // 0 `OK`, 1 `WARN`, 2 `ERROR`, 3 `STALE`, the levels of `diagnostic_msgs`.
+  uint8_t level;
+  // The message bytes: UTF-8, not NUL-terminated; empty allowed. At most 256 bytes: a
+  // longer message is cut, at a character boundary, and ends in `...`.
+  const char *message;
+  // The byte count of `message`.
+  size_t message_len;
+} HyphaNodeCheck;
+
 // Node information reported by `hypha_list_nodes`.
 typedef struct HyphaNodeInfo {
   // The node's registered name.
@@ -1049,19 +1075,6 @@ typedef struct HyphaSubscriberCounters {
   uint64_t other_schemas;
 } HyphaSubscriberCounters;
 
-// A transform a sender checks before it sends it: where the child sits in the parent,
-// at a ROS stamp.
-typedef struct HyphaSentTransform {
-  // The child origin in the parent frame.
-  double translation[3];
-  // The child orientation in the parent frame, `[x, y, z, w]`.
-  double rotation_xyzw[4];
-  // The header stamp, seconds part.
-  uint32_t stamp_secs;
-  // The header stamp, nanoseconds part; a time needs it below 1 000 000 000.
-  uint32_t stamp_nsecs;
-} HyphaSentTransform;
-
 // Identity joined from the subscription topic and the frame header.
 typedef struct HyphaSampleIdentity {
   // Subscription topic bytes.
@@ -1091,7 +1104,23 @@ typedef struct HyphaDelivery {
   // Nanoseconds between the send and this delivery, on the host monotonic
   // clock. Zero when `payload` is null.
   uint64_t transport_age_nanos;
+  // The sample, which `hypha_delivery_retain` keeps after the call. Valid only for the
+  // call; null when the delivery cannot be kept.
+  const struct HyphaDeliveryHolder *holder;
 } HyphaDelivery;
+
+// A transform a sender checks before it sends it: where the child sits in the parent,
+// at a ROS stamp.
+typedef struct HyphaSentTransform {
+  // The child origin in the parent frame.
+  double translation[3];
+  // The child orientation in the parent frame, `[x, y, z, w]`.
+  double rotation_xyzw[4];
+  // The header stamp, seconds part.
+  uint32_t stamp_secs;
+  // The header stamp, nanoseconds part; a time needs it below 1 000 000 000.
+  uint32_t stamp_nsecs;
+} HyphaSentTransform;
 
 // Called for each sample a subscription registration accepts.
 //
@@ -1359,6 +1388,44 @@ HyphaStatus hypha_cycle_emission_reserve(struct HyphaCycleEmission *emission,
 // # Safety
 // `emission` must be valid for the current callback.
 HyphaStatus hypha_cycle_emission_commit(struct HyphaCycleEmission *emission);
+
+// Lend `capacity` payload bytes of output `output_index` for one message the step writes
+// in place, as `hypha_publisher_reserve_frame` does for a publisher. On `Ok`, `*out` points
+// to `capacity` writable bytes, zeros, never an earlier frame's, and `*token` names the loan
+// for `hypha_cycle_emission_send` or `hypha_cycle_emission_return`; the bytes are valid
+// until one of them or the end of the step, which returns the loan unsent. A step may hold
+// several loans, of any outputs, beside a reserve. The message counts against the output's
+// per-step count from here. Nothing latches: `PoolExhausted` and `LoanLimit` when no loan is
+// free (a refusal is no lost message and counts nothing), `ResourceLimit` past the count,
+// `TooLarge` past the payload limit, `InvalidArgument` for an unknown output or a null
+// pointer; `*out` is null and `*token` zero on any of them. The latched error of the step
+// is returned as such.
+// # Safety
+// `emission` must be valid for the current callback. `out` and `token` must be writable.
+HyphaStatus hypha_cycle_emission_lend(struct HyphaCycleEmission *emission,
+                                      uint32_t output_index,
+                                      size_t capacity,
+                                      uint8_t **out,
+                                      uint64_t *token);
+
+// Stage the loan `token` for dispatch after the step with its first `len` bytes: the
+// message is sent shrunk to them, in the order of the step's sends and commits, after a
+// successful step. The loan is consumed either way. `InvalidArgument`, nothing staged, for
+// a token the step does not hold (sent, returned, or of another step) or a `len` past the
+// loan; the latched error of the step as such.
+// # Safety
+// `emission` must be valid for the current callback.
+HyphaStatus hypha_cycle_emission_send(struct HyphaCycleEmission *emission,
+                                      uint64_t token,
+                                      size_t len);
+
+// Return the loan `token` unsent: its slot goes back to the pool and it no longer counts
+// against the output's per-step count. `InvalidArgument` for a token the step does not
+// hold.
+// # Safety
+// `emission` must be valid for the current callback.
+HyphaStatus hypha_cycle_emission_return(struct HyphaCycleEmission *emission,
+                                        uint64_t token);
 
 // Read the held sample of one image binding: the newest usable sample it captured. The
 // payload is valid only during the callback. `NotAvailable` while `has_held` is zero;
@@ -1832,6 +1899,29 @@ int32_t hypha_node_ok(const struct HyphaNode *node);
 // # Safety
 // `node` must come from `hypha_node_create`, or be null.
 void hypha_node_shutdown(struct HyphaNode *node);
+
+// Report the checks of `owner` to `node`: named facts of the application (the device is
+// connected, the fix is held), each with a level and a message, which `~/state` carries
+// in `hypha_msgs/NodeState.checks`. A check at `ERROR` or `STALE` makes the state of the
+// node `DEGRADED`, as a required input that is not ok does; `WARN` and `OK` show and
+// change nothing else.
+//
+// The call replaces the whole set that `owner` reported before; `count` 0 removes it. An
+// owner is any number its caller picks and keeps (`hypha::DiagnosticUpdater` uses its
+// own address); owners do not see each other's checks, and a name may repeat. At most 64
+// checks in all, each name 1 to 128 bytes and each message at most 256 bytes, a longer one
+// cut and ended in `...`. `InvalidArgument`: a null `node`, a null `checks` with a count,
+// a null text with a length, text that is not UTF-8, an empty or too long name or a level
+// above 3. `TooLarge`: more than 64 checks in all. A refused call changes nothing and
+// records its reason for `hypha_last_error`. The texts are copied; the caller keeps them.
+//
+// # Safety
+// `node` is live. `checks` is null or `count` readable `HyphaNodeCheck`, each with its
+// `name` and `message` pointing to as many readable bytes as their lengths say.
+HyphaStatus hypha_node_set_checks(const struct HyphaNode *node,
+                                  uint64_t owner,
+                                  const struct HyphaNodeCheck *checks,
+                                  size_t count);
 
 // List every node registered on the bus: `callback` runs once for each, before the
 // call returns. `InvalidArgument`: a null `callback`. `Backend`: the node registry
@@ -2422,6 +2512,30 @@ HyphaStatus hypha_subscriber_topic(const struct HyphaSubscriber *subscriber,
 // # Safety
 // `subscriber` must come from `hypha_subscribe_typed` and must not be used afterwards.
 void hypha_subscriber_destroy(struct HyphaSubscriber *subscriber);
+
+// Keep the sample of `delivery` after its callback returns, without a copy: its payload
+// stays valid, at `delivery->payload`, until `hypha_received_sample_release`.
+//
+// A subscriber's callbacks keep at most the subscriber's loan budget of samples at once
+// (`HyphaSubscriberCounters::loan_budget`; one sample stays free for the next delivery).
+// Valid only during the callback that received `delivery`, on its thread. On `Ok`, `*out`
+// is the kept sample; on any other status it is null. `BorrowLimit` while the
+// subscriber's callbacks hold their budget, counted in `loan_refused`: the sample is then
+// released at the return as usual. `InvalidState`: the sample was kept already, or the
+// delivery cannot be kept (`holder` null). `InvalidArgument`: a null `delivery` or `out`.
+//
+// # Safety
+// `delivery` is null or the pointer a subscription callback received, during that call.
+// `out` is null or points to one writable pointer.
+HyphaStatus hypha_delivery_retain(const struct HyphaDelivery *delivery,
+                                  struct HyphaReceivedSample **out);
+
+// Release a sample `hypha_delivery_retain` kept: its slot returns to the publisher and its
+// payload is invalid from here. Any thread may release it. Null does nothing.
+//
+// # Safety
+// `sample` is null or comes from `hypha_delivery_retain` and is not used afterwards.
+void hypha_received_sample_release(struct HyphaReceivedSample *sample);
 
 // Create a transform buffer of `node` over the topics `tf_topic` (dynamic) and
 // `tf_static_topic` (static), UTF-8 of the given lengths, borrowed for the call. Both

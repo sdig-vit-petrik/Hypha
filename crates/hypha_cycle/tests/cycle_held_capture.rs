@@ -37,7 +37,7 @@ fn a_latest_binding_keeps_its_held_sample_when_the_next_capture_is_stale() {
     let _ = history.push(&[1], 100, 100);
     let mut binding = BindingCapture::new(&history, CaptureMode::Latest, 1).expect("binding");
     binding.capture(&history, latest(10), 105);
-    assert_eq!(binding.held().map(|sample| sample.payload.as_ref()), Some(&[1][..]));
+    assert_eq!(binding.held().map(|sample| sample.payload.to_vec()), Some(vec![1]));
 
     let _ = history.push(&[2], 0, 0);
     binding.capture(&history, latest(10), 200);
@@ -45,7 +45,7 @@ fn a_latest_binding_keeps_its_held_sample_when_the_next_capture_is_stale() {
     assert_eq!(binding.verdict, hypha_cycle::InputVerdict::Stale);
     let held = binding.held().expect("held sample survives a stale capture");
     assert_eq!(held.sequence, 0);
-    assert_eq!(held.payload.as_ref(), &[1]);
+    assert_eq!(held.payload.to_vec(), &[1]);
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn the_held_sample_survives_eviction_from_a_history_of_depth_one() {
     binding.capture(&history, latest(10), 200);
 
     let held = binding.held().expect("held sample outlives its eviction");
-    assert_eq!(held.payload.as_ref(), &[1]);
+    assert_eq!(held.payload.to_vec(), &[1]);
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn a_queued_binding_holds_the_newest_sample_of_a_multi_sample_capture() {
     assert_eq!(binding.samples.len(), 3);
     let held = binding.held().expect("queued capture holds a sample");
     assert_eq!(held.sequence, 2);
-    assert_eq!(held.payload.as_ref(), &[3]);
+    assert_eq!(held.payload.to_vec(), &[3]);
 }
 
 #[test]
