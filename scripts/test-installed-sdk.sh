@@ -132,8 +132,8 @@ if [ -n "${old_links}" ]; then
   exit 1
 fi
 readonly SHORT_DOMAIN="t_$$_sdk_hy"
-HYPHA_DOMAIN="${SHORT_DOMAIN}" "${PREFIX}/bin/hy" topic list --timeout 0.2
-HYPHA_DOMAIN="${SHORT_DOMAIN}" "${PREFIX}/bin/hytopic" list --timeout 0.2
+HYPHA_DOMAIN="${SHORT_DOMAIN}" "${PREFIX}/bin/hy" topic list
+HYPHA_DOMAIN="${SHORT_DOMAIN}" "${PREFIX}/bin/hytopic" list
 "${PREFIX}/bin/hy" clean --domain "${SHORT_DOMAIN}"
 
 # The installed hypha clean removes a domain nobody uses, then has nothing to remove.

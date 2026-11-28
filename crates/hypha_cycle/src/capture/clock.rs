@@ -5,6 +5,19 @@ use std::sync::Arc;
 use super::{CaptureClock, CycleHistory, HistorySample};
 
 impl CaptureClock {
+    /// The clock of a step: host time without a replay cut; with one, the strict cut, or
+    /// for a triggered step everything through it. A triggered step at T reads every input
+    /// through T: the samples one upstream step sent with the trigger sample carry T, and
+    /// the upstream hold has every sample stamped T of the reporting upstreams queued
+    /// (§6.6, #231).
+    pub(crate) const fn of_step(replay_cut: Option<u64>, triggered: bool, steady: u64) -> Self {
+        match (replay_cut, triggered) {
+            (Some(cut_nanos), true) => Self::ReplayThrough { cut_nanos },
+            (Some(cut_nanos), false) => Self::Replay { cut_nanos },
+            (None, _) => Self::Host { steady_nanos: steady },
+        }
+    }
+
     /// Whether this clock cuts by data time.
     pub(super) const fn is_replay(self) -> bool {
         matches!(self, Self::Replay { .. } | Self::ReplayThrough { .. })

@@ -161,7 +161,7 @@ fn stream_has_ports(node: &crate::transport::SharedNode, stream: &Stream) -> Res
     let Some(node_ref) = locked_node.as_ref() else {
         return Err("the session is gone".to_owned());
     };
-    match crate::transport::data_service_builder(node_ref, &name).open() {
+    match crate::data_service::data_service_builder(node_ref, &name).open() {
         Ok(service) => {
             let dynamic = service.dynamic_config();
             Ok(dynamic.number_of_publishers() > 0 || dynamic.number_of_subscribers() > 0)

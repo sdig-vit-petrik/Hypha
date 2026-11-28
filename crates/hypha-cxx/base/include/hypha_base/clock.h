@@ -18,6 +18,20 @@ inline bool isSimTime()
     return hypha_clock_is_sim_time() != 0;
 }
 
+/// @brief True when hypha::now() reads a time: always on host time, and on simulated time
+///        once the clock has a value (a `/clock` sample, setSimTime(), advanceSimTime(), or
+///        enableSimTime()). The placeholder zero that a simulated-time node starts with is
+///        no time: until the first value this returns false, and a stamp taken from now()
+///        would be zero. ROS 1's `ros::Time::isValid()` of `Time::now()`.
+///
+/// The node reads `/clock` in its run, so a constructor or setup() sees false, and a
+/// callback of the run sees true once the first sample arrived. Inside a cycle step use
+/// `CycleTime::now`.
+inline bool isClockValid()
+{
+    return hypha_clock_is_valid() != 0;
+}
+
 /// @brief Real elapsed time (CLOCK_MONOTONIC), never simulated; it agrees with every
 ///        other process on the same host.
 inline Time steadyNow()
