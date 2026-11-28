@@ -660,6 +660,15 @@ def pre_tool(call: Call) -> None:
 ALLOW_WITHOUT_REASON = re.compile(r"#!?\[allow\((?!.*\breason\s*=)")
 UNSAFE_BLOCK = re.compile(r"\bunsafe\s*\{")
 UNWRAP = re.compile(r"\.unwrap\(\)|\.expect\(")
+THREAD_SPAWN = re.compile(r"\bthread::(spawn|Builder)\b")
+ENV_VAR = re.compile(r"\benv::var(_os)?\b")
+EXTERN_C_FN = re.compile(r'\bextern\s+"C"\s+fn\b')
+ENV_VAR_ALLOWLIST = frozenset({
+    "crates/hypha_core/src/parameters_load.rs",
+    "crates/hypha_iceoryx2/src/domain.rs",
+    "crates/hypha_node/src/node.rs",
+    "crates/hypha_node/src/replay_restart.rs",
+})
 
 
 def added_lines(path: Path) -> dict[int, str]:
@@ -694,6 +703,10 @@ def rust_findings(path: Path, inserted: str | None) -> list[str]:
         (n for n, text in enumerate(lines, start=1) if "#[cfg(test)]" in text), len(lines) + 1
     )
     in_test_tree = any(part in ("tests", "benches", "examples") for part in path.parts)
+    rel = path.relative_to(REPO).as_posix()
+    in_crate_src = rel.startswith("crates/") and "/src/" in rel and not rel.endswith("/tests.rs")
+    in_ffi_src = rel.startswith("crates/hypha_ffi/src/")
+    env_allowed = rel in ENV_VAR_ALLOWLIST
     findings = []
     for number, text in added_lines(path).items():
         # For an edit whose inserted text is known, report only what it added.
@@ -711,6 +724,18 @@ def rust_findings(path: Path, inserted: str | None) -> list[str]:
         shipped = not in_test_tree and number < first_test_line
         if shipped and UNWRAP.search(code):
             findings.append(f"{number}: unwrap()/expect() in shipped code; return the error")
+        if shipped and in_crate_src and THREAD_SPAWN.search(code):
+            findings.append(
+                f"{number}: crates/*/src/ must not spawn OS threads (use WaitSet / apps/)"
+            )
+        if shipped and in_crate_src and not env_allowed and ENV_VAR.search(code):
+            findings.append(
+                f"{number}: env::var read outside the allowed config modules in crates/*/src/"
+            )
+        if shipped and in_ffi_src and EXTERN_C_FN.search(code):
+            findings.append(
+                f'{number}: new extern "C" fn requires owner approval and a docs/features.md row'
+            )
     return findings
 
 

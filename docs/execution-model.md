@@ -824,6 +824,14 @@ This matters when a slow callback blocks the sweep. In ROS 1 you might see
 a burst of timer callbacks afterwards. Here you see one call and a missed
 count.
 
+**A second rate inside a step is a `CycleTimer`, not a timer.** A `hypha::CycleTimer`
+([cpp-api.md](cpp-api.md) §5.4, "A second rate in a step") is no registration: the step
+polls it with `CycleTime`, and it ticks on a grid anchored at its first poll (or its
+`start(time)`) on the step's time, simulated in a replay, so a replay repeats its ticks. A
+poll gives the count of grid instants passed since the previous poll; the step runs its body
+once and reads the missed periods, or once per period. It wakes nothing: a tick runs in the
+first step at or after its instant.
+
 **A timer does not follow framework time backwards.** On simulated time a
 `timer` timer is due against `/clock` time. When `/clock` moves back, the
 timer fires nothing and its run ends with `ClockRewound`; `runNode` restarts the

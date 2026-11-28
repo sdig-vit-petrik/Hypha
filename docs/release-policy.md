@@ -35,7 +35,7 @@ mix two lines in one domain.
 |---|---|
 | Operating system | Ubuntu 26.04, on amd64 and arm64 |
 | C++ compiler | The GCC of that distribution; C++23 |
-| Rust | The latest stable, 1.98 or newer (`rust-toolchain.toml`, `rust-version`); not pinned |
+| Rust | One exact version for development and CI, `channel` of `rust-toolchain.toml`; the MSRV, `rust-version` of `Cargo.toml`, is the highest `rust-version` of the dependencies (1.89), and `test.sh` and CI build the workspace with it too |
 | Builder image | `docker/Dockerfile`, which installs exactly these |
 
 macOS is a development platform with no guarantee: CI builds the workspace there and
@@ -55,7 +55,11 @@ so an arm64 release runs them by hand in the builder image and the release notes
    loop: the endurance run of NFR-06. For every release: a 24 hour run. Neither run
    exists yet ([sil2-readiness.md](sil2-readiness.md), G-28); until they do, the
    release notes say so.
-4. The release notes, `docs/releases/X.Y.Z.md`, written by hand and reviewed in the
+4. **Triage and compaction pass:** run the [features.md](features.md) §2 triage and land
+   a subtraction/cleanup pass before cutting the release — removing unused public surface,
+   deduplicating test harnesses, folding or deleting implemented `docs/design/` notes, and
+   shrinking files pinned in `scripts/check-size-and-boundaries.sh`.
+5. The release notes, `docs/releases/X.Y.Z.md`, written by hand and reviewed in the
    pull request of the release: a summary; the breaking changes and the upgrade; the
    changes, with their issues; the defects fixed and the known open ones, each with
    its class ([safety-plan.md](safety-plan.md) §7); whether an assumption of use

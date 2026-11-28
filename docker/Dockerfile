@@ -18,9 +18,11 @@ ENV RUSTUP_HOME=/usr/local/rustup
 ENV CARGO_HOME=/usr/local/cargo
 ENV PATH=/usr/local/cargo/bin:$PATH
 
-# Rust is not pinned: the image takes the latest stable when it is built, as
-# rust-toolchain.toml selects it everywhere else.
-ARG HYPHA_RUST_VERSION=stable
+# The exact version rust-toolchain.toml selects everywhere else; check.sh fails when
+# the two differ. Moving it changes docker/, so the image is built once under a new tag.
+ARG HYPHA_RUST_VERSION=1.100.0
+# The MSRV (Cargo.toml rust-version): test.sh builds the workspace with it too.
+ARG HYPHA_RUST_MSRV=1.89.0
 ARG HYPHA_CHISEL_VERSION=v1.5.0
 # scripts/format.sh accepts exactly this clang-format major. The PyPI wheel
 # tracks the LLVM release on every host, the apt package does not.
@@ -78,6 +80,7 @@ RUN mkdir -p "$CARGO_HOME" "$RUSTUP_HOME" \
     && rustup toolchain install "${HYPHA_RUST_VERSION}" --profile minimal -c clippy -c rustfmt \
     && rustup default "${HYPHA_RUST_VERSION}" \
     && rustup component add llvm-tools-preview \
+    && rustup toolchain install "${HYPHA_RUST_MSRV}" --profile minimal \
     && rustup toolchain install "$(cat /usr/local/share/hypha/rust-nightly)" --profile minimal \
          -c miri -c rust-src \
     && cargo install --locked cbindgen@0.29.4 cargo-nextest@0.9.152 cargo-llvm-cov@0.9.1 \
