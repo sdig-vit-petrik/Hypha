@@ -145,9 +145,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # rustup installs the toolchain rust-toolchain.toml selects on first use.
+      # The exact version rust-toolchain.toml pins, with its components, installed
+      # explicitly; its version is in the log next to the result.
+      - name: The Rust toolchain
+        run: |
+          rustup toolchain install --profile minimal
+          rustc --version
+          rustup toolchain install "$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml).0" --profile minimal
+
       - name: clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: The MSRV builds the workspace
+        run: cargo "+$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml).0" check --locked --workspace --all-targets
 
   # The C++ SDK on the other architecture of the builder image.
   cxx-arm64:

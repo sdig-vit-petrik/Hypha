@@ -6,6 +6,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# The compiler of rust-toolchain.toml, in the log next to the result.
+rustc --version
+
 ./scripts/gen-ffi-header.sh --verify
 ./scripts/gen-mcap-reader-header.sh --verify
 # docs/traceability.md is generated; every requirement has an entry and every test
@@ -18,10 +21,38 @@ python3 -I examples/autoware/tools/test_port.py
 ./scripts/check-features.sh
 git ls-files '*.sh' | xargs shellcheck --severity=warning --external-sources
 
-# The image installs the toolchain rust-toolchain.toml selects.
+# One compiler everywhere (#131): the image installs the version rust-toolchain.toml
+# pins. rust-version (the MSRV) is the highest rust-version of the dependencies, no older
+# than they allow and no newer than needed; the image installs it too, and test.sh builds
+# the workspace with it, so what Cargo promises is what is tested.
 toolchain="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+if [[ ! "$toolchain" =~ ^([0-9]+\.[0-9]+)\.[0-9]+$ ]]; then
+  echo "rust-toolchain.toml channel is not an exact version (x.y.z): $toolchain" >&2
+  exit 1
+fi
+pinned="${BASH_REMATCH[1]}"
 if ! grep -q "^ARG HYPHA_RUST_VERSION=${toolchain}\$" docker/Dockerfile; then
   echo "docker/Dockerfile HYPHA_RUST_VERSION differs from rust-toolchain.toml ($toolchain)" >&2
+  exit 1
+fi
+msrv="$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)"
+dependencies_msrv="$(cargo metadata --locked --format-version 1 | python3 -I -c '
+import json, sys
+metadata = json.load(sys.stdin)
+members = set(metadata["workspace_members"])
+versions = [tuple(map(int, p["rust_version"].split("."))) for p in metadata["packages"]
+            if p["id"] not in members and p.get("rust_version")]
+print(".".join(map(str, max(versions)[:2])))')"
+if [[ "$msrv" != "$dependencies_msrv" ]]; then
+  echo "Cargo.toml rust-version ($msrv) is not the highest rust-version of the dependencies ($dependencies_msrv)" >&2
+  exit 1
+fi
+if [[ "$(printf '%s\n%s\n' "$msrv" "$pinned" | sort -V | tail -n 1)" != "$pinned" ]]; then
+  echo "Cargo.toml rust-version ($msrv) is newer than rust-toolchain.toml ($pinned)" >&2
+  exit 1
+fi
+if ! grep -q "^ARG HYPHA_RUST_MSRV=${msrv}.0\$" docker/Dockerfile; then
+  echo "docker/Dockerfile HYPHA_RUST_MSRV differs from Cargo.toml rust-version ($msrv.0)" >&2
   exit 1
 fi
 
