@@ -43,7 +43,7 @@ truecolor terminal and no special font. State is shown in form as well as colour
 ### `hypha topic` — what is being published
 
 ```text
-hypha topic list [--timeout <seconds>]    topics seen publishing, one line per type (default: 1.0s)
+hypha topic list [-v]                     every topic of the bus, one line per type; -v: publishers and subscribers
 hypha topic echo <topic> [-p] [--count <n>] [--type <type>] [--md5 <prefix>]
                                           print each message, decoded
 hypha topic hz <topic> [--window <n>] [--type <type>] [--md5 <prefix>]
@@ -54,12 +54,20 @@ hypha topic bw <topic> [--type <type>] [--md5 <prefix>]
                                           bandwidth and mean message size of each stream
 ```
 
-`list` reports only topics that publish while it is watching, and `hz`/`bw`
-cannot measure a topic that is not currently publishing: there is no separate
-topic registry on this bus, only observed traffic. A topic that has never
-published will not appear. Each line names the type and the first eight hex digits of
-its MD5, `/odom  [nav_msgs/Odometry (cd5e73d1)]`: a topic that carries two types, or two
-versions of one type, is two lines (topic name overloading, cpp-api.md §5).
+`list` reads the transport's service listing once and returns at once: it listens to
+nothing. A topic is listed from the moment a publisher, or a subscriber that declared its
+policy, has opened it, whether or not a sample has been sent, so a node whose topics are
+silent shows its topics. A line names the topic and its message type,
+`/odom  [nav_msgs/Odometry]`; a topic that carries two types, or two versions of one type, is
+two lines, each with the first eight hex digits of its MD5, `/odom  [nav_msgs/Odometry
+(cd5e73d1)]` (topic name overloading, cpp-api.md §5). A stream whose publisher gave no
+definition shows its schema hash, `[? (0123456789abcdef)]`. `-v` adds what the listing counts
+for free, the endpoints of each stream, `/odom  [nav_msgs/Odometry]  1 publisher, 2
+subscribers`; a crashed publisher is counted until its node is reclaimed. A bus with no
+topic prints nothing on standard output and `no topics on the bus` on standard error. The
+listing opens each stream for an instant, which takes one node slot of the stream while it
+lasts (interface-specification.md), and reads every service of the domain, so it takes
+longer on a bus of many streams. `hz` and `bw` cannot measure a topic that is not currently publishing.
 
 **A topic of several streams.** A topic name carries one stream for each schema, and
 `echo`, `hz` and `bw` read all of them: each stream is followed on its own, and one that
@@ -337,11 +345,10 @@ counter it named, and at 1 kHz 135 to 599 (`record_late_streams.rs`, runs on a l
 machine; before the count existed the same late streams were recorded from 22 to 55 and from
 1397 with no word).
 
-**Not followers.** `hypha topic list` listens on `**` for its `--timeout` and names the
-streams that publish while it listens, among those that exist when it starts: a stream that
-starts later in the window is not listed. `hypha intercept` relays one named input and
-subscribes to the streams that exist when it starts; it relays one type, and a change of the
-type is the configuration's to make. Neither follows a stream that joins later.
+**Not followers.** `hypha topic list` lists the streams that exist when it runs, once.
+`hypha intercept` relays one named input and subscribes to the streams that exist when it
+starts; it relays one type, and a change of the type is the configuration's to make. Neither
+follows a stream that joins later.
 
 ---
 

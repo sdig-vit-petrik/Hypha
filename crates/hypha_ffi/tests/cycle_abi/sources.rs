@@ -207,15 +207,24 @@ fn binding_after_burst(mode: HyphaCycleInputMode, values: u8) -> HyphaCycleBindi
     for value in 1..=values {
         unsafe { send_sample(publisher, &[value]) };
     }
-    let mut run_report =
-        HyphaWaitSetRunReport { reason: 0, status: 0, attachment: 0, slow_callbacks: 0 };
-    assert_eq!(
-        unsafe { hypha_waitset_run(waitset, 20_000_000, &raw mut run_report) },
-        HyphaStatus::Ok
-    );
-    assert_eq!(run_report.status, HyphaStatus::Ok as i32);
+    // Run until a step has captured the whole burst, not for a fixed slice: how soon a
+    // loaded host gives the 5 ms cycle its first step is the host's speed. The bound only
+    // ends a run that never captures.
     let mut view = HyphaCycleBindingView::default();
-    assert_eq!(unsafe { hypha_cycle_binding(cycle, index, &raw mut view) }, HyphaStatus::Ok);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let mut run_report =
+            HyphaWaitSetRunReport { reason: 0, status: 0, attachment: 0, slow_callbacks: 0 };
+        assert_eq!(
+            unsafe { hypha_waitset_run(waitset, 10_000_000, &raw mut run_report) },
+            HyphaStatus::Ok
+        );
+        assert_eq!(run_report.status, HyphaStatus::Ok as i32);
+        assert_eq!(unsafe { hypha_cycle_binding(cycle, index, &raw mut view) }, HyphaStatus::Ok);
+        if view.held.received_total >= u64::from(values) || std::time::Instant::now() > deadline {
+            break;
+        }
+    }
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
     assert_eq!(unsafe { hypha_input_source_destroy(source) }, HyphaStatus::Ok);
     unsafe {

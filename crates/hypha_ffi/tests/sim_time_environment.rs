@@ -369,3 +369,28 @@ fn destroying_a_sim_node_keeps_simulated_time_for_the_survivors() {
     drop(first);
     assert_ne!(hypha_clock_is_sim_time(), 0, "the surviving node is still on simulated time");
 }
+
+#[test]
+fn the_clock_is_valid_on_host_time_and_on_simulated_time_once_it_has_a_value() {
+    {
+        let _case = Case::new(None);
+        let _node = SimNode::new();
+        assert_eq!(hypha_clock_is_valid(), 1, "host time is always valid");
+    }
+    let _case = Case::new(Some("1"));
+    let _node = SimNode::new();
+    assert_ne!(hypha_clock_is_sim_time(), 0);
+    assert_eq!(hypha_clock_is_valid(), 0, "the node's zero is a placeholder, not a time");
+    assert_eq!(hypha_clock_set_sim_time(5_000_000_000), HyphaStatus::Ok as i32);
+    assert_eq!(hypha_clock_is_valid(), 1, "the first value makes the clock valid");
+    assert_eq!(hypha_clock_disable_sim_time(), HyphaStatus::Ok as i32);
+    assert_eq!(hypha_clock_is_valid(), 1, "back on host time");
+}
+
+#[test]
+fn simulated_time_enabled_at_a_value_is_valid() {
+    let _case = Case::new(None);
+    assert_eq!(hypha_clock_enable_sim_time(100), HyphaStatus::Ok as i32);
+    assert_eq!(hypha_clock_is_valid(), 1);
+    assert_eq!(hypha_clock_disable_sim_time(), HyphaStatus::Ok as i32);
+}

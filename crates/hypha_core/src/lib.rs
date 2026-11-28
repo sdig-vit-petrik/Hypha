@@ -1,4 +1,13 @@
 //! Shared framework data types and deterministic state.
+//!
+//! # Module map
+//! - `port`: topic specs, reserved names (`/hypha/`), wildcards, `QoS` values, port errors
+//! - `frame_validation`: frame header/CRC/sequence/timestamp validation rules
+//! - `message`: message trait and schema identity abstractions
+//! - `parameters` / `parameters_load` / `parameter_constraints`: TOML config loader, `${ENV}`, `include`, range checks
+//! - `dispatch`: `WaitSet` dispatch limits and fairness budgets
+//! - `timer`: polled timer cadence state
+//! - `introspection`: node manifest and configuration introspection records
 
 extern crate alloc;
 

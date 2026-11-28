@@ -51,6 +51,14 @@ pub struct CycleSnapshots {
     pub(crate) watches: Mutex<Vec<Option<crate::topic_streams::Watch>>>,
 }
 
+impl CycleSnapshots {
+    /// Count a step of `duration_nanos` whose capture began at host monotonic `steady_nanos`.
+    pub(crate) fn record_step_time(&self, duration_nanos: u64, steady_nanos: i64) {
+        let steady = u64::try_from(steady_nanos).unwrap_or(0);
+        crate::locked(&self.step_times).record(duration_nanos, steady);
+    }
+}
+
 // Another thread reads it during a run (`hypha_cycle_health`, `hypha_cycle_binding`).
 const _: () = {
     const fn shared_across_threads<T: Send + Sync>() {}

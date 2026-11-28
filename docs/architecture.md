@@ -382,6 +382,12 @@ CMake project (FetchContent or `add_subdirectory`, in the `hypha-builder` image)
 or it uses `find_package(hypha)` on a prefix that `cmake --install` filled. As a
 subproject, hypha keeps its strict warnings to its own targets.
 
+Cargo writes to `<source>/target`, or to the absolute `CARGO_TARGET_DIR` of the
+environment (a relative one is refused at configure). The root `CMakeLists.txt`
+resolves it once as `HYPHA_CARGO_TARGET_DIR`; every CMake file that names a cargo output
+uses it, and the cargo call gets it as `--target-dir`, so the two cannot differ
+(`scripts/test-cargo-target-dir.sh`).
+
 Message headers sit at their ROS 1 path, `<package>/<Name>.h`, and each
 package directory has one owner. `hypha-cxx` owns the directory of each standard
 package it ships (`std_msgs/`, `geometry_msgs/`, ..., `hypha_msgs/`). It writes
@@ -522,3 +528,16 @@ only to meet a line limit.
 | The held sample lives below the C ABI. | The C++ SDK then keeps no retention rule. A `Latest` port has no value before the first sample, and `has()` says so. |
 | The output default is to fail the run. | The framework never invents a safe command. A `diagnostic` output, which drops a send that finds the pool exhausted, is an explicit choice. |
 | `CycleNode` is the one model for a cyclic node. | One model replaces the old builder. The builder, its records, `Node::cycle`, `hypha_cycle_describe`, `hypha_node_describe_text` and the untyped subscriber constructor no longer exist. |
+
+## 7. Onion-Layer Testing
+
+Each architectural ring tests **only the responsibility it adds**, trusting inner rings to have already proven their own logic. Keep a handful of thin cross-ring smoke tests for wiring, but never repeat an N×M permutation matrix in an outer ring.
+
+| Ring | Crates | What its tests own | What it must not re-test |
+|---|---|---|---|
+| **1. Pure core** | `hypha_wire`, `hypha_time`, `hypha_msgdef`, `hypha_msggen`, `hypha_core`, `hypha_cycle`, `hypha_runtime`, `hypha_log` | All logic matrices, edge cases, state machines, and `proptest` invariants (codecs, clocks, TOML rules, supervision, triggers, replay cuts, TF math). | — |
+| **2. Transport** | `hypha_iceoryx2` | IPC mechanics only: SHM loans, service open races, dead-node reclaim, QoS stamping, WaitSet wakes, crash/SIGKILL handling. | Wire/codec edge cases, cycle or TOML rules. |
+| **3. Node runtime** | `hypha_node` | Orchestration between core and transport: WaitSet loop, lockstep `/clock_progress`, stream discovery, rewind/shutdown lifecycle. | Pure state-machine permutations already proven in `hypha_cycle` / `hypha_runtime`. |
+| **4. C ABI** | `hypha_ffi` | FFI boundary contracts only: null/invalid args, buffer-too-small, status mapping, ownership/drop, 1 smoke call per symbol (`argument_preamble`). | Cycle, replay, or TF permutation matrices. |
+| **5. C++ SDK** | `crates/hypha-cxx` | C++ facade only: RAII/move/drop, compile-time tags, exception/status mapping, `StepHarness` wiring, 1 happy + 1 error smoke test per API. | Re-testing Rust core or FFI matrices through C++. |
+| **6. Apps & E2E** | `apps/*`, `examples/` | CLI flags, exit codes, and a few real system scenarios (`hypha record`/`play`/`launch`, `examples/mrs`, `examples/sensor_pipeline`). | Unit-level edge cases of core crates. |

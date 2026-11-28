@@ -3,14 +3,13 @@
 use crate::cli::{connect, parse_cli};
 use clap::{Parser, Subcommand};
 use hypha_node::sdk::SchemaIdentityCache;
-use hypha_node::sdk::{BusNode, RawSubscriber, ReceivedSample, ResolvedSchema, StreamKey};
+use hypha_node::sdk::{BusNode, ResolvedSchema, StreamKey, TopicInfo};
 use hypha_tools::delay::Delays;
 use hypha_tools::echo_args::EchoArgs;
 use hypha_tools::msg_plot::{plot_header, plot_row, plot_values};
-use hypha_tools::msg_reflect::{SchemaCache, decode_message, format_significant};
-use hypha_tools::stream::{StreamFlags, stream_label};
+use hypha_tools::msg_reflect::{SchemaCache, decode_message};
+use hypha_tools::stream::{StreamFlags, stream_label, type_label};
 use hypha_tools::{approx_f64, approx_f64_usize};
-use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, VecDeque};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -25,9 +24,9 @@ use follow::Followed;
 #[derive(Debug, Parser)]
 #[command(
     name = "hypha topic",
-    after_help = "A topic that has never published during this run will not appear in `list`, \
-                  and `hz`/`bw` cannot measure a topic that is not currently publishing: there \
-                  is no separate topic registry on this bus, only observed traffic."
+    after_help = "`list` shows a topic from the moment a publisher or a subscriber has opened it, \
+                  with no sample sent; `hz` and `bw` cannot measure a topic that is not \
+                  currently publishing."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -36,11 +35,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Verb {
-    /// Topics seen publishing while the tool listens: one line for each type of a topic.
+    /// Every topic on the bus, published or not: one line for each type of a topic.
     List {
-        /// How long to listen, in seconds.
-        #[arg(long, value_name = "seconds", default_value_t = 1.0)]
-        timeout: f64,
+        /// Also the number of publishers and subscribers of each.
+        #[arg(short, long)]
+        verbose: bool,
     },
     /// Print each message, decoded; -p: one CSV row each.
     Echo {
@@ -82,52 +81,61 @@ enum Verb {
     },
 }
 
-/// The next sample of `sub`; a receive error is printed for the subcommand `label` and
-/// counts as no sample.
-fn receive_or_report(sub: &mut RawSubscriber, label: &str) -> Option<ReceivedSample> {
-    sub.try_receive().unwrap_or_else(|error| {
-        eprintln!("hypha topic {label}: {error}");
-        None
-    })
-}
-
-fn run_list(bus: &BusNode, timeout_sec: f64) -> ExitCode {
-    let mut sub = match bus.subscribe_raw("**", 0) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("hypha topic list: {e}");
+/// Lists the streams of the bus, one line each, from the transport's service listing: a
+/// stream is listed from the moment a publisher or a declared subscriber creates it, with or
+/// without a sample sent. Nothing waits; the type is read from the stream's schema record.
+fn run_list(bus: &BusNode, verbose: bool) -> ExitCode {
+    let mut listed = match bus.list_topics() {
+        Ok(listed) => listed,
+        Err(error) => {
+            eprintln!("hypha topic list: {error}");
             return ExitCode::FAILURE;
         }
     };
-
-    let mut topic_types = BTreeMap::new();
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs_f64(timeout_sec))
-        .unwrap_or_else(Instant::now);
-
-    let identities = SchemaIdentityCache::new();
-    while bus.ok() && Instant::now() < deadline {
-        while let Some(received) = receive_or_report(&mut sub, "list") {
-            let Some(sample) = received.to_raw_sample() else { continue };
-            if let Entry::Vacant(stream) = topic_types.entry((sample.topic, sample.schema_hash)) {
-                let (topic, schema_hash) = stream.key();
-                let label = schema_label(bus, &identities, topic, *schema_hash);
-                stream.insert(label);
-            }
-        }
-        thread::sleep(Duration::from_millis(5));
+    if listed.is_empty() {
+        eprintln!("hypha topic list: no topics on the bus");
+        return ExitCode::SUCCESS;
     }
-
-    if topic_types.is_empty() {
-        let timeout_text = format_significant(timeout_sec);
-        println!("(no traffic seen in {timeout_text}s)");
-    } else {
-        for ((topic, _), label) in &topic_types {
-            println!("{topic}  [{label}]");
-        }
+    listed.sort_by(|a, b| (&a.name, a.schema_hash).cmp(&(&b.name, b.schema_hash)));
+    for stream in &listed {
+        let shared = listed.iter().filter(|other| other.name == stream.name).count() > 1;
+        println!("{}", list_line(stream, &list_type(bus, stream, shared), verbose));
     }
-
     ExitCode::SUCCESS
+}
+
+/// The type a listed stream is shown with: its message type, and the start of its MD5 when
+/// another stream has its name; its schema hash when no definition is known, and a lookup that
+/// fails is said once on standard error.
+fn list_type(bus: &BusNode, stream: &TopicInfo, shared: bool) -> String {
+    let schema =
+        bus.resolve_schema_hash_now(&stream.name, stream.schema_hash).unwrap_or_else(|cause| {
+            eprintln!("hypha topic list: schema lookup failed for '{}': {cause}", stream.name);
+            None
+        });
+    match schema {
+        Some(schema) if shared => type_label(&schema.data_type, &schema.md5),
+        Some(schema) => schema.data_type,
+        None => stream_label(None, stream.schema_hash),
+    }
+}
+
+/// One line of the listing: `name  [type]`, and with `verbose` the endpoints the stream has.
+fn list_line(stream: &TopicInfo, data_type: &str, verbose: bool) -> String {
+    let line = format!("{}  [{data_type}]", stream.name);
+    if !verbose {
+        return line;
+    }
+    format!(
+        "{line}  {}, {}",
+        count_of(stream.publishers, "publisher"),
+        count_of(stream.subscribers, "subscriber")
+    )
+}
+
+fn count_of(count: usize, noun: &str) -> String {
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} {noun}{plural}")
 }
 
 fn run_echo(bus: &Arc<BusNode>, echo: &EchoArgs) -> ExitCode {
@@ -480,7 +488,7 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
     };
 
     match cli.verb {
-        Verb::List { timeout } => run_list(&bus, timeout),
+        Verb::List { verbose } => run_list(&bus, verbose),
         Verb::Echo { echo } => run_echo(&bus, &echo),
         Verb::Hz { topic, window, streams } => run_hz(&bus, &topic, window, &streams),
         Verb::Delay { input, output, window } => run_delay(&bus, &input, &output, window),
@@ -507,16 +515,4 @@ fn resolve_identity(
             None
         }
     }
-}
-
-/// The schema behind a frame's schema hash as `hypha topic list` shows it: its type and
-/// the first eight hex digits of its MD5, so two versions of one type are two lines. An
-/// unresolved schema shows its hash.
-fn schema_label(
-    bus: &BusNode,
-    identities: &SchemaIdentityCache,
-    topic: &str,
-    schema_hash: u64,
-) -> String {
-    stream_label(resolve_identity(bus, identities, topic, schema_hash).as_deref(), schema_hash)
 }
