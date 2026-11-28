@@ -27,13 +27,21 @@ inline ::HyphaStatus paramValidateNonempty(const char* value, size_t valueLen)
     return hypha_param_validate_nonempty(value, valueLen);
 }
 
-/// @brief The stored value of the scalar parameter @p name. A TEXT value borrows the
-///        configuration: copy it before the configuration is destroyed. Without a
-///        configuration the result is ABSENT.
-inline std::pair<HyphaParamResult, HyphaConfigValue> readConfigValue(const std::string& name)
+/// @brief @p own, or the active configuration of the process (configHandle()) when
+///        @p own is null: the configuration a read without its own file uses.
+inline const HyphaConfig* configOr(const HyphaConfig* own)
+{
+    return own != nullptr ? own : configHandle();
+}
+
+/// @brief The stored value of the scalar parameter @p name in @p own (null: the active
+///        configuration). A TEXT value borrows the configuration: copy it before the
+///        configuration is destroyed. Without a configuration the result is ABSENT.
+inline std::pair<HyphaParamResult, HyphaConfigValue>
+readConfigValue(const std::string& name, const HyphaConfig* own = nullptr)
 {
     HyphaConfigValue   value{};
-    const HyphaConfig* config = configHandle();
+    const HyphaConfig* config = configOr(own);
     if (config == nullptr) {
         return {HYPHA_PARAM_RESULT_ABSENT, value};
     }
@@ -43,11 +51,15 @@ inline std::pair<HyphaParamResult, HyphaConfigValue> readConfigValue(const std::
 
 /// @brief The stored value of element @p index of the list @p name, or of its @p field. The
 ///        text rule of readConfigValue applies.
-inline std::pair<HyphaParamResult, HyphaConfigValue>
-readListConfigValue(const std::string& name, size_t index, const std::string& field)
+inline std::pair<HyphaParamResult, HyphaConfigValue> readListConfigValue(
+    const std::string& name,
+    size_t             index,
+    const std::string& field,
+    const HyphaConfig* own = nullptr
+)
 {
     HyphaConfigValue   value{};
-    const HyphaConfig* config = configHandle();
+    const HyphaConfig* config = configOr(own);
     if (config == nullptr) {
         return {HYPHA_PARAM_RESULT_ABSENT, value};
     }
@@ -58,9 +70,10 @@ readListConfigValue(const std::string& name, size_t index, const std::string& fi
 }
 
 /// @brief The length of the TOML array @p name. A missing name is ABSENT.
-inline HyphaParamResult paramListLength(const std::string& name, size_t* outLen)
+inline HyphaParamResult
+paramListLength(const std::string& name, size_t* outLen, const HyphaConfig* own = nullptr)
 {
-    return ::hypha_config_list_len(configHandle(), name.data(), name.size(), outLen);
+    return ::hypha_config_list_len(configOr(own), name.data(), name.size(), outLen);
 }
 
 /// The lines of @p text, which is empty for no line.
@@ -84,9 +97,10 @@ inline std::vector<std::string> splitLines(const std::string& text)
 }
 
 /// @brief Every unread key under @p prefix in the active configuration, sorted.
-inline std::vector<std::string> unreadParameterKeys(const std::string& prefix)
+inline std::vector<std::string>
+unreadParameterKeys(const std::string& prefix, const HyphaConfig* own = nullptr)
 {
-    const HyphaConfig* config = configHandle();
+    const HyphaConfig* config = configOr(own);
     if (config == nullptr) {
         return {};
     }
@@ -96,9 +110,10 @@ inline std::vector<std::string> unreadParameterKeys(const std::string& prefix)
 
 /// @brief The names of the tables directly under @p prefix, sorted; none without a
 ///        configuration.
-inline std::vector<std::string> tableNames(const std::string& prefix)
+inline std::vector<std::string>
+tableNames(const std::string& prefix, const HyphaConfig* own = nullptr)
 {
-    const HyphaConfig* config = configHandle();
+    const HyphaConfig* config = configOr(own);
     if (config == nullptr) {
         return {};
     }
@@ -108,9 +123,10 @@ inline std::vector<std::string> tableNames(const std::string& prefix)
 
 /// @brief Marks @p key, a key or a table, as set on purpose and not read, for @p reason.
 ///        Without a configuration nothing is set, so there is nothing to mark: Ok.
-inline ::HyphaStatus ignoreParameter(const std::string& key, const std::string& reason)
+inline ::HyphaStatus
+ignoreParameter(const std::string& key, const std::string& reason, const HyphaConfig* own = nullptr)
 {
-    const HyphaConfig* config = configHandle();
+    const HyphaConfig* config = configOr(own);
     if (config == nullptr) {
         return HYPHA_STATUS_OK;
     }
@@ -120,13 +136,31 @@ inline ::HyphaStatus ignoreParameter(const std::string& key, const std::string& 
 /// @brief The file name that the text parameter @p key holds, resolved against the
 ///        directory of the file that wrote @p key. InvalidState without a loaded
 ///        configuration, InvalidArgument when @p key holds no text.
-inline std::expected<std::string, Status> resolveConfigKey(const std::string& key)
+inline std::expected<std::string, Status>
+resolveConfigKey(const std::string& key, const HyphaConfig* own = nullptr)
 {
-    const HyphaConfig* config = configHandle();
+    const HyphaConfig* config = configOr(own);
     if (config == nullptr) {
         return std::unexpected(Status(HYPHA_STATUS_INVALID_STATE));
     }
     return readSizedText(::hypha_config_resolve_key, config, key.data(), key.size());
+}
+
+/// @brief A TOML file at @p path loaded by the parameter-file loader on its own, apart from
+///        the configuration of the process; the caller releases @p out with
+///        destroyConfigFile(). InvalidArgument when the file cannot be read or is refused
+///        (the loader logs the reason).
+inline Status loadConfigFile(const std::string& path, HyphaConfig** out)
+{
+    if (path.empty()) {
+        return Status(HYPHA_STATUS_INVALID_ARGUMENT);
+    }
+    return Status(::hypha_config_create(path.data(), path.size(), out));
+}
+
+inline void destroyConfigFile(HyphaConfig* config)
+{
+    ::hypha_config_destroy(config);
 }
 
 /// Record one configuration row of the node introspection. InvalidState without a

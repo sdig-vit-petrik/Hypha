@@ -177,8 +177,9 @@ examples/autoware/tools/port.py verify` (run by `./check.sh`) checks them.
 `point_field_conversion.h` needs `<sensor_msgs/PointField.h>` (or `PointCloud2.h`) before
 it, as upstream does. Left out: `fill_image.h` and `point_cloud_conversion.h` (the second
 needs the deprecated `sensor_msgs/PointCloud`, which hypha does not ship). The SDK has no
-counterpart of `camera_info_manager`: a port reads its camera calibration into a
-`sensor_msgs::CameraInfo` itself (#265 leaves that decision open).
+counterpart of `camera_info_manager` (it needs a `NodeHandle`, a service and a URL
+scheme): the calibration, in TOML, is read by `hypha::readCameraInfo()` and written by
+`hypha::writeCameraInfo()` (section 9, *Camera calibration*).
 `crates/hypha-cxx/test/test_sensor_msgs_companions.cpp` runs them.
 
 An application generates its own `.msg` and
@@ -1756,6 +1757,65 @@ for (const auto sensor : settings.list("sensors")) {
   table that the node does not read stays an unread key. It works inside a list entry
   too (`sensor.tables()`). The C ABI call is `hypha_config_table_names(config, prefix, ...)`,
   names joined by `'\n'` (`abi.revision` 14).
+- **Another TOML file.** `hypha::ConfigFile file(path)` loads a TOML file with the
+  parameter-file loader (`include`, `${NAME}`) apart from the node's configuration, and
+  `file.view(prefix)` reads it with every `ConfigView` reader; `path()` resolves against
+  that file's directory, `unreadKeys()` lists its unread keys, and its reads are no
+  parameters of the node (no manifest rows). A file that is missing or not TOML throws
+  `ConfigError` (the loader logs the reason with the line). Views borrow the file. No C
+  function of its own: it is `hypha_config_create` and the configuration readers.
+- **An optional file name.** `cfg.optionalPath(key)` is `path(key)`, or no value when
+  `key` is not set; a key that is set and empty throws as `path()` does.
+- **Camera calibration (#265, #316).** `<hypha/camera_info.h>` reads a camera
+  calibration into a `sensor_msgs::CameraInfo`, from a table of the parameter file or
+  from a file of its own, both TOML with the keys of the ROS calibration file:
+
+  ```toml
+  image_width = 640
+  image_height = 480
+  camera_name = "narrow_stereo"           # optional
+  distortion_model = "plumb_bob"
+  distortion_coefficients = [-0.3635, 0.1619, -0.0001, 0.0003, 0.0]   # any length
+  camera_matrix = [                       # 3 x 3, row-major (ROS's K)
+      430.215, 0.0, 306.691,
+      0.0, 430.532, 227.225,
+      0.0, 0.0, 1.0,
+  ]
+  rectification_matrix = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]   # 3 x 3 (R)
+  projection_matrix = [432.0, 0.0, 306.0, 0.0, 0.0, 432.0, 227.0, 0.0, 0.0, 0.0, 1.0, 0.0]  # 3 x 4 (P)
+  binning_x = 0                           # optional, 0 when absent
+  binning_y = 0                           # optional, 0 when absent
+  [roi]                                   # optional; each key optional, 0 or false
+  x_offset = 0
+  y_offset = 0
+  height = 0
+  width = 0
+  do_rectify = false
+  ```
+
+  A matrix is the flat row-major array (the `data` of the ROS file, as for any matrix
+  parameter) and its length is checked against its shape. In the node's own file the
+  keys sit in a table, `[camera_info]` (and `[camera_info.roi]`), read with
+  `hypha::readCameraInfo(hypha::config("camera_info"))`. A file of its own, which
+  `set_camera_info` can rewrite at run time, is
+  `hypha::readCameraInfo(hypha::config().path("camera_info_url"), &cameraName)`;
+  `readCameraInfoIfPresent(path)` returns no value when nothing is at `path`, so the
+  camera runs uncalibrated as with `camera_info_manager` (the driver logs it), and
+  `config().optionalPath("camera_info_url")` makes the key itself optional.
+  `hypha::writeCameraInfo(path, info, cameraName)` writes the same TOML (into
+  `<path>.tmp`, then renamed over `path`, creating missing directories) and refuses a
+  calibration the reader would refuse; what it writes reads back equal. The file is
+  read by the parameter-file loader through `ConfigFile`; the SDK holds no parser.
+  Strict, like a bad parameter: a missing key, an unknown key (a typo, or the ROS
+  `rows`/`cols`/`data` layout, which the message tells to flatten), a size of 0, a number
+  that is not finite, an empty `distortion_model` or a matrix of the wrong length throw
+  `ConfigError` naming the file or table and the key, so a bad calibration read in the
+  constructor or `setup()` ends the node with 78:
+  `hypha: camera calibration 'left.toml': camera_matrix: expected 3 x 3 = 9 elements, found 8`.
+  `header` of the result is empty: the driver names the frame and stamps each message.
+  The ROS calibration YAML is not read: convert it once by hand
+  ([ros1-migration-guide.md](ros1-migration-guide.md), the `camera_info_manager` row).
+  `crates/hypha-cxx/test/test_camera_info.cpp` runs it.
 - **Porting.** A ROS 1 list parameter, with the fixed-size form:
   [ros1-migration-guide.md](ros1-migration-guide.md#108-a-list-of-scalars-in-the-parameter-file).
 - **Without a bus.** A `hypha::ConfigContext` serves `hypha::config()` in a test
@@ -2018,7 +2078,8 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hyph
 | `hypha/cycle_transforms.h`, `hypha/transform_buffer.h`, `hypha/transform_types.h`, `hypha/testing.h` | `Transforms`; `TransformBuffer`, `StaticTransformBroadcaster`; `TransformError`, `TransformTopics`; `testing::StepHarness` |
 | `hypha/raw_api.h`, `hypha/raw.h`                                     | Raw endpoints, `lookupDefinition`, `listNodes`; `RawSample`, `NodeInfo`, `Metric`, `SubscriberMetrics`                                                                                                          |
 | `hypha/status.h`                                                       | `Status`, `ConfigError`, `require`                                                                                                                                                             |
-| `hypha/config.h`                                                       | `config()`, `ConfigView`, `ConfigContext`, `ParameterError`; it includes `config_list.h` (`ConfigList`), `config_matrix.h` (`Matrix`) and `constraints.h` (`constraints`)                                                                                                 |
+| `hypha/config.h`                                                       | `config()`, `ConfigView`, `ParameterError`; it includes `config_file.h` (`ConfigContext`, `ConfigFile`), `config_list.h` (`ConfigList`), `config_matrix.h` (`Matrix`) and `constraints.h` (`constraints`)                                                                                                 |
+| `hypha/camera_info.h`                                                  | `readCameraInfo`, `readCameraInfoIfPresent`, `writeCameraInfo`: the camera calibration in TOML as `sensor_msgs::CameraInfo`                                                              |
 | `hypha/introspection.h`, `hypha/metrics.h`                           | `introspect`, `nodeState`, `recordConfig`; `metrics`, `metric`                                                                                                                             |
 | `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h` | `Duration`, `Time`, literals; `now`, `isClockValid`, `steadyNow`, simulated time; `toRosTime`, `rosTimeFromSeconds`, `rosTimeFromNanos`, `fromRosTime`                                                                                             |
 | `hypha_base/short_namespace.h`                                     | the alias `hy` of `hypha`; `HYPHA_NO_SHORT_NAMESPACE` leaves it out                                                                                                                      |

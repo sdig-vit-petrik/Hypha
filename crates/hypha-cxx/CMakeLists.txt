@@ -398,6 +398,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_qos.cpp
     test/test_topic_overloading.cpp
     test/test_sensor_msgs_companions.cpp
+    test/test_camera_info.cpp
     test/test_sensor_msgs_ros2_names.cpp
   )
   # The services of test_services.cpp: the camera's typed setter, and a bounded echo; and

@@ -68,7 +68,7 @@ PROD_RATCHET = {
 # Prefer topic splits (<suite>/<topic>.rs, docs/<doc>/<topic>.md) when adding to these.
 SOFT_RATCHET = {
     # tests (>600)
-    "crates/hypha-cxx/test/test_step_harness.cpp": 1425,
+    "crates/hypha-cxx/test/test_step_harness.cpp": 1350,
     "crates/hypha-cxx/test/test_cycle_node.cpp": 1375,
     "crates/hypha_ffi/tests/replay_fidelity.rs": 1215,
     "crates/hypha_ffi/tests/cycle_abi/trigger.rs": 1055,
