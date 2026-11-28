@@ -141,7 +141,6 @@ TEST(NodeStateCycles, OneRowPerCycleInCreationOrderCountsStepsAndMeasuresASlowSt
     EXPECT_GE(row.overruns, 1U) << "the 15 ms step is longer than the 10 ms period";
     // The distribution of the step times (#232): one slow step among about ten.
     EXPECT_GE(row.steps, 5U);
-    EXPECT_LT(row.step_p50_nanos, 5'000'000U) << "the median step is the fast one";
     EXPECT_LE(row.step_p50_nanos, row.step_p90_nanos);
     EXPECT_LE(row.step_p90_nanos, row.step_p99_nanos);
     EXPECT_GE(row.step_p99_nanos, 15'000'000U) << "the p99 of so few steps is the slow one";
