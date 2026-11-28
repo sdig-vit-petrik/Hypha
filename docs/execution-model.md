@@ -594,8 +594,11 @@ the trigger that has no limit.
    upstream that also feeds the cycle a topic still has to report T. Without this a
    triggered client that calls a triggered server would hold for good: each would wait
    for the other to report T before its own step at T. A client and its server that are
-   cycles of one `WaitSet` hold each other in the same way, and the turn repeats its
-   timers while that lets a held step run.
+   cycles of one `WaitSet` hold each other in the same way, and the turn repeats their
+   timers while that lets a held step run, within the turn's step budget. Cycles of two
+   `WaitSet`s of one node report as one node and are not held: the cycle logs it, and their
+   replay is not deterministic. A peer that reports no progress (a tool, a plain node) is
+   no upstream: its requests and answers are read at the first step after they came.
 6. **Progress and loops.** A triggered cycle cannot know when its next trigger
    comes. It reports at most the lowest clock its topic upstreams reported, and stays
    below its earliest pending trigger or fallback. A request or a response steps no

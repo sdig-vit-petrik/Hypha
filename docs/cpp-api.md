@@ -1165,8 +1165,11 @@ class ControlManager final : public hypha::CycleNode {
   calls `requests()` reads none: they wait for a later step, bounded by the client's
   timeout. A step that fails sends no output and no answer: the requests it read end
   `ServerLost` (`server step failed`), because the step may have changed state.
-- A `Deferred<Srv>` from `defer()` is answered in a later step of any cycle of the node,
-  and that answer too leaves after its step; answered on another thread, it leaves at once.
+- A `Deferred<Srv>`, from `defer()` in a step or from a plain server's handler, answered
+  during a step of any cycle of the node leaves after that step, and `reply()` returns `Ok`
+  at once. A step that then fails answers it as failed: the client reads `ServerLost`
+  (`server step failed`), and the `Deferred` is used up. An answer that cannot leave after
+  the step is logged. Answered on another thread, or in a plain callback, it leaves at once.
   A chain of calls keeps the `Deferred` and one state per call over steps
   (`docs/design/native-services.md` §8.2).
 - `call()` stages a call: `Sent`, `Busy` (the port has `outstanding` calls in flight,
@@ -1174,14 +1177,25 @@ class ControlManager final : public hypha::CycleNode {
   stamped with its time. A step that fails sends none: each call it staged ends `NotSent`,
   which the next step reads.
 - `result()` gives the next outcome a step holds, `results()` all of them: the outcomes of
-  calls of earlier steps. An outcome the step does not read is dropped after it and counted,
-  so a port used to fire and forget does not wedge. Timeouts count in framework time: a
+  calls of earlier steps. An outcome a successful step does not read is dropped after it,
+  logged once and counted (`unreadResults()`), so a port used to fire and forget does not
+  wedge; a step that fails passes the outcomes it did not read to the next step. Timeouts count in framework time: a
   call of a step at S times out at the first step at or after S + timeout.
 - Under simulated time a step at T holds the requests and outcomes stamped before T, the
   requests in the order of stamp, client node, client port and sequence. A request is
   therefore served at the server's first step after the client's, and its answer read at
   the client's first step after that, whatever `--chunk` or turn order, also when client
-  and server are two cycles of one node (`execution-model.md` §6.6 item 5).
+  and server are two cycles of one `WaitSet` (`execution-model.md` §6.6 item 5). Two cycles
+  of two `WaitSet`s of one node are not held against each other: that is logged, and not
+  deterministic. A triggered server reads a request at its next trigger after the request:
+  a server triggered only by its client's topic serves the call of the client's step at `t`
+  at the trigger the client sends next, since the trigger at `t` and the request carry one
+  stamp and requests are cut before it.
+- A request from outside the replay (`hypha service call`, a plain node) is served at the
+  first step after it came, and the answer of a server that reports no progress is read at
+  the first step after it came, whatever their stamps: not deterministic, logged once.
+- A step that fails on replay fidelity (a lost input) has already sent its answers and
+  calls, as it has sent its outputs.
 - A `testing::StepHarness` does not drive these ports yet: a step under it that calls one
   throws `std::logic_error`.
 

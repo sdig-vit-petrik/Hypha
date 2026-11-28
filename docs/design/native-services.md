@@ -51,11 +51,23 @@ is silent:
   client is refused with the sizes after the step, as for a plain server.
 - **Outcomes reach a step in call order**; an outcome no step read is dropped after it,
   counted, and logged once per port at info level.
+- **The peers outside the replay** (review of part 1): a request or an answer of a peer
+  that reports no progress is read at the first step after it came, not by its stamp, so a
+  tool can call a cycle server during a replay and a cycle client gets the answer of a plain
+  server instead of a `Timeout` with the answer in hand. A cycle client names itself
+  `<index>/<cycle>` to its server (at most 64 bytes), so two cycles of one node on one port name do not tie;
+  the client's per-run id breaks a tie left only by a node whose name cannot be read.
+- **Outcomes a failed step did not read go to the next step**, as its `NotSent` calls do;
+  a successful step that does not read one drops it, logs at warn once per port and counts
+  it (`Calls::unreadResults()`, C `hypha_cycle_unread_results`; the `~/state` row is stage 2).
+- **A step that fails on replay fidelity** (a lost input) has already sent its answers and
+  calls, as it has sent its outputs: the fidelity check follows the sends.
 - **`per_step`** is at most the server's slots (`clients × outstanding`); a `Calls` port's
   `outstanding` defaults to 1, as section 8.6 says, and counts the calls staged in the step.
-- **ABI**: five functions (`hypha_cycle_bind_server`, `hypha_cycle_bind_client`,
-  `hypha_cycle_requests`, `hypha_cycle_next_result`, `hypha_cycle_call`), coarse as those of
-  1b (#276); revision 12, the unreleased revision of 1b.
+- **ABI**: six functions (`hypha_cycle_bind_server`, `hypha_cycle_bind_client`,
+  `hypha_cycle_requests`, `hypha_cycle_next_result`, `hypha_cycle_call`,
+  `hypha_cycle_unread_results`), coarse as those of 1b (#276); revision 12, the unreleased
+  revision of 1b.
 
 Each decision gives its reason. Where the author checked a change
 against the code and kept a different mechanism, an **author's note** says so, with the
@@ -315,7 +327,13 @@ Stage 1c tests this.
 **Remaining non-determinism, to document:**
 
 - a client or a server that is a plain callback, which takes no part in lockstep
-  (execution-model.md §11.2);
+  (execution-model.md §11.2). The cut binds only the peers that report progress: a cycle
+  server serves the request of a tool (`hypha service call`, stamped with the host's time)
+  or of a plain node at its first step after the request came, and a cycle client reads the
+  answer of a server that does not report at its first step after it came, whatever their
+  stamps; each port logs this once;
+- a client and a server that are cycles of two `WaitSet`s of one node: they report as one
+  node, and no hold orders them; the cycle logs it once;
 - a `Deferred` answered from a worker thread;
 - a call made before a non-participant server started;
 - the first chunk of a replay without `--nodes`.

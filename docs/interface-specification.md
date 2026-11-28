@@ -219,7 +219,7 @@ semantics and its `HYPHA_TF_*` results are those of a cycle's TF input
 
 A service is a request and its answer between nodes, typed by a `.srv`
 ([design/native-services.md](design/native-services.md)). The C ABI is coarse on
-purpose: fifteen functions, ten for plain nodes and five for the ports of a cycle, and
+purpose: sixteen functions, ten for plain nodes and six for the ports of a cycle, and
 every rule of a call decided below them, once.
 
 | Function | What it does |
@@ -239,6 +239,7 @@ every rule of a call decided below them, once.
 | `hypha_cycle_requests(emission, server, each, context)` | In a step: calls `each` with each request the step reads |
 | `hypha_cycle_next_result(emission, client, done, context, found)` | In a step: calls `done` with the next outcome the step holds |
 | `hypha_cycle_call(emission, client, request, len, status)` | In a step: stages a call, sent after the step |
+| `hypha_cycle_unread_results(emission, client, out)` | In a step: the outcomes successful steps did not read and dropped |
 
 - **Declaration.** `HyphaServiceDesc` names a port (`literal` 0: the `service` key of
   `[ports.servers.<port>]` or `[ports.clients.<port>]`) or the service (`literal` 1:
@@ -304,8 +305,11 @@ every rule of a call decided below them, once.
   that sends nothing ends it `NOT_SENT`, held for the next step. `hypha_cycle_next_result`
   gives the outcomes a step holds, in call order, writing `found` 0 after the last: those
   that came before the step (on simulated time, stamped before its time) and the calls
-  whose deadline is at or before the step's time; an outcome the step does not take is
-  dropped after it. Deadlines are counted from the step that staged the call, on its
+  whose deadline is at or before the step's time; an outcome a successful step does not
+  take is dropped after it and counted (`hypha_cycle_unread_results`), and one a step that
+  sends nothing did not take goes to the next step. The cut binds the requests and answers
+  of peers that report progress only; those of a tool or a plain node are read at the first
+  step after they came. Deadlines are counted from the step that staged the call, on its
   scheduling clock. The three take the step's emission handle; a null one is
   `InvalidArgument`.
 
