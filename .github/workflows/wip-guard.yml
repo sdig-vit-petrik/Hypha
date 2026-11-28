@@ -1,0 +1,29 @@
+# Notifies the maintainer when non-draft open PRs into develop exceed the WIP cap (5).
+name: wip-guard
+
+on:
+  pull_request:
+    branches: [develop]
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  check-wip:
+    if: "!github.event.pull_request.draft"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check open non-draft PR count
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          WIP_LIMIT: "5"
+        run: |
+          count="$(gh pr list --repo "$REPO" --base develop --state open --json isDraft --jq '[.[] | select(.isDraft | not)] | length')"
+          echo "Non-draft open PRs into develop: ${count} (limit ${WIP_LIMIT})"
+          if [[ "$count" -gt "$WIP_LIMIT" ]]; then
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
+              "⚠️ @sdig-vit-petrik WIP limit exceeded: **${count}** non-draft PRs are open against \`develop\` (cap: ${WIP_LIMIT}). Merge or close existing PRs before spawning more to avoid conflict churn."
+          fi
