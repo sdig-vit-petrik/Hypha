@@ -93,7 +93,7 @@ SOFT_RATCHET = {
     # docs (>600)
     "docs/cpp-api.md": 1331,
     "docs/ros1-migration-guide.md": 1327,
-    "docs/execution-model.md": 1108,
+    "docs/execution-model.md": 890,
     "docs/tools.md": 1105,
     "docs/interface-specification.md": 637,
 }
