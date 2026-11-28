@@ -42,7 +42,7 @@ fn a_missing_silence_ms_is_not_available() {
     assert_eq!(outcome.status, HyphaStatus::NotAvailable);
     assert_eq!(
         outcome.detail,
-        "missing key 'silence_ms': a required input needs a limit, or the tag hypha::unsupervised"
+        "missing key 'silence_ms': an input needs a limit, 0 for none, or the tag hypha::unsupervised"
     );
 }
 

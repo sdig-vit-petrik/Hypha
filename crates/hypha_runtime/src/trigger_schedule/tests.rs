@@ -61,10 +61,42 @@ fn run(s: &mut TriggerSchedule, pending: &[i64], clock: TriggerClock<'_>) -> Vec
 }
 
 #[test]
-fn new_refuses_a_silence_that_is_not_positive() {
-    assert!(TriggerSchedule::new(&[0]).is_none());
+fn new_refuses_a_negative_silence_and_takes_zero_as_no_limit() {
     assert!(TriggerSchedule::new(&[-1]).is_none());
-    assert!(TriggerSchedule::new(&[S, 0]).is_none(), "every port needs a limit");
+    assert!(TriggerSchedule::new(&[S, -1]).is_none());
+    assert!(TriggerSchedule::new(&[0]).is_some(), "an untimed trigger");
+    assert!(TriggerSchedule::new(&[S, 0]).is_some(), "an untimed trigger beside a timed one");
+}
+
+#[test]
+fn a_schedule_of_untimed_triggers_has_no_fallback() {
+    let mut s = one(0);
+    assert_eq!(s.shortest(), None);
+    let year = 365 * 24 * 3_600 * 1_000_000_000_i64;
+    assert_eq!(run(&mut s, &[], host(0)), vec![]);
+    assert_eq!(run(&mut s, &[], host(year)), vec![], "no step without a trigger");
+    assert_eq!(s.next_fallback(), None);
+    assert_eq!(run(&mut s, &[year + 5], host(year + 5)), vec![trigger(year + 5, 0)]);
+    assert_eq!(run(&mut s, &[], host(2 * year)), vec![]);
+}
+
+#[test]
+fn an_untimed_trigger_is_never_late() {
+    let mut s = one(0);
+    assert_eq!(run(&mut s, &[10], host(1_000_000)), vec![trigger(10, 0)]);
+}
+
+#[test]
+fn the_fallback_counts_only_the_timed_triggers_and_never_marks_an_untimed_one_due() {
+    let mut s = TriggerSchedule::new(&[0, S]).unwrap();
+    assert_eq!(s.shortest(), Some(S));
+    assert_eq!(run_ports(&mut s, &[vec![], vec![]], host(0)), vec![]);
+    assert_eq!(run_ports(&mut s, &[vec![], vec![]], host(S)), vec![fallback(S, &[1])]);
+    let mut sim_schedule = TriggerSchedule::new(&[0, S]).unwrap();
+    let events = run_ports(&mut sim_schedule, &[vec![], vec![]], sim(0));
+    assert_eq!(events, vec![]);
+    let events = run_ports(&mut sim_schedule, &[vec![], vec![]], sim(2 * S));
+    assert_eq!(events, vec![fallback(S, &[1]), fallback(2 * S, &[1])]);
 }
 
 #[test]

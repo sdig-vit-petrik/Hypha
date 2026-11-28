@@ -594,16 +594,35 @@ port table refused in `setup()` exits 78 as it does in a cycle.
 
 Three tags of an input answer three separate questions; none implies another:
 
-| Tag             | Question it answers                        | `silence_ms`                  | Counts for `inputsOk()` and the node state |
-| --------------- | ------------------------------------------ | ----------------------------- | ------------------------------------------ |
-| `optionalTopic` | May the deployment leave the port unwired? | as without the tag            | a disabled port is not judged              |
-| `advisory`      | Is the node healthy without this input?    | optional; supervised if given | no                                         |
-| `unsupervised`  | Does the input have an age limit at all?   | refused; never stale          | yes                                        |
+| Tag             | Question it answers                        | `silence_ms`                         | Counts for `inputsOk()` and the node state |
+| --------------- | ------------------------------------------ | ------------------------------------ | ------------------------------------------ |
+| `optionalTopic` | May the deployment leave the port unwired? | as without the tag                   | a disabled port is not judged              |
+| `advisory`      | Is the node healthy without this input?    | as without the tag                   | no                                         |
+| `unsupervised`  | Has the input no age limit, by its nature? | refused; never stale                 | yes, unless also `advisory`                |
 
-`advisory` and `unsupervised` exclude each other (`start()` fails). An input that
-counts for health and is not `unsupervised` needs a `silence_ms` ("Input
-supervision"). `ignored = true` in the table is the operator's override of what
-`advisory` promises: the port starts with its fault overridden.
+Every enabled input states its time limit, advisory or not: a `silence_ms` in its table,
+or the tag `unsupervised` ("Input supervision"); without either, `start()` fails. An
+input has **no time limit** (it is *untimed*) when its table sets `silence_ms = 0`, a ROS
+timeout of 0.0 that the deployment chooses, or when its code tags it `unsupervised`, for
+an input that never has one (a configuration topic, a port without a table). An untimed
+input is `NeverArrived` before its first sample, `Usable` from it on until a later sample
+replaces the value, and never `stale()`; `port.untimed()` says so, so the node needs not
+read `silence_ms` itself. `advisory` and `unsupervised` combine: an input that may never
+be published and never expires (an operator's pause switch). A required untimed input
+keeps the node `WAITING` until its first sample. `ignored = true` in the table is the
+operator's override of what `advisory` promises: the port starts with its fault
+overridden; an untimed input has no fault, and the key is refused on it.
+
+```cpp
+// twist_mux: a lock masks the velocities below its priority. One declaration for every
+// lock; the table of each says whether it expires (silence_ms = 500) or not (0).
+hypha::Latest<std_msgs::Bool> lock{*this, name, hypha::advisory};
+
+bool masks() const  // ROS: hasExpired() || getMessage().data
+{
+    return this->lock.usable() ? this->lock->data : !this->lock.untimed();
+}
+```
 
 ### 5.4 Cycle node (L3)
 
@@ -747,16 +766,18 @@ of the sample, or reads `port.sentAt(0)`, its host-monotonic send time, which is
 wall time (execution-model.md §6.6 item 2). Each trigger has its own `silence_ms`: `usable()` and
 `stale()` of every trigger port judge its newest sample against it in every step. After
 the shortest `silence_ms` without a step a fallback step runs with every trigger empty
-and each trigger that is past its own limit `stale()`. An `Arrivals` port that is no
-trigger holds, in a trigger step, the samples sent up to the trigger sample, the ones
-one upstream step sent with it included; a later one is in a later step. Under
-simulated time that is every sample stamped at or before the step's time T, on every
-port. The rules are in
+and each trigger that is past its own limit `stale()`. An untimed trigger
+(`silence_ms = 0`, or `unsupervised`) has no limit of its own: it is never `stale()`, and
+the fallback runs after the shortest limit of the other triggers; a cycle whose triggers
+are all untimed runs no fallback and no step before its first trigger sample, as a ROS
+callback with no timeout. An `Arrivals` port that is no trigger holds, in a trigger step,
+the samples sent up to the trigger sample, the ones one upstream step sent with it
+included; a later one is in a later step. Under simulated time that is every sample
+stamped at or before the step's time T, on every port. The rules are in
 execution-model.md §6.6. `examples/mrs/managers/estimation_manager.cpp` and
 `control_manager.cpp` are triggered cycles. `start()` fails for a rate with a trigger
 ("a rate and a trigger exclude each other"), a `Latest` trigger ("the trigger must be
-an Arrivals port"), a trigger without `silence_ms`, also when `unsupervised` (the error
-names the port), and two triggers on one topic through `sharing()`.
+an Arrivals port"), and two triggers on one topic through `sharing()`.
 
 In a `StepHarness` test of a triggered step, `deliver()` the sample of the port that
 fires, and `deliver(port, {}, sentAt)` each other trigger with the send time of its
@@ -928,21 +949,20 @@ ignored = false          # optional; default false
 
 The parameter file cannot switch supervision off, and code sets no limit value:
 
-- `silence_ms` is required on an enabled input that counts for health and is not
-  `unsupervised`, optional on an `advisory` one, refused on an `unsupervised` one.
-  `unsupervised` with `advisory` fails `start()`. `stagnation_ms` is required with
-  `setAlive()` and refused without it.
+- `silence_ms` is required on an enabled input, `advisory` or not, unless it is
+  `unsupervised`, and refused on an `unsupervised` one. `silence_ms = 0` is no time limit.
+  `stagnation_ms` is required with `setAlive()` and refused without it.
 - A missing required key fails `start()` with `NotAvailable`, and a `CycleNode` under
   `runNode` exits 78 (a composed cycle exits as the application decides):
-  `hypha: cycle '<cycle>': input '<port>': missing key 'silence_ms': a required input needs a limit, or the tag hypha::unsupervised: NotAvailable`.
-- A limit is 1 ms to 3600 s; `limitMax(d)` lowers the top for the port. A value outside
+  `hypha: cycle '<cycle>': input '<port>': missing key 'silence_ms': an input needs a limit, 0 for none, or the tag hypha::unsupervised: NotAvailable`.
+- A limit is 0 (none) or 1 ms to 3600 s; `limitMax(d)` lowers the top for the port. A value outside
   fails `start()`; the library never clamps. The limit is inclusive: a value exactly
   `silence_ms` old is usable.
 - An unknown key fails `start()`, naming the port and the key (known: `topic`,
   `ignored`, `silence_ms`, and `stagnation_ms` with `setAlive()`, and any other key the
   application read before `start()`: section 9, port tables).
-- A sharing port has no `topic` key; a port without a table name that counts for health
-  needs `unsupervised`, else `start()` fails with `a required input without a table needs the tag hypha::unsupervised`.
+- A sharing port has no `topic` key; an enabled port without a table name, advisory or
+  not, reads no limit and needs `unsupervised`, else `start()` fails with `an input without a table has no time limit and needs the tag hypha::unsupervised`.
 - A port with no silence limit and no `setAlive()` is never stale. A disabled port needs
   no limits. `ignored = true` starts the port with its fault overridden, and fails
   `start()` on a port with no limit.

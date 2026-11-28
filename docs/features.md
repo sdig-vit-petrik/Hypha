@@ -116,7 +116,8 @@ fault.**
 
 | Feature | Question it answers | API | Users |
 |---|---|---|---|
-| Silence limit | Is this input too old to use? | `silence_ms` (required on every input that counts for health), `stale()`, `unsupervised` (the code's way to run without one), `limitMax`, `hypha_cycle_bind_input_supervision`, `HyphaCycleBindingView.supervision` | app 3, mrs 3, ex 1 |
+| Silence limit | Is this input too old to use? | `silence_ms` (required on every enabled input, advisory or not; `0` is no limit), `stale()`, `unsupervised` (the code's way to run without one), `limitMax`, `hypha_cycle_bind_input_supervision`, `HyphaCycleBindingView.supervision` | app 3, mrs 3, ex 1 |
+| Untimed input | Has this input no time limit (a ROS timeout of 0.0)? | `silence_ms = 0` or `unsupervised`, `Input::untimed()`, `IntrospectedInput.silence_nanos = 0` (#238) | ex twist_mux |
 | Stagnation | Did the source behind a relay (driver, bridge, gateway) stop while the relay still sends? | `stagnation_ms`, `setAlive()`, `stagnant()`, `limitMax` | app 1 |
 | Inputs of a step | May this step trust its inputs? | `Cycle::inputsOk()` | app 1 |
 | Ignore override | Should this fault count right now? | `ignored`, `setIgnored()`, `cycle_supervision.h` | app 1 |
@@ -224,7 +225,7 @@ that move bytes of any type; a new application use needs the owner's approval.
 | Item | Decision |
 |---|---|
 | Callback endpoints beside cycles | Keep both; see §3.2 rule. |
-| Input limits | Always read `silence_ms` / `stagnation_ms` from port tables; `limitMax` bounds them in code; `ignored = true` without a limit is refused. |
+| Input limits | Always read `silence_ms` / `stagnation_ms` from port tables; `limitMax` bounds them in code; `ignored = true` without a limit is refused. An untimed input is declared, never omitted: `silence_ms = 0` or `unsupervised`; it is never stale, and an untimed trigger runs no fallback (#238). |
 | Time & stamps | `toRosTime` throws `std::out_of_range` instead of returning `std::optional`. `fromSeconds` / `Duration * double` throw on NaN/Inf (`tryFromSeconds` is the non-throwing form, #126). `hypha::now()` returns `CycleTime::now` during a step. `Rate` and clock sleeps removed in favor of `Node::timer`. |
 | Process & threading | Multiple `Node`s share one session (ref-counted) and one config (#97, #208). Concurrent `WaitSet` access is detected via atomic owner token and returns `InvalidState` (#83). `TransformBuffer` lookups never block (#91). |
 | Replay & rewinds | Simulated time going backward ends the run with `ClockRewound` and restarts the process (FSR-37); in-place rewind removed (#130). `HYPHA_REPLAY_LOCKSTEP=0` selects open-loop playback (#102). Plain callbacks do not participate in lockstep (#153). |

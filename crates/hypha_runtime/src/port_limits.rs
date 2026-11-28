@@ -6,10 +6,12 @@
 //! key that the application has read before the call; nested keys count as one dotted
 //! name. The check never marks an application key read.
 //!
-//! An enabled input that counts for health must set `silence_ms` unless tagged
-//! `unsupervised`, which must not set it. `topic` is refused on a port that takes a
-//! Source. Limits are integer milliseconds inside their range. `ignored` defaults to
-//! false, and `true` on a port with no limit is refused.
+//! An enabled input, advisory or not, must set `silence_ms` unless tagged `unsupervised`,
+//! which must not set it: an input has no time limit only when it says so (#238).
+//! `silence_ms = 0` is an input with no time limit (a ROS timeout of 0.0), as the tag is.
+//! `topic` is refused on a port that takes a Source. Limits are integer milliseconds
+//! inside their range. `ignored` defaults to false, and `true` on a port with no limit is
+//! refused.
 
 use hypha_core::introspection::{ConfigRow, ConfigSource, IntrospectionRegistry};
 use hypha_core::parameters::{ParamValue, Parameters};
@@ -49,20 +51,19 @@ pub struct SupervisionLimits {
     pub stagnation_nanos: i64,
 }
 
-/// What the code declared about a port.
+/// What the code declared about a port. Whether the port is advisory plays no part: the
+/// limit is one question, health another.
 #[derive(Debug, Clone, Copy)]
 pub struct Declared {
-    /// The port is advisory: it does not count for health, so `silence_ms` is optional.
-    pub advisory: bool,
     /// The port is tagged `unsupervised`: it runs without a silence limit.
     pub unsupervised: bool,
     /// Whether the port declares a stagnation check.
     pub stagnation: bool,
 }
 
-/// The detail of a required input that has no limit.
-pub const MISSING_SILENCE: &str =
-    "missing key 'silence_ms': a required input needs a limit, or the tag hypha::unsupervised";
+/// The detail of an enabled input whose table states no limit.
+pub const MISSING_SILENCE: &str = "missing key 'silence_ms': an input needs a limit, 0 for none, \
+     or the tag hypha::unsupervised";
 
 /// The limits and the ignore flag that a table sets.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -118,39 +119,29 @@ pub fn supervise(
         return Err(PortError::Invalid("a port that reads a Source takes no topic".to_owned()));
     }
     let silence_key = port.parameters.has(&format!("{}.silence_ms", port.entry));
-    let both_tags = declared.unsupervised && declared.advisory;
-    if both_tags {
-        return Err(PortError::Invalid(
-            "the tags unsupervised and advisory exclude each other".to_owned(),
-        ));
-    }
     let unsupervised_with_limit = declared.unsupervised && silence_key;
     if unsupervised_with_limit {
         return Err(PortError::Invalid(
             "key 'silence_ms' on a port tagged unsupervised".to_owned(),
         ));
     }
-    let required = !declared.advisory && !declared.unsupervised;
-    let wants_silence = required || silence_key;
     if !read_limits {
         return Ok(Supervision::default());
     }
-    if !(wants_silence || declared.stagnation) {
+    let mut limits = SupervisionLimits::default();
+    if !declared.unsupervised {
+        limits.silence_nanos = read_silence(port, ranges).map_err(|error| match error {
+            PortError::Missing(_) => PortError::Missing(MISSING_SILENCE.to_owned()),
+            other @ PortError::Invalid(_) => other,
+        })?;
+    }
+    if limits.silence_nanos == 0 && !declared.stagnation {
         if read_ignored(port)? {
             return Err(PortError::Invalid(
                 "key 'ignored' needs a silence_ms or stagnation_ms limit".to_owned(),
             ));
         }
         return Ok(Supervision::default());
-    }
-    let mut limits = SupervisionLimits::default();
-    if wants_silence {
-        limits.silence_nanos =
-            read_limit(port, "silence_ms", ranges.silence_min_nanos, ranges.silence_max_nanos)
-                .map_err(|error| match error {
-                    PortError::Missing(_) => PortError::Missing(MISSING_SILENCE.to_owned()),
-                    other @ PortError::Invalid(_) => other,
-                })?;
     }
     if declared.stagnation {
         limits.stagnation_nanos = read_limit(
@@ -202,8 +193,23 @@ fn unknown_key(port: Port<'_>, prefix: &str, check_stagnation: bool) -> Option<S
 }
 
 /// Read the millisecond key `key` of the port entry, as nanoseconds inside `min..=max`.
-/// The value is recorded before its range is checked.
 fn read_limit(port: Port<'_>, key: &str, min: i64, max: i64) -> Result<i64, PortError> {
+    let millis = read_millis(port, key)?;
+    within(key, millis, min, max)
+}
+
+/// Read `silence_ms` of the port entry: zero is an input with no time limit, any other
+/// value nanoseconds inside the silence range.
+fn read_silence(port: Port<'_>, ranges: &SupervisionRanges) -> Result<i64, PortError> {
+    let millis = read_millis(port, "silence_ms")?;
+    if millis == 0 {
+        return Ok(0);
+    }
+    within("silence_ms", millis, ranges.silence_min_nanos, ranges.silence_max_nanos)
+}
+
+/// The integer millisecond key `key` of the port entry, recorded as it was read.
+fn read_millis(port: Port<'_>, key: &str) -> Result<i64, PortError> {
     let full_name = format!("{}.{key}", port.entry);
     let millis = match port.parameters.value(&full_name) {
         None => return Err(PortError::Missing(format!("missing key '{key}'"))),
@@ -213,6 +219,11 @@ fn read_limit(port: Port<'_>, key: &str, min: i64, max: i64) -> Result<i64, Port
         }
     };
     record(port, full_name, millis.to_string(), None, ConfigSource::Parameter);
+    Ok(millis)
+}
+
+/// `millis` of key `key` as nanoseconds inside `min..=max`, refused, never clamped, outside.
+fn within(key: &str, millis: i64, min: i64, max: i64) -> Result<i64, PortError> {
     let nanos = millis.checked_mul(NANOS_PER_MILLI).filter(|nanos| (min..=max).contains(nanos));
     nanos.ok_or_else(|| PortError::Invalid(format!("key '{key}' is outside its range")))
 }

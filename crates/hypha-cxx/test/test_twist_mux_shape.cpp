@@ -1,7 +1,8 @@
 // The shape of twist_mux as one triggered cycle: velocity inputs that each trigger the
 // step, in priority order, and locks that mask the velocities below their priority. The
 // step asks no clock and never which port fired. The priority of each input is a key of its
-// port table, read before the cycle starts.
+// port table, read before the cycle starts. A ROS timeout of 0.0 (no timeout) is
+// `silence_ms = 0` in the table: the node never reads `silence_ms` itself (#238).
 
 #include "hypha/cycle_node.h"
 #include "hypha/hypha.h"
@@ -47,9 +48,11 @@ class TwistMux final : public hypha::CycleNode
                 {name, priorityOf(name), std::make_unique<Arrivals<Twist>>(*this, name, advisory)}
             );
         }
+        // A lock is advisory: the node is healthy without it, as in ROS, and a lock that
+        // never arrived or expired masks (fail safe).
         for (const std::string& name : lockInputs) {
             this->locks_.push_back(
-                {name, priorityOf(name), std::make_unique<Latest<Bool>>(*this, name)}
+                {name, priorityOf(name), std::make_unique<Latest<Bool>>(*this, name, advisory)}
             );
         }
         std::ranges::stable_sort(this->velocities_, std::greater{}, &Velocity::priority);
@@ -122,12 +125,15 @@ class TwistMux final : public hypha::CycleNode
         return *found;
     }
 
-    /// The highest priority a lock masks: a lock that is not usable counts as locked.
+    /// The highest priority a lock masks. A usable lock masks while its value is true; one
+    /// that is not usable masks when it has a time limit (it expired, or never arrived), and
+    /// an untimed lock (`silence_ms = 0`, ROS timeout 0.0) is free until its first message.
     int64_t lockedPriority() const
     {
         int64_t locked = 0;
         for (const Lock& lock : this->locks_) {
-            if (!lock.port->usable() || (*lock.port)->data) {
+            const bool masks = lock.port->usable() ? (*lock.port)->data : !lock.port->untimed();
+            if (masks) {
                 locked = std::max(locked, lock.priority);
             }
         }
@@ -143,14 +149,18 @@ std::string topicFor(const std::string& name)
     return hypha_test::testTopic("/mux_" + name);
 }
 
-/// The parameter file of the mux: one table for each input, with its limit (500 ms on a
-/// velocity, 1 s on the lock) and its priority.
-std::string parameters(int64_t lockPriority = 255)
+/// The parameter file of the mux: one table for each input, with its limit and its
+/// priority. The joystick has 500 ms, the navigation @p navigationMs (0: a ROS timeout of
+/// 0.0, no limit), the e-stop lock 1 s, and the pause lock no limit.
+std::string parameters(int64_t lockPriority = 255, int navigationMs = 500)
 {
     std::string text;
     for (const auto& [port, silenceMs, priority] :
          std::vector<std::tuple<std::string, int, int64_t>>{
-             {"joystick", 500, 100}, {"navigation", 500, 10}, {"e_stop", 1000, lockPriority}
+             {"joystick", 500, 100},
+             {"navigation", navigationMs, 10},
+             {"e_stop", 1000, lockPriority},
+             {"pause", 0, 200}
          }) {
         text += "[ports.inputs." + port + "]\ntopic='" + topicFor(port) + "'\nsilence_ms = "
               + std::to_string(silenceMs) + "\npriority = " + std::to_string(priority) + "\n";
@@ -159,7 +169,7 @@ std::string parameters(int64_t lockPriority = 255)
 }
 
 const std::vector<std::string> kVelocities{"navigation", "joystick"};
-const std::vector<std::string> kStop{"e_stop"};
+const std::vector<std::string> kStop{"e_stop", "pause"};
 
 Twist twist(double x)
 {
@@ -318,16 +328,51 @@ TEST_F(TwistMuxHarness, AFallbackForwardsNothing)
     EXPECT_TRUE(sentX(harness, mux).empty());
 }
 
+TEST_F(TwistMuxHarness, AnUntimedLockIsFreeUntilItsFirstMessageAndNeverExpires)
+{
+    TwistMux                    mux(kVelocities, kStop);
+    hypha::testing::StepHarness harness{mux};
+    harness.set(mux.lock("e_stop"), Bool{});
+    EXPECT_TRUE(mux.lock("pause").untimed()) << "from silence_ms = 0, as a start decides";
+    EXPECT_FALSE(mux.lock("e_stop").untimed());
+    harness.setNeverArrived(mux.lock("pause"));
+    harness.deliver(mux.velocity("joystick"), {twist(1.0)}, before(0));
+    harness.deliver(mux.velocity("navigation"), {}, before(0));
+    harness.step(mux, at(kNow));
+    EXPECT_EQ(sentX(harness, mux), std::vector<double>{1.0}) << "never set: free";
+    Bool paused;
+    paused.data = true;
+    // Sent ten hours before the step: an untimed lock holds its value until it is replaced.
+    harness.deliver(mux.lock("pause"), paused, before(36'000'000));
+    harness.deliver(mux.velocity("joystick"), {twist(1.0)}, before(0));
+    harness.step(mux, at(kNow));
+    EXPECT_TRUE(mux.lock("pause").usable());
+    EXPECT_TRUE(sentX(harness, mux).empty()) << "set long ago: still locked";
+}
+
+TEST_F(TwistMuxHarness, AVelocityWithRosTimeoutZeroIsUsableForEver)
+{
+    this->load(parameters(255, 0));
+    TwistMux                    mux(kVelocities, kStop);
+    hypha::testing::StepHarness harness{mux};
+    harness.set(mux.lock("e_stop"), Bool{});
+    harness.deliver(mux.velocity("joystick"), {}, before(600));
+    harness.deliver(mux.velocity("navigation"), {twist(2.0)}, before(36'000'000));
+    harness.step(mux, at(kNow));
+    EXPECT_TRUE(mux.velocity("navigation").untimed());
+    EXPECT_EQ(sentX(harness, mux), std::vector<double>{2.0}) << "a ten-hour-old sample";
+}
+
 namespace {
 
 /// A node for the mux on the bus, under simulated time when @p simulated.
 class TwistMuxBus : public ::testing::Test
 {
   protected:
-    void start(bool simulated)
+    void start(bool simulated, int navigationMs = 500)
     {
         this->path = std::filesystem::temp_directory_path() / "hypha_twist_mux_bus.toml";
-        std::ofstream(this->path) << parameters();
+        std::ofstream(this->path) << parameters(255, navigationMs);
         if (simulated) {
             ASSERT_TRUE(hypha::enableSimTime(Time::fromNanos(kNow)));
         }
@@ -420,11 +465,35 @@ TEST_F(TwistMuxBus, IdleVelocityInputsDoNotDegradeState)
     EXPECT_EQ(nodeStateNow(), hypha_msgs::NodeState::INPUTS_USABLE);
 }
 
-TEST_F(TwistMuxBus, AMissingLockShowsWaiting)
+TEST_F(TwistMuxBus, AnUntimedLockAndVelocityThatNeverArrivedLeaveTheNodeHealthy)
+{
+    this->start(false, 0);
+    TwistMux mux(kVelocities, kStop);
+    ASSERT_TRUE(mux.start(*this->node));
+    auto lock = this->publisherOf<Bool>("e_stop");
+    ASSERT_TRUE(lock.publish(Bool{}));
+    // The joystick's 500 ms are the only fallback: the navigation has no limit.
+    ASSERT_TRUE(this->node->runFor(700_ms).ok());
+    EXPECT_EQ(nodeStateNow(), hypha_msgs::NodeState::INPUTS_USABLE);
+    EXPECT_TRUE(mux.lock("pause").untimed());
+    EXPECT_TRUE(mux.velocity("navigation").untimed());
+    EXPECT_EQ(mux.lock("pause").verdict(), hypha::InputVerdict::NeverArrived);
+    const auto introspection = hypha::introspect();
+    ASSERT_TRUE(introspection.has_value());
+    for (const auto& input : introspection->input_bindings) {
+        const bool untimed =
+            input.topic == topicFor("pause") || input.topic == topicFor("navigation");
+        EXPECT_EQ(input.silence_nanos == 0, untimed) << input.topic << " shows its limit";
+    }
+}
+
+TEST_F(TwistMuxBus, ANeverArrivedTimedLockMasksWithoutDegradingState)
 {
     this->start(false);
     TwistMux mux(kVelocities, kStop);
     ASSERT_TRUE(mux.start(*this->node));
     ASSERT_TRUE(this->node->runFor(700_ms).ok());
-    EXPECT_EQ(nodeStateNow(), hypha_msgs::NodeState::WAITING);
+    EXPECT_EQ(nodeStateNow(), hypha_msgs::NodeState::INPUTS_USABLE) << "every input is advisory";
+    EXPECT_EQ(mux.lock("e_stop").verdict(), hypha::InputVerdict::NeverArrived);
+    EXPECT_FALSE(mux.lock("e_stop").untimed()) << "so it masks";
 }

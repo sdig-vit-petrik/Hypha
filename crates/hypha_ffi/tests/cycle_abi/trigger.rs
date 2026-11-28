@@ -172,15 +172,17 @@ fn commit_refuses_a_trigger_on_a_cycle_with_a_rate() {
     unsafe { supervise(cycle, fixture.node, index) };
     assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, index) }, HyphaStatus::Ok);
     assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::InvalidArgument);
+    let error = last_error();
+    assert!(error.contains("a rate and a trigger exclude each other"), "{error}");
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
 }
 
 #[test]
-fn commit_refuses_a_trigger_without_a_silence_limit() {
+fn a_trigger_without_a_silence_limit_commits() {
     let fixture = Fixture::new();
     let (cycle, index) = fixture.cycle(0, HyphaCycleInputMode::Queued);
     assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, index) }, HyphaStatus::Ok);
-    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::InvalidArgument);
+    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
 }
 
@@ -752,20 +754,23 @@ fn two_ports_on_one_topic_are_refused() {
 }
 
 #[test]
-fn commit_refuses_any_trigger_without_a_silence_limit_and_names_it() {
+fn an_untimed_trigger_beside_a_timed_one_is_never_stale_in_a_fallback() {
     let fixture = Fixture::new();
+    let recorder = Recorder::default();
     let limited = trigger_input(&fixture, 8);
-    let unlimited = trigger_input(&fixture, 8);
-    let cycle = period_less_cycle(&fixture, Some(empty_step), ptr::null_mut());
+    let untimed = trigger_input(&fixture, 8);
+    let cycle = period_less_cycle(&fixture, Some(record_step), recording(&recorder));
     let index = bind_queued(cycle, limited.source, 1);
-    add_trigger(&fixture, cycle, index, 1_000 * MILLIS);
-    let bare = bind_queued(cycle, unlimited.source, 1);
+    add_trigger(&fixture, cycle, index, SILENCE_NANOS);
+    let bare = bind_queued(cycle, untimed.source, 1);
     assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, bare) }, HyphaStatus::Ok);
-    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::InvalidArgument);
-    let error = last_error();
-    let reason = format!("its trigger input ({}) needs a positive silence limit", unlimited.topic);
-    assert!(error.contains(&reason), "{error}");
-    destroy(cycle, &[limited.publisher, unlimited.publisher]);
+    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
+    assert!(run_until(fixture.waitset, POLL_BOUND, || !recorder.steps().is_empty()));
+    let fallback = &recorder.steps()[0];
+    assert_eq!(fallback.fired(), None, "the timed trigger's fallback: {fallback:?}");
+    assert_ne!(fallback.ports[0].faults & HYPHA_FAULT_STALE, 0, "{fallback:?}");
+    assert_eq!(fallback.ports[1].faults, 0, "an untimed trigger is never stale: {fallback:?}");
+    destroy(cycle, &[limited.publisher, untimed.publisher]);
 }
 
 #[test]
