@@ -434,6 +434,20 @@ class PostEdit(unittest.TestCase):
         )
         self.assertEqual(found, [])
 
+    def test_crate_boundaries_and_ffi_symbol_findings(self) -> None:
+        found = self.findings(
+            'fn f() {\n    std::thread::spawn(|| {});\n    let _ = std::env::var("X");\n}\n',
+            "crates/hypha_core/src/hooks_probe.rs",
+        )
+        self.assertEqual(len(found), 2, found)
+        self.assertIn("OS threads", found[0])
+        self.assertIn("env::var", found[1])
+        ffi = self.findings(
+            'pub unsafe extern "C" fn hypha_probe() {}\n', "crates/hypha_ffi/src/hooks_probe.rs"
+        )
+        self.assertEqual(len(ffi), 1, ffi)
+        self.assertIn("owner approval", ffi[0])
+
     def test_a_finding_reaches_claude_with_exit_2(self) -> None:
         path = REPO / "target/hooks-probe/src/hooks_probe.rs"
         path.parent.mkdir(parents=True, exist_ok=True)

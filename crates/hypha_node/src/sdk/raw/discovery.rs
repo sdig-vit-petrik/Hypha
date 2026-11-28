@@ -41,6 +41,7 @@ pub(super) fn list_topic_ports(node: &ffi::HyphaNode) -> Result<Vec<TopicInfo>, 
             published: service.publishers > 0,
             publishers: service.publishers,
             subscribed: service.subscribers > 0,
+            subscribers: service.subscribers,
         });
     };
     ffi::list_service_ports(node, &mut collect)

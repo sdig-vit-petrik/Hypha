@@ -2,7 +2,8 @@
 
 use hypha_time::{Duration, Time};
 use hypha_time::{
-    advance_sim_time, disable_sim_time, enable_sim_time, is_sim_time, set_sim_time, steady_now,
+    advance_sim_time, disable_sim_time, enable_sim_time, is_sim_time, set_sim_time,
+    sim_time_has_value, steady_now,
 };
 
 use crate::status::Error;
@@ -26,6 +27,15 @@ pub fn clock_steady_now_nanos() -> i64 {
 #[must_use]
 pub fn clock_is_sim_time() -> bool {
     is_sim_time()
+}
+
+/// True when framework time holds a time: always on the wall clock, and on simulated time
+/// once the clock has a value (a `/clock` sample, a set or an advance, or an enable at a
+/// value). The zero a simulated-time node starts with is a placeholder, so this is false
+/// until the first value.
+#[must_use]
+pub fn clock_is_valid() -> bool {
+    !is_sim_time() || sim_time_has_value()
 }
 
 /// Enable simulated time at `initial_nanos`. `InvalidArgument` when it is negative.

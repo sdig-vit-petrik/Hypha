@@ -375,12 +375,12 @@ pub(crate) fn peer_node(
             };
             CallbackProgression::Stop
         })
-        .map_err(|cause| ServiceError::Port(crate::transport::node_list_failed(cause)))?;
+        .map_err(|cause| ServiceError::Port(crate::data_service::node_list_failed(cause)))?;
     Ok(found)
 }
 
 pub(crate) fn node_name(view: &impl iceoryx2::node::NodeView) -> String {
-    view.details().as_ref().map_or_default(|details| details.name().as_str().to_owned())
+    view.details().as_ref().map(|details| details.name().as_str().to_owned()).unwrap_or_default()
 }
 
 pub(crate) fn pid_of(view: &impl iceoryx2::node::NodeView) -> Option<i32> {
@@ -392,7 +392,7 @@ pub(crate) fn pid_of(view: &impl iceoryx2::node::NodeView) -> Option<i32> {
 pub(crate) fn reclaim_dead(key: &StreamKey, what: &str, view: iceoryx2::node::DeadNodeView<Ipc>) {
     let name = node_name(&view);
     let pid = pid_of(&view).map_or_else(|| "unknown".to_owned(), |pid| pid.to_string());
-    match view.blocking_remove_stale_resources(crate::transport::RECLAIM_TIMEOUT) {
+    match view.blocking_remove_stale_resources(crate::data_service::RECLAIM_TIMEOUT) {
         Ok(()) => log::info!(target: "hypha/transport",
             "hypha: service '{}': reclaimed dead node '{name}' (pid {pid}) that held {what}", key.public()),
         // Another process reclaims it at the same moment, or it is gone: the caller tries again.
