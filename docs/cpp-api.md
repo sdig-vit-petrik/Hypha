@@ -1105,7 +1105,7 @@ Reference: `hypha/config.h`.
 identity, the configuration rows, and every live endpoint, cycle and cycle input
 binding with its effective settings. `hypha::nodeState()` returns the
 `hypha_msgs::NodeState` that `runNode` publishes on `~/state`; section 2 gives the rule
-that judges `state`. A program with its own `main()` publishes both itself. No example
+that judges `state`. Each `CycleState` row carries the distribution of the cycle's step times: the median, the 90th and the 99th percentile of every step since the commit (`step_p50_nanos`, `step_p90_nanos`, `step_p99_nanos`) and of the last 10 to 20 seconds with their longest (`recent_step_*`), beside `last_step_nanos` and `max_step_nanos`, in host monotonic nanoseconds. A quantile is the upper edge of a bucket of a fixed histogram (16 buckets per power of two): at most 1/16 above the true value, never below. `hypha topic delay <input> <output>` gives the time from an input to an output instead ([tools.md](tools.md)). A program with its own `main()` publishes both itself. No example
 calls them; `hypha node` and `hypha top` ([tools.md](tools.md)) show them. The fields
 are in `crates/hypha_msgs/msg/hypha_msgs/NodeIntrospection.msg`, `NodeState.msg` and
 the row messages; the row rules and counters in `hypha/introspection.h`. Its C ABI
