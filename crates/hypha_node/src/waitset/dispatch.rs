@@ -48,9 +48,12 @@ pub(super) struct CallbackDispatcher<'a> {
     pub(super) due: Vec<Due>,
     /// The index in `due` of the item that runs now.
     pub(super) due_index: usize,
-    /// The replay and triggered steps this run ran; a repeat of the timers that adds none
-    /// ends the repeats (`service_edges`).
+    /// The replay and triggered steps this run ran; a repeat of the timers that adds none,
+    /// and moves no limit, ends the repeats (`local_edges`).
     pub(super) steps_run: u64,
+    /// The times the limit of a triggered cycle moved in this run: a cycle of its
+    /// `WaitSet` that it reads may hold a step of another (`local_edges`).
+    pub(super) limits_moved: u64,
     /// Registrations a callback detached during this run: never dispatched again.
     pub(super) detached: &'a std::cell::RefCell<Vec<AttachmentId>>,
 }
@@ -143,15 +146,16 @@ impl CallbackDispatcher<'_> {
         self.fire_due(now, false)
     }
 
-    /// Fire what is due, as [`Self::fire_due_timers`]; with `services_only`, only the replay
-    /// and triggered cycles that have a server or a client, for a repeat of the turn.
-    pub(super) fn fire_due(&mut self, now: hypha_time::Time, services_only: bool) -> Progression {
+    /// Fire what is due, as [`Self::fire_due_timers`]; with `linked_only`, only the replay
+    /// and triggered cycles that another cycle of this `WaitSet` holds or is held by, for a
+    /// repeat of the turn.
+    pub(super) fn fire_due(&mut self, now: hypha_time::Time, linked_only: bool) -> Progression {
         self.due.clear();
         let (cycles, node) = (self.cycles, self.node);
         // A registration a callback detached is not observed: it neither fires nor fails.
         let live = self.registrations.iter_mut().filter(|r| !is_detached_in(self.detached, r.id));
         for registration in live {
-            if services_only && !super::service_edges::has_services(cycles, registration) {
+            if linked_only && !super::local_edges::is_linked(cycles, registration) {
                 continue;
             }
             let due = match self_scheduled(registration) {

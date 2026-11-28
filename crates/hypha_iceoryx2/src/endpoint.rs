@@ -442,6 +442,14 @@ impl Iox2Subscriber {
         single.into_iter().chain(set.into_iter().flatten().map(|(_, _, service)| service))
     }
 
+    /// True when `publisher` sends on a stream this subscriber reads: one of its topics'
+    /// services is the publisher's. Names fixed at open: no lock, no allocation.
+    #[must_use]
+    pub fn reads_stream_of(&self, publisher: &Iox2Publisher) -> bool {
+        let sent = publisher.service.name();
+        self.port_factories().any(|service| service.name() == sent)
+    }
+
     /// The topic this subscriber reads. A set reports its pattern or topic.
     #[must_use]
     pub fn topic(&self) -> &str {

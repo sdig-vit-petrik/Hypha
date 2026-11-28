@@ -39,7 +39,8 @@ is silent:
   a step read depended on `--chunk`. Each cycle with a service peer in its `WaitSet` holds
   a step until the peer has run every step before it, as for a peer in another node, and
   the turn repeats the timers of such cycles while that lets a held step run. The lockstep
-  test of a pair in one node fails without it.
+  test of a pair in one node fails without it. Two cycles of one `WaitSet` joined by a topic use the
+  same hold (#307, `waitset/local_edges.rs`).
 - **A step that sends no output sends no answer and no call.** A step that stops the run,
   or continues with a status, publishes nothing (execution-model.md §6.1), so it is treated
   as a failed step here too: its requests end `ServerLost` (`server step failed`), its

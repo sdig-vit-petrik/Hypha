@@ -50,6 +50,7 @@ impl RunDriver for NativeRun<'_> {
         let mut dispatcher = CallbackDispatcher {
             due_index: 0,
             steps_run: 0,
+            limits_moved: 0,
             registrations: &mut registrations,
             cycles: &cycles,
             waitset: std::ptr::from_ref(set) as usize,
