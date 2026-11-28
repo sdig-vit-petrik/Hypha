@@ -393,8 +393,8 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   publishers interleave. Timestamp binary search is valid only while no descending
   adjacent pair remains in the history. Evicting those pairs restores the fast
   path; unordered histories keep the per-sample replay admission rules. A sample
-  stamped exactly at a replay cut belongs to the next step, except on a trigger port of
-  a triggered cycle, which admits it at its own step ("replay through T").
+  stamped exactly at a replay cut belongs to the next step of a rate cycle, while a step
+  of a triggered cycle admits it on every input ("replay through T", #231).
 - **A wall clock that steps back inside one host turn makes a fresh trigger late.** The
   trigger schedule maps each pending stamp onto the monotonic clock by the turn's one
   wall reading, and a stamp from the future counts as sent now. When a port holds a

@@ -99,7 +99,7 @@ impl CallbackDispatcher<'_> {
     /// any trigger port, in merge order, and the fallbacks due before them.
     ///
     /// Under simulated time a step at `t` runs once the clock reached `t` and every
-    /// upstream reported at least `t`, and its other inputs are cut strictly before `t`.
+    /// upstream reported at least `t`, and every input is read through `t`.
     pub(super) fn run_triggered(&mut self, attachment: AttachmentId, now: i64) -> Progression {
         self.triggered_turn(attachment, now)
             .unwrap_or_else(|status| fail_with(&mut self.failure, attachment, status))
@@ -171,7 +171,7 @@ impl CallbackDispatcher<'_> {
 }
 
 /// Run one step of `cycle` at `time`, its trigger ports holding `trigger`; under simulated
-/// time its other inputs are cut at `time`.
+/// time its inputs are read through `time`.
 fn step_triggered(
     cycle: &Cycle,
     set: &HyphaWaitSet,

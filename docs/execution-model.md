@@ -540,20 +540,40 @@ the trigger that has no limit.
    port is judged at each step by its newest sample against its own limit: under
    simulated time the samples sent at or before T count, and the age is T − sent, so
    a sample exactly at its limit is usable; in host time every retained sample counts,
-   as for a `Latest` input, one stamped after the step included. Under simulated time
-   every other input is cut strictly before T, as a grid step is cut at its deadline.
-   In host time a queued
-   (`Arrivals`) input that is no trigger takes its pending samples, in arrival order,
-   up to the first one sent after the trigger sample, by the host send time of both. A
-   sample sent with the trigger sample, by one step of one upstream cycle, has the same
-   send time and is taken. A later one waits for a later trigger step or a fallback,
-   so the trigger samples drained in one turn each find their own arrivals; with two
-   publishers on the input, an earlier sample that arrives behind a later one waits
-   with it. The input's verdict counts every sample that has arrived, the waiting ones
-   included. A `Latest` input and the transform input are captured as a host-time rate
-   step captures them. Under simulated time a sample stamped exactly T, as the outputs
-   of the step that sent the trigger sample are, is cut and belongs to the next step:
-   the two clocks differ here.
+   as for a `Latest` input, one stamped after the step included.
+
+   A queued (`Arrivals`) input that is no trigger follows one rule on both clocks: **a
+   trigger step holds the samples that the upstream step which sent its trigger sample
+   sent with it, and none that a later upstream step sent.** One step of a cycle stamps all its outputs with one send
+   time, so the pair a driver publishes (an IMU and a magnetometer message) is matched
+   in the step of the trigger sample, live and in a lockstep replay of its recording
+   (#231).
+   - Under simulated time the step reads every other input through T, as it reads its
+     triggers: a sample stamped T is in the step, one stamped after T is not, whatever
+     the input's mode. An upstream step at a later time sends nothing the step holds.
+     The rule knows an upstream step by its time alone: two steps of one triggered
+     upstream at one time T (`dt = 0`) count as one, and the first trigger step at T
+     here takes the samples of both. A fallback at T reads its inputs through T too.
+     The hold of item 5 makes this deterministic: the step runs only once every upstream has
+     reported T, an upstream reports T only after it sent every output stamped T, and
+     the player sends every message stamped T before `/clock = T`, so each such sample
+     is in the input when the step captures. A publisher that reports no progress, such
+     as a plain callback, is not waited for, and the messages stamped at the first
+     instant of a pass follow its `/clock` (replay-flow-control.md §4.3): whether such a
+     sample stamped T is in the step depends on when it arrived. A grid step is cut
+     strictly before its deadline instead (section 11.1). Several trigger samples stamped T run as several
+     steps at T, in the order of item 1; the first of them takes the queued samples
+     stamped T, and the later ones find them taken.
+   - In host time a queued (`Arrivals`) input that is no trigger takes its pending
+     samples, in arrival order, up to the first one sent after the trigger sample, by
+     the host send time of both. A sample sent with the trigger sample, by one step of
+     one upstream cycle, has the same send time and is taken. A later one waits for a
+     later trigger step or a fallback, so the trigger samples drained in one turn each
+     find their own arrivals; with two publishers on the input, an earlier sample that
+     arrives behind a later one waits with it. The input's verdict counts every sample
+     that has arrived, the waiting ones included. A `Latest` input and the transform
+     input are captured as a host-time rate step captures them: the newest retained
+     sample, which may be newer than the trigger sample.
 3. **Fallback.** When no step ran for the shortest silence limit (`silence_ms`) of
    the triggers, one step runs without a trigger sample. The limit counts from the
    last step, or from the cycle's first evaluation when that is later: a trigger
@@ -584,7 +604,7 @@ the trigger that has no limit.
    clock is at least T and every upstream of the cycle has reported at least T on
    `/clock_progress`, so no trigger stamped T can still come. A grid replay cycle needs
    T − 1 ns (section 11.1): it cuts its inputs strictly before T, while a triggered step
-   reads its triggers through T. A held step waits for as long as its
+   reads its inputs through T (item 2). A held step waits for as long as its
    upstream does not report; the player's `--timeout` is the bound. The trigger stamps of
    each port must ascend in arrival order: a trigger stamped before the step that ran
    last, from a publisher that does not report progress or from several publishers on
@@ -607,7 +627,8 @@ below the C ABI, that the step looks up with explicit results and never waits on
 1. **Filled before the step, under the step's cut.** The input is two queued, optional
    bindings. Before the step every captured `TFMessage` goes into the buffer, those of
    `/tf_static` as static. Under simulated time that is every sample sent strictly
-   before the step's time, so a replay sees the same buffer on every run; in host time
+   before the time of a rate step, or at or before the time of a triggered step (section
+   6.6 item 2), so a replay sees the same buffer on every run; in host time
    every retained sample. A sample that does not decode fails the step with
    `InvalidFrame`. A transform the buffer refuses (a rotation that is not a unit
    quaternion, a non-finite value, a second parent for a frame, a cycle, a frame both

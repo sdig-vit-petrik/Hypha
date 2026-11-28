@@ -232,9 +232,10 @@ A client and its server therefore form the two-node feedback loop of §6.4, whic
 deadlock.
 
 execution-model.md §6.6 item 5 changes with this. A triggered step at T needs an upstream
-that feeds only non-trigger inputs (queued inputs, requests, responses) to report T − 1 ns,
-not T, because those inputs are already cut strictly before T. This removes the deadlock
-of a triggered client that calls a triggered server.
+that feeds it only requests or responses to report T − 1 ns, not T, because those inputs
+are cut strictly before T. This removes the deadlock of a triggered client that calls a
+triggered server. (Since #231 a triggered step reads its topic inputs through T, so an
+upstream that feeds it a topic, a trigger or not, still reports T.)
 
 *Reason.* This is the cut every other input uses, so the served step depends only on
 stamps. An earlier draft admitted requests at `/clock` sample boundaries. Under that rule
