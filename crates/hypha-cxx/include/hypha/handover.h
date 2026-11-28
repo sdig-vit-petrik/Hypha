@@ -56,19 +56,28 @@ struct Distinct<T, Rest...>
 {
 };
 
+/// The name a warning gives a kind: a generated message's type (`sensor_msgs/PointCloud2`),
+/// else its index in the Handover's kinds.
+template <typename T>
+std::string handoverKindName(std::size_t index)
+{
+    if constexpr (requires { T::TYPE_NAME; }) {
+        return T::TYPE_NAME;
+    } else {
+        return "kind " + std::to_string(index);
+    }
+}
+
 /// A message was dropped at its depth: a warning at most once a second, the counts attached.
-inline void warnHandoverDropped(std::size_t kind, uint64_t droppedInAll)
+inline void warnHandoverDropped(const std::string& kind, uint64_t droppedInAll)
 {
 #if !defined(HYPHA_NO_LOGGING)
     HYPHA_LOG_WARN_THROTTLE(
-        1.0,
-        "hand-over full: dropped the oldest message of kind {} ({} dropped so far)",
-        kind,
-        droppedInAll
+        1.0, "hand-over full: dropped the oldest {} ({} dropped so far)", kind, droppedInAll
     );
 #else
     if (droppedInAll == 1U) {
-        warn("hand-over full: dropped the oldest message of kind " + std::to_string(kind));
+        warn("hand-over full: dropped the oldest " + kind);
     }
 #endif
 }
@@ -143,7 +152,7 @@ class Handover
         }
         this->wake_.notify_one();
         if (displaced) {
-            detail::warnHandoverDropped(kind, droppedInAll);
+            detail::warnHandoverDropped(Handover::kindName(kind), droppedInAll);
         }
         return displaced;
     }
@@ -206,6 +215,18 @@ class Handover
     }
 
   private:
+    /// The name of the kind at @p index, for a warning.
+    static std::string kindName(std::size_t index)
+    {
+        static const std::array<std::string, sizeof...(Kinds)> names = [] {
+            std::size_t i = 0U;
+            return std::array<std::string, sizeof...(Kinds)>{
+                detail::handoverKindName<Kinds>(i++)...
+            };
+        }();
+        return names.at(index);
+    }
+
     struct Entry
     {
         uint64_t order;
