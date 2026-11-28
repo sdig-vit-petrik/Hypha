@@ -21,6 +21,7 @@ use crate::node::HyphaNode;
 use crate::status::Error;
 use crate::waitset::HyphaCallbackResult;
 
+use super::call_log::{CallLog, Entry};
 use super::outcome::{CallOutcome, CallResult, CallStatus};
 use super::spec::{Role, ServiceDecl};
 
@@ -47,7 +48,7 @@ pub(crate) type Finished = (Box<dyn CallDone>, CallResult);
 struct Call {
     /// The transport's call, or `None` while no server took it.
     sent: Option<CallId>,
-    /// The request, kept while no server took it.
+    /// The request, kept for the call log.
     request: Vec<u8>,
     /// Framework time at the call.
     sent_nanos: i64,
@@ -79,6 +80,8 @@ struct ClientState {
     calls: Vec<Call>,
     /// Outcomes found outside a turn, delivered at the next one.
     ready: Vec<Finished>,
+    /// The call log on `<service>/calls`; `None` when it could not be opened.
+    log: Option<CallLog>,
 }
 
 /// A client, owned by its caller. Dropping it drops the outcomes of its calls in flight
@@ -106,6 +109,8 @@ pub struct ClientStatus {
     pub ready: bool,
     /// Calls whose outcome is still to come.
     pub pending: usize,
+    /// Records the call log dropped: no free sample, or a record above its bound.
+    pub log_dropped: u64,
 }
 
 /// Create a client of `decl` on `node`. A `blocking` client is attached to nothing; any
@@ -130,6 +135,8 @@ pub fn service_client_create(
         .service_client(spec, resolved.outstanding, None)
         .map_err(|cause| super::spec::refuse_spec(&spec.name, &cause))?;
     let listener = port.open_listener().map_err(Error::from)?;
+    let client_port = if decl.literal { spec.name.as_str() } else { decl.name };
+    let log = CallLog::open(node, spec, client_port);
     let state = ClientState {
         identity: Identity {
             name: spec.name.clone(),
@@ -142,6 +149,7 @@ pub fn service_client_create(
         timeout_text: format!("{} ({})", seconds(resolved.timeout), resolved.timeout_source),
         calls: Vec::new(),
         ready: Vec::new(),
+        log,
     };
     let core = Arc::new(ClientCore { state: Mutex::new(state) });
     let mut client =
@@ -255,6 +263,7 @@ pub fn client_status(client: &HyphaClient) -> ClientStatus {
     ClientStatus {
         ready: state.port.as_ref().is_some_and(Iox2Client::server_available),
         pending: state.calls.len().saturating_add(state.ready.len()),
+        log_dropped: state.log.as_ref().map_or(0, CallLog::dropped),
     }
 }
 
@@ -315,7 +324,7 @@ impl ClientState {
             Ok(()) => self.calls.push(call),
             Err(CallSendError::Busy { .. }) => return CallStatus::Busy,
             Err(CallSendError::TooLarge { .. }) => return CallStatus::TooLarge,
-            Err(cause) => self.ready.push(finish(call, not_sent(&cause))),
+            Err(cause) => self.ready.push(finish(call, not_sent(&cause), &mut self.log)),
         }
         CallStatus::Sent
     }
@@ -339,7 +348,7 @@ impl ClientState {
                 continue;
             };
             let call = self.calls.remove(index);
-            finished.push(finish(call, outcome_of(report.event)));
+            finished.push(finish(call, outcome_of(report.event), &mut self.log));
         }
         let waiting = self.calls.iter().any(|call| call.sent.is_none());
         if waiting && port.server_available() {
@@ -348,7 +357,7 @@ impl ClientState {
                 match send(port, &mut call) {
                     // Held until the server takes it, or its deadline.
                     Ok(()) | Err(CallSendError::Busy { .. }) => kept.push(call),
-                    Err(cause) => finished.push(finish(call, not_sent(&cause))),
+                    Err(cause) => finished.push(finish(call, not_sent(&cause), &mut self.log)),
                 }
             }
             self.calls = kept;
@@ -366,7 +375,7 @@ impl ClientState {
                 )),
                 Some(id) => expire(port, id, &self.timeout_text),
             };
-            finished.push(finish(call, outcome));
+            finished.push(finish(call, outcome, &mut self.log));
         }
         finished
     }
@@ -418,7 +427,6 @@ fn send(port: &mut Iox2Client, call: &mut Call) -> Result<(), CallSendError> {
     match port.send(&call.request, stamp) {
         Ok(id) => {
             call.sent = Some(id);
-            call.request = Vec::new();
             Ok(())
         }
         Err(CallSendError::NoServer) => Ok(()),
@@ -459,7 +467,13 @@ fn outcome_of(event: CallEvent) -> CallOutcome {
     }
 }
 
-fn finish(call: Call, outcome: CallOutcome) -> Finished {
+/// End `call` in `outcome`, recorded in the call log.
+fn finish(call: Call, outcome: CallOutcome, log: &mut Option<CallLog>) -> Finished {
     let done_nanos = hypha_time::now().nanos();
-    (call.done, CallResult { outcome, sent_nanos: call.sent_nanos, done_nanos })
+    let result = CallResult { outcome, sent_nanos: call.sent_nanos, done_nanos };
+    if let Some(log) = log.as_mut() {
+        let sequence = call.sent.map_or(0, |id| id.0);
+        log.record(&Entry { sequence, request: &call.request, result: &result });
+    }
+    (call.done, result)
 }

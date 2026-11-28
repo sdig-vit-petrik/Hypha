@@ -26,6 +26,11 @@ pub struct ServiceDecl<'a> {
     pub type_name: &'a str,
     /// The `.srv` MD5 over both halves.
     pub md5: &'a str,
+    /// The definition of the request half with its dependencies; empty for none. A server
+    /// registers both definitions so the tools can encode a request; a client's are unused.
+    pub request_definition: &'a str,
+    /// The definition of the response half; empty for none.
+    pub response_definition: &'a str,
     /// The policy, or `None` for `defaultService`.
     pub policy: Option<ServicePolicy>,
     /// A client's timeout that code sets, or `None` for the policy's. The client's table
@@ -108,7 +113,9 @@ pub(crate) fn resolve(
             &format!("service '{written}' is not a valid service name"),
         )
     })?;
-    let spec = ServiceSpec::new(&name, decl.type_name, decl.md5).with_policy(policy);
+    let spec = ServiceSpec::new(&name, decl.type_name, decl.md5)
+        .with_policy(policy)
+        .with_definitions(decl.request_definition, decl.response_definition);
     spec.validate().map_err(|cause| refuse_spec(&name, &cause))?;
     Ok(Resolved { spec, timeout, timeout_source, outstanding })
 }

@@ -23,6 +23,8 @@ fn decl(name: &str) -> ServiceDecl<'_> {
         literal: true,
         type_name: SET_BOOL,
         md5: SET_BOOL_MD5,
+        request_definition: "",
+        response_definition: "",
         policy: None,
         timeout: Some(Duration::from_millis(300)),
     }
@@ -172,4 +174,64 @@ fn a_port_reads_its_table_and_a_port_without_one_is_refused_with_the_stanza() {
         "server port 'set_exposure' has no table; add to the parameter file:\n\
          [ports.servers.set_exposure]\nservice = \"~/set_exposure\""
     );
+}
+
+#[test]
+fn each_finished_call_is_logged_on_the_services_calls_topic() {
+    use hypha_core::message::DecodeOwned as _;
+    use hypha_node::sdk::msgs::hypha_msgs::ServiceCall;
+    use hypha_node::sdk::{BusNode, SubscriberOptions};
+
+    let server_node = node("logged_srv");
+    let name = format!("/{}", unique_name("logged"));
+    let handler = Handler(|request: &mut HyphaRequest, payload: &[u8]| match payload {
+        [1] => request_reply(request, b"ok"),
+        _ => drop(hypha_node::safe::request_answer(request, Answer::Refuse("not armed"))),
+    });
+    let server = service_serve(&server_node, &decl(&name), Box::new(handler)).expect("server");
+    let client_node = node("logging_cli");
+    let client = service_client_create(&client_node, &decl(&name), true).expect("client");
+    let topic = hypha_node::safe::call_log_topic(&name);
+    assert_eq!(topic, format!("{name}/calls"));
+    let reader = BusNode::new(&unique_name("log_reader")).expect("reader");
+    let mut log = reader
+        .subscribe_raw_with_schema(
+            &topic,
+            ServiceCall::TYPE_NAME,
+            ServiceCall::SCHEMA_HASH,
+            SubscriberOptions::default().keeping(4),
+        )
+        .expect("the log topic exists once the client does");
+    let results = while_running(&server_node, Duration::from_secs(2), || {
+        [call_and_wait(&client, &[1]), call_and_wait(&client, &[2])]
+    });
+    let mut records = Vec::new();
+    while let Some(sample) = log.try_receive().expect("receive") {
+        let bytes = sample.bytes().expect("a payload");
+        records.push(ServiceCall::decode_from(bytes).expect("a ServiceCall"));
+    }
+    assert_eq!(records.len(), 2, "{records:?}");
+    let answered = records.first().expect("the answered call's record");
+    let refused = records.get(1).expect("the refused call's record");
+    for record in &records {
+        assert_eq!(record.service, name);
+        assert_eq!(record.r#type, SET_BOOL);
+        assert_eq!(record.md5, SET_BOOL_MD5);
+        assert!(record.client_node.starts_with("logging_cli"), "{}", record.client_node);
+        assert_eq!(record.client_port, name, "a literal client is labelled by its service");
+        assert!(record.sent.as_nanos() <= record.done.as_nanos());
+    }
+    assert_eq!((answered.sequence, answered.outcome), (1, ServiceCall::ANSWERED));
+    assert_eq!(answered.reason, "answered");
+    assert_eq!(
+        (answered.request.as_slice(), answered.response.as_slice()),
+        (&[1_u8][..], &b"ok"[..])
+    );
+    assert_eq!((refused.sequence, refused.outcome), (2, ServiceCall::REFUSED));
+    assert_eq!(refused.reason, "refused: not armed");
+    assert_eq!(refused.request, [2]);
+    assert_eq!(refused.response, Vec::<u8>::new());
+    assert_eq!(results[1].outcome, CallOutcome::Refused("not armed".to_owned()));
+    assert_eq!(hypha_node::safe::client_status(&client).log_dropped, 0);
+    hypha_node::safe::service_server_destroy(server);
 }

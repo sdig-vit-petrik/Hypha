@@ -43,9 +43,10 @@ pub use crate::sample::{HyphaReceivedSample, sample_identity, sample_payload};
 pub use crate::schema::{schema_lookup, schema_resolve_hash, schema_resolve_hash_now};
 pub use crate::service::{
     Answer, CallDone, CallOutcome, CallResult, CallStatus, ClientStatus, HyphaClient, HyphaRequest,
-    HyphaServer, RequestView, ServeHandler, ServiceDecl, client_call, client_status,
-    client_wait_for_server, request_answer, request_defer, service_client_create,
-    service_client_destroy, service_serve, service_server_destroy,
+    HyphaServer, ListedService, RequestView, ServeHandler, ServiceDecl, ServiceDefinitions,
+    call_log_topic, client_call, client_status, client_wait_for_server, list_services,
+    request_answer, request_defer, service_client_create, service_client_destroy,
+    service_definitions, service_serve, service_server_destroy,
 };
 pub use crate::status::Error;
 pub use crate::subscriber::{

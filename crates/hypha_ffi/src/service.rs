@@ -79,6 +79,16 @@ pub struct HyphaServiceDesc {
     /// A client: 1 for a blocking client, attached to nothing, whose call waits on the
     /// calling thread. 0 for a client of the node's `WaitSet`. A server: 0.
     pub blocking: u8,
+    /// A server: the definition of the request half (`<type>Request`) with its
+    /// dependencies, registered in the schema store so tools can encode a request. Null
+    /// with length 0 for none. A client: unused.
+    pub request_definition: *const c_char,
+    /// Bytes of `request_definition`.
+    pub request_definition_len: usize,
+    /// A server: the definition of the response half; null with length 0 for none.
+    pub response_definition: *const c_char,
+    /// Bytes of `response_definition`.
+    pub response_definition_len: usize,
 }
 
 /// One request, borrowed for the handler's call.
@@ -216,6 +226,10 @@ impl CallDone for CDone {
 /// Each text of `desc` points to its length of readable bytes.
 unsafe fn declaration(desc: &HyphaServiceDesc) -> Result<ServiceDecl<'_>, HyphaStatus> {
     let text = |pointer: *const c_char, len: usize| unsafe { borrow_str(pointer, len) };
+    // A definition is optional: null with length 0 is none.
+    let optional = |pointer: *const c_char, len: usize| {
+        if pointer.is_null() && len == 0 { Ok("") } else { text(pointer, len) }
+    };
     let policy = &desc.policy;
     let policy = if policy.name_len == 0 {
         let cleared = policy.clients == 0
@@ -245,6 +259,8 @@ unsafe fn declaration(desc: &HyphaServiceDesc) -> Result<ServiceDecl<'_>, HyphaS
         literal: desc.literal != 0,
         type_name: text(desc.type_name, desc.type_name_len)?,
         md5: text(desc.md5, desc.md5_len)?,
+        request_definition: optional(desc.request_definition, desc.request_definition_len)?,
+        response_definition: optional(desc.response_definition, desc.response_definition_len)?,
         policy,
         timeout: (desc.timeout_nanos != 0).then(|| Duration::from_nanos(desc.timeout_nanos)),
     })

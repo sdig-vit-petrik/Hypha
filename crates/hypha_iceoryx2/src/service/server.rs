@@ -85,6 +85,9 @@ pub struct Iox2Server {
     server: RrServer,
     response_notifier: Notifier<Ipc>,
     service: StreamFactory,
+    /// The records of the request and response definitions, removed before the name lock
+    /// goes, so the next server of the name never finds this one's records removed later.
+    schema: Option<crate::schema::ServiceSchemaRelease>,
     /// The name lock; declared last so it drops last, and no second server starts while
     /// this one stands.
     _lock: Notifier<Ipc>,
@@ -137,8 +140,14 @@ impl Iox2Server {
             server,
             response_notifier,
             service,
+            schema: None,
             _lock: lock,
         }
+    }
+
+    /// Keep the records of the stream's definitions while this server stands.
+    pub(crate) fn hold_schema(&mut self, release: crate::schema::ServiceSchemaRelease) {
+        self.schema = Some(release);
     }
 
     /// The public name of the service.

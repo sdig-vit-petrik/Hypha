@@ -6,16 +6,20 @@
 //! refused on a dispatch thread, and that an unanswered request is refused. The C ABI and
 //! the SDKs only carry bytes and callbacks across.
 
+mod call_log;
 mod client;
+mod listing;
 mod outcome;
 mod server;
 mod spec;
 
+pub use call_log::{CALL_LOG_POLICY, SERVICE_CALL_DEFINITION, call_log_topic};
 pub use client::{
     CallDone, ClientStatus, HyphaClient, client_call, client_status, client_wait_for_server,
     service_client_create, service_client_destroy,
 };
 pub(crate) use client::{ClientCore, Finished};
+pub use listing::{ListedService, ServiceDefinitions, list_services, service_definitions};
 pub use outcome::{
     CallOutcome, CallResult, CallStatus, HYPHA_CALL_ANSWERED, HYPHA_CALL_BUSY,
     HYPHA_CALL_NO_SERVER, HYPHA_CALL_NOT_SENT, HYPHA_CALL_REFUSED, HYPHA_CALL_SENT,
