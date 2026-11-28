@@ -414,7 +414,9 @@ TEST_F(SharedSourceRoles, EachBindingShowsItsOwnRoleOnOneSource)
     const std::string      topic = hypha_test::testTopic("/shared");
     hypha::Cycle           cycle("roles_cycle");
     hypha::Latest<Float64> needed{cycle, "needed", hypha::Topic{topic}, hypha::unsupervised};
-    hypha::Latest<Float64> extra{cycle, "extra", hypha::sharing(needed), hypha::advisory};
+    hypha::Latest<Float64> extra{
+        cycle, "extra", hypha::sharing(needed), hypha::advisory, hypha::unsupervised
+    };
     cycle.setRate(hypha::Hz(100.0));
     ASSERT_TRUE(cycle.start(*this->node, NoStep{}).has_value());
 
