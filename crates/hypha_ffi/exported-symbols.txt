@@ -32,6 +32,7 @@ T hypha_cycle_expect_participant
 T hypha_cycle_health
 T hypha_cycle_image_alive
 T hypha_cycle_image_binding
+T hypha_cycle_image_clear
 T hypha_cycle_image_held
 T hypha_cycle_image_lookup_transform
 T hypha_cycle_image_reject_sample

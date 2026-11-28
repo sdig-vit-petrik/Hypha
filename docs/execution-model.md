@@ -504,6 +504,8 @@ Each cause of loss has its own counter:
 2. Age rejection: the input read the sample, and the age rule refused it.
 3. Overflow discard: the input discarded an old sample beyond its share on purpose, or a
    newest-only trigger passed a sample for a newer one (section 6.6 item 7).
+4. Clear: a step's `clear()` dropped a sample that its capture had admitted and left
+   pending (`cleared_total`, section 6.8).
 
 The transport's cumulative missing-sequence count is read atomically, so health
 queries do not take the source-history or sequence-validator locks.
@@ -704,6 +706,8 @@ below the C ABI, that the step looks up with explicit results and never waits on
 6. **Loops.** The TF input makes every `/tf` publisher an upstream of the cycle. A
    triggered cycle that publishes the TF a second triggered cycle reads, while the
    second feeds the first, is the loop of §6.6 item 6.
+7. **Clear.** A step's `clear()` forgets the dynamic transforms and keeps the static
+   ones (section 6.8).
 
 A plain node with no cycle uses the same buffer through a transform buffer (C ABI
 `hypha_transform_buffer_create`; [interface-specification.md](interface-specification.md#transform-buffer-of-a-plain-node)).
@@ -714,6 +718,52 @@ lookup may come from any thread at any time; one lock guards the buffer for one
 message or one lookup, and no lookup waits on the transport. A message that does not
 decode is counted and logged with the refused transforms and fails nothing, and a
 `/tf` loss is the subscriber's missing-sequence count, not a failed run.
+
+### 6.8 Clearing an input or the TF input (a reset)
+
+A node that resets (robot_localization's `reset` service and `set_pose`, an EKF that
+starts again, a tracker reset) forgets what it received before. A step asks for it with
+`clear()` on an input or on its `Transforms` port (C ABI `hypha_cycle_image_clear`). The
+rules live below the C ABI (`hypha_cycle::BindingCapture::clear`, the cycle's TF input).
+
+1. **When the step returns.** A clear is a request, applied after the step returns, as
+   `setIgnored()` and the outputs are. The rest of the step still reads what it captured:
+   `*port`, `samples()` and every lookup. Two clears of one port in one step are one.
+2. **What an input forgets.** Its value (`has()` and `lastKnown()` of a `Latest` port turn
+   false and throw), and the samples that the step's capture admitted and left pending.
+   A rate step takes every sample its cut admits (section 6.5), so it leaves none; a
+   queued input of a host-time triggered step can leave the samples sent after its
+   trigger sample (section 6.6 item 2), and these are dropped. A sample the capture did not
+   admit stays: in host time one that arrived after the capture, under simulated time one
+   sent at or after the step's time. A clear at step T thus drops exactly what was pending
+   at T, the same in every run and every `--chunk` of the player.
+3. **A trigger port is not cleared.** Its pending samples are the steps the schedule has
+   planned; `clear()` on it throws `std::logic_error` (C ABI `InvalidArgument`).
+4. **Supervision.** Until a sample after the clear is admitted, the input holds no value
+   and its verdict is `NeverArrived`. The silence keeps counting from the newest sample
+   before the clear: the input turns `Stale` (and `stale()`) on the schedule it had
+   without the clear, so a clear never hides a source that stopped, and it logs nothing
+   for a source that keeps sending. A clear restarts no timer: stagnation keeps its alive
+   value and its timer, and `received()` and `deliveredCount()` keep counting. A step
+   that finds the input `NeverArrived` after a clear and then `Usable` logs
+   `<in> is usable again`.
+5. **Counters and log.** The dropped samples are counted in `cleared_total` of
+   `bindingHealth()` (cause 4 of section 6.5), in no loss counter, and not in the node
+   state's `dropped`: a clear is the application's decision. Each clear logs one INFO
+   line, `hypha: <in> cleared: <n> pending sample(s) dropped`.
+6. **The TF input.** `Transforms::clear()` forgets every dynamic transform, as tf2's
+   `Buffer::clear()` does, and keeps the static ones, which their publishers send once.
+   A lookup through a forgotten frame answers `UnknownFrame` (or `Refused`, while the
+   frame's newest transform was a refused one) until a new transform of it is ingested,
+   and a transform stamped earlier than the forgotten ones is a new history, not an old
+   one. It logs `hypha: cycle '<cycle>' TF input cleared: <n> dynamic frame(s) forgotten,
+   static transforms kept`. The TF bindings take every admitted sample before the step, so
+   no `/tf` sample is pending to drop.
+7. **Under replay.** A clear changes nothing but the cut it applies: a reset at step T
+   forgets the samples stamped before T, and the step at T + period sees those stamped in
+   [T, T + period). A `testing::StepHarness` step records the clear (`cleared(port)`) and
+   applies it when the step returns: the input has no value and is `NeverArrived` until the
+   test gives it one, and the Transforms port keeps its static transforms alone.
 
 ---
 

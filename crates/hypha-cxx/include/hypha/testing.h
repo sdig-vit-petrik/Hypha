@@ -24,6 +24,7 @@
 ///  - the answers of a Transforms port, from the transforms given to deliver() and
 ///    deliverStatic(): the library code of a cycle's TF input looks them up;
 ///  - the bound of perStep() on the sends of a step;
+///  - clear(): later steps find an input NeverArrived, and a Transforms port static-only;
 ///  - what a disabled port does: deliver(), set(), setStale() and setStagnant() on a
 ///    disabled input are refused, since a started cycle gives it no sample and never judges
 ///    it (setNeverArrived() is true of it and stays allowed); a disabled output counts the
@@ -31,22 +32,18 @@
 /// What it leaves out:
 ///  - a port that requires its topic, or sits on a Topic literal, is enabled without a
 ///    check of its table or name, where a start refuses a missing, empty or invalid one;
-///  - an enabled output reports a subscriber (hasSubscribers() is true), since no
-///    transport counts one;
+///  - an enabled output reports a subscriber (hasSubscribers() is true): no transport counts one;
 ///  - the node, the transport (no subscriber or publisher is opened, no sample crosses a
 ///    bus), the clock, and every key of a table but `topic` and `silence_ms`. A `topic`
 ///    that is not text throws ParameterError, where a start refuses it with
 ///    InvalidArgument; a start reads an array `topic` as a disabled port.
 ///
-/// The parameter file is read when the harness is built, for `topic`, and in deliver(),
-/// for `silence_ms`, so a Node or a ConfigContext must hold it before the harness exists.
-/// Without a file every optionalTopic port is disabled.
-///
-/// step() moves no clock: in a harness step hypha::now() returns the process clock, so a
-/// test of code that calls it sets simulated time itself.
-///
-/// Not part of hypha/hypha.h. The harness keeps pointers to the cycle and its ports, so
-/// declare it after them. A send the step refused and caught still fails step().
+/// The parameter file is read when the harness is built, for `topic`, and in deliver(), for
+/// `silence_ms`: a Node or a ConfigContext holds it before the harness exists; without one
+/// every optionalTopic port is disabled. step() moves no clock: hypha::now() returns the
+/// process clock, so a test of code that calls it sets simulated time itself. Not part of
+/// hypha/hypha.h. Declare the harness after the cycle and its ports, which it points to. A
+/// send the step refused and caught still fails step().
 
 #include "hypha/backend/handles.h"
 #include "hypha/backend/ros1_codec.h"
@@ -256,12 +253,16 @@ class StepHarness final : private detail::CaptureStore
         this->beginStep(time.now);
         const EndStep endStep{this};
         std::forward<Step>(step)(time);
+        this->applyClears();
         this->rethrowLatched();
     }
 
     /// @brief What the last step sent on @p port, in send order.
     template <typename M>
     const std::vector<M>& sent(const Output<M>& port) const;
+
+    /// @brief True when the last step called clear() on @p port.
+    bool cleared(const Port& port) const;
 
   private:
     struct Store
@@ -300,8 +301,9 @@ class StepHarness final : private detail::CaptureStore
     /// The transforms a Transforms port holds, in a buffer the harness feeds.
     struct FedTransforms
     {
-        const Port*                    port;
-        backend::UniqueTransformBuffer buffer;
+        const Port*                       port;
+        backend::UniqueTransformBuffer    buffer;
+        std::vector<std::vector<uint8_t>> statics;
     };
 
     struct NodeStep
@@ -336,6 +338,8 @@ class StepHarness final : private detail::CaptureStore
     static bool startWouldEnable(const detail::TopicSource& topic);
     void*       storeFor(const Port& port, void* (*make)(), void (*destroy)(void*)) override;
     const HyphaTransformBuffer* transformsFor(const Port& port, int64_t cacheNanos) override;
+    void                        clearAfterStep(Port& port, void (*forget)(Port&)) override;
+    void                        applyClears();
     void
     feed(Transforms& port, std::vector<geometry_msgs::TransformStamped> transforms, bool isStatic);
     template <typename M>
@@ -382,13 +386,14 @@ class StepHarness final : private detail::CaptureStore
     void rethrowLatched();
     void endStep() noexcept;
 
-    Cycle&                     cycle_;
-    std::vector<Store>         stores_;
-    std::vector<Pending>       pending_;
-    std::vector<Pending>       running_;
-    std::vector<Delivery>      deliveries_;
-    std::vector<Intake>        intakes_;
-    std::vector<FedTransforms> transforms_;
+    Cycle&                                         cycle_;
+    std::vector<Store>                             stores_;
+    std::vector<Pending>                           pending_;
+    std::vector<Pending>                           running_;
+    std::vector<Delivery>                          deliveries_;
+    std::vector<Intake>                            intakes_;
+    std::vector<FedTransforms>                     transforms_;
+    std::vector<std::pair<Port*, void (*)(Port&)>> clears_;
 };
 
 }  // namespace hypha::testing

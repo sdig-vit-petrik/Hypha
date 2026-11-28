@@ -573,3 +573,47 @@ TEST_F(TriggeredFixture, ForeignTriggerStillThrows)
     hypha::Cycle other("other");
     EXPECT_THROW(other.setTrigger(owner.trigger), std::invalid_argument);
 }
+
+namespace {
+
+/// Tries to clear its trigger port in each step, and records what clear() threw.
+class ClearsItsTrigger final : public hypha::CycleNode
+{
+  public:
+    ClearsItsTrigger() : trigger(*this, "trig")
+    {
+        this->setTrigger(this->trigger);
+    }
+
+    hypha::Arrivals<Float64> trigger;
+    std::vector<std::string> refusals;
+
+    void step(const hypha::CycleTime&) override
+    {
+        try {
+            this->trigger.clear();
+        } catch (const std::logic_error& error) {
+            this->refusals.emplace_back(error.what());
+        }
+    }
+};
+
+}  // namespace
+
+// The pending samples of a trigger port are the steps the schedule plans: no step clears them.
+TEST_F(TriggeredFixture, ATriggerPortCannotBeCleared)
+{
+    this->init("trig", 10000);
+    ClearsItsTrigger cycle;
+    ASSERT_TRUE(cycle.start(*this->node));
+    auto publisher = this->publisherOf("trig");
+    ASSERT_TRUE(publisher.publish(Float64{1.0}));
+    ASSERT_TRUE(publisher.publish(Float64{2.0}));
+    ASSERT_TRUE(runUntil(*this->node, [&] {
+        return cycle.refusals.size() >= 2;
+    }));
+    EXPECT_EQ(
+        cycle.refusals.front(),
+        "hypha: clear() on a trigger port: its pending samples are the cycle's steps"
+    );
+}

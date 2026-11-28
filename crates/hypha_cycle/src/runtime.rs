@@ -278,6 +278,9 @@ impl CycleRuntime {
             return Err(STATUS_RESOURCE_LIMIT);
         }
         self.triggers.insert(position, index);
+        if let Some(capture) = self.captures.get_mut(index) {
+            capture.set_trigger();
+        }
         Ok(())
     }
 
@@ -690,6 +693,22 @@ impl CycleRuntime {
         if overran {
             self.health.overruns = self.health.overruns.wrapping_add(1);
         }
+    }
+
+    /// Clear binding `index` after the step that captured it last: see
+    /// [`BindingCapture::clear`]. Returns the pending samples it dropped.
+    ///
+    /// # Errors
+    /// Returns `STATUS_INVALID_ARGUMENT` if `index` names no binding, or a trigger port,
+    /// whose pending samples are the steps the schedule has planned.
+    pub fn clear_binding(&mut self, index: usize) -> Result<u64, i32> {
+        let slot = self.bindings.get(index).ok_or(STATUS_INVALID_ARGUMENT)?;
+        let capture = self.captures.get_mut(index).ok_or(STATUS_INVALID_ARGUMENT)?;
+        if capture.is_trigger() {
+            return Err(STATUS_INVALID_ARGUMENT);
+        }
+        let history = slot.history.as_ref().map(|history| crate::locked(history));
+        Ok(capture.clear(history.as_deref()))
     }
 
     /// Re-judge binding `index` after the step rejected its sample `sequence` as

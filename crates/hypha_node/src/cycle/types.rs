@@ -14,6 +14,11 @@ pub const HYPHA_CYCLE_VERDICT_USABLE: u32 = 1;
 /// capture clock.
 pub const HYPHA_CYCLE_VERDICT_STALE: u32 = 2;
 
+/// `hypha_cycle_image_clear`: clear the input binding of that index.
+pub const HYPHA_CYCLE_CLEAR_INPUT: u32 = 0;
+/// `hypha_cycle_image_clear`: clear the dynamic transforms of the TF input of that index.
+pub const HYPHA_CYCLE_CLEAR_TRANSFORMS: u32 = 1;
+
 /// Fault bit: the input is stale, its newest sample older than the silence limit.
 pub const HYPHA_FAULT_STALE: u32 = 1;
 /// Fault bit: the alive counter unchanged within the stagnation limit.
@@ -263,6 +268,8 @@ pub struct HyphaCycleBindingHealth {
     pub latest_unavailable_iterations: u64,
     /// Transitions from usable to stale latest value.
     pub usable_to_stale_transitions: u64,
+    /// Cumulative pending samples that a step's clear dropped (`hypha_cycle_image_clear`).
+    pub cleared_total: u64,
 }
 
 /// Everything one input binding reports: in a step from the image

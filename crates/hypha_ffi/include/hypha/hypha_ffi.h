@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 14
+#define HYPHA_ABI_REVISION 15
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -35,6 +35,12 @@
 // broken, not late. It replaces `UNKNOWN_FRAME`, `NOT_CONNECTED` and `AFTER_BUFFER`
 // while that frame's newest transform is a refused one.
 #define HYPHA_TF_REFUSED 6
+
+// `hypha_cycle_image_clear`: `index` names an input binding.
+#define HYPHA_CYCLE_CLEAR_INPUT 0
+
+// `hypha_cycle_image_clear`: `index` names a TF input (`hypha_cycle_bind_transforms`).
+#define HYPHA_CYCLE_CLEAR_TRANSFORMS 1
 
 // Freshness verdict: no sample admitted since the binding was created.
 #define HYPHA_CYCLE_VERDICT_NEVER_ARRIVED 0
@@ -454,6 +460,8 @@ typedef struct HyphaCycleBindingHealth {
   uint64_t latest_unavailable_iterations;
   // Transitions from usable to stale latest value.
   uint64_t usable_to_stale_transitions;
+  // Cumulative pending samples that a step's clear dropped (`hypha_cycle_image_clear`).
+  uint64_t cleared_total;
 } HyphaCycleBindingHealth;
 
 // The held sample facts of one input binding: the newest usable sample it captured.
@@ -1166,6 +1174,20 @@ HyphaStatus hypha_cycle_image_alive(const struct HyphaCycleImage *image,
 HyphaStatus hypha_cycle_image_set_ignored(const struct HyphaCycleImage *image,
                                           uint32_t binding_index,
                                           uint8_t ignore);
+
+// Clear, when the step returns, the input binding `index` (`kind` is
+// `HYPHA_CYCLE_CLEAR_INPUT`) or the TF input `index` (`HYPHA_CYCLE_CLEAR_TRANSFORMS`).
+// An input forgets its held sample and the pending samples its capture admitted, counted
+// in `cleared_total`; a TF input forgets its dynamic transforms and keeps the static ones.
+// The rest of the step still reads what it captured; a repeat in one step clears once.
+// Valid only during the step callback. `InvalidArgument` for a null `image`, an unknown
+// `kind` or index, or a trigger port, whose pending samples are the cycle's steps.
+//
+// # Safety
+// `image` must be a callback-live pointer.
+HyphaStatus hypha_cycle_image_clear(const struct HyphaCycleImage *image,
+                                    uint32_t kind,
+                                    uint32_t index);
 
 // Fill `out` with the health, held sample and supervision of binding `binding_index`
 // at this step. `InvalidArgument` for a null pointer or an index past the last binding;

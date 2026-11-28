@@ -356,6 +356,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_twist_mux_shape.cpp
     test/test_newest_only.cpp
     test/test_transforms_port.cpp
+    test/test_cycle_clear.cpp
     test/test_transform_buffer.cpp
     test/test_subscriber_diagnostics.cpp
     test/test_cycle_sample_stamps.cpp
