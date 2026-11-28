@@ -73,13 +73,34 @@ void recordConfig(const std::string& key, const T& value)
     );
 }
 
-/// @brief The state of this node, judged now from the inputs' ok bits: `WAITING` while
-///        a required input never arrived, else `DEGRADED` while one is not ok (stale,
-///        stagnant), else `INPUTS_USABLE`. Call it on the thread that runs the node.
+/// @brief The state of this node, judged now from the inputs' ok bits and the checks of the
+///        application (`DiagnosticUpdater`): `WAITING` while a required input never arrived,
+///        else `DEGRADED` while one is not ok (stale, stagnant) or a check is at ERROR or
+///        STALE, else `INPUTS_USABLE`. `checks` lists the checks as last reported. Call it on
+///        the thread that runs the node.
 /// @throws std::runtime_error before a Node exists.
 inline std::expected<hypha_msgs::NodeState, Status> nodeState()
 {
     return detail::readNodeRecord<hypha_msgs::NodeState>(backend::readNodeState, "nodeState()");
+}
+
+/// One check of the application in `~/state` (#121): a name, a level of
+/// `diagnostic_msgs/DiagnosticStatus` (OK, WARN, ERROR, STALE) and a message. An ERROR or
+/// STALE check makes the node DEGRADED.
+using HealthCheck = backend::CheckText;
+
+/// @brief Replace the checks that @p owner reported to this process's node with @p checks;
+///        none removes them. A driver reports its own; `DiagnosticUpdater` reports its tasks.
+///        Without a node nothing is reported.
+/// @return InvalidArgument for a name of 0 or over 128 bytes or a level over 3, TooLarge for
+///         over 64 checks in all; a refusal changes nothing.
+inline Status reportChecks(uint64_t owner, const std::vector<HealthCheck>& checks)
+{
+    HyphaNode* const node = backend::nodeHandle();
+    if (node == nullptr) {
+        return Status(Status::Ok);
+    }
+    return backend::setChecks(node, owner, checks);
 }
 
 }  // namespace hypha

@@ -1,18 +1,22 @@
 // The status tasks of a node, published as one DiagnosticArray: what ROS's
 // diagnostic_updater makes and a diagnostic_aggregator reads.
 
+#include "hypha/application_node.h"
 #include "hypha/cycle_node.h"
 #include "hypha/diagnostic_functions.h"
 #include "hypha/diagnostic_updater.h"
 #include "hypha/hypha.h"
 #include "hypha/publisher.h"
 #include "hypha/testing.h"
+#include <hypha_msgs/NodeState.h>
 
 #include "test_types.h"
 
 #include <diagnostic_msgs/DiagnosticArray.h>
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <expected>
 #include <stdexcept>
 #include <string>
 #include <vector>

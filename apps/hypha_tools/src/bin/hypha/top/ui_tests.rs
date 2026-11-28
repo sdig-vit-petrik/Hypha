@@ -202,3 +202,36 @@ fn the_nodes_list_says_when_an_input_waits_while_another_version_is_published() 
     waiting.verdict = Input::USABLE;
     assert_eq!(shown(&node(vec![waiting])), "1/1 OK, 1 OTHER VERSION");
 }
+
+#[test]
+fn the_node_card_draws_a_failing_check_under_its_health_line() {
+    let node = NodeInfo {
+        name: "driver".to_owned(),
+        executable: "driver".to_owned(),
+        pid: 1,
+        is_alive: true,
+    };
+    let state = hypha_node::sdk::msgs::hypha_msgs::NodeState {
+        node: "driver".to_owned(),
+        state: hypha_node::sdk::msgs::hypha_msgs::NodeState::DEGRADED,
+        checks: vec![hypha_node::sdk::msgs::hypha_msgs::NodeCheck {
+            name: "Device".to_owned(),
+            level: hypha_node::sdk::msgs::hypha_msgs::NodeCheck::ERROR,
+            message: "serial port absent".to_owned(),
+        }],
+        ..hypha_node::sdk::msgs::hypha_msgs::NodeState::default()
+    };
+    let node_st = (state, Instant::now());
+    let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
+    terminal.draw(|f| draw_node_summary_card(f, f.area(), &node, Some(&node_st), None)).unwrap();
+    let rows: Vec<String> = terminal
+        .backend()
+        .buffer()
+        .content
+        .chunks(100)
+        .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+        .collect();
+    let shown = rows.join("\n");
+    assert!(shown.contains("DEGRADED / FAILED CHECK"), "{shown}");
+    assert!(shown.contains("Check: Device: ERROR serial port absent"), "{shown}");
+}

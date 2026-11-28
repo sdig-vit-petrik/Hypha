@@ -726,8 +726,9 @@ The library does not serialise calls for the caller. A single endpoint handle
 is used from one thread at a time. The node observation calls (`hypha_node_ok`,
 `hypha_node_shutdown`, `hypha_node_metrics`) are safe to use while another
 thread runs a `WaitSet`, and so are the cycle snapshots `hypha_cycle_health` and
-`hypha_cycle_binding`. Call `hypha_node_state` on the thread that runs the node, or
-while no thread does. No mutex stays held across user processing.
+`hypha_cycle_binding`. `hypha_node_set_checks` may be called from any thread, as the
+application's checks are read under a lock held for the copy only. Call `hypha_node_state`
+on the thread that runs the node, or while no thread does. No mutex stays held across user processing.
 
 One thread runs one `WaitSet`. `hypha_waitset_request_stop` and
 `hypha_waitset_request_failure` are the calls another thread may make on a

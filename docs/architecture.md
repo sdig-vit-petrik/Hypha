@@ -267,8 +267,10 @@ else ok means usable and not stagnant). `hypha_node_state` reads the verdict and
 `ok` bit of each input that counts for health; C++ `inputsOk()` reads the same bit.
 Bindings of one topic give one input with the worst verdict. The node is `WAITING`
 while a binding that never arrived is not ok, else `DEGRADED` while any is not ok:
-a stagnant input degrades the node, an ignored stale input does not. `runNode`
-publishes the state on `~/state` every second. Each cycle logs every change of a
+a stagnant input degrades the node, an ignored stale input does not. A check that the
+application reports (`hypha_node_set_checks`, from `DiagnosticUpdater`) at `ERROR` or
+`STALE` degrades the node too; one at `WARN` does not (`node_state.rs` holds the rule).
+`runNode` publishes the state on `~/state` every second. Each cycle logs every change of a
 judgement once, after the step that captured it; reading the state logs nothing.
 
 ### 2.4 The layers of the C++ SDK

@@ -26,6 +26,7 @@ mod loan;
 mod log;
 mod metrics;
 mod node;
+mod node_checks;
 mod node_discovery;
 mod node_state;
 mod param_topic;
@@ -76,6 +77,7 @@ pub use hypha_node::loan::HyphaLoan;
 pub use hypha_node::log::{HyphaLogLevel, HyphaLogModule};
 pub use hypha_node::metrics::HyphaMetricCallback;
 pub use hypha_node::node::HyphaNode;
+pub use hypha_node::node_checks::HyphaNodeCheck;
 pub use hypha_node::node_discovery::{
     HyphaNodeCallback, HyphaNodeInfo, HyphaServicePortCallback, HyphaServicePortInfo,
 };
@@ -93,6 +95,7 @@ pub use metrics::hypha_node_metrics;
 pub use node::{
     hypha_node_create, hypha_node_destroy, hypha_node_name, hypha_node_ok, hypha_node_shutdown,
 };
+pub use node_checks::hypha_node_set_checks;
 pub use node_discovery::{
     hypha_list_nodes, hypha_list_service_ports, hypha_topic_validate_public_name,
 };

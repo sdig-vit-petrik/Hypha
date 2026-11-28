@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod checks;
 mod graph;
 mod graph_layout;
 mod graph_ui;

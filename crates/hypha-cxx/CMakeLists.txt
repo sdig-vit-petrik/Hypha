@@ -398,6 +398,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_step_harness_services.cpp
     test/test_sequence.cpp
     companions/test/test_diagnostic_updater.cpp
+    companions/test/test_diagnostic_updater_state.cpp
     test/test_raw_endpoints.cpp
     test/test_qos.cpp
     test/test_topic_overloading.cpp

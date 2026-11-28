@@ -683,6 +683,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | `tf2_ros::StaticTransformBroadcaster` | An `Output<tf2_msgs::TFMessage>` declared with `latched` and `topic = "/tf_static"` in its ports table |
 | A reset that clears state: robot_localization's `reset` service and `set_pose` (`tfBuffer_.clear()`, `clearMeasurementQueue()`), an EKF reinitialisation, a tracker reset | In the step: `port.clear()` on each input whose old samples must not reach the next step and `transforms.clear()` on the `Transforms` port (static transforms stay), beside the node's own reset. Applied when the step returns; later steps see only later samples, the inputs are `NeverArrived` until one arrives (cpp-api.md §5.4, execution-model.md §6.8). A queue the node keeps itself is the node's to empty |
 | `diagnostic_updater::Updater updater;` with `updater.setHardwareID(id)`, `updater.add("Name", this, &Class::method)` | `hypha::DiagnosticUpdater updater{diagnostics};` over an `Output<diagnostic_msgs::DiagnosticArray> diagnostics{*this, "diagnostics"}` (`[ports.outputs.diagnostics] topic = "/diagnostics"`); the calls stay (`<hypha/diagnostic_updater.h>`, cpp-api.md §2.7) |
+| A diagnostic task as the only place that says the device is absent (no one reads `/diagnostics`), or the driver's own health in a log line | The same task: `hypha::DiagnosticUpdater updater;` with no sink and no port. Its rows are in `~/state` (`NodeState.checks`), an `ERROR` one makes the node `DEGRADED` and `hypha top` shows it; a `WARN` one only shows. A node that has an aggregator builds it over the `Output` as above and gets both from the one declaration (cpp-api.md §2.7) |
 | The updater's own timer, `~diagnostic_period`, `updater.update()` / `force_update()` | `updater.update()` in `step()` (it runs the tasks once per period, default 1 s); the period is a top-level key read with `hypha::config()` and given to `setPeriod`; `forceUpdate()` runs now |
 | `diagnostic_updater::DiagnosticStatusWrapper`: `summary`, `summaryf`, `mergeSummary`, `add`, `addf`, `clear` | `hypha::DiagnosticStatusWrapper`, the same calls; the levels are `diagnostic_msgs::DiagnosticStatus::OK`, `WARN`, `ERROR`, `STALE` |
 | `FrequencyStatusParam`, `FrequencyStatus`, `TimeStampStatus`, `TopicDiagnostic`, `HeaderlessTopicDiagnostic` | The same names in `hypha::` (`<hypha/diagnostic_functions.h>`); `tick(msg.header.stamp)` takes the `RosTime` stamp |
@@ -697,7 +698,15 @@ included, uses the same `HYPHA_DOMAIN`.
 **Diagnostics (`diagnostic_updater`):** a status task the application owns (the device is
 absent, a fix is lost, a rate is low) keeps its task and its name: the node publishes it with
 `hypha::DiagnosticUpdater` as above, and the system's `diagnostic_aggregator` reads
-`/diagnostics` as in ROS. Three kinds of diagnostic are not tasks:
+`/diagnostics` as in ROS. The same task is in `~/state` and `hypha top`: an `ERROR` or
+`STALE` level makes the node `DEGRADED` (not ready, as a required input that is stale does),
+`WARN` does not. So a ported node whose device or fix is absent is no longer `INPUTS_USABLE`
+for lack of an input to degrade: choose the level by that rule (`ERROR` for the fact
+without which the node cannot do its job, `WARN` for the one that only needs a look). A
+node with no `diagnostic_aggregator` in its system still declares the tasks, with the updater
+that has no sink. An application counter that had nowhere to go (a queue's drops, grabs
+without an image) becomes a `WARN` task with the number in the message. Three kinds of
+diagnostic are not tasks:
 
 - A check of the age of an input (`now - stamp > timeout`) is the port's `silence_ms`
   (section 2.1); `~/state` shows it and `hypha top` reads it. Drop the task, unless the
