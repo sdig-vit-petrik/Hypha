@@ -48,6 +48,7 @@ const NO_PREAMBLE: &[(&str, &str)] = &[
     ("hypha_clock_now_nanos", "no argument"),
     ("hypha_clock_steady_now_nanos", "no argument"),
     ("hypha_clock_is_sim_time", "no argument"),
+    ("hypha_clock_is_valid", "no argument"),
     ("hypha_clock_disable_sim_time", "no argument"),
     ("hypha_clock_enable_sim_time", "a negative start is refused; abi_boundary_values"),
     ("hypha_clock_set_sim_time", "a negative time is refused; abi_boundary_values"),
