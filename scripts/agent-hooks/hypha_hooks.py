@@ -663,12 +663,14 @@ UNWRAP = re.compile(r"\.unwrap\(\)|\.expect\(")
 THREAD_SPAWN = re.compile(r"\bthread::(spawn|Builder)\b")
 ENV_VAR = re.compile(r"\benv::var(_os)?\b")
 EXTERN_C_FN = re.compile(r'\bextern\s+"C"\s+fn\b')
-ENV_VAR_ALLOWLIST = frozenset({
-    "crates/hypha_core/src/parameters_load.rs",
-    "crates/hypha_iceoryx2/src/domain.rs",
-    "crates/hypha_node/src/node.rs",
-    "crates/hypha_node/src/replay_restart.rs",
-})
+ENV_VAR_ALLOWLIST = frozenset(
+    {
+        "crates/hypha_core/src/parameters_load.rs",
+        "crates/hypha_iceoryx2/src/domain.rs",
+        "crates/hypha_node/src/node.rs",
+        "crates/hypha_node/src/replay_restart.rs",
+    }
+)
 
 
 def added_lines(path: Path) -> dict[int, str]:
