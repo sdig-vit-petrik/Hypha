@@ -1560,6 +1560,13 @@ thread for the outcome and returns it, and a call it refused before sending read
 answer. The message says what to use instead: `call(request, onResult)`. The library
 starts no thread for it.
 
+From the shell, `hypha service call <service> '<yaml or json>'` is the operator's
+`rosservice call`: a server registers the definitions of its `.srv` when it is created,
+so the tool encodes the request, prints the response, and exits with a code per outcome
+([tools.md](tools.md), `hypha service`). Every client, the tool's included, logs each
+finished call as a `hypha_msgs/ServiceCall` on `<service>/calls` while someone reads it:
+`hypha topic echo /camera/set_enabled/calls`, recorded by `hypha record`.
+
 ### 8.4 Limits, and services in a cycle
 
 A service has a policy as a topic does (section 7): `hypha::ServicePolicy`, mapped to the

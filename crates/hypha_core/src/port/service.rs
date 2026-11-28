@@ -104,6 +104,12 @@ pub struct ServiceSpec {
     pub md5: String,
     /// The limits.
     pub policy: ServicePolicy,
+    /// The definition text of the request half (`<type>Request`), as a `.msg` with its
+    /// dependencies; empty when the server gives none. A server registers it in the schema
+    /// store so a tool can encode a request it did not compile.
+    pub request_definition: String,
+    /// The definition text of the response half (`<type>Response`); empty for none.
+    pub response_definition: String,
 }
 
 impl ServiceSpec {
@@ -115,7 +121,17 @@ impl ServiceSpec {
             type_name: type_name.to_string(),
             md5: md5.to_string(),
             policy: ServicePolicy::default_service(),
+            request_definition: String::new(),
+            response_definition: String::new(),
         }
+    }
+
+    /// The same spec with the definitions of its two halves.
+    #[must_use]
+    pub fn with_definitions(mut self, request: &str, response: &str) -> Self {
+        self.request_definition = request.to_string();
+        self.response_definition = response.to_string();
+        self
     }
 
     /// The same spec under `policy`.

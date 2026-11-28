@@ -15,12 +15,17 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <deque>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+
+#ifdef HYPHA_TEST_HYPHA_TOOL
+#    include <sys/wait.h>
+#endif
 
 /// Echo's requests are bounded at 64 bytes, so a longer text is TooLarge.
 template <>
@@ -477,5 +482,63 @@ TEST_F(ServiceFixture, TheCameraWorkerAnswersSettersCalledByABlockingClient)
     EXPECT_FLOAT_EQ(exposed->response().reached_exposure, 10000.0F);
     EXPECT_FALSE(exposed->response().success);
 }
+
+#ifdef HYPHA_TEST_HYPHA_TOOL
+/// What `hypha service <arguments>` printed and its exit code.
+struct ToolRun
+{
+    std::string out;
+    int         code{-1};
+};
+
+ToolRun runTool(const std::string& arguments)
+{
+    ToolRun     run;
+    std::string command = std::string(HYPHA_TEST_HYPHA_TOOL) + " service " + arguments;
+    FILE*       pipe = popen(command.c_str(), "r");
+    if (pipe == nullptr) {
+        return run;
+    }
+    char buffer[256];
+    while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        run.out += buffer;
+    }
+    const int status = pclose(pipe);
+    run.code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return run;
+}
+
+/// The camera proof from the shell: the C++ servers register their definitions, so an
+/// operator's `hypha service call` encodes a request the tool never compiled.
+TEST_F(ServiceFixture, AnOperatorCallsTheCameraSettersFromTheShell)
+{
+    FakeCamera camera;
+    camera.setup(*this->node);
+    std::atomic<bool> done{false};
+    ToolRun           enabled;
+    ToolRun           exposed;
+    ToolRun           refusedText;
+    std::thread       operatorThread([&] {
+        enabled = runTool("call " + testTopic("/camera/set_enabled") + " 'data: true'");
+        exposed =
+            runTool("call " + testTopic("/camera/set_exposure") + " '{target_exposure: 20000}'");
+        refusedText =
+            runTool("call " + testTopic("/camera/set_exposure") + " 'target_exposure: fast' 2>&1");
+        done = true;
+    });
+    const auto        until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!done && std::chrono::steady_clock::now() < until) {
+        static_cast<void>(this->node->runFor(hypha::Duration::fromMillis(5)));
+    }
+    operatorThread.join();
+    EXPECT_EQ(enabled.code, 0) << enabled.out;
+    EXPECT_EQ(enabled.out, "success: true\nmessage: \"streaming\"\n");
+    EXPECT_EQ(exposed.code, 0) << exposed.out;
+    EXPECT_EQ(exposed.out, "reached_exposure: 10000\nsuccess: false\n");
+    EXPECT_EQ(refusedText.code, 1);
+    EXPECT_NE(refusedText.out.find("target_exposure: 'fast' is not a float32"), std::string::npos)
+        << refusedText.out;
+}
+#endif
 
 }  // namespace

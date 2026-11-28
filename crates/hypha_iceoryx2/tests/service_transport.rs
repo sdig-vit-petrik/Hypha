@@ -549,6 +549,34 @@ fn the_tools_list_each_stream_with_its_server_and_clients() {
 }
 
 #[test]
+fn a_server_registers_its_definitions_for_the_tools_while_it_stands() {
+    let name = service_name();
+    let server_side = new_transport();
+    let definitions = spec(&name).with_definitions("bool data", "bool success\nstring message");
+    let server = server_side.serve(&definitions).expect("a server");
+    let tool = new_transport();
+    let schema = tool
+        .service_schema(&name, V1, Duration::from_millis(200))
+        .expect("the store")
+        .expect("the server registered its definitions");
+    assert_eq!(schema.request_type, "std_srvs/SetBoolRequest");
+    assert_eq!(schema.request_definition, "bool data");
+    assert_eq!(schema.response_type, "std_srvs/SetBoolResponse");
+    assert_eq!(schema.response_definition, "bool success\nstring message");
+    // Another version of the name has no records of its own.
+    assert_eq!(tool.service_schema(&name, V2, Duration::ZERO).expect("the store"), None);
+    drop(server);
+    assert_eq!(
+        tool.service_schema(&name, V1, Duration::ZERO).expect("the store"),
+        None,
+        "the records go with their server"
+    );
+    // A server that gives no definitions registers none.
+    let _bare = server_side.serve(&spec(&name)).expect("a server again");
+    assert_eq!(tool.service_schema(&name, V1, Duration::ZERO).expect("the store"), None);
+}
+
+#[test]
 fn a_stream_opened_with_another_policy_is_refused() {
     let name = service_name();
     let transport = new_transport();

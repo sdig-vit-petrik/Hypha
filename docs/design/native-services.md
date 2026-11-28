@@ -6,7 +6,16 @@ Status: accepted design, after an independent review whose seventeen changes are
 in. Stage 1a (the transport) is implemented in `crates/hypha_iceoryx2/src/service/`; the
 runtime, the C ABI and the C++ endpoints of stage 1b in `crates/hypha_node/src/service/`,
 `crates/hypha_ffi/src/service.rs` and `crates/hypha-cxx/include/hypha/service*.h`. The
-call log and `hypha service` (the rest of 1b) and the stages above are not. Each decision gives its reason. Where the author checked a change
+call log (`crates/hypha_node/src/service/call_log.rs`), the servers' definitions in the
+schema store and `hypha service list|info|call` (`apps/hypha_tools/src/bin/hypha/service.rs`)
+complete 1b; the stages above are not built. Decisions of the second part where this
+document is silent: the log's topic is `<service>/calls` under a policy `serviceCalls`
+(the service's clients and tools as publishers, depth 4); a record carries at most 2 KiB
+besides the policy's request and response bounds, its reason cut at 1 KiB; `call` with no
+body calls a request of no fields and prints the template of any other; the exit codes
+are 0 answered, 1 a tool failure, then 2 to 6 for refused, no server, not sent, server
+lost and timeout; `list` shows no per-outcome counts before the `~/state` rows of stage
+2, and the paused-clock notice is not built. Each decision gives its reason. Where the author checked a change
 against the code and kept a different mechanism, an **author's note** says so, with the
 evidence.
 
