@@ -50,7 +50,15 @@ hypha topic hz <topic> [--window <n>] [--type <type>] [--md5 <prefix>]
                                           publish rate of each stream
 hypha topic bw <topic> [--type <type>] [--md5 <prefix>]
                                           bandwidth and mean message size of each stream
+hypha topic pool --payload <bytes> [--publishers <n>] [--subscribers <n>] [--depth <n>] [--loans <n>]
+                                          what a publisher's pool reserves
 ```
+
+`pool` joins no bus: it prints the slots, the slot size and the shared memory of a publisher
+whose messages are at most `--payload` serialized bytes under a policy of these limits (a limit left
+out is that of the `default` policy: 8, 16, 32), from the rule the transport sizes with.
+`hypha topic pool --payload 5038896 --publishers 1 --subscribers 2 --depth 2` is the pool of a 5 MP
+mono8 camera on `hypha::imageQos`: 23 samples of 5039000 bytes, 115897000 bytes (cpp-api.md §7.1).
 
 `list` reads the transport's service listing once and returns at once: it listens to
 nothing. A topic is listed from the moment a publisher, or a subscriber that declared its

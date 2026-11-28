@@ -37,7 +37,11 @@ struct Tool {
 
 /// Every tool, in the order `hypha --help` lists them.
 const TOOLS: [Tool; 12] = [
-    Tool { subcommand: "topic", main: topic::main, summary: "list, echo, hz and bw of topics" },
+    Tool {
+        subcommand: "topic",
+        main: topic::main,
+        summary: "list, echo, hz and bw of topics; the pool of a policy",
+    },
     Tool {
         subcommand: "top",
         main: top::main,
