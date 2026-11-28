@@ -1,1116 +1,129 @@
 # Execution Model
 
-How `hypha` runs your callbacks: the `WaitSet`, `run`, notifications,
-timers, and polling.
-
-SIGINT, SIGTERM, and node shutdown stop a running WaitSet at a dispatch boundary.
-A callback that is running when the stop arrives can finish. The run then stops
-before the next callback. The owner waits for the run to return before
-destroying cycles or the node. The node owns its cycles and destroys
-them with its `WaitSet`. The framework creates no cleanup thread.
-
-This guide is for engineers who know ROS 1 (noetic). `hypha` uses the same
-words as `roscpp` for several functions. Some of them behave differently.
-Read section 2 before you port a node.
+How Hypha schedules callbacks, timers, cycles, and replay. Applies uniformly to the C++ SDK, Rust SDK, and C ABI.
 
 ---
 
-## 1. Who this is for
+## 1. Quick Map from ROS 1
 
-You know `ros::spin()`, `ros::spinOnce()`, `ros::AsyncSpinner` and
-`ros::CallbackQueue`. You want to know what the equivalent parts of
-`hypha` do, and where they differ.
-
-Every rule in this document applies to the C++ SDK, the Rust SDK and the
-C ABI. The C++ names are used in the examples, because most nodes are C++.
-
----
-
-## 2. Quick map from ROS 1
-
-| ROS 1 | `hypha` | The difference that matters |
+| ROS 1 | Hypha | Key Difference |
 |---|---|---|
-| `ros::spin()` | `Node::run()` | It returns a `RunResult` you must check. |
-| `ros::spinOnce()` | `Node::runFor(limit)` | There is no one-cycle call. Run for a bounded time instead. |
-| `ros::AsyncSpinner(N)` | none | The framework creates no thread. You create and own every thread. |
-| `ros::MultiThreadedSpinner` | none | Callbacks of one `WaitSet` never run at the same time. |
-| `ros::CallbackQueue` | `WaitSet` | Registrations attach to a `WaitSet`. Samples wait in shared memory. |
-| `ros::getGlobalCallbackQueue()` | `hypha_node_default_waitset` | Each node has one default `WaitSet`. |
-| `nh.subscribe(topic, 10, cb)` | `node.subscribe<T>(hypha::Topic{topic}, cb)` | A callback subscription wakes on each sample; every publisher notifies. See section 7. |
-| `ros::Rate` + `sleep()` | `Node::timer` | A timer is due against the monotonic clock on host time and against `/clock` on simulated time; the run waits until its deadline. |
-| `ros::Timer` | `hypha::Timer` | Missed periods do not fire as a burst. See section 11. |
-| `ros::ok()` | `hypha::ok()` | Same idea. |
-| `ros::shutdown()` | Destroying the `Node` | The bus is released when the `Node` goes out of scope. |
-| `const Msg::ConstPtr&` you may keep | typed callback: keep it; raw callback: copy it | See section 10.3. |
-| roscore / master | none | Nodes find each other through shared memory. |
+| `ros::spin()` | `Node::run()` | Returns `[[nodiscard]] RunResult`; stops at a dispatch boundary on `SIGINT`/`SIGTERM` or `requestStop()`. |
+| `ros::spinOnce()` | `Node::runFor(limit)` | No single-step call; pass a positive host-time span (`steadyNow()`). |
+| `ros::AsyncSpinner` / `MultiThreadedSpinner` | None | **Hypha creates no threads.** Every callback runs on the thread calling `run()`; callbacks of one `WaitSet` never overlap. |
+| `ros::CallbackQueue` | `WaitSet` | One default `WaitSet` per node (`hypha_node_default_waitset`). Samples stay in shared memory until drained. |
+| `ros::Timer` | `Node::timer()` | Missed periods are counted, never replayed as a burst. |
+| `const Msg::ConstPtr&` | Typed: owned; Raw: borrowed | Typed callbacks receive an owned copy; raw callbacks receive a view valid only during the call. |
 
 ---
 
-## 3. The framework creates no thread
-
-This is the rule the whole execution model follows. Every callback runs on a
-thread your application created and owns. Nothing progresses in the
-background.
+## 2. Single-Threaded `WaitSet` Loop
 
 ```text
-  your thread
-  ───────────
-
-  run() ─┐
-          │  1. build every native attachment, once, at run entry
-          │
-          │  2. wait on the native WaitSet
-          │        wakes on a notification, a timer deadline,
-          │        or an operation deadline
-          │
-          │  3. take a bounded batch from each ready attachment and
-          │     call your callback for each accepted sample
-          │
-          └──4. check stop, progress operations, then go back to 2
+run():
+  1. Build native attachments once at run entry (attachments freeze during run).
+  2. Wait on native WaitSet (notifications, timer deadlines, stop, runFor limit).
+  3. Dispatch due timers/cycles first, then a bounded batch of ready ingress.
+  4. Check stop/failure and repeat.
 ```
 
-| Part | What it is |
-|---|---|
-| **Node session** | One process-wide session. The first `hypha::Node` creates it. |
-| **`WaitSet`** | A set of registrations and the thread that runs them. A node has one `WaitSet`, its default one (`hypha_node_default_waitset`); there is no call that creates another. |
-| **Attachment** | One registered subscription, timer, cycle, or housekeeping job. It has an id. |
-| **Callback** | Your function. It runs on the thread that called `run()`. |
-
-Consequences you must plan for:
-
-- **Housekeeping only progresses while a `WaitSet` runs.** Latched replay is an
-  attachment. A node that never runs its `WaitSet` wakes no late subscriber of a
-  latched topic. A latched
-  topic's last sample reaches a new subscriber when the node's `WaitSet` hears
-  the domain graph event that a subscriber creation fires (`hypha/hk/graph/v1`),
-  or when the publisher next sends, and only that subscriber receives it. A
-  schema needs no run: an endpoint that carries a message definition writes its
-  schema record when it opens, and a reader reads that record.
-- **Attachments freeze during a run.** Create every subscription and cycle
-  before you call `run()`. A subscription created during a run is refused
-  with `InvalidState`. A timer is the exception: a callback may create one when
-  the node runs on host time or on its own simulated clock, and it joins before
-  the run next waits. On a simulated clock the node does not own, it is refused.
-  A callback may also cancel and reset a timer (`Timer::cancel()`,
-  `Timer::reset()`; [cpp-api.md](cpp-api.md) section 3).
-- **One `WaitSet` has one thread.** A node has one `WaitSet`, so its callbacks
-  never run concurrently with each other, and a slow callback delays every other
-  one of the node. Work that must not wait for them runs in a thread you create,
-  outside the `WaitSet`, with your own synchronisation of the state it shares, or
-  in another process.
+- **Housekeeping requires a running `WaitSet`:** Latched replay to late subscribers happens on graph events (`hypha/hk/graph/v1`) while `run()` / `runFor()` executes. Schema records need no run (written on endpoint creation).
+- **Frozen topology:** Subscriptions and cycles cannot be attached while running (`InvalidState`). Timers are the exception (callbacks may create a timer on host time or a node-owned sim clock, and may `cancel()`/`reset()` timers). Detaching from a callback defers context release until `run()` returns; detaching from another thread during a run is refused.
+- **`requestStop()`** is thread-safe and sticky (a stop requested before `run()` returns immediately on the next `run()`).
+- **Restarting a `WaitSet`:** Timers count the stopped interval as missed periods (no burst); cycle input histories and sequence state persist.
+- **No blocking round trips in callbacks:** Calling blocking schema lookups inside a callback returns `InvalidState`; resolve schemas before `run()`.
 
 ---
 
-## 4. Running: `run`, `runFor`, `requestStop`
+## 3. Bounded Dispatch
 
-```cpp
-// Blocks until something stops it.
-hypha::Node node("my_node");
-const hypha::RunResult result = node.run();
-if (!result.ok()) {
-    // The call itself can fail, and a call that completed can still
-    // report that the run failed. RunResult carries both.
-    return 1;
-}
-```
+Every turn rotates a fair cursor across ready attachments (rejected frames count against the batch):
 
-`Node::run()` runs the node's default `WaitSet` on the calling thread. It returns
-when:
-
-- your application called `requestStop()`, or
-- a callback asked for a stop, or
-- the run failed.
-
-`runFor(limit)` is the same run with a deadline. When the deadline elapses
-the run stops the same way `requestStop()` stops it, and reports a normal
-stop. A run always takes its first dispatch turn, so it serves the timers that
-are due and the samples already queued even when a loaded host spends the
-whole limit starting the run. Use it in tests and short tools. The limit is a
-span of real time. A limit of zero or less is refused with `InvalidArgument` and runs nothing. A
-limit that you compute from framework time can be negative after playback
-jumps, and a rewind makes it longer, so compute a limit from `steadyNow()`.
-
-`requestStop()` is the one operation another thread may call on a running
-`WaitSet`. It is idempotent while running. A stop requested while no run is in
-progress is kept: the next run returns at once and consumes it, so a stop from
-another thread is not lost to the start of a run. The C ABI
-(`hypha_waitset_request_stop`) reports `InvalidState` in that case, to say no
-run was in progress; the C++ `requestStop()` returns nothing.
-
-`RunResult` is `[[nodiscard]]`. Ignoring it is a compiler diagnostic, because
-a run that failed and a run that stopped normally are different outcomes.
-
-### 4.1 There is no `spinOnce()`
-
-A public one-cycle call is not provided. The native `WaitSet` and the guards
-it borrows live on one run stack, and keeping them alive across separate
-calls needs a lifetime design this release does not have.
-
-Replace a `spinOnce()` loop with one of these:
-
-| You wanted | Do this |
-|---|---|
-| pump callbacks for a moment | `runFor(limit)` |
-| run until told to stop | `run()`, and `requestStop()` from elsewhere |
-| do periodic work | attach a timer and let it run inside `run()` |
-| process several inputs periodically | start a `CycleNode` or a `Cycle` and let `run()` serve it (§6.1) |
-
-### 4.2 Restart
-
-A `WaitSet` may run again after it stops. On the next run:
-
-- Timers count the stopped interval as missed periods in their next call. There
-  are no catch-up callbacks for it.
-- A cycle's input history does **not** restart. The first image after resume
-  judges retained samples against host time, so a value can already be stale.
-- Registrations, positive schema caches, and sequence state are kept.
-
----
-
-## 5. Bounded dispatch
-
-Every turn is bounded, so one busy topic cannot starve a timer, a stop
-request, or a timer.
-
-| Limit | Default | What happens at the limit |
+| Limit | Default | At Limit |
 |---|---|---|
-| Registrations per `WaitSet` | 128 | Attach returns `ResourceLimit` |
-| Samples per attachment per turn | 8 | The attachment stays ready and the rotation moves on |
-| Work items before a readiness recheck | 64 | The loop rechecks the native `WaitSet` |
-| Slow callback warning | 10 ms of host time | Counter, plus a warning at most once per second. Simulated time never makes a callback slow |
+| Registrations per `WaitSet` | 128 | `ResourceLimit` |
+| Samples per attachment per turn | 8 | Stays ready; rotation advances |
+| Work items before readiness recheck | 64 | Rechecks native `WaitSet` |
+| Slow callback warning | 10 ms host time | Counter + throttled warning (≤1/s) |
 
-These are engineering defaults, not safety-derived limits. Measure them on
-your target. A limit is refused, never clamped: a zero limit, or a batch size
-above the dispatch budget, returns `InvalidArgument`.
-
-The dispatcher rotates over ready attachments with a cursor. It does not
-restart each scan at the first registration. Rejected frames count against
-the batch, so a flood of corrupt traffic is bounded like valid traffic is.
+- **Callback exceptions:** C++ catches exceptions at the C ABI boundary, logs (throttled ≤1/10 s), increments `node.callback_failures`, and continues the run.
+- **One delivery style per subscriber:** Either a `WaitSet` callback/latest attachment or manual owning receive (Rust SDK); mixing returns `InvalidOperation`.
 
 ---
 
-## 5.1 Asking a question whose answer arrives later
+## 4. Notifications and Wildcards
 
-A callback runs on the thread that has to deliver every other answer. A call
-that waits for a round trip therefore stops the loop that must complete it.
-Blocking schema lookups refuse a call made from a dispatcher callback and
-return `InvalidState`. There is no asynchronous submission in the C ABI.
+Every publisher notifies its topic's event service after sending. Whether anything wakes depends on the reader:
 
-**Resolve before the run.** Call `hypha_schema_lookup` (or, in the Rust SDK,
-`BusNode::resolve_schema_hash`) outside a callback, before the run. A later
-`hypha_schema_lookup` for the same type returns the definition from inside a
-callback, with no round trip. A definition that is not held yet returns
-`InvalidState` inside a callback.
-
----
-
-## 6. Freshness and periodic cycles
-
-These measure different things. One duration never serves two of them.
-
-| Meaning | Reference event | How it is configured |
-|---|---|---|
-| Cycle input freshness (staleness) | the newest sample's send time, at each capture | `silence_ms` of the port (section 6.4) |
-| Input stagnation | the last change of the alive counter, on the step's scheduled deadline | `stagnation_ms` of a port that declares an alive counter (section 6.4) |
-| Source age | the measurement timestamp | not validated in this release |
-
-Managed sources keep bounded shared history below the C ABI. A cycle captures
-the samples visible at its timer turn and judges its bindings together at one
-host-monotonic instant (the replay cut under simulated time). Each binding can use
-a different silence limit; without one nothing is rejected. The boundary is strictly
-greater than, so a sample exactly at its limit remains usable. A source that is not wired or has
-never received a sample reports `NeverArrived`; a retained value that exceeds
-its binding limit reports `Stale`.
-
-### 6.1 Cycle execution
-
-A cycle is a framework-time periodic registration on the node's default
-`WaitSet`. The application keeps mutable state in the members of its
-`hypha::CycleNode`, or in the object that a named step functor points to. Its
-`Latest`, `Arrivals` and `Output` ports hold the frozen typed capture for each
-call:
-
-```cpp
-void step(const hypha::CycleTime& time);
-```
-
-A `CycleNode` takes its rate from `rate_hz` under `[cycle]` in the parameter file,
-or from `setRate()` in `setup()`, and its triggers from `setTrigger(port)`, once per
-trigger port. The
-cycle has the node's name. A composed `hypha::Cycle` has its own name and uses
-`setRate()`.
-
-The executor runs due timers, including cycles and intervals, before dispatching
-new ingress. A cycle capture therefore uses data already ingested by an earlier
-turn; samples waiting on the same wake become visible to a later image. Due
-cycles run in registration order. This timer-first rule keeps continuous
-ingress from postponing timer work, while a slow earlier callback can still
-delay later cycles.
-
-`CycleTime` reports the framework time of the step (`now`), the same time as a ROS
-header stamp (`stamp`), the time since the previous step started (`dt`) and the
-missed periods (`missed`). The first step has no `dt`. `hypha::now()` returns
-`time.now` for as long as the step runs. On host time `dt` is the difference of
-two monotonic readings, so a step of the system clock never makes it negative;
-`now` and `stamp` follow the system clock. A forward gap in host time is reported
-through `dt` and `missed` without a catch-up burst. On simulated time a clock that
-goes back ends the run with `ClockRewound` and restarts the process, and a cycle
-replays instead: it runs every expired deadline, each with its own time and inputs
-(section 11.1).
-Simulation pauses stop cycles, while ingress and housekeeping continue as the
-`WaitSet` runs. In host time, freshness still uses host time, so the first
-post-resume image can be stale.
-
-Latest inputs select the newest accepted retained sample. Queued inputs have
-an independent cursor per binding, examine up to their arrivals per step within
-the cycle budget (section 6.5), and preserve any remaining backlog for a later
-iteration. A batch can be
-empty while its stream is healthy; the image separately reports its verdict:
-`Usable` while the newest sample is within the silence limit, `Stale` after it.
-Test `samples().empty()` for "nothing new".
-Captured ranges are consumed before application processing, so a step failure
-does not replay them. State changes and earlier successful output sends also
-remain committed if a later output fails.
-
-The C++ facade decodes samples into the ports before calling the step. A `Latest`
-port decodes a value once, when it becomes the port's value; `*port` and `port->field`
-read it. A sample that does not decode fails nothing: the port reports it to the
-library, which counts it, logs it at most once per 10 s per input, and judges the input
-without it; a `Latest` port keeps the value it had (readable through `lastKnown()`; `*port`
-reads only a usable value) and an `Arrivals` port delivers the
-other samples in order. Each output `send(message)` serializes the message into a transport loan that the
-step holds until it returns. Each output has a positive per-step send limit, which
-defaults to one, and its publisher holds that many loans. The library checks each
-message against the limit when it is reserved. After the step succeeds, it sends the
-held loans in send-call order across outputs. If the step fails, the loans are
-released unsent and nothing from that step is published. Exceeding a send limit
-fails the iteration with `ResourceLimit` and publishes nothing from that step.
-The facade owns no scheduler, history, freshness
-rule, or cursor. Use `Cycle::health()` and `introspect()` for
-runtime diagnostics and configuration; inspection does not advance capture.
-Cycles create no thread. The node's `run()` and `runFor()` serve them on the
-calling thread.
-
-### 6.2 Cycle timing limits
-
-- The timers-first rule adds a phase delay between the arrival of a sample and
-  the step that reads it. A cycle drains its bound input queues immediately
-  before capture; the delay depends on the work limits of section 5 and the
-  other registrations. Measure it on the target. Do not assume a fixed bound.
-- A cycle has no deadline guarantee. Due cycles run in registration order. A
-  slow step delays the cycles that follow it.
-- `CycleTime::now` is read before the SDK decodes the image. It is not
-  the time at which the algorithm runs. Measure elapsed real time with `hypha::steadyNow()`. The duration of a callback includes the
-  decode, the step and the encode. The capture time stays separate: the library
-  judges the samples once, at capture, and never again at callback entry.
-- On host time `CycleTime::now` (and `stamp`) is the wall time read when the step
-  starts, not its scheduled deadline, so it varies with how late the run woke (section 11).
-- `CycleTime::missed` counts the periods that passed without a step since the
-  previous step: a per-step delta, 0 when the step is on time, never a running
-  total (`Cycle::health()` keeps the total). A host timer starts its periods at
-  the first run turn, so the time between the attach and the run is not missed.
-  A triggered step reports 0. A rewind adds no missed period. A forward gap in host
-  time is measured on the monotonic clock, and cannot be told from scheduling
-  delay, so the count shows it and no catch-up burst follows. A step of the
-  system clock is not a gap: it changes no count. On simulated time a replay step reports 0 missed
-  periods: a forward jump of `/clock` runs one step for each period it covers.
-  A cycle timer runs on framework time, so no tick is due while simulated time stays at
-  zero. Any other cycle committed before the first simulated time arrives reports a large
-  count at its first tick; a node that must not see it starts its cycle after simulated
-  time arrives.
-- A managed source keeps an owned, immutable copy of each payload below the C
-  ABI, and releases the transport loan at once. A queued history is therefore
-  not zero-copy end to end. The history limit counts samples, not bytes, and it
-  does not bound the objects that the SDK decodes from them. Never reinterpret a
-  serialized payload as a C++ message that holds vectors or strings.
-- Managed cycle inputs do not wake the `WaitSet` between ticks, except the triggers
-  of a triggered cycle (section 6.6). Each tick drains
-  every bound source's transport queue into its bounded history before capture.
-  Cycles sharing a source also share that history; the first tick drains it and
-  later ticks see the retained samples. Size a source's transport queue for at
-  least one period of arrivals. A queue overflow drops old samples. For a queued
-  binding, a forward per-publisher sequence gap contributes to its `overrun_total`
-  after the next surviving sample arrives. A latest binding does not count it.
-- On simulated time the framework `/clock` subscriber is notification-driven:
-  every `/clock` publisher notifies, so the node wakes when time moves.
-- **Data time.** Every frame carries a framework send time. A publisher stamps
-  it with the framework clock, which is simulated time on a sim-time node. A
-  replayer stamps it with the recorded time instead. `hypha play` does this for
-  every frame it publishes, `/clock` included. It publishes `/clock = T` only
-  after every message stamped at or before `T`, so a node that reads `/clock = T`
-  already has that data queued (`replay-flow-control.md` §4.3 states the rule and
-  its one exception). It
-  also waits until every participant has reported, on `/clock_progress`, a
-  `clock_sent_nanos` at or after the host send floor taken just before that
-  `/clock` sample went out, and a `clock_nanos` at or beyond the sample's value.
-  A participant that holds a deadline for an upstream reports less, and that
-  does not acknowledge the sample yet.
-  On simulated time a cycle judges its inputs in this data time (section
-  11.1). In host time, a cycle judges by host transport time, as before.
-- hypha has no RPC. A request and its reply are two topics (cpp-api.md §8), so a
-  step sends one on an `Output` and reads the other on an `Arrivals` input.
-
-### 6.3 Cycle failure
-
-| Condition | Result |
+| Reader | Wakes on Arrival? |
 |---|---|
-| An input is missing or stale | The step runs with the explicit verdict. The application chooses its response. The framework never supplies a default value. |
-| An output is not marked | Nothing is published for it. |
-| The step throws | The iteration fails with `Panic`, or `ResourceLimit` for `std::bad_alloc`. No output is sent. |
-| A selected payload passes the CRC and the schema check but does not deserialize | The C++ port rejects the sample: it is counted (`RequiredInput.undecodable`), logged at most once per 10 s per input, and the input is judged without it. The step and the run go on. |
-| An emission is refused, or a payload is larger than its publisher allows | The library checks the message at reserve time and validates every staged message before it sends the first one. The iteration fails and no output is sent. |
-| The transport has no free loan for a message (`PoolExhausted`) | The message is dropped at reserve, and the step continues. The run fails at dispatch unless the output is `diagnostic` (C ABI `DropPoolExhausted`), which drops and counts this refusal only (`output_pool_drops`). A dropped message takes its sequence number, so the subscriber counts the loss. |
-| The transport reports `Disconnected` or `Backend`, or a send reports `InvalidArgument` or `InvalidState` | The run fails. The recoverability of the fault is not known. |
+| Callback subscriber (`subscribe`, `subscribeRaw`) | Yes — wakes `WaitSet` immediately. |
+| Triggered cycle's trigger ports | Yes — wakes `WaitSet` immediately. |
+| Rate cycle inputs | No — drained at the cycle's tick (or every turn under sim time). |
+| Wildcard pattern (`*`) | No event service — polled every **1 ms** (triggers: `min(silence_ms)/10`, ≥1 ms). |
 
-- The owning `WaitSet` is one failure domain. A terminal failure stops the
-  remaining outputs and the run, other cycles of the same `WaitSet` included.
-  A node has one `WaitSet`: work that must survive such a failure runs in
-  another process.
-- Sends are not atomic. A later failure cannot undo an earlier send or a state
-  change.
-- A process that dies between two sends of one step has sent the first output of
-  that step and not the second. A consumer receives the first, never the second,
-  and no loss is counted for it: the unsent frame took no sequence number. Each
-  of the consumer's inputs then turns `Stale` after its own silence limit; the
-  second input's newest sample is from the step before. Two outputs of one step carry the same
-  framework send stamp, so a consumer that needs both from one step compares
-  the stamps.
-- A failed step never replays its captured ranges.
-- The framework never calls `exit()` and never invents a safe output. It cannot
-  promise that an actuator stop command reaches the bus after a failure. A
-  system watchdog covers that case.
-- A failed send of the data differs from a failed notification after a
-  successful send. The second is a diagnostic degradation.
-
-### 6.4 Input supervision
-
-Every enabled input that counts for health has a silence limit, unless its code tags
-it `unsupervised`; the decision is made below the C ABI (`hypha_runtime::port_limits`).
-A port with a silence limit checks that its input is current. Two checks exist:
-staleness (the silence limit) and stagnation. One limit, `silence_ms`, decides both
-whether a value may be used (the `Stale` verdict) and whether the port is stale
-(`stale()`); `age_rejections_total` counts the samples it refused. Stagnation is
-`stagnant()`.
-The cycle runtime does the detection below the C ABI, in `hypha_cycle`. The
-application decides what a stale or stagnant input means.
-
-1. The runtime evaluates every port with a limit once per iteration, at the capture
-   and before the step. The resolution of every limit is therefore one cycle period.
-2. Staleness uses the capture clock: host monotonic time against each sample's
-   transport send time, or the replay cut against its framework send time under
-   simulated time. Framework time in host mode is the wall clock, which can step,
-   so it plays no part. Host scheduling, the timers and the fallbacks, runs on the
-   monotonic clock as well, so a step of the wall clock neither delays nor advances
-   them.
-3. A port is stale when its newest sample was sent more than `silence_ms` before the
-   capture. A sample that arrives late, already older than the limit, is refused and
-   does not end the staleness: only a fresh sample does. A queued port is judged by
-   its newest sample too. An empty step is `Usable` while that sample is young, and
-   `Stale`, with `stale()` true, after it. A publisher slower than the cycle gives
-   `Usable` steps with no new sample; a publisher that stopped gives `Stale` steps.
-4. A port that has received nothing counts from its first evaluation, so it is not
-   stale before `silence_ms` has passed. A sample stamped after the capture clock has
-   not aged.
-5. Stagnation needs a life sign: an integer in the payload that the original source
-   advances, declared with `setAlive()`. It is for data that reaches hypha through a
-   relay (a device driver, the ROS bridge, a gateway). There the frame sequence
-   number proves only that the relay ran: it advances when the relay publishes the
-   last payload again. A topic that a hypha cycle publishes needs no life sign: its
-   frame sequence advances only when the sender's step ran, and `silence_ms` reports
-   a sender that stopped. A payload that does not change is not stagnant; a periodic
-   sender may publish the same value for ever. The library never decodes a payload,
-   so the C++ port reads the life sign and gives it to the runtime. The runtime
-   applies the value after the step returns, with the time of that iteration.
-
-   The checks of a frame are separate, and each covers its own faults: the CRC covers
-   corruption; the sequence number covers loss, repetition and reordering; the send
-   time covers delay and silence; the life sign covers a relayed source that stopped
-   while its relay still sends.
-6. The stagnation timer starts at the first alive value the runtime sees. Any
-   change of the value restarts it, a wrap included. Stagnation is checked only
-   while the port is not stale, so a port is never stale and stagnant at once.
-   A port that has accepted no sample is stale, never stagnant. The timer runs on
-   the step's scheduled deadline, `CycleTime::scheduled_nanos`: the deadline on the
-   monotonic clock of the timers in host mode (rule 2), simulated time in a replay. It
-   is not the wall clock `CycleTime::now`, so a step of the host wall clock, back or
-   forward, neither holds a stagnation back nor brings it forward: a supervision
-   limit does not move with the wall clock.
-7. Disabled and ignored are two facts. A disabled port (an `Optional` port whose
-   `topic` is empty or unset) reads no topic and is neither stale nor stagnant.
-   Ignoring (`setIgnored(true)`) hides the condition: `stale()` and `stagnant()`
-   are false while a port is ignored, and `ignored()` shows the override.
-8. The runtime logs one line for each change of the stale or stagnant state after the
-   step returns:
-
-The log, module `hypha`, shows each change of a wired input's judgement once, at the end
-of the step that captured it; there is no periodic summary, and the initial wait logs
-nothing. An input without a silence limit never logs `never arrived`. Two ports on one
-topic log under their own names. `<in>` is `cycle '<cycle>' input '<port>' (<topic>)`,
-or `cycle '<cycle>' input (<topic>)` without a table; an advisory input's line ends in
-` (advisory)`, and an advisory input reports its faults at INFO where the table says WARN:
-the node is healthy without it. An `unsupervised` or an ignored input is not advisory: its
-lines have the levels of the table. Ages and limits are whole milliseconds.
-
-| Change | Level | Line |
-|---|---|---|
-| first usable sample | INFO | `<in> is usable` |
-| usable → stale | WARN | `<in> is stale: newest sample is <age> ms old, silence_ms = <limit>` |
-| no sample for the whole limit since start | WARN | `<in> never arrived: no sample for <age> ms, silence_ms = <limit>` |
-| alive value stopped changing | WARN | `<in> is stagnant: alive value unchanged for <t> ms, stagnation_ms = <limit>` |
-| back to usable | INFO | `<in> is usable again` |
-| `setIgnored(true)` while faulted | WARN | `<in> fault is ignored` |
-| `setIgnored(false)` while faulted | WARN | `<in> fault counts again` |
-
-### 6.5 Queued work: budget, overflow and loss counters
-
-A queued input (`Arrivals`) examines at most its arrivals per step. A cycle budget
-caps all queued inputs together. In each step, the budget is shared among the
-queued inputs that have pending samples. An idle input takes none, and a `Latest`
-input takes none. Without a budget, no cycle-wide limit applies.
-
-A queued input has one overflow behaviour, and no option selects another: the
-pending samples beyond its share are the oldest, so it discards them, examines
-the newest, and counts each discard. In a triggered cycle the triggers keep their
-pending samples for later steps, and on host time a queued input that is no trigger
-keeps the samples sent after the step's trigger sample: they are not pending for
-that step and no share discards them (section 6.6).
-
-Each cause of loss has its own counter:
-
-1. History overwrite: the history dropped a sample before the input read it.
-2. Age rejection: the input read the sample, and the age rule refused it.
-3. Overflow discard: the input discarded an old sample beyond its share on purpose.
-
-The transport's cumulative missing-sequence count is read atomically, so health
-queries do not take the source-history or sequence-validator locks.
-
-Section 5.4 of the C++ API page gives the fields, the TOML keys and the rules.
-
-### 6.6 Triggered cycles
-
-A cycle runs either on a rate or on triggers, never both. A trigger is one of the
-cycle's `Arrivals` inputs (`Cycle::setTrigger(port)`, C ABI `hypha_cycle_set_trigger`
-on a cycle created with period 0); each call adds one trigger, a repeat adds nothing,
-and the order of the calls has no meaning. A trigger is queued and wired and has its
-own positive silence limit. Two triggers may not read one topic through `sharing()`,
-since each sample would step twice: `setTrigger` refuses the second with
-`InvalidArgument`. A cycle has at most 64 triggers. A cycle with both a rate and a
-trigger, with neither, or with a trigger that has no positive silence limit is refused
-at start with `InvalidArgument`, and one log line names the cycle and the reason, and
-the trigger that has no limit.
-
-1. **One step per trigger sample.** The samples of all triggers run in one order:
-   by framework send stamp, a tie by port (the binding index of the port, which is
-   its construction order in C++), and each port's samples in the order they
-   arrived. In a step the port that fires holds exactly its sample; every other
-   trigger holds none, and its samples stay pending for their own steps. The step
-   tells the port that fired by its `samples()`, the one that is not empty. Two
-   steps at one time give `dt = 0`. A turn runs every trigger sample that is due;
-   each trigger subscriber's queue depth bounds them, and a queue overflow is a
-   counted transport loss of that port, as for any input. The arrivals limit, the
-   cycle budget and the overflow discard do not apply to a trigger, which keeps each
-   sample for its own step; they apply to the other `Arrivals` inputs.
-2. **What the step sees.** The step's time, `CycleTime::now`, is the framework send
-   stamp of every output the step sends, and it depends on the clock. Under simulated
-   time it is the framework send time T of the trigger sample (of a fallback, the
-   fallback's time), so the outputs carry T. In host time it is the wall time read when
-   the step starts, as for a rate step: later than the sample's own stamp by the wake-up
-   and the capture, so an output's stamp is its own send time, and a downstream
-   triggered cycle orders and ages it from the start of the step, not from the sample
-   that caused it. In host time the trigger sample's own stamp is therefore not carried
-   by the output; a node that needs it copies the `header.stamp` of the sample's
-   payload, or reads the sample's host-monotonic send time with `sentAt(index)` of the
-   trigger's `Arrivals` port. (`scheduled_nanos` of the C ABI is T under simulated
-   time; in host time it is the sample's send time on the monotonic clock, not a wall
-   stamp.) The sample is delivered without a second age check: the schedule
-   judged it once (item 3), so a trigger step holds it even when the capture finds it
-   past its limit, and is empty only when the sample does not decode. Every trigger
-   port is judged at each step by its newest sample against its own limit: under
-   simulated time the samples sent at or before T count, and the age is T − sent, so
-   a sample exactly at its limit is usable; in host time every retained sample counts,
-   as for a `Latest` input, one stamped after the step included. Under simulated time
-   every other input is cut strictly before T, as a grid step is cut at its deadline.
-   In host time a queued
-   (`Arrivals`) input that is no trigger takes its pending samples, in arrival order,
-   up to the first one sent after the trigger sample, by the host send time of both. A
-   sample sent with the trigger sample, by one step of one upstream cycle, has the same
-   send time and is taken. A later one waits for a later trigger step or a fallback,
-   so the trigger samples drained in one turn each find their own arrivals; with two
-   publishers on the input, an earlier sample that arrives behind a later one waits
-   with it. The input's verdict counts every sample that has arrived, the waiting ones
-   included. A `Latest` input and the transform input are captured as a host-time rate
-   step captures them. Under simulated time a sample stamped exactly T, as the outputs
-   of the step that sent the trigger sample are, is cut and belongs to the next step:
-   the two clocks differ here.
-3. **Fallback.** When no step ran for the shortest silence limit (`silence_ms`) of
-   the triggers, one step runs without a trigger sample. The limit counts from the
-   last step, or from the cycle's first evaluation when that is later: a trigger
-   stamped before the first evaluation moves the count no earlier. It repeats every
-   shortest limit until a trigger arrives. In the fallback step every trigger is
-   empty; a trigger without a sample for its own limit, since its last step or the
-   first evaluation, is stale, and the others keep the verdict of item 2. A trigger
-   stamped exactly at the fallback time runs instead of the fallback. In host time a
-   trigger sample older than its port's limit on the wall clock (a sample exactly at
-   its limit steps), or stamped before the sample of its port's last trigger step,
-   runs no step: it is consumed and counted in its port's `age_rejections_total`. A
-   trigger stamped before the last step of another port, or before a fallback, steps
-   at that step's time, so a step's time never goes back, and the next fallback counts
-   from there.
-   The send stamp is aged once, when the trigger is received, and its silence then
-   runs on the monotonic clock: a later step of the wall clock moves no fallback. The
-   fallbacks that a late turn missed run as one step at the latest due time, as a rate
-   cycle counts missed periods instead of a burst. Under
-   simulated time each fallback runs, at the last trigger stamp plus multiples of
-   the limit, so replays repeat them.
-4. **Wake-up.** Each trigger wakes the `WaitSet` when its publisher notifies, which
-   every publisher does, and the `WaitSet` wakes at the cycle's next fallback
-   deadline, so a fallback runs on its deadline. A wildcard trigger has no listener: a
-   cycle with one polls its triggers every tenth of its shortest silence limit, at
-   least every millisecond. Under simulated time the wake follows the rule of a cycle
-   timer (section 11.1).
-5. **Simulated time.** A step at T, for a trigger or a fallback, runs when the node's
-   clock is at least T and every upstream of the cycle has reported at least T on
-   `/clock_progress`, so no trigger stamped T can still come. A grid replay cycle needs
-   T − 1 ns (section 11.1): it cuts its inputs strictly before T, while a triggered step
-   reads its triggers through T. A held step waits for as long as its
-   upstream does not report; the player's `--timeout` is the bound. The trigger stamps of
-   each port must ascend in arrival order: a trigger stamped before the step that ran
-   last, from a publisher that does not report progress or from several publishers on
-   one topic whose samples arrive out of order, fails the run with `SequenceGap`, and
-   the log names both times. A publisher that reports no progress, such as a plain
-   callback, is not waited for, so a tie with its samples runs in arrival order.
-6. **Progress and loops.** A triggered cycle cannot know when its next trigger
-   comes. It reports at most the lowest clock its upstreams reported, and stays
-   below its earliest pending trigger or fallback. A feedback loop made only of
-   triggered cycles has no delay element: it holds for good, until the player's
-   `--timeout` ends it with an error that names the loop's nodes, or a stop does. A loop needs a delay element, a rate cycle or a clock driver, as an
-   algebraic loop does in any block-diagram tool.
-
-### 6.7 The TF input
-
-A cycle can hold a TF input (C++ `hypha::Transforms`, C ABI
-`hypha_cycle_bind_transforms`): a buffer of the transforms on `/tf` and `/tf_static`,
-below the C ABI, that the step looks up with explicit results and never waits on.
-
-1. **Filled before the step, under the step's cut.** The input is two queued, optional
-   bindings. Before the step every captured `TFMessage` goes into the buffer, those of
-   `/tf_static` as static. Under simulated time that is every sample sent strictly
-   before the step's time, so a replay sees the same buffer on every run; in host time
-   every retained sample. A sample that does not decode fails the step with
-   `InvalidFrame`. A transform the buffer refuses (a rotation that is not a unit
-   quaternion, a non-finite value, a second parent for a frame, a cycle, a frame both
-   static and dynamic, a header stamp whose `nsecs` reaches one second) is left out and
-   logged, at most once a second per TF input with the count. Every refusal is counted
-   for good in the node metric `tf.refused` (`tf.undecodable` for a message that does
-   not decode), and the input keeps the last refusal of each frame until a transform of
-   that frame is kept again.
-2. **Lookups.** A lookup names a target, a source and a time, or asks for the latest
-   time common to every transform on the chain (C ABI `latest`, C++ `lookupLatest`).
-   Time 0 is a time like any other, since simulated time may start there. Unknown frame, frames not connected, time
-   before the buffer and time after it are distinct results; an empty name is refused
-   and one leading `/` is dropped. A lookup that fails as unknown frame, not connected
-   or after the buffer while a frame on its chain (the target, the source or a frame
-   above either) has a refused newest transform answers `Refused` instead (#123): the
-   producer is broken, not late. A policy such as "at the stamp, else the newest" is
-   the application's (MRS keeps it in its `Transformer`).
-3. **A clock that goes back.** The cycle ends its run with `ClockRewound` and the
-   process restarts (section 11.1), so the buffer starts empty in the new process.
-   This holds for simulated time only. A host step of the wall clock does not end
-   the run: transforms keep their wall stamps. A dynamic transform stamped more than
-   the buffer length before its frame's newest one, as after a backward step of the
-   wall clock, drops that frame's older transforms, so a lookup answers from the new
-   timeline at once; the frame's descendants and static transforms keep theirs. The
-   node logs it once per frame and step: `hypha: cycle '<cycle>' TF input: '<child>'
-   in '<parent>' is stamped <d> s before its newest transform, more than the <c> s
-   buffer: its older transforms are dropped`.
-4. **Static transforms.** `/tf_static` is read with depth 32, one latched sample for
-   each publisher a topic can have, so a cycle that starts late sees every static
-   publisher.
-5. **Losses.** A `/tf` burst larger than the queue is a counted transport loss of the
-   binding and, under simulated time, fails the replay step with `SequenceGap`; the
-   lost samples are never interpolated over silently. A replay step takes at most 32
-   samples of each topic; one with more pending, sent before its time, fails with
-   `SequenceGap` and logs the count instead of dropping the oldest.
-6. **Loops.** The TF input makes every `/tf` publisher an upstream of the cycle. A
-   triggered cycle that publishes the TF a second triggered cycle reads, while the
-   second feeds the first, is the loop of §6.6 item 6.
-
-A plain node with no cycle uses the same buffer through a transform buffer (C ABI
-`hypha_transform_buffer_create`; [interface-specification.md](interface-specification.md#transform-buffer-of-a-plain-node)).
-The same code ingests and looks up, so the results above hold, but there is no step:
-the run of the node's default `WaitSet` ingests every received `TFMessage` on the run
-thread as it arrives, under simulated time and in host time alike, with no cut. A
-lookup may come from any thread at any time; one lock guards the buffer for one
-message or one lookup, and no lookup waits on the transport. A message that does not
-decode is counted and logged with the refused transforms and fails nothing, and a
-`/tf` loss is the subscriber's missing-sequence count, not a failed run.
+Notifications are wake hints only; the data queue is authoritative. Failed notifications increment `transport.failed_notifications` without failing the publish.
 
 ---
 
-## 7. Notifications: every publisher notifies, the reader decides
+## 5. Cycles
 
-In ROS 1, a publisher and a subscriber connect over TCP. The subscriber
-wakes when data arrives. You configure nothing.
+A cycle (`CycleNode` or `Cycle`) captures all bound inputs at once, runs `step(const CycleTime&)`, and publishes staged outputs after `step()` succeeds.
 
-In `hypha`, the data path is shared memory, which does not wake anybody. Every
-publisher therefore also signals its topic's event service after each send.
-Whether that signal wakes anything is decided by **how the topic is read**, not by
-a setting on either end:
+### 5.1 Execution and Timing
+- **Timers-first:** Due timers and cycles run before new ingress, in registration order. Cycles drain bound queues immediately before capture.
+- **Host time:** `CycleTime::now` / `stamp` are wall time at step start (varies with wake-up latency: kernel latency via `timerfd` on Linux; up to ~10 ms coalescing on macOS). `dt` is monotonic elapsed time; `missed` is the per-step delta of missed periods (no catch-up burst).
+- **Decoding & outputs:** Undecodable samples are counted (`RequiredInput.undecodable`), logged (≤1/10 s), and skipped without failing the run. `Output::send()` serializes into pre-allocated `perStep()` loans and flushes in call order on return.
+- **Failure semantics:**
+  - Step throws → iteration fails (`Panic` or `ResourceLimit` on `bad_alloc`); no outputs sent.
+  - Emission limit or payload bound exceeded → iteration fails; no outputs sent.
+  - `PoolExhausted` on output → run fails unless output is tagged `diagnostic` (drops & counts `output_pool_drops`).
+  - The `WaitSet` is one failure domain; a terminal error stops all cycles on that `WaitSet`. Captured input ranges are not replayed on failure.
 
-| Reader | Wakes on a sample? |
-|---|---|
-| Callback subscription (`node.subscribe<T>(topic, cb)`, `subscribeRaw`, a Rust `WaitSet::attach_subscription`) | Yes. The `WaitSet` opens a listener for it, so `run()` wakes at once. |
-| Triggered cycle's trigger inputs | Yes. The cycle's `WaitSet` listens on each trigger topic. |
-| Cycle input of a rate cycle (scan → process → output) | No. It is drained at the cycle's tick; it has no listener, so its publishers signal nobody. |
-| Wildcard pattern | No event service spans a pattern, so it is polled (section 8). |
+### 5.2 Input Supervision
+Evaluated below the C ABI (`hypha_cycle`) once per step before `step()` runs:
+- **Staleness (`silence_ms`):** Evaluated on host monotonic time (or replay cut under sim time). A sample is usable while `age <= silence_ms` (inclusive). A port with no sample counts from first evaluation. Late samples already past `silence_ms` are rejected (`age_rejections_total`) and do not clear staleness.
+- **Stagnation (`stagnation_ms` + `setAlive()`):** For relayed sources (drivers/bridges) whose relay keeps sending stale payloads. Runs on `CycleTime::scheduled_nanos` (monotonic in host mode, sim time in replay) and only while not stale. Any change in the alive counter (including wrap) resets it.
+- **Ignoring (`setIgnored(true)`):** Hides faults from `stale()`/`stagnant()` and `inputsOk()`; raw faults remain visible in `bindingHealth()` and `~/state`.
+- **State-change logs (`hypha` module, logged once per transition; advisory inputs log at INFO):**
+  `<in> is usable` | `is stale: newest sample is <age> ms old, silence_ms = <limit>` | `never arrived: no sample for <age> ms, silence_ms = <limit>` | `is stagnant: alive value unchanged for <t> ms, stagnation_ms = <limit>` | `is usable again` | `fault is ignored` | `fault counts again`.
 
-```cpp
-// Publisher: always notifies.
-auto out = node.advertise<sensor_msgs::Imu>(hypha::Topic{"/imu"});
+### 5.3 Queued Work and Overflow
+`Arrivals` ports examine up to `perStep` samples per step (capped jointly by `[cycle] arrival_budget` across non-idle queued ports). Excess pending samples drop **oldest first** (`work_limit_drops_total`). Separate counters track history overwrites (`lost()`), age rejections (`age_rejections_total`), and overflow drops (`work_limit_drops_total`).
 
-// Callback subscriber: wakes the run per sample.
-auto in = node.subscribe<sensor_msgs::Imu>(hypha::Topic{"/imu"}, onImu);
-```
+### 5.4 Triggered Cycles
+Configured via `setTrigger(arrivalsPort)` (up to 64 triggers; mutually exclusive with rate; each trigger requires `silence_ms`; no two triggers may share a topic):
+- **Ordering:** One step per trigger sample across all triggers, ordered by `(framework_send_stamp, port_index, arrival_order)`. Only the firing trigger's `samples()` is non-empty. Triggers bypass `perStep`/`arrival_budget` discard.
+- **Step time & cuts:** Under sim time, `CycleTime::now` is the trigger's stamp `T` (other inputs cut strictly `< T`). Under host time, `now` is wall time at step start (non-trigger `Arrivals` take samples sent `<=` trigger's host send time).
+- **Fallback:** If no trigger fires for `min(silence_ms)`, a fallback step runs with all triggers empty (repeating every `min(silence_ms)`).
+- **Loops:** A feedback loop of triggered cycles alone has no delay element and deadlocks under lockstep until `--timeout`; include at least one rate cycle or clock driver.
 
-A publisher with no listening reader checks its topic's listener list and sends
-nothing; the cost is one small event service per topic. A rate cycle's
-schedule is never disturbed by a wake.
-
-### 7.1 How a notification reaches your callback
-
-The `WaitSet` opens one listener per callback subscription when it is attached,
-attaches it once at run entry and never rebuilds it during the run. A subscriber
-itself owns no listener, so a subscriber read on a schedule costs none.
-
-When the listener fires, the run loop marks that subscription ready, consumes
-the pending notifications so an unread event cannot spin the loop, and takes a
-bounded batch from it. A notification is a wake hint, not a message count: the
-data queue stays authoritative. Nothing polls the queue: a sample whose
-notification is lost or fails waits for the next notification of its topic, and
-the failure is counted (`transport.failed_notifications`).
-
-There is no relay thread and no forwarding step. The thread that called
-`run()` is the thread that waits on the listener.
+### 5.5 TF Input (`hypha::Transforms`)
+Captures `/tf` and `/tf_static` (depth 32) before each step (cut `< T` under sim time). Refused transforms (non-finite, non-unit quaternion, second parent, cycle, mixed static/dynamic, invalid stamp) increment `tf.refused` and cause lookups on affected chains to return `TransformError::Refused`. Under host wall-clock jumps backward exceeding cache length, older transforms for that frame are dropped. Under sim time, `/tf` queue overflow or >32 pending samples fails with `SequenceGap`.
 
 ---
 
-## 8. Wildcard subscriptions
+## 6. Timers and Simulated Time / Replay
 
-A wildcard pattern follows several topics and has no single event service, so
-its callback subscription is read on a 1 ms cadence: about 1000 wake-ups a
-second whether or not a sample arrived, and up to 1 ms of latency. An idle
-callback subscription on a literal topic does not wake the run. Subscribe to literal
-topics in nodes that must stay idle.
+### 6.1 Plain Timers vs. `CycleTimer`
+- `Node::timer()` uses `timerfd` on Linux (`select` on macOS) in host mode and `/clock` in sim mode. Never bursts missed periods.
+- `hypha::CycleTimer` (`<hypha/cycle_timer.h>`) is polled inside `step()` against `CycleTime::now` — deterministic in replay and `StepHarness`.
 
-A node whose work is rate cycles wakes at its cycle rates and timers only. Cycle
-inputs open no listener, so a published sample never wakes a rate cycle. Without any
-timer due, the wait lasts at most 1 s.
-
----
-
-## 9. Waiting
-
-The C++ SDK has no blocking read. The `WaitSet` is the wait.
+### 6.2 Replay Cycles (Simulated Time)
+Under `HYPHA_USE_SIM_TIME=1`, rate and triggered cycles execute deterministically in data time ([replay-flow-control.md](replay-flow-control.md)):
+- **Grid & cuts:** Rate-cycle deadlines lie on whole multiples of the period strictly after the first received clock value. Each step at `D` runs with `now = D`, `missed = 0`, and admits samples stamped strictly `< D`. Forward `/clock` jumps run every expired deadline (sliced at ≤1024 steps / 50 ms per turn).
+- **Lockstep progress:** Nodes with cycles publish `hypha_msgs/ReplayProgress` on `/clock_progress` after each turn (draining replay inputs first). A cycle holds deadline `D` until every participant upstream reports `>= D - 1 ns` (`>= D` for triggered cycles).
+- **Faithfulness:** Any transport overflow or unread history eviction on a replay input fails the run with `SequenceGap` (`replay not faithful`) in lockstep mode, or warns in open-loop mode (`HYPHA_REPLAY_LOCKSTEP=0`). Inputs tagged `hostClock` (`Latest` only) bypass replay cuts and use host freshness.
+- **Rewinds:** Simulated time moving backward ends the run with `ClockRewound` (exit **75** under `runNode`) so the supervisor restarts the process cleanly; nothing rewinds in place.
+- **Plain callbacks in replay:** Plain subscriptions and `Node::timer()` do not participate in lockstep, publish no `/clock_progress`, and run non-deterministically as samples arrive. Use cycles for deterministic replay, or `HYPHA_REPLAY_LOCKSTEP=0` for open-loop playback.
 
 ---
 
-## 10. Callback rules
+## 7. Troubleshooting: When a Callback Never Runs
 
-### 10.1 Which thread runs it
-
-The thread that called `run()` or `runFor()` runs your callback. The
-framework never creates a thread of its own.
-
-Callbacks of one `WaitSet` never run at the same time as one another. Two
-`WaitSet`s that you run on two threads do run concurrently, so state shared
-between them needs your own synchronisation.
-
-### 10.2 What a callback may do
-
-A callback may publish, read a subscriber that no `WaitSet` drives, read the
-schema caches, and ask for a stop.
-
-A callback may **not** add to the topology. An attach is refused with
-`InvalidState` while the `WaitSet` runs, because the native attachments are
-frozen for the whole run. Create every endpoint before you run. A callback may
-detach a registration of its own `WaitSet` (a destroyed timer or subscription):
-it is never dispatched again, and it is removed and its context released when the
-run returns. A detach from another thread during a run is refused.
-
-A callback may **not** block on a reply. A request and its reply are two topics
-(cpp-api.md §8); the reply arrives as a later sample.
-
-**Detach a registration before you destroy the object its callback context
-points to.** The registration shares the subscriber, so the endpoint itself
-stays alive until the detach; the context is only borrowed, and a callback on a
-freed context is the caller's use-after-free. A detach from a callback releases the
-context only when the run returns: keep the context valid until its `release` runs.
-
-### 10.2.1 What a callback returns
-
-A callback tells the run loop what to do next:
-
-| Action | Effect |
-|---|---|
-| continue | Keep running. This is the default. |
-| continue, with a nonzero status | Keep running. The node health counts the failure. |
-| stop | End the run and report a normal stop. |
-| fail | End the run and report the status the callback chose. |
-
-### 10.3 How long the data lives
-
-| Callback type | What you receive | May you keep it? |
-|---|---|---|
-| Typed (`Subscriber<T>`) | a decoded message in a shared pointer | **Yes.** It is an owned copy. |
-| Raw (`subscribeRaw`) | `RawSample.bytes`, a span over shared memory | **No.** Copy the bytes first. |
-
-The raw span is valid only for the duration of the call. This is different
-from ROS 1, where a `ConstPtr` stays valid after the callback returns.
-
-### 10.4 Exceptions
-
-A subscription or timer callback that throws does not propagate the
-exception. The C++ SDK catches it at the C ABI boundary and returns the
-continue action with the status `Panic`, so the run counts the failure and
-keeps running. The SDK logs the first failure of each callback, then at most
-one line every ten seconds, so a callback that throws on every sample does not
-flood the log. Your node keeps running.
-
-`hypha::metric("node.callback_failures")` reads the count. The `node.*` metrics report every callback the
-executor called, every failure, the status of the last failure, and the
-framework time at which the last dispatch sweep ended. A health report of your
-own can therefore show a callback that fails on every call.
-
-Handle your own errors. Do not rely on an exception reaching `main`.
-
-### 10.5 A frame that does not parse
-
-A sample that is not an `hypha` frame is still delivered. `payload` is
-null, and only the topic is filled in. A node that counts foreign traffic
-therefore still sees it.
-
----
-
-## 11. Timers
-
-`Node::timer(period, callback)` returns a `hypha::Timer` and throws
-`std::runtime_error` when the timer is refused.
-It attaches a timer to the node's default `WaitSet`. Rust `attach_timer`
-attaches one to a `WaitSet` you created; the C++ SDK has no such call. The
-`WaitSet` owns the timer. On host time it is due against the monotonic clock,
-and the run's wait ends at its deadline; on simulated time it follows `/clock`. There is no timer thread and no timer queue of the SDK's own.
-
-A timer is the one periodic registration: the host-time interval
-(`HYPHA_ATTACH_INTERVAL`) is gone, and the C++ SDK has no host-time timer. A
-host timer is due on the monotonic clock: the `WaitSet` sleeps until its next deadline,
-and a step of the system clock neither delays nor advances it. On Linux a `timerfd` armed
-with the deadline ends the wait, so a timer runs within the kernel's wake-up latency of its
-deadline (the wait needs `timerfd`: without it creating a `WaitSet` fails with `Backend`
-code 42); on macOS the wait is `select` with a timeout in microseconds, which the kernel's
-timer coalescing defers by up to half the wait, and by at most about 10 ms.
-
-A timer callback runs on the same thread as your subscription callbacks,
-and never at the same time as one of them.
-
-**A timer does not fire a burst.** If several periods elapsed since the
-last sweep, the callback still runs **once** in that sweep. The framework
-counts the periods you missed since its previous call instead of replaying
-them; the next on-time call reports 0 again. Read the count when you must
-detect an overrun. This is the rule for a plain timer and for
-a cycle in host time. A cycle on simulated time replays its deadlines
-instead (section 11.1).
-
-This matters when a slow callback blocks the sweep. In ROS 1 you might see
-a burst of timer callbacks afterwards. Here you see one call and a missed
-count.
-
-**A second rate inside a step is a `CycleTimer`, not a timer.** A `hypha::CycleTimer`
-([cpp-api.md](cpp-api.md) §5.4, "A second rate in a step") is no registration: the step
-polls it with `CycleTime`, and it ticks on a grid anchored at its first poll (or its
-`start(time)`) on the step's time, simulated in a replay, so a replay repeats its ticks. A
-poll gives the count of grid instants passed since the previous poll; the step runs its body
-once and reads the missed periods, or once per period. It wakes nothing: a tick runs in the
-first step at or after its instant.
-
-**A timer does not follow framework time backwards.** On simulated time a
-`timer` timer is due against `/clock` time. When `/clock` moves back, the
-timer fires nothing and its run ends with `ClockRewound`; `runNode` restarts the
-process (section 11.1). A step of the host wall clock is not a rewind, and a host
-timer never sees one: it is due on the monotonic clock.
-
-### 11.1 Cycles on simulated time
-
-A simulator can drive `/clock` itself: a rate cycle marked with `Cycle::setClockDriver`
-publishes its start value with no step, then steps only after every participant
-acknowledged the previous value, as `hypha play` waits for its chunks. Its first step is
-one period after the start. The start is from zero up to, not including, 2^32 seconds, the
-range of a `/clock` message's seconds; `hypha_cycle_set_clock_driver` refuses another and
-names the range in `hypha_last_error`. `replay-flow-control.md` §4.5 gives its rules.
-
-A cycle on simulated time is a replay cycle. It runs every period in data
-time, so a result does not depend on how fast the clock is moved or on the
-host:
-
-- **Deadlines are on the grid.** A deadline is a whole multiple of the cycle's
-  period in simulated time. The first is the first multiple strictly after the
-  first clock value that the cycle sees, so its phase does not depend on when
-  the node started. A clock value is a `/clock` sample, a `setSimTime` or
-  `advanceSimTime`, or an `enableSimTime` with a start. The zero that a node
-  starts with is a placeholder, not a value, and does not set the phase.
-- **One step per expired deadline.** When the clock moves past deadlines
-  `D1 < D2 < … ≤ now`, the inputs are drained once, and the cycle then runs one
-  step for each deadline. Each step has `now = Di`,
-  `missed = 0`, and its outputs carry `Di` as their framework send
-  stamp. The header stamp of each step is `Di` too.
-- **Each step sees its deadline's data.** A step takes only the samples whose
-  framework send time is before `Di`. A queued input stops its cursor at that
-  cut, and a latest input takes the newest sample before it, newest by arrival: with
-  several publishers on one topic, which one arrived last depends on host timing
-  (`replay-flow-control.md` §6.7). A sample sent at `Di` belongs to the next step. A step therefore never sees data that the
-  replay has not yet reached.
-- **Ages are data-time ages.** A sample is judged by `Di − sent`, and supervision
-  (silence and stagnation) is measured against `Di`. A sample 600 ms old at the
-  deadline is stale under a 500 ms limit, whatever the host speed.
-- **Wake-ups follow the clock.** A node on simulated time wakes its `WaitSet` on
-  each `/clock` event. Its timers do not poll. A run at 50 Hz with idle inputs takes
-  about two turns per clock event.
-- **Progress is reported per `/clock` sample.** After each turn of a `WaitSet`
-  that holds a replay cycle or a triggered cycle (section 6.6), it publishes `hypha_msgs/ReplayProgress` on
-  `/clock_progress`: the node's name, a clock value and the host send time of the
-  sample it answers. Before it reports, the turn drains the inputs of every replay
-  cycle of the `WaitSet`, also on a turn that ran no step of it (not its plain callback
-  subscriptions), so the samples sent
-  before the sample it answers are in the input histories. The clock value is the
-  sample's value, lowered to one nanosecond below the earliest deadline that has not
-  run. A report is sent for
-  each new sample, even when the clock value repeats. The player waits for these
-  reports (`replay-flow-control.md`, sections 4.2 and 4.3).
-- **A held deadline waits for the upstream nodes.** A cycle reads from the nodes
-  that publish its inputs and `/clock_progress`, except itself. Before it runs
-  deadline `D`, each of them must report a clock of at least `D - 1 ns` (`D` for a
-  triggered cycle, section 6.6), for a
-  `/clock` sample sent at or after the one a restarted process rejoined on. A feedback loop does not deadlock, because each node
-  needs only the other's deadlines before `D`. A deadline that waits is held, and
-  the cycle still reports its clock up to that deadline (`replay-flow-control.md`,
-  section 6.4). A held deadline has no time limit in the node: the player's
-  `--timeout` names an upstream that stops reporting.
-- **A time base mismatch is reported.** A sample stamped more than 250 periods
-  past a step's deadline can never be admitted. This is the usual sign of a
-  publisher on wall time feeding a replay. The node logs
-  `replay time base mismatch` at most once a second per topic.
-- **Forward jumps are stepped, in slices.** A forward jump of `/clock` runs one
-  step for each expired deadline, in order, none skipped. A replay cycle runs at
-  most 1024 steps, and starts none after 50 ms, in one `WaitSet` turn; the next
-  turn follows at once, after the run checked its stop request and its limit and
-  reported its progress at the first deadline not run, so a bounded run ends and
-  the player's `--timeout` holds. A triggered cycle admits at most 1024 events per
-  turn. A jump of more than 1024 periods logs `hypha: cycle '<name>' steps <n>
-  periods for a forward jump of /clock from <a> ns to <b> ns` at info level. The
-  player's chunks are contiguous, so one replay run makes no jump.
-  A second `hypha play` run that starts later in time, against nodes still running
-  from an earlier run, does: its first `/clock` jumps the whole gap. Restart the
-  nodes between runs.
-- **Nothing rewinds in place.** When simulated time goes back under any timer or
-  cycle of a `WaitSet`, the run ends with `ClockRewound` and logs the timer or cycle and
-  the new time; `runNode` restarts the process. A node that follows `/clock` also checks
-  `/clock` itself, whatever its `WaitSet` holds and in the open loop too: a sample lower
-  than the last one it applied is not applied, the run ends with `ClockRewound`, and the
-  node logs `hypha: '<node>' saw /clock go back from <a> ns to <b> ns`. A node with only
-  subscriptions therefore restarts as well (#130). A CLI tool (`_hyphacli_<tool>`) follows
-  the clock back. A backward seek of `hypha play` restarts
-  the process: `hypha::runNode` exits 75, `hypha launch` starts it again, and it rejoins on the next `/clock`
-  (`replay-flow-control.md`, section 4.4). The new process anchors its grid on
-  its first clock value, so a pass that starts again runs on the same phase as
-  the first one. A plain timer (`Node::timer`) is not a cycle: it starts one
-  period after the first clock value of the new process.
-- **Plain timers.** A plain timer is not a replay cycle: on simulated time it
-  fires once per sweep against the clock and counts the missed periods (section 11.2).
-
-A replay is faithful when no sample it should have read was lost. A loss is one
-of two things: a transport overflow, which shows as a sequence gap, or a history
-eviction that a cursor had not read. A step that has a new loss on an
-input (queued or latest) fails, and the `WaitSet` run that holds it fails with
-`SequenceGap`; in the open loop (section 11.2) the loss is counted and warned of,
-and the run goes on. The node logs `replay not faithful: N samples lost on <topic>` at
-error level, at most once per topic per second, and a repeated loss is summed
-into the next line. The binding's losses also count in its `overrun_total`.
-A latest binding in host time counts neither its transport gaps nor its history losses,
-because a value it did not read was superseded in host time. Under replay it counts every
-transport gap. A sample it passed over or had not read when the history evicted it counts
-only at a step that finds no retained sample before the deadline that no reader rejected.
-Until then a newer sample that no reader rejected, retained or held by the binding,
-supersedes it in data time: every later deadline admits that sample, so every later step
-takes it or a newer one. A rejection of that sample, by the step or by another reader of the
-history, ends the supersession. A step that selects nothing counts every evicted sample that
-no sample the binding holds for good supersedes, because one of them may be the value this
-step or a later one is due, and the step knows no later deadline. The count errs only towards
-a loss, in the three cases of `replay-flow-control.md` §6.6: an evicted rejected sample, an
-evicted sample at or before the newest evicted rejected one, and a step that selects nothing
-counting an evicted sample stamped at or after its deadline. The last cannot happen on a
-topic that the player alone publishes to a node it waits for: the samples stamped at or after
-the deadline then came in the one chunk that ran the step, which fits the queue. When samples have
-been accepted but none are admitted because all retained samples are stamped at or after the
-deadline, the input history is shorter than one replay chunk; the binding's verdict at the C ABI is `EMPTY` (not
-`NEVER_ARRIVED`), or `STALE` for a queued binding past its silence limit. An Arrivals port shows
-`Usable` with no new sample, and a Latest port without a value shows `NeverArrived`. When the
-history evicted a sample stamped before D, so the value the step was due is gone, a latest
-binding's node logs `all N retained samples on <topic> are stamped at or after deadline D: the input history is shorter than one replay chunk`.
-An input whose first samples all come after D evicted nothing it was due, and logs nothing.
-An input stamped on another clock is not replayed: a topic relayed from another
-domain carries that domain's simulated clock, which this node's deadlines cannot cut.
-The `hostClock` option (C ABI `hypha_cycle_set_host_clock`, latest inputs only)
-captures it as a host-time step does, at every step: the newest sample whatever its
-stamp, its silence limit judged by host time (the sender's send time, so on one host),
-and no replay loss or time-base mismatch for it. Such an input makes the step depend on
-arrival timing, so a replay of the node is no longer deterministic for it.
-`hypha play --clock` waits for the nodes, and a node drains its replay inputs on every turn,
-so a queue holds one chunk, which the player splits to fit it; the replay fails only when an input
-history is too short: a queued input needs a `perStep` of at least period x rate, and a
-`Latest` input's history of its queue plus one always suffices for a topic the player alone
-publishes (`replay-flow-control.md`, section 6.7). A run at a high
-`--rate` is only as faithful as the host keeps up.
-
----
-
-### 11.2 Plain callbacks in a replay
-
-The replay lockstep runs cycles only: rate cycles (section 11.1) and triggered cycles
-(section 6.6) are held for their upstream nodes, run in time order and reported on
-`/clock_progress`. A plain subscription or a plain `Node::timer` takes no part (#153):
-
-- **When it runs.** A plain callback runs as its sample arrives, with framework time
-  the clock. A plain timer is due against `/clock`, fires once per turn and counts the
-  periods it missed, as on host time (section 11). It is not held for any node, and
-  the player does not wait for it.
-- **Progress.** A plain callback reports nothing. A node opens its `/clock_progress`
-  publisher when it commits its first cycle, so a node with only plain callbacks is
-  neither waited for by the player nor an upstream of any cycle: a cycle that reads
-  its output runs its deadlines as the clock reaches them. Its replay is not
-  deterministic. A framework timer, such as the 1 s `~/state` timer of `runNode`, is
-  a plain timer and takes no part either.
-- **Rewind.** A node on simulated time that reads a `/clock` lower than its last one
-  ends its run with `ClockRewound`, whatever its `WaitSet` holds (#130, section 11.1).
-- **Two modes.** A replay has two modes and one switch. The lockstep is the default.
-  `HYPHA_REPLAY_LOCKSTEP=0`, set for the whole launch, is the open loop: every node on
-  simulated time follows `/clock` as a ROS node follows `ros2 bag play`, reports no
-  progress and is waited for by no one; its replay cycles run one step per deadline
-  but hold no deadline for an upstream node, and a replay input that lost samples is
-  logged as a warning instead of failing the run (`replay-flow-control.md` §4.6).
-  `HYPHA_USE_SIM_TIME=follow` is refused: no node of a launch leaves the lockstep
-  alone. A system that needs a deterministic replay is built from cycles; one that
-  cannot be, such as a port of ROS nodes, plays in the open loop.
-
-### 11.3 Design note: one execution model for cycles and plain callbacks (#136)
-
-Closed by the owner's decision of 2026-11-24 (#153): the lockstep's contract is rate
-and triggered cycles, and plain callbacks leave it. The second set of replay rules for
-callbacks (`waitset/callback_events.rs`, #72) is gone, so the duplication the note
-described no longer exists, and no scheduler core is shared. State inputs (#103) are
-not planned. A plain subscription has no supervision; an event-driven node that needs
-verdicts or a deterministic replay becomes a triggered cycle (#138).
-
-## 12. One subscriber, one delivery style
-
-One subscriber uses one style. The type you create decides it.
-
-| Style | Type | How you get data |
-|---|---|---|
-| Callback | `Subscriber<M>` with a callback | The run calls you once for each sample. |
-| Latest value | `Subscriber<M>` | The run takes every sample, and `latestSample()` returns the newest. For tests and tools; a step reads a `Latest<M>` port. |
-
-A `Subscriber<M>` attaches to the node's `WaitSet` when you create it.
-
-The runtime applies the same rule. An owning receive (Rust SDK only; the C ABI
-has none) and a `WaitSet` attachment each claim the subscriber, and the first
-claim decides. Every
-other style then returns `InvalidOperation` and takes no
-sample. A wait by hand on a subscriber that a `WaitSet` drives returns
-`InvalidOperation` too. One `WaitSet` drives a subscriber at a time: a second
-attach returns `InvalidState` until the first registration is detached or its
-`WaitSet` is destroyed.
-
----
-
-## 13. What will surprise you
-
-- **Nothing progresses until you run a `WaitSet`.** Latched topics are not
-  replayed to a late subscriber until then. A node that only publishes a
-  latched topic still needs a run for its housekeeping.
-- **You cannot subscribe during a run.** Attachments freeze at run entry; only a
-  timer on host time or on the node's own simulated clock may be created from a
-  callback.
-- A wildcard subscription runs about 1000 times a second whether or not data
-  arrived: a pattern has no event service, so it is polled. See section 8.
-- A publisher or an output writes `header.seq` and nothing else. hypha does not write
-  or check `header.stamp`. The conventional value is framework time while
-  simulated time is active, otherwise Unix wall time. See cpp-api.md §3 for
-  the conversion.
-- A raw callback's bytes are gone after the callback returns.
-- A timer that fell behind does not catch up with a burst. A cycle on
-  simulated time runs each expired deadline (section 11.1); a plain timer does not
-  (section 11.2).
-- A loop of triggered cycles alone fails with `Timeout` under simulated time. Put
-  a rate cycle in the loop (section 6.6).
-- A callback that throws does not reach `main`. The run counts it as a
-  failure with the status `Panic` and keeps running. Read the count with
-  `hypha::metric("node.callback_failures")`.
-- `run()` returns a result. Ignoring it is a compiler diagnostic.
-- A subscriber count is not delivery. `subscriberCount()`
-  shows that a subscriber is connected. It does not show that it received a sample.
-
----
-
-## 14. When a callback never runs
-
-Check these in order.
-
-1. **Is a `WaitSet` running?** A callback runs only inside `run()` or
-   `runFor()`. Nothing runs in the background.
-2. **Did you attach before running?** A subscription created during a run is
-   refused with `InvalidState`.
-3. **Did you keep the subscriber alive?** If the `Subscriber` object goes out
-   of scope, the registration goes with it.
-4. **Do the topic names match exactly?** There is no master to report a
-   mismatch. A subscriber with no publisher logs one warning after five seconds. The warning names
-   the topic and the domain, or, when the topic has publishers of other schemas, the
-   subscriber's type and MD5 and the published ones. It warns again when the published schemas
-   change, and five seconds after its own publisher left.
-5. **Is the input a callback or a cycle input?** A cycle input is read at its
-   cycle's tick, never on arrival. See section 7.
-6. **Is the message type the same on both sides?** A topic carries one stream
-   for each type and version (MD5): a subscriber of another MD5 than the publisher's
-   is on another stream and receives nothing. The warning of item 4 names both.
-7. **Did the run report a failure?** Check `RunResult::reason()` and
-   `RunResult::status()`. A setup failure runs no callback at all, and names
-   the attachment that refused.
-8. **Do you read a subscriber that a `WaitSet` drives by hand?** Read it in its
-   callback instead. At the C ABI, a receive or a wait on an attached subscriber
-   returns `InvalidOperation`.
-   See section 12.
-
-Use `hypha topic list`, `hypha topic echo <topic>` and `hypha topic hz <topic>` to
-see what is really on the bus. `hypha topic hz` measures the publish cadence,
-so compare it with the rate at which your callback runs.
-
----
-
-## 14.1 Worked examples
-
-| Example | What it shows |
-|---|---|
-| [`speed`](../examples/speed) | Two `CycleNode`s, a source and a monitor, the ordinary shape |
-
-The heavy-work example is the answer to "my callback is slow". The framework
-will not add a thread for you: it counts the slow callback and reports the
-count in the run result. Move the work to a thread you own, behind a queue
-with a bound you chose, and keep the discard visible.
-
----
-
-## 15. Related documents
-
-| Document | What it adds |
-|---|---|
-| [cpp-api.md](cpp-api.md) | The C++ SDK task guide, including endpoints and QoS; the reference is the public header comments. |
-| [interface-specification.md](interface-specification.md) | The C ABI contract, return codes and threading rules. |
-| [Hypha Apps tools](tools.md) | `hypha topic` and the other command-line tools. |
+1. Is `node.run()` / `node.runFor()` actually running? (Nothing runs in the background.)
+2. Was the subscription created *before* `run()`? (Attaching during a run returns `InvalidState`.)
+3. Is the `Subscriber` object still in scope? (Destroying it detaches the callback.)
+4. Do topic names and message MD5s match? (A subscriber with no matching publisher warns after 5 s; check `hypha topic list`.)
+5. Is it a rate-cycle input? (Rate-cycle inputs drain at ticks, never on arrival.)
+6. Did `run()` return an error? (Inspect `RunResult::status()` and `reason()`.)

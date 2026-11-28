@@ -96,10 +96,6 @@ SOFT_RATCHET = {
     "crates/hypha_runtime/src/trigger_schedule/tests.rs": 614,
     "apps/hypha_tools/tests/record_sync.rs": 613,
     # docs (>600)
-    "docs/cpp-api.md": 1331,
-    "docs/ros1-migration-guide.md": 1327,
-    "docs/execution-model.md": 1108,
-    "docs/tools.md": 1105,
     "docs/interface-specification.md": 637,
 }
 

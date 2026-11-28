@@ -16,7 +16,7 @@ Both programs are started by `hypha::runNode`, so each publishes `~/introspectio
 table; `startup_exit_code.cmake` checks the exit code. `sensor_pipeline_compare` and
 `replay_check.sh` are the replay recipe: they replay a recorded fixture into the processor
 on simulated time and compare two outputs by header stamp. The porting rules behind the code are in
-[ros1-migration-guide.md §10](../../docs/ros1-migration-guide.md#10-porting-an-event-driven-node-an-applicationnode).
+[ros1-migration-guide.md §10](../../docs/ros1-migration-guide.md#10-porting-an-event-driven-node-applicationnode).
 
 | File | Holds |
 |---|---|
@@ -75,7 +75,7 @@ missing or malformed parameter file, and a second argument stops it with exit co
 ## Threads and ownership
 
 `Node::run()` calls every callback on the thread that calls it, and the framework creates
-no thread ([execution-model.md §3](../../docs/execution-model.md#3-the-framework-creates-no-thread)).
+no thread ([execution-model.md §2](../../docs/execution-model.md#2-single-threaded-waitset-loop)).
 The processor has two threads:
 
 | Thread | Runs |
@@ -118,7 +118,7 @@ report t=<s> tf static_base_link_lidar=<found|error> lookup_failed invalid_frame
   simulated time.
 - `received` counts the callbacks. `missing` is `missingSequences()`: frames lost before
   the subscriber read them, so a queue overflow. The other fields are
-  `hypha::SubscriberMetrics` ([cpp-api.md §7](../../docs/cpp-api.md#7-service-limits-and-endpoint-queues)).
+  `hypha::SubscriberMetrics` ([cpp-api.md §7](../../docs/cpp-api.md#7-service-limits-and-qos-policies)).
 - `timer_missed` is `Timer::missedCount()`: the periods the timer never fired in.
 - `handover_dropped` counts the clouds the hand-over queue dropped.
 - `lookup_failed` counts the worker's lookups by `hypha::TransformError`. An
@@ -159,7 +159,7 @@ the processor agree whichever starts first. `/tf` and `/tf_static` carry hypha's
 
 A player or a bridge declares no policy: when it opens a topic first, it creates the
 topic with `default` (depth 32), and a typed endpoint with another policy is then refused
-with `QosMismatch` ([cpp-api.md §7](../../docs/cpp-api.md#7-service-limits-and-endpoint-queues)).
+with `QosMismatch` ([cpp-api.md §7](../../docs/cpp-api.md#7-service-limits-and-qos-policies)).
 Try the wrong order:
 
 ```sh
@@ -197,7 +197,7 @@ One replay, as the script runs it:
    `hypha record --sync --topics /cloud_processor/centroid --compression none -o run_a.mcap`.
    The script waits for its line `Following`. With `--sync` the recorder takes part in
    the replay: it holds each chunk until it is written
-   ([tools.md](../../docs/tools.md#hypha-record--capture-to-mcap)).
+   ([tools.md](../../docs/tools.md#hypha-record)).
 3. The player, in the foreground, with the input topics only:
    `hypha play --input fixture/sensor_inputs.mcap --clock --rate 1 --settle 0.5 --nodes hypha_record --topics /imu /lidar/points /tf /tf_static`.
    `--clock` publishes `/clock` from the recording's time, and every replayed frame
@@ -255,7 +255,7 @@ What the lines show:
 Only the recorder. The processor follows `/clock` with plain callbacks, which take no
 part in the replay lockstep (#153): they run as their samples arrive, and the player
 does not wait for the processor
-([execution-model.md §11.2](../../docs/execution-model.md#112-plain-callbacks-in-a-replay)).
+([execution-model.md §6.2](../../docs/execution-model.md#62-replay-cycles-simulated-time)).
 Its two runs match when it keeps up, which `--rate 1` leaves room for; a node that
 needs a deterministic replay at any rate is built from cycles. A centroid carries its
 cloud's stamp, so the comparison by stamp holds.
