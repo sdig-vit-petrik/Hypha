@@ -5,21 +5,20 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use hypha_cycle::{
-    BindingCapture, CycleHealth, CycleRuntime, CycleTime, EmissionBudget, OutputError,
-    StagedMessage, counts_losses, is_short_history,
+    BindingCapture, CycleRuntime, CycleTime, EmissionBudget, OutputError, StagedMessage,
+    counts_losses, is_short_history,
 };
 
 use super::image::{EmissionView, ImageView, SupervisionCopy, binding_report};
 use super::registration::{Cycle, CycleOutput, CycleStep};
-use super::source::CycleInputSource;
+use super::source::{CycleInputSource, DrainClock};
 use super::state::CycleStepHandler;
 use super::types::{
     HyphaCycleBindingHealth, HyphaCycleBindingView, HyphaCycleHealth, HyphaCycleHeldReport,
     HyphaCycleTime, HyphaSupervisionReport,
 };
 use crate::loan::{HyphaLoan, take_sequence};
-use crate::status::Error;
-use crate::status::HyphaStatus;
+use crate::status::{Error, HyphaStatus};
 use crate::waitset::{
     HYPHA_ACTION_CONTINUE, HYPHA_ACTION_FAIL, HYPHA_ACTION_STOP, HyphaCallbackResult,
 };
@@ -42,30 +41,12 @@ struct StepState<'a> {
     /// The cycle's outputs. A reserve takes its loan from the output's publisher.
     outputs: &'a [CycleOutput],
     outcome: &'a mut StepOutcome,
+    services: &'a mut crate::service::CycleServices,
     is_replay: bool,
     /// The `WaitSet` of the cycle: a failure the application requested holds the step's outputs.
     waitset: &'a crate::waitset::HyphaWaitSet,
-}
-
-/// Drain each physical source of `cycle` once into its history, before a step the
-/// dispatcher cuts itself. `InvalidState` inside a step.
-pub(crate) fn drain_inputs(cycle: &Cycle) -> Result<(), Error> {
-    drain_sources(&cycle.step_ref()?.inputs)
-}
-
-/// Drain each physical source once into its history.
-///
-/// Several bindings and cycles can share a source, whose history is their common snapshot.
-fn drain_sources(inputs: &[Arc<CycleInputSource>]) -> Result<(), Error> {
-    for (index, source) in inputs.iter().enumerate() {
-        let already_drained = inputs
-            .get(..index)
-            .is_some_and(|previous| previous.iter().any(|item| Arc::ptr_eq(item, source)));
-        if !already_drained {
-            source.drain()?;
-        }
-    }
-    Ok(())
+    /// The loans the step holds, by token (`emission_lend`); empty between steps.
+    lent: &'a mut Vec<Option<super::image::LentMessage>>,
 }
 
 /// One timer firing of a committed cycle.
@@ -87,10 +68,10 @@ pub(crate) fn cycle_timer_tick(
     };
     let replay_cut = state.input_cut.take();
     // A triggered step finds its inputs drained by the dispatcher.
-    let trigger_samples = state.trigger_take.take();
+    let trigger_step = state.trigger_step.take();
     if replay_cut.is_none()
-        && trigger_samples.is_none()
-        && let Err(status) = drain_sources(&state.inputs)
+        && trigger_step.is_none()
+        && let Err(status) = super::source::drain_sources(&state.inputs, DrainClock::Host)
     {
         return HyphaCallbackResult::fail(status as i32);
     }
@@ -112,7 +93,7 @@ pub(crate) fn cycle_timer_tick(
         capture_steady_nanos: hypha_time::steady_now().nanos(),
         missed_periods,
         replay_cut_nanos,
-        trigger_samples,
+        trigger_step,
         ..CycleTime::default()
     };
     let inputs = &state.inputs;
@@ -121,6 +102,7 @@ pub(crate) fn cycle_timer_tick(
     let emissions = &mut state.emissions;
     let cycle_name = cycle.name();
     let mut step_outcome = StepOutcome::default();
+    state.services.begin(step_nanos, replay_cut, Some(&set.node().transport));
     let mut step_state = StepState {
         step,
         inputs,
@@ -130,8 +112,10 @@ pub(crate) fn cycle_timer_tick(
         cycle_name,
         outputs,
         outcome: &mut step_outcome,
+        services: &mut state.services,
         is_replay,
         waitset: set,
+        lent: &mut state.lent,
     };
 
     let mut send_stamps: Option<(u64, u64)> = None;
@@ -145,6 +129,10 @@ pub(crate) fn cycle_timer_tick(
         },
         |index, loan| send_output(outputs, index, loan, step_nanos, &mut send_stamps),
     );
+    // Answers and calls leave after the outputs, and only from a step that sent them (FSR-38).
+    let answers_leave =
+        result.is_ok() && step_outcome.answer.is_some_and(|answer| answer.sends_outputs());
+    state.services.finish(answers_leave, cycle_name);
 
     // A replay step that lost samples is not faithful, so it fails, after its
     // supervision and health are applied. Outside the lockstep nothing paces the inputs,
@@ -158,12 +146,17 @@ pub(crate) fn cycle_timer_tick(
     if step_outcome.answer.is_some() {
         apply_rejections(cycle_name, inputs, &state.port_names, runtime, supervision);
         apply_supervision(&state.input_rows, &state.input_options, runtime, supervision);
+        super::image::apply_clears(cycle_name, inputs, &state.port_names, runtime, supervision);
+        for input in &mut state.transforms {
+            input.apply_clear(cycle_name);
+        }
     }
     if let Some(duration_nanos) = step_outcome.duration_nanos {
         // An overrun is a host-time fact: under simulated time a slow step slows the clock.
         let host_rate = !hypha_time::is_sim_time() && !is_replay;
         let period = if host_rate { u64::try_from(cycle.period_nanos()).unwrap_or(0) } else { 0 };
         runtime.record_step(duration_nanos, period);
+        cycle.snapshots.record_step_time(duration_nanos, timing.capture_steady_nanos);
     }
     log_judgement_events(cycle_name, inputs, &state.port_names, input_options, runtime);
     store_health(cycle, inputs, input_options, runtime, is_replay);
@@ -207,7 +200,7 @@ fn run_step(
             .map_err(|status| status as i32)?;
     }
     let mut emission =
-        EmissionView { emissions, outputs: state.outputs, budget, open: false, error: None };
+        EmissionView::new(emissions, state.outputs, budget, state.services, &mut *state.lent);
     let image = ImageView::new(
         captures,
         state.inputs,
@@ -226,10 +219,12 @@ fn run_step(
     let duration = called_at.elapsed();
     state.outcome.answer = Some(answer);
     state.outcome.duration_nanos = Some(u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX));
-    // A reservation the callback did not commit fails the step.
+    // A reservation the callback did not commit fails the step; a loan it did not send
+    // goes back unsent.
     if emission.open && emission.error.is_none() {
         emission.error = Some(Error::InvalidState);
     }
+    emission.lent.clear();
     if state.waitset.failure_requested() {
         emission.emissions.clear();
         return Err(HyphaStatus::ApplicationFailed as i32);
@@ -291,7 +286,7 @@ fn apply_rejections(
 const UNDECODABLE_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The name of one input in a log line.
-fn input_subject(cycle_name: &str, port: &str, topic: &str) -> String {
+pub(super) fn input_subject(cycle_name: &str, port: &str, topic: &str) -> String {
     if port.is_empty() {
         format!("cycle '{cycle_name}' input ({topic})")
     } else {
@@ -516,24 +511,6 @@ fn abi_time(time: CycleTime) -> HyphaCycleTime {
     }
 }
 
-fn abi_health(health: CycleHealth) -> HyphaCycleHealth {
-    HyphaCycleHealth {
-        iterations: health.iterations,
-        missed_periods: health.missed_periods,
-        callback_failures: health.callback_failures,
-        output_attempts: health.output_attempts,
-        output_successes: health.output_successes,
-        output_failures: health.output_failures,
-        output_pool_drops: health.output_pool_drops,
-        observed_framework_nanos: health.observed_framework_nanos,
-        observed_steady_nanos: health.observed_steady_nanos,
-        steps: health.steps,
-        last_step_nanos: health.last_step_nanos,
-        max_step_nanos: health.max_step_nanos,
-        overruns: health.overruns,
-    }
-}
-
 fn store_health(
     cycle: &Cycle,
     inputs: &[Arc<CycleInputSource>],
@@ -542,7 +519,7 @@ fn store_health(
     is_replay: bool,
 ) {
     let mut health = crate::locked(&cycle.snapshots.health);
-    *health = abi_health(runtime.health());
+    *health = HyphaCycleHealth::from(runtime.health());
     let mut counts = crate::locked(&cycle.snapshots.input_counts);
     counts.clear();
     for input in inputs {
@@ -553,6 +530,14 @@ fn store_health(
         });
     }
     drop(counts);
+    let mut watches = crate::locked(&cycle.snapshots.watches);
+    if watches.len() != inputs.len() {
+        watches.clear();
+        watches.extend(inputs.iter().map(|input| {
+            input.subscriber.as_deref().and_then(|subscriber| subscriber.watch.clone())
+        }));
+    }
+    drop(watches);
     let mut bindings = crate::locked(&cycle.snapshots.bindings);
     for (index, item) in bindings.iter_mut().enumerate() {
         let Some(capture) = runtime.binding_capture(index) else {
@@ -592,6 +577,7 @@ pub(super) fn binding_view(
             age_rejections_total: capture.counters.age_rejections_total,
             latest_unavailable_iterations: capture.counters.latest_unavailable_iterations,
             usable_to_stale_transitions: capture.counters.usable_to_stale_transitions,
+            cleared_total: capture.counters.cleared_total,
         },
         held: HyphaCycleHeldReport {
             received_total: held.received_total,

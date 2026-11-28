@@ -60,7 +60,9 @@ impl OpenWindow {
         if !should_retry {
             return false;
         }
-        log::warn!(target: "hypha/transport", "hypha_iceoryx2: {} is in use by another endpoint, attempt {}: {cause:?}",
+        // Debug: endpoints that start together meet this overlap in normal operation. A
+        // failure that outlasts the window is logged by the caller, with its cause.
+        log::debug!(target: "hypha/transport", "hypha_iceoryx2: {} is in use by another endpoint, attempt {}: {cause:?}",
              self.what, self.attempt);
         std::thread::sleep(retry_delay(self.attempt).min(remaining));
         self.attempt = self.attempt.saturating_add(1);
@@ -81,7 +83,7 @@ pub(crate) fn open_within_window<T, E: Copy + core::fmt::Debug>(
     let mut window = OpenWindow::start(what);
     loop {
         let outcome = {
-            let locked_node = node.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let locked_node = crate::locked(node);
             let node_ref = locked_node.as_ref().ok_or(node_gone)?;
             attempt(node_ref)
         };
@@ -284,6 +286,31 @@ mod service_open_errors;
 #[cfg(test)]
 mod window_tests {
     use super::{OpenWindow, SERVICE_OPEN_WINDOW};
+    use std::sync::Mutex;
+
+    /// The records of this module's retries: the level and text of each.
+    static RECORDS: Mutex<Vec<(log::Level, String)>> = Mutex::new(Vec::new());
+
+    struct Capture;
+
+    impl log::Log for Capture {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if record.target() == "hypha/transport" {
+                crate::locked(&RECORDS).push((record.level(), record.args().to_string()));
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    /// The lines that retries of the service `what` wrote since the capture began.
+    fn lines_of(what: &str) -> Vec<(log::Level, String)> {
+        crate::locked(&RECORDS).iter().filter(|(_, text)| text.contains(what)).cloned().collect()
+    }
 
     #[test]
     fn a_failure_that_is_not_transient_is_not_retried() {
@@ -308,5 +335,22 @@ mod window_tests {
             waited < SERVICE_OPEN_WINDOW.saturating_add(std::time::Duration::from_millis(500)),
             "{waited:?}"
         );
+    }
+
+    /// Two endpoints that start together meet this overlap in normal operation, and the
+    /// retry clears it: its lines are DEBUG, never a WARN or an ERROR. A failure that gives
+    /// up is reported by the caller, which owns the cause.
+    #[test]
+    fn a_retry_inside_the_window_is_logged_at_debug_at_most() {
+        assert!(log::set_logger(&Capture).is_ok(), "no other test of this crate sets a logger");
+        log::set_max_level(log::LevelFilter::Trace);
+        let mut window = OpenWindow::start("the logged service");
+        while window.retry_after(&"AlreadyExists", true) {}
+
+        let lines = lines_of("the logged service");
+        assert!(!lines.is_empty(), "a retry leaves a line");
+        for (level, text) in lines {
+            assert!(level >= log::Level::Debug, "{level} {text}");
+        }
     }
 }

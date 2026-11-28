@@ -98,6 +98,49 @@ pub fn host_resources() -> Result<Vec<(String, Resource)>, String> {
     Ok(found)
 }
 
+/// The bytes the shared-memory objects of `domain` (empty for the domain "none") hold
+/// on Linux, where each one is a sparse file of `/dev/shm` and its allocated blocks are
+/// the pages written. A domain with no objects holds 0. `None` on any other system,
+/// which does not expose how much of an object was written.
+///
+/// # Errors
+/// The message of a domain name that is not one, or of an object that cannot be read.
+pub fn domain_shared_memory(domain: &str) -> Result<Option<u64>, String> {
+    if !domain.is_empty() && !crate::domain::is_domain_name(domain) {
+        return Err(format!("'{domain}' is not a domain name"));
+    }
+    if !cfg!(target_os = "linux") {
+        return Ok(None);
+    }
+    let mut total: u64 = 0;
+    for name in SharedMemory::list() {
+        let Ok(name) = std::str::from_utf8(name.as_bytes()) else {
+            continue; // not a name iceoryx2 gives
+        };
+        if domain_of_name(name) != Some(domain) {
+            continue;
+        }
+        let path = Path::new(LINUX_SHARED_MEMORY_DIRECTORY).join(name);
+        let held = match std::fs::metadata(&path) {
+            Ok(metadata) => allocated_bytes(&metadata),
+            // Removed between the listing and the read: it holds nothing any more.
+            Err(cause) if cause.kind() == ErrorKind::NotFound => 0,
+            Err(cause) => return Err(format!("cannot read {}: {cause}", path.display())),
+        };
+        total = total.saturating_add(held);
+    }
+    Ok(Some(total))
+}
+
+/// Where Linux keeps the POSIX shared-memory objects.
+const LINUX_SHARED_MEMORY_DIRECTORY: &str = "/dev/shm";
+
+/// The bytes the blocks of a file hold: `st_blocks` counts 512-byte units.
+fn allocated_bytes(metadata: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt as _;
+    metadata.blocks().saturating_mul(512)
+}
+
 /// Adds the resources under `directory`: a named entry whole, and the entries of a
 /// directory that is named after no domain.
 fn collect_paths(directory: &Path, found: &mut Vec<(String, Resource)>) -> Result<(), String> {

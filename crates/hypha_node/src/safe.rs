@@ -6,27 +6,35 @@
 
 pub use crate::clock::{
     clock_advance_sim_time, clock_disable_sim_time, clock_enable_sim_time, clock_is_sim_time,
-    clock_now_nanos, clock_set_sim_time, clock_steady_now_nanos,
+    clock_is_valid, clock_now_nanos, clock_set_sim_time, clock_steady_now_nanos,
 };
 pub use crate::config::{
-    HyphaConfig, config_create, config_ignore, config_resolve_key, config_unread_keys, node_config,
+    HyphaConfig, config_create, config_ignore, config_resolve_key, config_table_names,
+    config_unread_keys, node_config,
 };
 pub use crate::cycle::{
     CycleId, CycleSnapshots, CycleStepHandler, EmissionView, HyphaInputSource, ImageView,
     cycle_bind_input, cycle_bind_input_supervision, cycle_bind_output, cycle_bind_transforms,
     cycle_binding, cycle_commit, cycle_create, cycle_destroy, cycle_expect_participant,
     cycle_health, cycle_set_class_based, cycle_set_clock_driver, cycle_set_host_clock,
-    cycle_set_trigger, cycle_tick, emission_commit, emission_reserve, image_alive, image_binding,
-    image_held, image_lookup_transform, image_reject_sample, image_sample, image_set_ignored,
-    input_source_create, input_source_destroy,
+    cycle_set_trigger, cycle_tick, emission_call, emission_commit, emission_lend,
+    emission_next_result, emission_requests, emission_reserve, emission_return, emission_send,
+    emission_unread_results, image_alive, image_binding, image_clear, image_held,
+    image_lookup_transform, image_reject_sample, image_sample, image_set_ignored,
+    input_source_create, input_source_destroy, input_source_in_place,
 };
 pub use crate::domain::domain;
 pub use crate::introspection_abi::{config_record_config, node_introspect, node_record_config};
 pub use crate::last_error::last_error;
-pub use crate::loan::{HyphaLoan, loan_send, publisher_loan_frame};
+pub use crate::loan::{
+    HyphaLoan, loan_send, loan_shrink, publisher_loan_frame, publisher_reserve_frame,
+};
 pub use crate::metrics::{node_metrics, subscriber_metrics};
 pub use crate::node::{HyphaNode, node_create, node_destroy, node_name, node_ok, node_shutdown};
-pub use crate::node_discovery::{ListedNode, ListedServicePort, list_nodes, list_service_ports};
+pub use crate::node_checks::{HyphaNodeCheck, check_row, node_set_checks};
+pub use crate::node_discovery::{
+    GraphWatch, ListedNode, ListedServicePort, graph_watch, list_nodes, list_service_ports,
+};
 pub use crate::node_state::node_state;
 pub use crate::param_topic::param_topic;
 pub use crate::parameter_parse::{ParamRead, config_list_len, config_list_value, config_value};
@@ -35,17 +43,28 @@ pub use crate::publisher::{
     publisher_subscriber_count,
 };
 pub use crate::qos::Declaration;
-pub use crate::sample::{HyphaReceivedSample, sample_identity, sample_payload};
+pub use crate::sample::{
+    HyphaDeliveryHolder, HyphaReceivedSample, delivery_retain, sample_identity, sample_payload,
+};
 pub use crate::schema::{schema_lookup, schema_resolve_hash, schema_resolve_hash_now};
+pub use crate::service::{
+    Answer, CallDone, CallOutcome, CallResult, CallStatus, ClientStatus, FedAnswer, FedCall,
+    HyphaClient, HyphaRequest, HyphaServer, HyphaStepServices, ListedService, MAX_LOGGED_BYTES,
+    RequestState, RequestView, ServeHandler, ServiceDecl, ServiceDefinitions, StepRequest,
+    call_log_topic, client_call, client_status, client_wait_for_server, cycle_bind_client,
+    cycle_bind_server, list_services, log_pool_bytes, record_bound, request_answer, request_defer,
+    service_client_create, service_client_destroy, service_definitions, service_serve,
+    service_server_destroy, step_services_create,
+};
 pub use crate::status::Error;
 pub use crate::subscriber::{
     FrameIdentity, HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS, HyphaSubscriber, SubscriberIdentity,
-    SubscriberSettings, subscribe_typed, subscriber_counters, subscriber_publisher_count,
-    subscriber_receive, subscriber_topic,
+    SubscriberSettings, subscribe_stream, subscribe_typed, subscriber_counters,
+    subscriber_publisher_count, subscriber_receive, subscriber_topic,
 };
 pub use crate::transforms::buffer::{
-    HyphaTransformBuffer, transform_buffer_create, transform_buffer_destroy,
-    transform_buffer_lookup,
+    HyphaTransformBuffer, transform_buffer_create, transform_buffer_create_fed,
+    transform_buffer_destroy, transform_buffer_feed, transform_buffer_lookup,
 };
 pub use crate::transforms::{HyphaSentTransform, TransformLookup, transform_check};
 pub use crate::waitset::registrations::waitset_attach_foreign;

@@ -3,7 +3,7 @@
 A software PLC cycle: the runtime freezes the inputs once per period and judges their
 age, `step()` runs a control law on that image, and one command is sent. Copy this
 example for a node that computes at one rate over its inputs. For an event-driven node
-on a plain `hypha::Node`, copy [sensor_pipeline](../sensor_pipeline/README.md).
+(`hypha::ApplicationNode`), copy [sensor_pipeline](../sensor_pipeline/README.md).
 
 | File | Holds |
 |---|---|

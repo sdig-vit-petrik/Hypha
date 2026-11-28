@@ -1,7 +1,5 @@
 //! The cycle-wide queued-arrival budget.
 
-use std::sync::PoisonError;
-
 use super::helpers::rotate_index;
 use super::{CaptureClock, CycleRuntime};
 use crate::CaptureMode;
@@ -11,7 +9,13 @@ const STATUS_RESOURCE_LIMIT: i32 = 13;
 
 impl CycleRuntime {
     /// Fill `self.assignments` with each binding's share of the arrival budget.
-    pub(super) fn arrival_assignments(&mut self, clock: CaptureClock) -> Result<(), i32> {
+    /// With `sent_through`, a binding's pending samples are those within its reach
+    /// ([`CycleRuntime::firing_sent_nanos`]).
+    pub(super) fn arrival_assignments(
+        &mut self,
+        clock: CaptureClock,
+        sent_through: Option<u64>,
+    ) -> Result<(), i32> {
         self.assignments.clear();
         let Some(mut remaining) = self.arrival_budget else {
             // Without a shared budget, capture applies each binding's limit directly.
@@ -29,11 +33,11 @@ impl CycleRuntime {
         for (index, (slot, capture)) in self.bindings.iter().zip(&self.captures).enumerate() {
             let capacity = match (&slot.history, slot.options.mode) {
                 // The trigger and exempt bindings take their samples outside the budget.
-                _ if self.trigger == Some(index) || slot.exempt => 0,
+                _ if self.triggers.contains(&index) || slot.exempt => 0,
                 (Some(history), CaptureMode::Queued) => {
-                    let history = history.lock().unwrap_or_else(PoisonError::into_inner);
+                    let history = crate::locked(history);
                     capture
-                        .pending_samples_on(&history, clock)
+                        .pending_arrivals(&history, clock, sent_through)
                         .min(slot.options.max_samples_per_iteration)
                 }
                 _ => 0,

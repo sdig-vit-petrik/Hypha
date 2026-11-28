@@ -11,7 +11,7 @@ fn route(
     ros_definition: Option<&str>,
 ) -> BridgeRoute {
     BridgeRoute {
-        hypha_topic: "/hypha/text".into(),
+        hypha_topic: "/bridge/text".into(),
         ros_topic: "/ros/text".into(),
         ros_type: ros_type.map(str::to_owned),
         ros_md5: ros_md5.map(str::to_owned),
@@ -163,7 +163,7 @@ fn a_route_declares_its_own_latching_rather_than_being_guessed_from_its_name() {
     let toml = format!(
         r#"
         [[routes]]
-        hypha_topic = "/hypha/text"
+        hypha_topic = "/bridge/text"
         ros_topic = "/ros/text"
         ros_type = "std_msgs/String"
         ros_md5 = "{STD_STRING_MD5}"
@@ -188,7 +188,7 @@ fn latched_defaults_to_false_when_not_declared() {
     let toml = format!(
         r#"
         [[routes]]
-        hypha_topic = "/hypha/text"
+        hypha_topic = "/bridge/text"
         ros_topic = "/ros/text"
         ros_type = "std_msgs/String"
         ros_md5 = "{STD_STRING_MD5}"

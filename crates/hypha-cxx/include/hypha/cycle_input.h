@@ -57,6 +57,12 @@ class Input : public Port
         return this->verdict_;
     }
 
+    /// @brief True when the input is within its limits in this step: verdict() is Usable.
+    bool usable() const
+    {
+        return this->verdict_ == InputVerdict::Usable;
+    }
+
     uint64_t received() const
     {
         return this->heldReport_.received_total;
@@ -81,6 +87,30 @@ class Input : public Port
         return this->hasFault(HYPHA_FAULT_STAGNANT);
     }
 
+    /// @brief True when the port has no time limit: tagged unsupervised, or `silence_ms = 0`
+    ///        in its table (a ROS timeout of 0.0). It is never stale: NeverArrived before its
+    ///        first sample, Usable from it on, until a later sample replaces the value. False
+    ///        for a port with a limit, a disabled port, and before start(); in a
+    ///        testing::StepHarness it is read from the parameter file, as a start decides it.
+    /// @throws std::logic_error in a StepHarness without a loaded configuration.
+    /// @throws ParameterError in a StepHarness when the table's `silence_ms` is missing or
+    ///         outside its range.
+    bool untimed() const
+    {
+        if (!this->enabled()) {
+            return false;
+        }
+        if (this->supervision_.decided()) {
+            return this->supervision_.untimed();
+        }
+        if (!this->enabledByHarness()) {
+            return false;
+        }
+        const bool noTable = this->supervision_.name().empty() || this->settings_.unsupervised;
+        return noTable
+            || detail::tableSilenceNanos(this->supervision_.name(), this->settings_.limitMax) == 0;
+    }
+
     /// @brief True when setIgnored(true) hides the fault of this port.
     bool ignored() const
     {
@@ -92,6 +122,21 @@ class Input : public Port
     void setIgnored(bool ignore)
     {
         this->supervision_.setIgnored(this->index_, ignore);
+    }
+
+    /// @brief Forget, when the step returns, the value and the pending samples this step
+    ///        admitted (`cleared_total`): later steps see later samples only, NeverArrived
+    ///        until one comes, Stale once the last one before is older than `silence_ms`.
+    /// @throws std::logic_error outside step(), or on a trigger port.
+    void clear()
+    {
+        if (detail::CaptureStore* const harness = this->harnessStore()) {
+            harness->clearAfterStep(*this, [](Port& port) {
+                static_cast<Input<M>&>(port).forgetCleared();
+            });
+            return;
+        }
+        this->supervision_.clear(this->index_);
     }
 
     /// @brief Declare the stagnation check: an end-to-end life sign, an integral member of
@@ -119,10 +164,11 @@ class Input : public Port
     }
 
     /// @brief True when the port reads a topic. False before start(), and for a disabled
-    ///        port, which never has a value.
+    ///        port, which never has a value. In a testing::StepHarness it is true for a
+    ///        port that the parameter file wires, as a start would.
     bool enabled() const
     {
-        return this->slot_->source.enabled();
+        return this->slot_->source.enabled() || this->enabledByHarness();
     }
 
     /// @brief The cumulative health of this binding with its supervision report: of this
@@ -199,6 +245,8 @@ class Input : public Port
         return detail::TopicSource::ofPort(name, false, settings.optionalTopic);
     }
 
+    virtual void forgetCleared() = 0;  ///< A testing::StepHarness step's clear() returned.
+
     /// @brief The library's ok bit of this binding: usable and not stagnant, or not
     ///        counted (disabled, advisory) or ignored. True before start().
     bool inputOk() const override
@@ -247,6 +295,11 @@ class Input : public Port
         return this->tableRefused_;
     }
 
+    const detail::TopicSource* topicSource() const override
+    {
+        return &this->slot_->topic;
+    }
+
     std::optional<uint64_t> aliveOf(const M& message) const
     {
         if (!this->alive_) {
@@ -268,40 +321,7 @@ class Input : public Port
     }
 
     /// @brief The first port of a topic to bind opens its source.
-    ::HyphaStatus ensureSource()
-    {
-        detail::SourceSlot<M>& slot = *this->slot_;
-        if (slot.source.valid()) {
-            // Another port opened the subscriber before this port was constructed.
-            if (this->depth_ > slot.openedDepth) {
-                detail::error(
-                    this->portText() + " needs a queue of " + std::to_string(this->depth_)
-                    + " samples, but the port it shares the topic with opened it with "
-                    + std::to_string(slot.openedDepth)
-                    + "; construct both ports before either cycle starts"
-                );
-                return HYPHA_STATUS_RESOURCE_LIMIT;
-            }
-            return HYPHA_STATUS_OK;
-        }
-        const std::expected<std::string, Status> resolved = slot.topic.resolve();
-        if (!resolved) {
-            // A bad `topic` in the port's table: a restart cannot fix it.
-            this->tableRefused_ = true;
-            return static_cast<::HyphaStatus>(resolved.error());
-        }
-        std::expected<detail::InputSource, Status> opened = detail::openSource<M>(
-            backend::defaultWaitSet(),
-            *resolved,
-            backend::declaredSubscriberOptions(slot.policy, slot.depth)
-        );
-        if (!opened) {
-            return static_cast<::HyphaStatus>(opened.error());
-        }
-        slot.source = std::move(*opened);
-        slot.openedDepth = slot.depth;
-        return HYPHA_STATUS_OK;
-    }
+    ::HyphaStatus ensureSource();
 
     std::string portText() const
     {
@@ -361,3 +381,5 @@ class Input : public Port
 };
 
 }  // namespace hypha
+
+#include "hypha/detail/cycle_input_impl.h"

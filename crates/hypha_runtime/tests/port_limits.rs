@@ -48,11 +48,11 @@ const FULL_RANGE: SupervisionRanges = SupervisionRanges {
     stagnation_max_nanos: i64::MAX,
 };
 
-// A required port needs `silence_ms`; an advisory port may set it.
-const BOTH: Declared = Declared { advisory: false, unsupervised: false, stagnation: true };
-const SILENCE: Declared = Declared { advisory: false, unsupervised: false, stagnation: false };
-const STAGNATION: Declared = Declared { advisory: true, unsupervised: false, stagnation: true };
-const NONE: Declared = Declared { advisory: true, unsupervised: false, stagnation: false };
+// A port needs `silence_ms` unless it is tagged unsupervised, which reads no silence limit.
+const BOTH: Declared = Declared { unsupervised: false, stagnation: true };
+const SILENCE: Declared = Declared { unsupervised: false, stagnation: false };
+const STAGNATION: Declared = Declared { unsupervised: true, stagnation: true };
+const NONE: Declared = Declared { unsupervised: true, stagnation: false };
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -208,7 +208,7 @@ fn a_table_with_only_allowed_keys_or_no_table_has_no_unknown_key() {
 
 #[test]
 fn silence_ms_is_a_known_key_of_every_input() {
-    assert!(Call::on(KEYS, "timed").declared(NONE).disabled().run().is_ok());
+    assert!(Call::on(KEYS, "timed").declared(BOTH).disabled().run().is_ok());
     assert!(Call::on(KEYS, "timed").declared(SILENCE).disabled().run().is_ok());
 }
 
@@ -257,7 +257,7 @@ fn a_limit_of_another_type_is_refused() {
 #[test]
 fn a_limit_outside_its_range_is_refused_and_not_clamped() {
     let outside = invalid("key 'silence_ms' is outside its range");
-    assert_eq!(Call::on(KEYS, "too_fast").declared(SILENCE).run(), outside);
+    assert_eq!(Call::on(KEYS, "too_fast").declared(SILENCE).run(), silence(0), "0 is no limit");
     assert_eq!(Call::on(KEYS, "too_slow").declared(SILENCE).run(), outside);
     assert_eq!(Call::on(KEYS, "huge").declared(SILENCE).ranges(WIDE_RANGES).run(), outside);
 }
@@ -334,6 +334,85 @@ fn an_overflow_policy_key_is_unknown() {
     );
 }
 
+const APPLICATION_KEYS: &str = r#"[ports.inputs.mux]
+topic = "/mux"
+silence_ms = 250
+priority = 100
+
+[ports.inputs.other]
+topic = "/other"
+silence_ms = 250
+priority = 10
+
+[ports.inputs.stalled]
+topic = "/stalled"
+silence_ms = 250
+stagnation_ms = 500
+
+[ports.inputs.typo]
+topic = "/typo"
+silence_mss = 250
+priority = 5
+"#;
+
+/// What `supervise` returns for the port `name` of [`APPLICATION_KEYS`] once the application
+/// has read `read`, and the keys that are still unread afterwards.
+fn after_reads(
+    name: &str,
+    declared: Declared,
+    read_limits: bool,
+    read: &[&str],
+) -> (Result<Supervision, PortError>, Vec<String>) {
+    let parameters = parameters(APPLICATION_KEYS);
+    for key in read {
+        assert!(parameters.value(key).is_some(), "the fixture sets {key}");
+    }
+    let introspection = IntrospectionRegistry::new(Identity::default());
+    let entry = format!("ports.inputs.{name}");
+    let port = Port { parameters: &parameters, introspection: &introspection, entry: &entry };
+    let outcome = supervise(port, declared, true, read_limits, &RANGES);
+    (outcome, parameters.unread_keys())
+}
+
+#[test]
+fn a_key_read_by_the_application_is_accepted() {
+    let (outcome, unread) = after_reads("mux", SILENCE, true, &["ports.inputs.mux.priority"]);
+    assert_eq!(outcome, silence(250 * MILLI));
+    assert!(unread.iter().all(|key| !key.starts_with("ports.inputs.mux.")), "unread: {unread:?}");
+}
+
+#[test]
+fn a_key_read_by_the_application_is_accepted_on_a_disabled_port() {
+    let (outcome, _) = after_reads("mux", SILENCE, false, &["ports.inputs.mux.priority"]);
+    assert_eq!(outcome, Ok(Supervision::default()));
+}
+
+#[test]
+fn an_unread_extra_key_is_still_refused_and_stays_unread() {
+    let (outcome, unread) = after_reads("mux", SILENCE, true, &[]);
+    assert_eq!(outcome, invalid("unknown key 'priority'"));
+    assert!(unread.contains(&"ports.inputs.mux.priority".to_owned()), "unread: {unread:?}");
+}
+
+#[test]
+fn a_key_read_in_another_table_does_not_count() {
+    let (outcome, _) = after_reads("mux", SILENCE, true, &["ports.inputs.other.priority"]);
+    assert_eq!(outcome, invalid("unknown key 'priority'"));
+}
+
+#[test]
+fn a_framework_key_the_port_does_not_declare_stays_refused_when_the_application_reads_it() {
+    let (outcome, _) =
+        after_reads("stalled", SILENCE, true, &["ports.inputs.stalled.stagnation_ms"]);
+    assert_eq!(outcome, invalid("unknown key 'stagnation_ms'"));
+}
+
+#[test]
+fn a_typo_of_a_framework_key_is_refused_beside_an_application_key_that_was_read() {
+    let (outcome, _) = after_reads("typo", NONE, true, &["ports.inputs.typo.priority"]);
+    assert_eq!(outcome, invalid("unknown key 'silence_mss'"));
+}
+
 const BOUNDS: &str = r#"[ports.inputs.stag_low]
 topic = "/a"
 stagnation_ms = 9
@@ -407,43 +486,70 @@ fn a_millisecond_value_whose_nanoseconds_wrap_is_refused_and_the_largest_is_acce
 const RULE: &str =
     "[ports.inputs.limited]\nsilence_ms = 200\n[ports.inputs.bare]\ntopic = \"/bare\"\n";
 
-const REQUIRED: Declared = Declared { advisory: false, unsupervised: false, stagnation: false };
-const ADVISORY: Declared = Declared { advisory: true, unsupervised: false, stagnation: false };
-const UNSUPERVISED: Declared = Declared { advisory: false, unsupervised: true, stagnation: false };
-const BOTH_TAGS: Declared = Declared { advisory: true, unsupervised: true, stagnation: false };
+const REQUIRED: Declared = Declared { unsupervised: false, stagnation: false };
+const UNSUPERVISED: Declared = Declared { unsupervised: true, stagnation: false };
 
 fn silence_of(result: &Result<Supervision, PortError>) -> Option<i64> {
     result.as_ref().ok().map(|found| found.limits.silence_nanos)
 }
 
 #[test]
-fn the_rule_is_decided_from_advisory_and_unsupervised() {
-    // A required input: the key is required, and read when present.
+fn the_rule_is_decided_from_unsupervised_alone() {
+    // An input, advisory or not: the key is required, and read.
     let required = Call::on(RULE, "bare").declared(REQUIRED).run();
     assert_eq!(
         required,
         Err(PortError::Missing(hypha_runtime::port_limits::MISSING_SILENCE.to_owned()))
     );
     assert_eq!(silence_of(&Call::on(RULE, "limited").declared(REQUIRED).run()), Some(200 * MILLI));
-    // An advisory input: optional, read when present.
-    assert_eq!(silence_of(&Call::on(RULE, "bare").declared(ADVISORY).run()), Some(0));
-    assert_eq!(silence_of(&Call::on(RULE, "limited").declared(ADVISORY).run()), Some(200 * MILLI));
     // An unsupervised input: never a limit, and the key is refused.
     assert_eq!(silence_of(&Call::on(RULE, "bare").declared(UNSUPERVISED).run()), Some(0));
     assert_eq!(
         Call::on(RULE, "limited").declared(UNSUPERVISED).run(),
         invalid("key 'silence_ms' on a port tagged unsupervised")
     );
-    // Both tags exclude each other, with or without the key.
-    for name in ["bare", "limited"] {
-        assert_eq!(
-            Call::on(RULE, name).declared(BOTH_TAGS).run(),
-            invalid("the tags unsupervised and advisory exclude each other")
-        );
-    }
 }
 
 #[test]
 fn a_disabled_input_needs_no_limit() {
     assert_eq!(silence_of(&Call::on(RULE, "bare").declared(REQUIRED).disabled().run()), Some(0));
+}
+
+/// Ports with no time limit (#238): `silence_ms = 0` in the table, or the tag `unsupervised`.
+const UNTIMED: &str = r#"[ports.inputs.zero]
+topic = "/zero"
+silence_ms = 0
+
+[ports.inputs.zero_ignored]
+topic = "/zero_ignored"
+silence_ms = 0
+ignored = true
+
+[ports.inputs.negative]
+topic = "/negative"
+silence_ms = -1
+
+[ports.inputs.bare]
+topic = "/bare"
+"#;
+
+#[test]
+fn silence_ms_zero_is_an_input_with_no_time_limit() {
+    assert_eq!(Call::on(UNTIMED, "zero").declared(REQUIRED).run(), silence(0));
+    assert_eq!(
+        Call::on(UNTIMED, "negative").declared(REQUIRED).run(),
+        invalid("key 'silence_ms' is outside its range")
+    );
+    let with_stagnation =
+        UNTIMED.to_owned() + "[ports.inputs.alive]\nsilence_ms = 0\nstagnation_ms = 50\n";
+    let alive = Call { source: &with_stagnation, ..Call::on("", "alive") }.run();
+    assert_eq!(alive, stagnation(50 * MILLI), "an untimed input may still check its life sign");
+}
+
+#[test]
+fn ignored_on_an_untimed_input_is_refused() {
+    assert_eq!(
+        Call::on(UNTIMED, "zero_ignored").declared(REQUIRED).run(),
+        invalid("key 'ignored' needs a silence_ms or stagnation_ms limit")
+    );
 }

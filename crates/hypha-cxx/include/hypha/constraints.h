@@ -2,12 +2,17 @@
 
 #include "hypha/backend/config_readers.h"
 
+#include <algorithm>
 #include <concepts>
 #include <cstdint>
 #include <format>
+#include <initializer_list>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace hypha {
 
@@ -138,6 +143,64 @@ struct Nonempty
 inline Nonempty nonempty()
 {
     return {};
+}
+
+/// A value that is one of a short list: a baud rate, a mode name. Numbers compare exactly,
+/// whatever the integer width and signedness; text compares as text.
+template <typename Value>
+struct OneOf
+{
+    std::vector<Value> allowed;
+    std::string        description;
+
+    template <typename T>
+    bool accepts(const T& value) const
+    {
+        return std::ranges::any_of(this->allowed, [&value](const Value& candidate) {
+            if constexpr (std::is_integral_v<Value> && std::is_integral_v<T>) {
+                return std::cmp_equal(candidate, value);
+            } else {
+                return candidate == value;
+            }
+        });
+    }
+};
+
+namespace detail {
+
+template <typename T>
+using OneOfStored = std::conditional_t<std::is_convertible_v<T, std::string_view>, std::string, T>;
+
+template <typename T>
+std::string oneOfText(const T& value)
+{
+    if constexpr (std::is_convertible_v<T, std::string_view>) {
+        return "'" + std::string(value) + "'";
+    } else {
+        return std::format("{}", value);
+    }
+}
+
+}  // namespace detail
+
+/// @brief The values that @p allowed lists: `required<uint32_t>("baud_rate",
+///        constraints::oneOf({4800, 9600, 19200}))`, or `oneOf({"fast", "slow"})` for text.
+///        The refusal lists them: `must be one of 4800, 9600, 19200`.
+/// @throws std::invalid_argument for an empty list.
+template <typename T>
+OneOf<detail::OneOfStored<T>> oneOf(std::initializer_list<T> allowed)
+{
+    if (allowed.size() == 0) {
+        throw std::invalid_argument("hypha: constraints::oneOf needs at least one value");
+    }
+    OneOf<detail::OneOfStored<T>> constraint;
+    std::string                   listed;
+    for (const T& value : allowed) {
+        constraint.allowed.push_back(detail::OneOfStored<T>(value));
+        listed += (listed.empty() ? "" : ", ") + detail::oneOfText(value);
+    }
+    constraint.description = "must be one of " + listed;
+    return constraint;
 }
 
 }  // namespace constraints

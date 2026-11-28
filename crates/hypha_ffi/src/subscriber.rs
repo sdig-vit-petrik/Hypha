@@ -11,16 +11,21 @@ use hypha_node::status::HyphaStatus;
 mod counters;
 mod missing;
 mod read;
+mod retain;
 pub use counters::hypha_subscriber_counters;
 pub use missing::hypha_subscriber_missing_sequences;
 pub use read::{hypha_subscriber_destroy, hypha_subscriber_topic};
+pub use retain::{hypha_delivery_retain, hypha_received_sample_release};
 
 use crate::boundary::{borrow_str, handle_ref, read_in, require_non_null, write_out};
 use std::os::raw::c_char;
 use std::sync::Arc;
 
 /// Subscribe to `topic` with `options` and record `data_type` (null: empty) in the node
-/// introspection. `definition` (length 0: none) is the definition of `expected_md5`
+/// introspection. A topic carries one stream for each schema: with `expected_md5` the
+/// subscriber reads that schema's stream alone, and without one (length 0) every stream of
+/// the topic that exists at creation, polled, creating none (`NotAvailable` when there is
+/// none). `definition` (length 0: none) is the definition of `expected_md5`
 /// (length 0: none); with one, a non-empty `data_type` and a valid `expected_md5` are
 /// required (`InvalidSchema` otherwise). `InvalidArgument`: a null `node`, `options` or
 /// `out`. `InvalidTopic`: a `~/` topic on a CLI tool node.

@@ -5,6 +5,7 @@
 ///
 ///     Latest<Status>  status{*this, "status", optionalTopic};
 ///     Arrivals<Imu>   imu{*this, "imu", perStep(64), advisory(!imuRequired)};
+///     Arrivals<Twist> cmd{*this, "cmd", newestOnly};
 ///     Output<TF>      tf{*this, "tf_static", latched};
 ///     Output<Scan>    scan{*this, "scan", my::policies::lidar, maxPayloadDynamic(1 << 20)};
 ///
@@ -47,8 +48,9 @@ struct Advisory
     }
 };
 
-/// @brief The input runs without a silence limit. The table must then not set
-///        `silence_ms`, and the port must not be advisory.
+/// @brief The input runs without a silence limit: it is never stale (Input::untimed()). The
+///        table must then not set `silence_ms`. It may be advisory too. A deployment that
+///        chooses no limit sets `silence_ms = 0` in the table instead.
 struct Unsupervised
 {
     bool on = true;
@@ -96,10 +98,29 @@ struct Diagnostic
 
 /// @brief Arrivals: the samples one step examines (default HYPHA_DEFAULT_ARRIVALS_PER_STEP).
 ///        Output: the messages one step may send (default 1). Zero throws
-///        std::invalid_argument; an Arrivals perStep above the policy's `maxDepth` is refused.
+///        std::invalid_argument; an Arrivals perStep above the policy's `maxDepth` (32 for the
+///        default policy) is refused when the port is constructed, the same way, and runNode()
+///        exits 70. A count read from the parameter file is checked where it is read, with
+///        constraints::range(1, maxDepth), to be refused as a ParameterError (exit 78).
 struct PerStep
 {
     uint32_t count;
+};
+
+/// @brief Arrivals only: ROS's `queue_size` 1. A step examines only the newest pending
+///        sample; the older ones are dropped and counted as work-limit drops. A trigger steps
+///        once on the newest of the samples due together, on host time every sample pending
+///        when the node gets its turn, under simulated time the samples of one stamp, so a
+///        replay steps the same on every run. The queue stays perStep() deep, nothing is lost
+///        in transport, and the topic's policy is not changed (execution-model.md §6.6).
+struct NewestOnly
+{
+    bool on = true;
+
+    constexpr NewestOnly operator()(bool value) const
+    {
+        return {value};
+    }
 };
 
 /// @brief The largest message of an output or publisher, in serialized bytes, for a
@@ -122,6 +143,7 @@ inline constexpr Unsupervised  unsupervised{};
 inline constexpr HostClock     hostClock{};
 inline constexpr Latched       latched{};
 inline constexpr Diagnostic    diagnostic{};
+inline constexpr NewestOnly    newestOnly{};
 
 constexpr PerStep perStep(uint32_t count)
 {
@@ -174,7 +196,7 @@ concept LatestOption =
 /// @brief The tags an Arrivals input takes.
 template <typename T>
 concept ArrivalsOption =
-    detail::OneOf<T, OptionalTopic, Advisory, Unsupervised, LimitMax, PerStep, Qos>;
+    detail::OneOf<T, OptionalTopic, Advisory, Unsupervised, LimitMax, PerStep, NewestOnly, Qos>;
 
 /// @brief The tags an Output takes.
 template <typename T>
@@ -198,6 +220,7 @@ struct InputSettings
     bool                    countsForHealth{true};
     bool                    unsupervised{false};
     bool                    hostClock{false};
+    bool                    newestOnly{false};
     std::optional<uint32_t> perStep{};
     Duration                limitMax{Duration::fromSeconds(3600)};
     std::optional<Qos>      qos{};
@@ -225,6 +248,11 @@ struct InputSettings
     void apply(HostClock tag)
     {
         this->hostClock = tag.on;
+    }
+
+    void apply(NewestOnly tag)
+    {
+        this->newestOnly = tag.on;
     }
 
     void apply(PerStep tag)

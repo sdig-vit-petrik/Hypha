@@ -16,34 +16,44 @@ set(HYPHA_MSGS_OUT_DIR "${CMAKE_BINARY_DIR}/generated/include")
 set(HYPHA_MSGS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/msg")
 
 # One call per package; DEPENDS names the packages a package's fields refer to,
-# so each is declared after the ones it needs.
+# so each is declared after the ones it needs. A package's .srv files sit beside its
+# .msg files: the standard services of ROS 1 (nav_msgs/GetMap, sensor_msgs/SetCameraInfo,
+# ...), unchanged (crates/hypha_msgs/upstream), and std_srvs below.
 hypha_generate_messages(PACKAGE std_msgs
   MSG_DIR "${HYPHA_MSGS_ROOT}/std_msgs" OUT_DIR "${HYPHA_MSGS_OUT_DIR}")
 hypha_generate_messages(PACKAGE geometry_msgs
   MSG_DIR "${HYPHA_MSGS_ROOT}/geometry_msgs" OUT_DIR "${HYPHA_MSGS_OUT_DIR}"
   DEPENDS std_msgs)
 hypha_generate_messages(PACKAGE diagnostic_msgs
-  MSG_DIR "${HYPHA_MSGS_ROOT}/diagnostic_msgs" OUT_DIR "${HYPHA_MSGS_OUT_DIR}"
+  MSG_DIR "${HYPHA_MSGS_ROOT}/diagnostic_msgs" SRV_DIR "${HYPHA_MSGS_ROOT}/diagnostic_msgs"
+  OUT_DIR "${HYPHA_MSGS_OUT_DIR}"
   DEPENDS std_msgs)
 hypha_generate_messages(PACKAGE rosgraph_msgs
   MSG_DIR "${HYPHA_MSGS_ROOT}/rosgraph_msgs" OUT_DIR "${HYPHA_MSGS_OUT_DIR}"
   DEPENDS std_msgs)
 hypha_generate_messages(PACKAGE nav_msgs
-  MSG_DIR "${HYPHA_MSGS_ROOT}/nav_msgs" OUT_DIR "${HYPHA_MSGS_OUT_DIR}"
+  MSG_DIR "${HYPHA_MSGS_ROOT}/nav_msgs" SRV_DIR "${HYPHA_MSGS_ROOT}/nav_msgs"
+  OUT_DIR "${HYPHA_MSGS_OUT_DIR}"
   DEPENDS std_msgs geometry_msgs)
 hypha_generate_messages(PACKAGE sensor_msgs
-  MSG_DIR "${HYPHA_MSGS_ROOT}/sensor_msgs" OUT_DIR "${HYPHA_MSGS_OUT_DIR}"
+  MSG_DIR "${HYPHA_MSGS_ROOT}/sensor_msgs" SRV_DIR "${HYPHA_MSGS_ROOT}/sensor_msgs"
+  OUT_DIR "${HYPHA_MSGS_OUT_DIR}"
   DEPENDS std_msgs geometry_msgs)
 hypha_generate_messages(PACKAGE tf2_msgs
-  MSG_DIR "${HYPHA_MSGS_ROOT}/tf2_msgs" OUT_DIR "${HYPHA_MSGS_OUT_DIR}"
+  MSG_DIR "${HYPHA_MSGS_ROOT}/tf2_msgs" SRV_DIR "${HYPHA_MSGS_ROOT}/tf2_msgs"
+  OUT_DIR "${HYPHA_MSGS_OUT_DIR}"
   DEPENDS geometry_msgs)
 
 hypha_generate_messages(PACKAGE hypha_msgs
   MSG_DIR "${HYPHA_MSGS_ROOT}/hypha_msgs" OUT_DIR "${HYPHA_MSGS_OUT_DIR}")
+
+# The services every ROS 1 port reaches for: Empty, Trigger, SetBool.
+hypha_generate_messages(PACKAGE std_srvs
+  SRV_DIR "${HYPHA_MSGS_ROOT}/std_srvs" OUT_DIR "${HYPHA_MSGS_OUT_DIR}")
 
 # Every standard package. The name differs from the package hypha_msgs above,
 # which holds hypha's own messages.
 add_library(hypha_standard_messages INTERFACE)
 target_link_libraries(hypha_standard_messages INTERFACE
   std_msgs geometry_msgs diagnostic_msgs rosgraph_msgs nav_msgs sensor_msgs tf2_msgs
-  hypha_msgs)
+  hypha_msgs std_srvs)

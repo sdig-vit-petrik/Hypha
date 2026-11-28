@@ -1,0 +1,61 @@
+# A small workload for `hypha load`: three topics between three processes, a slow
+# reader whose losses are counted but not limited, and the recorder on. The slow reader
+# has a process of its own: its callbacks hold up every other callback of its node's
+# `WaitSet`, so a reader that must keep pace never shares a process with it.
+#
+#   hypha load examples/load/smoke.toml --report smoke.json
+#
+# The limits are those of a reader that keeps pace (zero loss, every loss accounted)
+# and of a publisher that is never refused. It sets no latency limit: a latency
+# figure depends on the host (docs/tools.md, `hypha load`).
+
+[run]
+duration_s = 10.0
+warmup_s = 2.0
+cooldown_s = 1.0
+sample_interval_s = 1.0
+bounded_memory = false
+
+[recorder]
+enabled = true
+compression = "lz4"
+
+[[process]]
+name = "sensors"
+
+[[process]]
+name = "planner"
+
+[[process]]
+name = "slow_logger"
+
+[[topic]]
+name = "/load/image"
+bytes = 1048576
+rate_hz = 30.0
+publisher = "sensors"
+subscribers = [{ process = "planner", depth = 4 }]
+
+[[topic]]
+name = "/load/control"
+bytes = 100
+rate_hz = 1000.0
+publisher = "sensors"
+burst = { count = 10, every_s = 1.0 }
+subscribers = [
+    { process = "planner", depth = 32 },
+    # A slow reader: 5 ms of work per sample at 1 kHz loses most samples, and counts them.
+    { process = "slow_logger", depth = 2, work_us = 5000, limits = { loss_accounted = true } },
+]
+
+[[topic]]
+name = "/load/status"
+bytes = 256
+rate_hz = 10.0
+publisher = "planner"
+subscribers = [{ process = "sensors", depth = 4 }]
+
+[limits]
+max_loss = 0
+loss_accounted = true
+max_refused_publishes = 0

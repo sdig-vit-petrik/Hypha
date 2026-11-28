@@ -44,7 +44,7 @@ fn drop_oldest_keeps_newest_assigned_work_and_counts_only_policy_drops() {
             None,
             |captures, _| {
                 let payloads: Vec<u8> =
-                    captures[0].samples.iter().map(|sample| sample.payload[0]).collect();
+                    captures[0].samples.iter().map(|sample| sample.payload.to_vec()[0]).collect();
                 assert_eq!(payloads, [3, 4]);
                 assert_eq!(captures[0].work_limit_drops, 2);
                 assert_eq!(captures[0].lost_since_capture, 0);
@@ -209,9 +209,9 @@ fn two_bindings_of_one_history_keep_independent_cursors() {
             None,
             |captures, _| {
                 let left: Vec<u8> =
-                    captures[0].samples.iter().map(|sample| sample.payload[0]).collect();
+                    captures[0].samples.iter().map(|sample| sample.payload.to_vec()[0]).collect();
                 let right: Vec<u8> =
-                    captures[1].samples.iter().map(|sample| sample.payload[0]).collect();
+                    captures[1].samples.iter().map(|sample| sample.payload.to_vec()[0]).collect();
                 // The first drops its oldest excess, the second carries it.
                 assert_eq!(left, [2]);
                 assert_eq!(right, [1]);
@@ -228,7 +228,7 @@ fn two_bindings_of_one_history_keep_independent_cursors() {
             None,
             |captures, _| {
                 assert_eq!(captures[0].samples.len(), 0);
-                assert_eq!(captures[1].samples[0].payload[0], 2);
+                assert_eq!(captures[1].samples[0].payload.to_vec()[0], 2);
                 Ok(Vec::new())
             },
             |_, _| Ok(()),

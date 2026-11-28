@@ -1,5 +1,6 @@
 //! The transform buffer of a plain node: a [`TfState`] fed by two subscriptions on the
-//! node's default `WaitSet`, looked up from any thread.
+//! node's default `WaitSet`, looked up from any thread. A buffer with no node is fed by
+//! its caller instead, as the TF input of a step test is.
 //!
 //! A lookup takes the same lock as ingestion and never waits on the transport.
 
@@ -19,14 +20,19 @@ use crate::waitset::{
     WaitSetSlot, waitset_attach_subscription, waitset_detach,
 };
 
-/// The transform buffer of a plain node. Opaque to the caller.
+/// The transform buffer of a plain node, or one its caller feeds. Opaque to the caller.
 ///
-/// It names its node weakly, so it never keeps a destroyed node alive. Any thread may
-/// look up through a shared reference.
+/// Any thread may look up through a shared reference.
 pub struct HyphaTransformBuffer {
-    node: Weak<HyphaNode>,
     state: Arc<Mutex<TfState>>,
-    /// The `/tf` and the `/tf_static` registration on the node's default `WaitSet`.
+    /// What feeds the buffer from the bus; `None` for a buffer its caller feeds.
+    subscribed: Option<Subscribed>,
+}
+
+/// The node of a subscribed buffer, named weakly so a destroyed node is not kept alive,
+/// and the `/tf` and the `/tf_static` registration on its default `WaitSet`.
+struct Subscribed {
+    node: Weak<HyphaNode>,
     attachments: [HyphaAttachmentId; 2],
 }
 
@@ -76,7 +82,43 @@ pub fn transform_buffer_create(
     let topics = [tf, tf_static];
     let attachments =
         with_default_waitset(node, |set| attach_both(set, node, topics, request, &state))??;
-    Ok(Box::new(HyphaTransformBuffer { node: Arc::downgrade(node), state, attachments }))
+    let subscribed = Some(Subscribed { node: Arc::downgrade(node), attachments });
+    Ok(Box::new(HyphaTransformBuffer { state, subscribed }))
+}
+
+/// Create a transform buffer with no node, which [`transform_buffer_feed`] fills.
+/// `cache_nanos` of dynamic history is kept per frame.
+///
+/// # Errors
+/// `InvalidArgument` for a zero cache.
+pub fn transform_buffer_create_fed(cache_nanos: u64) -> Result<Box<HyphaTransformBuffer>, Error> {
+    if cache_nanos == 0 {
+        return Err(Error::InvalidArgument);
+    }
+    let state = TfState::new(Duration::from_nanos(cache_nanos), Arc::default());
+    Ok(Box::new(HyphaTransformBuffer { state: Arc::new(Mutex::new(state)), subscribed: None }))
+}
+
+/// Insert every transform of the `tf2_msgs/TFMessage` in `payload` into a buffer with no
+/// node, as static ones when `is_static`, as a cycle's TF input ingests each sample it
+/// captured: a refused transform is counted, logged and left out.
+///
+/// # Errors
+/// `InvalidState` for a buffer that its subscriptions feed; `InvalidFrame` when `payload`
+/// does not decode, and nothing is inserted then.
+pub fn transform_buffer_feed(
+    buffer: &HyphaTransformBuffer,
+    payload: &[u8],
+    is_static: bool,
+) -> Result<(), Error> {
+    if buffer.subscribed.is_some() {
+        return Err(Error::InvalidState);
+    }
+    let mut pass = IngestPass::default();
+    let mut state = crate::locked(&buffer.state);
+    let ingested = state.ingest(TfOwner::Fed, payload, is_static, &mut pass);
+    state.finish(TfOwner::Fed, pass);
+    ingested
 }
 
 /// Subscribe both topics and attach both subscriptions to `set`; on a refusal nothing
@@ -139,13 +181,17 @@ pub fn transform_buffer_lookup(
 }
 
 /// Detach both registrations of `buffer`, which releases both subscribers. From a
-/// callback of the running `WaitSet` the detach is deferred to the end of the run.
+/// callback of the running `WaitSet` the detach is deferred to the end of the run. A
+/// buffer with no node has nothing to detach.
 ///
 /// # Errors
 /// `InvalidState` during a run on another thread, or while the default `WaitSet` is
 /// lent to a Rust owner; nothing is detached then.
 pub fn transform_buffer_destroy(buffer: &HyphaTransformBuffer) -> Result<(), Error> {
-    let Some(node) = buffer.node.upgrade() else {
+    let Some(subscribed) = &buffer.subscribed else {
+        return Ok(());
+    };
+    let Some(node) = subscribed.node.upgrade() else {
         return Ok(());
     };
     let slot = crate::locked(&node.default_waitset);
@@ -155,7 +201,7 @@ pub fn transform_buffer_destroy(buffer: &HyphaTransformBuffer) -> Result<(), Err
         WaitSetSlot::Lent => return Err(Error::InvalidState),
     };
     let _claim = set.shared.claim()?;
-    let [dynamic, fixed] = buffer.attachments;
+    let [dynamic, fixed] = subscribed.attachments;
     waitset_detach(set, dynamic)?;
     waitset_detach(set, fixed)
 }

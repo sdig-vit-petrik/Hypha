@@ -1,13 +1,17 @@
-// Compile-only check: the cycle examples of the documentation build as written.
-// Nothing here runs. A missing overload or a renamed call fails the build.
+// The cycle examples of the documentation build as written: a missing overload or a
+// renamed call fails the build. The tests run the step tests of cpp-api section 5.4.
 
 #include "hypha/cycle_node.h"
 #include "hypha/cycle_transforms.h"
 #include "hypha/hypha.h"
 #include "hypha/testing.h"
+#include <hypha_test_srvs/String.h>
+#include <hypha_test_srvs/Vec1.h>
 
 #include <gtest/gtest.h>
 #include <std_msgs/Float64.h>
+#include <std_srvs/SetBool.h>
+#include <std_srvs/Trigger.h>
 
 #include <deque>
 #include <optional>
@@ -137,5 +141,78 @@ TEST(StepWithoutABus, InputsOkFollowsTheSetVerdictAndFaults)
     harness.setNeverArrived(controller.speed);
     EXPECT_FALSE(controller.inputsOk()) << "an input that never arrived is not ok";
 }
+
+// cpp-api 8.6: a chain of calls. hypha_test_srvs has the fields of mrs_msgs/String and
+// mrs_msgs/Vec1.
+namespace mrs_msgs {
+using String = hypha_test_srvs::String;
+using Vec1 = hypha_test_srvs::Vec1;
+}  // namespace mrs_msgs
+
+class UavManager final : public hypha::CycleNode
+{
+  public:
+    Requests<std_srvs::Trigger> takeoff{*this, "takeoff"};
+    Calls<mrs_msgs::String>     switchController{*this, "switch_controller"};
+    Calls<mrs_msgs::String>     switchTracker{*this, "switch_tracker"};
+    Calls<mrs_msgs::Vec1>       trackerTakeoff{*this, "tracker_takeoff"};
+    Calls<std_srvs::SetBool>    toggleOutput{*this, "toggle_output"};
+    Calls<std_srvs::SetBool>    arming{*this, "arming"};
+    Calls<std_srvs::Trigger>    eland{*this, "eland"};
+
+    void step(const hypha::CycleTime& time) override
+    {
+        for (hypha::Request<std_srvs::Trigger>& request : this->takeoff.requests()) {
+            if (this->takeoffSeq_.running()) {
+                request.reply({.success = false, .message = "takeoff in progress"});
+            } else {
+                this->takeoffSeq_.start(request.defer(), this->runTakeoff());
+            }
+        }
+        this->takeoffSeq_.advance(time);  // in every step while it runs
+    }
+
+  private:
+    hypha::Task<std_srvs::Trigger::Response> runTakeoff()
+    {
+        auto a = co_await hypha::call(this->switchController, {.value = "MpcController"});
+        if (!succeeded(a)) {
+            co_return co_await this->disarm("could not activate the controller", a);
+        }
+        auto b = co_await hypha::call(this->switchTracker, {.value = "LandoffTracker"});
+        if (!succeeded(b)) {
+            co_return co_await this->disarm("could not activate the tracker", b);
+        }
+        co_await hypha::sleepFor(hypha::Duration::fromMillis(300));  // the motors ramp up
+        auto c = co_await hypha::call(this->trackerTakeoff, {.goal = this->takeoffHeight_});
+        if (!succeeded(c)) {
+            auto e = co_await hypha::call(this->eland, {});
+            co_return {
+                .success = false,
+                .message = "takeoff was not successful (" + c.description()
+                         + "); eland: " + e.description()
+            };
+        }
+        co_return {.success = true, .message = "taking off"};
+    }
+
+    /// Turn the output off, then disarm, and fail the takeoff with the reason.
+    template <typename Srv>
+    hypha::Task<std_srvs::Trigger::Response> disarm(std::string what, hypha::CallResult<Srv> why)
+    {
+        co_await hypha::call(this->toggleOutput, {.data = false});
+        co_await hypha::call(this->arming, {.data = false});
+        co_return {.success = false, .message = what + " (" + why.description() + ")"};
+    }
+
+    template <typename Srv>
+    static bool succeeded(const hypha::CallResult<Srv>& r)
+    {
+        return r.ok() && r.response().success;
+    }
+
+    hypha::Sequence<std_srvs::Trigger> takeoffSeq_;
+    double                             takeoffHeight_{1.5};
+};
 
 }  // namespace

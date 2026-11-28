@@ -178,6 +178,36 @@ fn set_clock_driver_refuses_a_zero_timeout_and_a_negative_factor() {
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
 }
 
+/// The calling thread's `hypha_last_error`.
+fn last_error() -> String {
+    let mut text = [0_u8; 512];
+    let mut length = 0_usize;
+    let status = unsafe { hypha_last_error(text.as_mut_ptr().cast(), text.len(), &raw mut length) };
+    assert_eq!(status, HyphaStatus::Ok);
+    String::from_utf8(text.get(..length).expect("within the buffer").to_vec()).expect("UTF-8")
+}
+
+#[test]
+fn set_clock_driver_refuses_a_start_the_clock_message_cannot_carry() {
+    let host = Host::plain();
+    let cycle = host.cycle(PERIOD);
+    // `/clock` carries seconds in 32 bits: 2^32 s is the first value it cannot hold.
+    let too_late =
+        HyphaClockDriverOptions { start_nanos: (1_i64 << 32) * 1_000_000_000, ..driver_options() };
+    assert_eq!(
+        unsafe { hypha_cycle_set_clock_driver(cycle, &raw const too_late) },
+        HyphaStatus::InvalidArgument
+    );
+    let reason = last_error();
+    assert!(reason.contains("4294967296 s"), "the text names the limit: {reason}");
+    let largest = HyphaClockDriverOptions {
+        start_nanos: (1_i64 << 32) * 1_000_000_000 - 1,
+        ..driver_options()
+    };
+    assert_eq!(unsafe { hypha_cycle_set_clock_driver(cycle, &raw const largest) }, HyphaStatus::Ok);
+    assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
+}
+
 #[test]
 fn expect_participant_refuses_a_cycle_that_is_not_a_driver() {
     let host = Host::plain();
@@ -305,7 +335,7 @@ struct Stage {
     name: String,
     node: *mut HyphaNode,
     waitset: *mut HyphaWaitSet,
-    source: *mut HyphaInputSource,
+    sources: Vec<*mut HyphaInputSource>,
     cycle: *mut HyphaCycle,
     context: Box<StepContext>,
 }
@@ -315,6 +345,9 @@ enum Mode {
     Rate,
     /// A triggered cycle on a node that reads `/clock`.
     Triggered,
+    /// A triggered cycle on a node that reads `/clock`, with a second trigger on a topic
+    /// nobody publishes.
+    TwoTriggers,
     /// The driver, on a plain node.
     Driver(Vec<String>, u64),
 }
@@ -324,22 +357,36 @@ impl Stage {
         let name = unique(label);
         let node = match mode {
             Mode::Driver(..) => create_node(&name),
-            _ => create_sim_node_with_triggers(&name, &[50_000]),
+            _ => participant_node(&name),
         };
+        Self::on_node(name, node, mode, input, output)
+    }
+
+    /// The stage `name` on `node`, which is already created: its ports open only now.
+    fn on_node(name: String, node: *mut HyphaNode, mode: &Mode, input: &str, output: &str) -> Self {
         let waitset = unsafe { create_waitset(node) };
-        let subscriber = unsafe { open_subscriber(node, input, MD5, DEPTH) };
-        let mut source = ptr::null_mut();
-        assert_eq!(
-            unsafe { hypha_input_source_create(waitset, subscriber, &raw mut source) },
-            HyphaStatus::Ok
-        );
+        let quiet = format!("{input}_quiet");
+        let inputs =
+            if matches!(mode, Mode::TwoTriggers) { vec![input, &quiet] } else { vec![input] };
+        let sources: Vec<*mut HyphaInputSource> = inputs
+            .into_iter()
+            .map(|topic| {
+                let subscriber = unsafe { open_subscriber(node, topic, MD5, DEPTH) };
+                let mut source = ptr::null_mut();
+                assert_eq!(
+                    unsafe { hypha_input_source_create(waitset, subscriber, &raw mut source) },
+                    HyphaStatus::Ok
+                );
+                source
+            })
+            .collect();
         let publisher = unsafe { open_publisher(node, output, DATA_TYPE, MD5, "") };
         let context = Box::new(StepContext {
             record: Context::default(),
             emit_deadline: matches!(mode, Mode::Driver(..)),
         });
         let label = c_text(&name);
-        let period = if matches!(mode, Mode::Triggered) { 0 } else { PERIOD };
+        let period = if matches!(mode, Mode::Triggered | Mode::TwoTriggers) { 0 } else { PERIOD };
         let mut cycle = ptr::null_mut();
         let status = unsafe {
             hypha_cycle_create(
@@ -359,11 +406,19 @@ impl Stage {
             max_samples_per_iteration: DEPTH,
             optional: 0,
         };
-        let mut index = 0_u32;
-        assert_eq!(
-            unsafe { hypha_cycle_bind_input(cycle, source, &raw const bind, &raw mut index) },
-            HyphaStatus::Ok
-        );
+        let indices: Vec<u32> = sources
+            .iter()
+            .map(|&source| {
+                let mut index = 0_u32;
+                assert_eq!(
+                    unsafe {
+                        hypha_cycle_bind_input(cycle, source, &raw const bind, &raw mut index)
+                    },
+                    HyphaStatus::Ok
+                );
+                index
+            })
+            .collect();
         let mut out_index = 0_u32;
         let status = unsafe {
             hypha_cycle_bind_output(
@@ -377,10 +432,12 @@ impl Stage {
         assert_eq!(status, HyphaStatus::Ok);
         match mode {
             Mode::Rate => {}
-            Mode::Triggered => {
-                let bound = unsafe { bind_trigger(cycle, node, index, 50_000) };
-                assert_eq!(bound.status, HyphaStatus::Ok, "{}", bound.detail);
-                assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, index) }, HyphaStatus::Ok);
+            Mode::Triggered | Mode::TwoTriggers => {
+                for (&index, silence_ms) in indices.iter().zip([50_000, 60_000]) {
+                    let bound = unsafe { bind_trigger(cycle, node, index, silence_ms) };
+                    assert_eq!(bound.status, HyphaStatus::Ok, "{}", bound.detail);
+                    assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, index) }, HyphaStatus::Ok);
+                }
             }
             Mode::Driver(expected, timeout) => {
                 let options =
@@ -407,7 +464,7 @@ impl Stage {
             }
         }
         assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
-        Self { name, node, waitset, source, cycle, context }
+        Self { name, node, waitset, sources, cycle, context }
     }
 
     fn steps(&self) -> Vec<Record> {
@@ -429,10 +486,17 @@ impl Drop for Stage {
     fn drop(&mut self) {
         unsafe {
             hypha_cycle_destroy(self.cycle);
-            hypha_input_source_destroy(self.source);
+            for &source in &self.sources {
+                hypha_input_source_destroy(source);
+            }
             hypha_node_destroy(self.node);
         }
     }
+}
+
+/// The node of a participant: on simulated time, with the trigger tables of its ports.
+fn participant_node(name: &str) -> *mut HyphaNode {
+    create_sim_node_with_triggers(name, &[50_000, 60_000])
 }
 
 /// A driver and one participant `stage`, created in that order of clock ownership.
@@ -483,8 +547,9 @@ fn a_driver_steps_only_after_every_participant_acknowledges() {
     let run = Loop::new(&Mode::Rate, true, 5_000 * MS);
     run.run(50, false);
     let driver: Vec<i64> = run.driver.steps().iter().map(|step| step.scheduled).collect();
-    let expected: Vec<i64> = (0..driver.len()).map(deadline).collect();
-    assert_eq!(driver, expected, "the driver steps start + k * period");
+    // The start value is the barrier: the first step is one period after it.
+    let expected: Vec<i64> = (1..=driver.len()).map(deadline).collect();
+    assert_eq!(driver, expected, "the driver steps start + k * period, k > 0");
     // Step k + 1 waits for the stage to acknowledge step k, so the stage is never more
     // than two values behind.
     let stage = run.stage.steps();
@@ -500,13 +565,75 @@ fn a_driver_steps_only_after_every_participant_acknowledges() {
 fn the_driver_reads_its_participants_output_one_step_later() {
     let run = Loop::new(&Mode::Triggered, true, 5_000 * MS);
     run.run(30, false);
-    for step in run.driver.steps().iter().skip(2) {
+    // The first step, at start + period, has nothing to read: the echo starts at the second.
+    for step in run.driver.steps().iter().skip(1) {
         let echo = step.seen.expect("the echo of the previous step");
         assert_eq!(
             i64::try_from(echo).unwrap(),
             step.scheduled - i64::try_from(PERIOD).unwrap(),
             "{step:?}"
         );
+    }
+}
+
+#[test]
+fn a_two_trigger_cycle_acknowledges_every_driver_step() {
+    let run = Loop::new(&Mode::TwoTriggers, true, 5_000 * MS);
+    run.run(30, false);
+    // The quiet second trigger holds nothing back: the stage steps on each driver output.
+    let stage: Vec<i64> = run
+        .stage
+        .steps()
+        .iter()
+        .filter(|step| step.seen.is_some())
+        .map(|step| step.scheduled)
+        .collect();
+    let driver: Vec<i64> = run.driver.steps().iter().map(|step| step.scheduled).collect();
+    assert!(stage.len() + 2 >= driver.len(), "stage {stage:?}, driver {driver:?}");
+    assert_eq!(Some(stage.as_slice()), driver.get(..stage.len()));
+}
+
+/// The steps of a two-trigger `stage` whose first trigger reads `peer`, a participant
+/// that echoes the driver, and whose second reads the driver, until the driver ran 20
+/// steps; `stage_first` turns the stage first, else the driver first.
+fn two_participant_steps(stage_first: bool) -> Vec<Record> {
+    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    let _ = hypha_clock_disable_sim_time();
+    let (echo, to_driver) =
+        (format!("/{}", unique("drv_echo")), format!("/{}", unique("drv_back")));
+    // The stage's second trigger is on `<echo>_quiet`, which the driver feeds here.
+    let from_driver = format!("{echo}_quiet");
+    let stage = Stage::new("stage", &Mode::TwoTriggers, &echo, &to_driver);
+    let peer = Stage::new("peer", &Mode::Triggered, &from_driver, &echo);
+    let expected = vec![stage.name.clone(), peer.name.clone()];
+    let driver =
+        Stage::new("driver", &Mode::Driver(expected, 5_000 * MS), &to_driver, &from_driver);
+    let order = if stage_first { [&stage, &peer, &driver] } else { [&driver, &peer, &stage] };
+    let started = std::time::Instant::now();
+    while driver.steps().len() < 20 {
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "the driver stalled");
+        for participant in order {
+            assert_eq!(participant.run(2 * MS), 0, "a run failed");
+        }
+    }
+    let steps = stage.steps().into_iter().filter(|step| step.scheduled <= deadline(15)).collect();
+    drop((stage, peer, driver));
+    let _ = hypha_clock_disable_sim_time();
+    steps
+}
+
+#[test]
+fn a_tie_with_a_reporting_participant_runs_in_port_order_in_any_turn_order() {
+    let reference = two_participant_steps(false);
+    assert_eq!(reference, two_participant_steps(true), "the turn order changed the steps");
+    // At each deadline the peer's echo (port 0, which this step reads) runs before the
+    // driver's sample (port 1) it ties with: the stage holds the deadline until the peer
+    // reported it, so the echo is there whichever node turns first.
+    let (pairs, _) = reference.as_chunks::<2>();
+    assert!(pairs.len() >= 10, "{reference:?}");
+    for [first, second] in pairs {
+        assert_eq!(first.scheduled, second.scheduled, "{reference:?}");
+        assert_eq!((first.seen.is_some(), second.seen), (true, None), "{reference:?}");
     }
 }
 
@@ -535,7 +662,7 @@ fn a_participant_that_stops_fails_the_driver_naming_it() {
 }
 
 #[test]
-fn an_expected_participant_holds_the_start_and_the_value_is_resent() {
+fn an_expected_participant_holds_the_first_step_and_the_start_value_is_resent() {
     let serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
     let _ = hypha_clock_disable_sim_time();
     let topic = format!("/{}", unique("drv_solo"));
@@ -551,7 +678,7 @@ fn an_expected_participant_holds_the_start_and_the_value_is_resent() {
     while started.elapsed() < std::time::Duration::from_secs(1) {
         assert_eq!(driver.run(20 * MS), 0);
     }
-    assert_eq!(driver.steps().len(), 1, "only the start value ran");
+    assert!(driver.steps().is_empty(), "a step ran before the participant acknowledged");
     let mut received = 0;
     while unsafe { receive_payload(reader) }.is_some() {
         received += 1;
@@ -562,6 +689,37 @@ fn an_expected_participant_holds_the_start_and_the_value_is_resent() {
         hypha_node_destroy(reader_node);
     }
     drop(driver);
+    let _ = hypha_clock_disable_sim_time();
+    drop(serial);
+}
+
+#[test]
+fn an_expected_participant_that_joins_late_reads_the_first_step() {
+    let serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    let _ = hypha_clock_disable_sim_time();
+    let (to_stage, to_driver) =
+        (format!("/{}", unique("drv_out")), format!("/{}", unique("drv_back")));
+    // The participant's node exists first, as the driver needs, but none of its ports.
+    let name = unique("stage");
+    let node = participant_node(&name);
+    let driver =
+        Stage::new("driver", &Mode::Driver(vec![name.clone()], 5_000 * MS), &to_driver, &to_stage);
+    for _ in 0..5 {
+        assert_eq!(driver.run(2 * MS), 0);
+    }
+    let stage = Stage::on_node(name, node, &Mode::Triggered, &to_stage, &to_driver);
+    let started = std::time::Instant::now();
+    while driver.steps().len() < 5 {
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "the driver stalled");
+        for participant in [&driver, &stage] {
+            assert_eq!(participant.run(2 * MS), 0, "a run failed");
+        }
+    }
+    // The driver's first step emits its deadline; the stage's first step must read it.
+    let sent = driver.steps().first().expect("a driver step").scheduled;
+    let first = Record { scheduled: sent, seen: Some(sent.unsigned_abs()) };
+    assert_eq!(stage.steps().first(), Some(&first), "the first step's output was lost");
+    drop((stage, driver));
     let _ = hypha_clock_disable_sim_time();
     drop(serial);
 }

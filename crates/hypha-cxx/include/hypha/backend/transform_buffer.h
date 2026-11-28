@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace hypha::backend {
 
@@ -36,6 +37,21 @@ inline ::HyphaStatus createTransformBuffer(
         cacheNanos,
         out
     );
+}
+
+/// @brief Create a transform buffer with no node, which transformBufferFeed() fills.
+inline ::HyphaStatus createFedTransformBuffer(uint64_t cacheNanos, HyphaTransformBuffer** out)
+{
+    return hypha_transform_buffer_create_fed(cacheNanos, out);
+}
+
+/// @brief Insert the transforms of the encoded `tf2_msgs/TFMessage` @p payload into a
+///        buffer with no node, as static ones when @p isStatic.
+inline ::HyphaStatus transformBufferFeed(
+    const HyphaTransformBuffer* buffer, const std::vector<uint8_t>& payload, bool isStatic
+)
+{
+    return hypha_transform_buffer_feed(buffer, payload.data(), payload.size(), isStatic ? 1U : 0U);
 }
 
 /// @brief Look up @p source in @p target at @p atNanos, or at the latest common time

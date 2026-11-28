@@ -1,6 +1,6 @@
-# Sensor pipeline: a synthetic IMU and LiDAR source, an event-driven processing node on a
-# plain hypha::Node with one worker thread, and a replay check that compares two runs of
-# the node by message stamp.
+# Sensor pipeline: a synthetic IMU and LiDAR source, an event-driven processing node with
+# one worker thread (both hypha::ApplicationNode, started by hypha::runNode), and a replay
+# check that compares two runs of the node by message stamp.
 #
 #   cmake -S . -B build && cmake --build build
 
@@ -41,14 +41,36 @@ endforeach()
 
 install(TARGETS ${SENSOR_PIPELINE_TARGETS} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
+# The tests are not added when the hypha tree is built without tests.
+set(SENSOR_PIPELINE_TESTS ON)
+if(DEFINED HYPHA_BUILD_TESTS AND NOT HYPHA_BUILD_TESTS)
+  set(SENSOR_PIPELINE_TESTS OFF)
+endif()
+
+# A parameter file that is missing or malformed, or one without its ports tables, ends
+# each node with exit 78, which a supervisor never restarts. Only noports joins the bus.
+if(SENSOR_PIPELINE_TESTS AND COMMAND hypha_add_test)
+  set(hypha_cloud_processor_config processor.toml)
+  set(hypha_sensor_source_config source.toml)
+  foreach(node IN ITEMS hypha_cloud_processor hypha_sensor_source)
+    foreach(case IN ITEMS missing malformed noports)
+      hypha_add_test(${node}_startup_${case}
+        COMMAND ${CMAKE_COMMAND}
+          -DNODE=$<TARGET_FILE:${node}>
+          -DCASE=${case}
+          -DCONFIG=${CMAKE_CURRENT_SOURCE_DIR}/config/${${node}_config}
+          -DEXPECTED=78
+          -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/startup_exit_code.cmake")
+    endforeach()
+    set_tests_properties(${node}_startup_noports PROPERTIES LABELS "needs-iceoryx2")
+  endforeach()
+endif()
+
 # The replay check (replay_check.sh) runs the processor twice on the recorded fixture,
 # with hypha play and hypha record, and compares the two outputs by stamp. It needs the
 # tools and the comparison; it is not run when the hypha tree is built without tests.
-set(SENSOR_PIPELINE_REPLAY_TEST ON)
-if(DEFINED HYPHA_BUILD_TESTS AND NOT HYPHA_BUILD_TESTS)
-  set(SENSOR_PIPELINE_REPLAY_TEST OFF)
-endif()
-if(SENSOR_PIPELINE_REPLAY_TEST AND TARGET hypha::hypha AND TARGET sensor_pipeline_compare)
+if(SENSOR_PIPELINE_TESTS AND TARGET hypha::hypha AND TARGET sensor_pipeline_compare)
   hypha_add_test(sensor_pipeline_replay_check
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/replay_check.sh"
       --hypha "$<TARGET_FILE:hypha::hypha>"

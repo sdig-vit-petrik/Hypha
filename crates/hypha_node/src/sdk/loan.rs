@@ -115,6 +115,15 @@ impl RawSubscriber {
         Ok(crate::sdk::metrics::collect(|emit| ffi::subscriber_metrics(subscriber, emit)))
     }
 
+    /// The other schemas (MD5s) of this subscriber's topic that a live publisher sends, as
+    /// its node's housekeeping last found them: `None` before the first check, which comes
+    /// only while a run of the node's `WaitSet` goes on, and for a subscriber of no single
+    /// stream. A fact about the topic, not a fault.
+    #[must_use]
+    pub fn other_schemas(&self) -> Option<u64> {
+        other_schemas_of(&self.subscriber)
+    }
+
     /// Counts the frames this subscriber lost before it read them: the sequence
     /// values skipped between accepted frames of one publisher. The count only grows.
     ///
@@ -122,6 +131,26 @@ impl RawSubscriber {
     /// Never fails: the count is the subscriber's own.
     pub fn missing_sequences(&self) -> Result<u64, String> {
         Ok(self.subscriber.missing_sequences())
+    }
+
+    /// Frames that the publishers this subscriber has met sent before the first one it
+    /// accepted from each: a publisher's first frame has sequence 1, so a first sequence of `n`
+    /// means `n - 1` frames this subscriber never saw. A publisher that ran before the subscriber is
+    /// among them, so a reader judges the count only for streams and publishers it knows
+    /// came later. A latched publisher's replayed sample is not counted.
+    #[must_use]
+    pub fn sent_before_first(&self) -> u64 {
+        self.subscriber.validator_sent_before_first()
+    }
+
+    /// A handle to this subscriber's counters. It stays readable after the subscriber
+    /// moved into a [`crate::sdk::WaitSet`] attachment, and while the subscriber lives
+    /// it reads the same counts as [`RawSubscriber::missing_sequences`] and
+    /// [`RawSubscriber::metrics`]. It keeps the subscriber's counts alive, not the
+    /// subscription: after a detach it reads the final counts.
+    #[must_use]
+    pub fn counters(&self) -> SubscriberCounters {
+        SubscriberCounters { subscriber: Arc::clone(&self.subscriber) }
     }
 
     /// Counts the publishers currently connected to this subscriber's topic.
@@ -132,6 +161,40 @@ impl RawSubscriber {
         ffi::subscriber_publisher_count(&self.subscriber)
             .map_err(|error| named_error("cannot read the publisher count", error))
     }
+}
+
+/// The counters of one [`RawSubscriber`], readable from any thread while the
+/// subscriber itself is owned elsewhere, such as by a [`crate::sdk::WaitSet`].
+#[derive(Clone)]
+pub struct SubscriberCounters {
+    subscriber: Arc<ffi::HyphaSubscriber>,
+}
+
+impl SubscriberCounters {
+    /// The subscriber's missing-sequence count, as [`RawSubscriber::missing_sequences`].
+    #[must_use]
+    pub fn missing_sequences(&self) -> u64 {
+        self.subscriber.missing_sequences()
+    }
+
+    /// The other schemas of the subscriber's topic, as [`RawSubscriber::other_schemas`].
+    #[must_use]
+    pub fn other_schemas(&self) -> Option<u64> {
+        other_schemas_of(&self.subscriber)
+    }
+
+    /// Every metric of the subscriber, as [`RawSubscriber::metrics`].
+    #[must_use]
+    pub fn metrics(&self) -> Vec<(String, u64)> {
+        let subscriber = &self.subscriber;
+        crate::sdk::metrics::collect(|emit| ffi::subscriber_metrics(subscriber, emit))
+    }
+}
+
+/// The `other_schemas` counter of `subscriber`, `None` for "not checked".
+fn other_schemas_of(subscriber: &ffi::HyphaSubscriber) -> Option<u64> {
+    let other_schemas = ffi::subscriber_counters(subscriber).other_schemas;
+    (other_schemas != crate::subscriber::HYPHA_NOT_CHECKED).then_some(other_schemas)
 }
 
 /// Open a raw subscriber without registering it with an executor.
@@ -152,4 +215,56 @@ pub(crate) fn subscribe_on(
     ffi::subscribe_typed(node, topic_pattern, &identity, settings)
         .map(|subscriber| RawSubscriber { subscriber })
         .map_err(|error| numbered_error(format!("subscribe failed for '{topic_pattern}'"), error))
+}
+
+/// Why a stream could not be subscribed to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamSubscribeError {
+    /// The stream's service has no observer slot left for a reader that declares no policy:
+    /// other tools hold them all.
+    SlotsTaken,
+    /// The library refused the subscription for another reason.
+    Refused(String),
+}
+
+impl std::fmt::Display for StreamSubscribeError {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SlotsTaken => write!(
+                out,
+                "all {} observer slots of the stream are taken by other tools",
+                crate::sdk::UNDECLARED_SUBSCRIBER_SLOTS
+            ),
+            Self::Refused(message) => write!(out, "{message}"),
+        }
+    }
+}
+
+impl std::error::Error for StreamSubscribeError {}
+
+/// Open a raw subscriber of the one stream of `schema_hash`, without registering it with an
+/// executor.
+pub(crate) fn subscribe_stream_on(
+    node: &ffi::HyphaNode,
+    topic: &str,
+    schema_hash: u64,
+    options: SubscriberOptions,
+) -> Result<RawSubscriber, StreamSubscribeError> {
+    let settings = ffi::SubscriberSettings {
+        depth: options.depth,
+        no_publisher_warning_after_nanos: ffi::HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS,
+        request: hypha_core::port::QosRequest::Undeclared,
+    };
+    ffi::subscribe_stream(node, topic, schema_hash, settings)
+        .map(|subscriber| RawSubscriber { subscriber })
+        .map_err(|error| {
+            if ffi::status_code(error) == ffi::HYPHA_STATUS_RESOURCE_LIMIT {
+                StreamSubscribeError::SlotsTaken
+            } else {
+                StreamSubscribeError::Refused(numbered_error(
+                    format!("subscribe failed for '{topic}'"),
+                    error,
+                ))
+            }
+        })
 }

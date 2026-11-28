@@ -1,8 +1,6 @@
 //! `WaitSet` dispatch ownership and C ABI implementation.
 
-use hypha_runtime::timer_schedule::{callback_deadline, replay_periods};
-
-use super::replay::{CycleTimer, ReplayDue};
+use super::replay::ReplayDue;
 use super::{
     AttachmentId, BatchStep, BatchTurn, CallbackWarnings, Dispatcher, Duration, EventOutcome,
     ExecutionHealth, HYPHA_ACTION_CONTINUE, HYPHA_ACTION_FAIL, HYPHA_ACTION_STOP,
@@ -11,6 +9,10 @@ use super::{
 };
 use crate::cycle::{Cycle, CycleId};
 use crate::status::Error;
+use hypha_core::dispatch::{CallbackBudget, callback_budget};
+
+mod timer_due;
+use timer_due::{host_deadline, timer_due};
 
 /// One timer firing of the current turn, in registration order.
 #[derive(Clone, Copy)]
@@ -39,13 +41,20 @@ pub(super) struct CallbackDispatcher<'a> {
     /// The node this run serves. Its transport owns the latched topics.
     pub(super) node: &'a HyphaNode,
     pub(super) batch_size: u32,
-    pub(super) warn_nanos: u64,
     pub(super) warn_interval_nanos: u64,
     pub(super) slow_callbacks: u64,
     pub(super) failure: Option<(AttachmentId, HyphaStatus)>,
     /// Counts every callback answer, over every run of every `WaitSet` on the node.
     pub(super) health: &'a ExecutionHealth,
     pub(super) due: Vec<Due>,
+    /// The index in `due` of the item that runs now.
+    pub(super) due_index: usize,
+    /// The replay and triggered steps this run ran; a repeat of the timers that adds none,
+    /// and moves no limit, ends the repeats (`local_edges`).
+    pub(super) steps_run: u64,
+    /// The times the limit of a triggered cycle moved in this run: a cycle of its
+    /// `WaitSet` that it reads may hold a step of another (`local_edges`).
+    pub(super) limits_moved: u64,
     /// Registrations a callback detached during this run: never dispatched again.
     pub(super) detached: &'a std::cell::RefCell<Vec<AttachmentId>>,
 }
@@ -135,93 +144,30 @@ impl CallbackDispatcher<'_> {
     /// The due time is measured against the node's clock, so a timer follows
     /// simulation pause and jump. The native interval only supplies wake-ups.
     fn fire_due_timers(&mut self, now: hypha_time::Time) -> Progression {
+        self.fire_due(now, false)
+    }
+
+    /// Fire what is due, as [`Self::fire_due_timers`]; with `linked_only`, only the replay
+    /// and triggered cycles that another cycle of this `WaitSet` holds or is held by, for a
+    /// repeat of the turn.
+    pub(super) fn fire_due(&mut self, now: hypha_time::Time, linked_only: bool) -> Progression {
         self.due.clear();
-        let cycles = self.cycles;
+        let (cycles, node) = (self.cycles, self.node);
         // A registration a callback detached is not observed: it neither fires nor fails.
         let live = self.registrations.iter_mut().filter(|r| !is_detached_in(self.detached, r.id));
         for registration in live {
-            if let Some(item) = self_scheduled(registration) {
-                self.due.push(item);
+            if linked_only && !super::local_edges::is_linked(cycles, registration) {
                 continue;
             }
-            let Target::Timer {
-                ref mut timer,
-                ref mut cycle,
-                ref mut run_anchored,
-                ref control,
-                ..
-            } = registration.target
-            else {
-                continue;
+            let due = match self_scheduled(registration) {
+                Some(item) => Ok(Some(item)),
+                None => timer_due(cycles, node, registration.id, &mut registration.target, now),
             };
-            let grid = if timer.is_grid() { cycle.as_mut() } else { None };
-            if let Some(owned) = grid {
-                match grid_due(cycles, registration.id, timer, owned, now) {
-                    Ok(Some(due)) => self.due.push(due),
-                    Ok(None) => {}
-                    Err(status) => return fail_with(&mut self.failure, registration.id, status),
-                }
-                continue;
+            match due {
+                Ok(Some(item)) => self.due.push(item),
+                Ok(None) => {}
+                Err(status) => return fail_with(&mut self.failure, registration.id, status),
             }
-            // On simulated time a plain timer starts on the first clock value, not on the
-            // placeholder zero a node starts with.
-            if !*run_anchored && self.node.on_sim_time() && !hypha_time::sim_time_has_value() {
-                continue;
-            }
-            if let Some(control) = control.as_deref() {
-                // A reset or a canceled timer that finds time gone back is a rewind, as
-                // for any timer: the run ends and the process restarts (FSR-37).
-                let followed = control.apply_reset(timer, run_anchored)
-                    && (!control.is_canceled()
-                        || super::TimerControl::follow_while_canceled(timer, now));
-                if !followed {
-                    let subject = timer_subject(registration.id, timer.period().nanos());
-                    let status = crate::replay_restart::refuse_rewind(&subject, now.nanos());
-                    return fail_with(&mut self.failure, registration.id, status);
-                }
-                // A canceled timer calls nothing and counts no missed period.
-                if control.is_canceled() {
-                    continue;
-                }
-            }
-            let scheduled = anchor_at_first_run(timer, run_anchored, now);
-            let (hypha_core::timer::Observation { fired, rewound }, missed_delta) =
-                observe_with_delta(timer, now);
-            if let Some(control) = control.as_deref() {
-                control.observed(timer.next_due());
-            }
-            let owner = match cycle.as_ref().map(|timer| find_cycle(cycles, timer.cycle)) {
-                Some(Ok(cycle)) => Some(cycle),
-                Some(Err(status)) => return fail_with(&mut self.failure, registration.id, status),
-                None => None,
-            };
-            if rewound {
-                // Nothing rewinds in place: the run ends and the process restarts.
-                let plain_timer = timer_subject(registration.id, timer.period().nanos());
-                let subject =
-                    owner.map_or(plain_timer, |cycle| format!("cycle '{}'", cycle.name()));
-                let status = crate::replay_restart::refuse_rewind(&subject, now.nanos());
-                return fail_with(&mut self.failure, registration.id, status);
-            }
-            if let Some(cycle) = owner
-                && fired != 0
-            {
-                let Some(deadline) =
-                    callback_deadline(scheduled, missed_delta, timer.period().nanos())
-                else {
-                    let status = HyphaStatus::InvalidState;
-                    return fail_with(&mut self.failure, registration.id, status);
-                };
-                match cycle.step_mut() {
-                    Ok(mut step) => step.scheduled_nanos = deadline,
-                    Err(status) => return fail_with(&mut self.failure, registration.id, status),
-                }
-            }
-            if fired == 0 {
-                continue;
-            }
-            let cycle = owner.map(|cycle| cycle.id);
-            self.due.push(Due::Timer { attachment: registration.id, cycle, missed: missed_delta });
         }
         self.run_due(now)
     }
@@ -232,6 +178,7 @@ impl CallbackDispatcher<'_> {
             let Some(&item) = self.due.get(index) else {
                 break;
             };
+            self.due_index = index;
             // A callback earlier in this turn may have detached the registration.
             if self.is_detached(item.attachment()) {
                 continue;
@@ -262,7 +209,7 @@ impl CallbackDispatcher<'_> {
         cycle: Option<CycleId>,
         missed: u64,
     ) -> HyphaCallbackResult {
-        let warn_nanos = self.warn_nanos;
+        let configured = self.node.slow_callback_ms;
         let warn_interval = self.warn_interval_nanos;
         let health = self.health;
         let set = self.set;
@@ -274,17 +221,22 @@ impl CallbackDispatcher<'_> {
         let Some(registration) = self.find(attachment) else {
             return invalid(Error::InvalidState);
         };
-        let Registration { id, ref mut target, ref mut warnings, .. } = *registration;
-        let (result, was_slow) = match (owner, target) {
-            (Some(cycle), _) => timed(warnings, id, warn_nanos, warn_interval, || {
-                invoke_cycle(health, cycle, set, missed)
-            }),
-            (None, Target::Timer { callback, .. }) => {
-                timed(warnings, id, warn_nanos, warn_interval, || {
-                    invoke_interval(health, callback, missed)
+        let Registration { ref mut target, ref mut warnings, .. } = *registration;
+        let Target::Timer { ref timer, ref mut callback, .. } = *target else {
+            return invalid(Error::InvalidState);
+        };
+        let period = timer.period().nanos();
+        let budget = callback_budget(configured, Some(period.unsigned_abs()));
+        let (result, was_slow) = match owner {
+            Some(cycle) => {
+                let subject = Subject::Cycle(cycle.name());
+                timed(warnings, subject, budget, warn_interval, || {
+                    invoke_cycle(health, cycle, set, missed)
                 })
             }
-            (None, _) => return invalid(Error::InvalidState),
+            None => timed(warnings, Subject::Timer(period), budget, warn_interval, || {
+                invoke_interval(health, callback, missed)
+            }),
         };
         self.count_slow(u64::from(was_slow));
         result
@@ -343,24 +295,51 @@ fn invalid(status: Error) -> HyphaCallbackResult {
     HyphaCallbackResult::fail(HyphaStatus::from(status) as i32)
 }
 
-/// Time one callback of registration `id` and count it in `warnings` when slow.
+/// What a slow-callback line calls the registration: a topic, a timer by its period or a
+/// cycle by its name, as the user knows them.
+#[derive(Clone, Copy)]
+pub(super) enum Subject<'a> {
+    Topic(&'a str),
+    /// A timer, by its period in nanoseconds.
+    Timer(i64),
+    Cycle(&'a str),
+    /// A server or a client, by its service name.
+    Service(&'a str),
+}
+
+impl std::fmt::Display for Subject<'_> {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Topic(topic) => write!(out, "topic '{topic}'"),
+            Self::Timer(period) => {
+                let period = u64::try_from(period).unwrap_or(0);
+                write!(out, "timer {} ms", hypha_core::dispatch::millis_text(period))
+            }
+            Self::Cycle(name) => write!(out, "cycle '{name}'"),
+            Self::Service(name) => write!(out, "service '{name}'"),
+        }
+    }
+}
+
+/// Time one callback of `subject` and count it in `warnings` when it takes longer than its
+/// `budget`, which a line names when the budget says so.
 pub(super) fn timed<F: FnOnce() -> HyphaCallbackResult>(
     warnings: &mut CallbackWarnings,
-    id: AttachmentId,
-    warn_nanos: u64,
+    subject: Subject<'_>,
+    budget: CallbackBudget,
     warn_interval_nanos: u64,
     body: F,
 ) -> (HyphaCallbackResult, bool) {
-    if warn_nanos == 0 {
-        return (body(), false);
-    }
     let started = Instant::now();
     let result = body();
     let elapsed = started.elapsed();
-    if !hypha_core::dispatch::is_slow_callback(elapsed, warn_nanos) {
+    if !hypha_core::dispatch::is_slow_callback(elapsed, budget.nanos) {
         return (result, false);
     }
     warnings.slow_callbacks = warnings.slow_callbacks.wrapping_add(1);
+    if !budget.warns {
+        return (result, true);
+    }
 
     let interval = Duration::from_nanos(warn_interval_nanos);
     let is_due = hypha_core::dispatch::is_warning_due(
@@ -368,11 +347,14 @@ pub(super) fn timed<F: FnOnce() -> HyphaCallbackResult>(
         interval,
     );
     if is_due {
-        log::warn!(target: "hypha", "hypha: attachment {} callback took {} ms, threshold {} ms, {} warnings suppressed",
-                id,
-                elapsed.as_millis(),
-                Duration::from_nanos(warn_nanos).as_millis(),
-                warnings.suppressed_warnings);
+        let nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        let line = hypha_core::dispatch::slow_callback_line(
+            &subject.to_string(),
+            nanos,
+            budget.nanos,
+            warnings.suppressed_warnings,
+        );
+        log::warn!(target: "hypha", "{line}");
         warnings.last_warning = Some(Instant::now());
         warnings.suppressed_warnings = 0;
     } else {
@@ -384,13 +366,16 @@ pub(super) fn timed<F: FnOnce() -> HyphaCallbackResult>(
 impl Dispatcher for CallbackDispatcher<'_> {
     fn on_event(&mut self, attachment: AttachmentId) -> EventOutcome {
         let batch_size = self.batch_size;
-        let warn_nanos = self.warn_nanos;
+        let budget = callback_budget(self.node.slow_callback_ms, None);
         let warn_interval = self.warn_interval_nanos;
         let health = self.health;
         let set = self.set;
 
         if self.is_detached(attachment) {
             return EventOutcome::Drained;
+        }
+        if let Some(outcome) = self.on_service_event(attachment) {
+            return outcome;
         }
         let detached = self.detached;
         let mut outcome = EventOutcome::Drained;
@@ -408,8 +393,10 @@ impl Dispatcher for CallbackDispatcher<'_> {
                     (subscriber, callback)
                 }
                 Target::LatchReplay => {
-                    // Replay latched topics after a subscriber was created.
+                    // An endpoint came or went: replay latched topics to a new subscriber,
+                    // and refresh the streams of the watched topics.
                     self.node.transport.replay_latched();
+                    self.node.topic_streams.graph_changed();
                     return EventOutcome::Drained;
                 }
                 // These are time-driven. A trigger wake only wakes the turn.
@@ -417,7 +404,8 @@ impl Dispatcher for CallbackDispatcher<'_> {
                 | Target::Timer { .. }
                 | Target::Triggered(_)
                 | Target::Driver(_)
-                | Target::TriggerWake => return EventOutcome::Drained,
+                | Target::TriggerWake
+                | Target::Service(_) => return EventOutcome::Drained,
             };
 
             let mut turn = BatchTurn::new(batch_size);
@@ -438,10 +426,16 @@ impl Dispatcher for CallbackDispatcher<'_> {
                 *transport_failing = failed;
                 let (step, stop_early) = match received {
                     Ok(Some(sample)) => {
-                        let (result, was_slow) =
-                            timed(warnings, id, warn_nanos, warn_interval, || {
-                                invoke_data(health, callback, &sample, received_nanos, set)
-                            });
+                        let (result, was_slow) = timed(
+                            warnings,
+                            Subject::Topic(&subscriber.topic),
+                            budget,
+                            warn_interval,
+                            || {
+                                let loans = subscriber.loan_budget();
+                                invoke_data(health, callback, sample, received_nanos, set, loans)
+                            },
+                        );
                         if was_slow {
                             slow = slow.saturating_add(1);
                         }
@@ -497,19 +491,44 @@ impl Dispatcher for CallbackDispatcher<'_> {
         if decision != Progression::Continue {
             return decision;
         }
+        if self.node.on_sim_time() {
+            let decision = self.repeat_for_local_edges(now);
+            if decision != Progression::Continue {
+                return decision;
+            }
+        }
+        let decision = self.drive_services();
+        if decision != Progression::Continue {
+            return decision;
+        }
+        // `sim` says the node reads `/clock`; a replay cycle also runs on simulated time
+        // set through the C ABI, which `on_sim_time` adds. Only then can one be attached.
+        if self.node.on_sim_time() {
+            let decision = self.drain_replay_inputs();
+            if decision != Progression::Continue {
+                return decision;
+            }
+        }
         self.publish_progress(snapshot, now);
         Progression::Continue
     }
 
     fn on_tick(&mut self) -> Progression {
+        let now_nanos = crate::subscriber::host_now_nanos();
         for registration in &*self.registrations {
             if is_detached_in(self.detached, registration.id) {
                 continue;
             }
             if let Target::Subscription { ref subscriber, .. } = registration.target {
-                subscriber.check_no_publisher_warning();
+                subscriber.check_no_publisher_warning(now_nanos);
             }
         }
+        let replay = self.node.on_sim_time();
+        for cycle in self.cycles {
+            crate::cycle::check_input_publishers(cycle, now_nanos, replay);
+        }
+        // The node's housekeeping, after the turn and outside every step.
+        self.node.topic_streams.housekeep(&self.node.transport, now_nanos);
         // Every dispatch sweep ends here, so an unbounded run is observed too.
         self.health.record_sweep_end();
         Progression::Continue
@@ -533,7 +552,7 @@ impl Dispatcher for CallbackDispatcher<'_> {
 
     /// The wait may last until the earliest host deadline. Under simulated time the
     /// timers hold no host deadline, and a canceled timer holds none.
-    fn next_timed_wait(&mut self) -> Option<std::time::Duration> {
+    fn next_deadline(&mut self) -> Option<hypha_time::Time> {
         // What a callback attached or reset takes effect before this wait.
         self.admit_attached();
         self.apply_timer_resets();
@@ -544,81 +563,18 @@ impl Dispatcher for CallbackDispatcher<'_> {
             _ => false,
         });
         if sliced {
-            return Some(std::time::Duration::ZERO);
+            return Some(hypha_time::steady_now());
         }
         let host_timers = !self.node.on_sim_time();
         let live = self.registrations.iter().filter(|r| !is_detached_in(self.detached, r.id));
-        let deadline = live.filter_map(|r| host_deadline(&r.target, host_timers)).min()?;
-        let remaining = deadline.saturating_sub(hypha_time::steady_now().nanos());
-        Some(std::time::Duration::from_nanos(u64::try_from(remaining).unwrap_or(0)))
+        let timers = live.filter_map(|r| host_deadline(&r.target, host_timers)).min();
+        // The housekeeping's next round, or the rest of one a pass left unfinished: a
+        // deadline like a timer's, so the timer that ends the wait ends it for this too.
+        let housekeeping =
+            self.node.topic_streams.next_deadline(crate::subscriber::host_now_nanos());
+        let calls = self.service_deadline();
+        timers.into_iter().chain(housekeeping).chain(calls).min().map(hypha_time::Time::from_nanos)
     }
-}
-
-/// Start a host timer's periods at the first run turn, not at the attach, and return
-/// the deadline it is due at now.
-fn anchor_at_first_run(
-    timer: &mut hypha_core::timer::Timer,
-    run_anchored: &mut bool,
-    now: hypha_time::Time,
-) -> i64 {
-    if !*run_anchored {
-        timer.reset(now);
-        *run_anchored = true;
-    }
-    timer.next_due().nanos()
-}
-
-/// Observe `timer` at `now`, with the periods this observation skipped: the `missed` of
-/// the callback, not the running total.
-pub(super) fn observe_with_delta(
-    timer: &mut hypha_core::timer::Timer,
-    now: hypha_time::Time,
-) -> (hypha_core::timer::Observation, u64) {
-    let previous_missed = timer.missed_count();
-    let observation = timer.observe(now);
-    (observation, timer.missed_count().wrapping_sub(previous_missed))
-}
-
-/// The replay call of the grid timer of a cycle at `now`, `None` when it has nothing to
-/// run; the status that ends the run for an unknown cycle or a rewind.
-fn grid_due(
-    cycles: &[Cycle],
-    attachment: AttachmentId,
-    timer: &mut hypha_core::timer::Timer,
-    owned: &mut CycleTimer,
-    now: hypha_time::Time,
-) -> Result<Option<Due>, HyphaStatus> {
-    let CycleTimer { cycle: id, ref mut upstream, ref deferred } = *owned;
-    let cycle = find_cycle(cycles, id)?;
-    if timer.awaiting_anchor() {
-        // Nothing fires before the first clock value sets the phase.
-        if !hypha_time::sim_time_has_value() {
-            return Ok(None);
-        }
-        timer.anchor_grid(now);
-    }
-    let first_nanos = timer.next_due().nanos();
-    let (hypha_core::timer::Observation { fired, rewound }, missed_delta) =
-        observe_with_delta(timer, now);
-    if rewound {
-        let subject = format!("cycle '{}'", cycle.name());
-        return Err(crate::replay_restart::refuse_rewind(&subject, now.nanos()));
-    }
-    // A held cycle runs its backlog, and a sliced one the deadlines its last turn did not
-    // reach, on a turn with no new deadline.
-    let held = upstream.hold.backlog_first().is_some();
-    let sliced = deferred.is_some();
-    if fired == 0 && !held && !sliced {
-        return Ok(None);
-    }
-    let periods = replay_periods(fired, missed_delta);
-    Ok(Some(Due::Replay(ReplayDue {
-        attachment,
-        cycle: id,
-        first_nanos,
-        period_nanos: timer.period().nanos(),
-        periods,
-    })))
 }
 
 pub(super) fn is_detached_in(
@@ -626,18 +582,6 @@ pub(super) fn is_detached_in(
     attachment: AttachmentId,
 ) -> bool {
     detached.try_borrow().is_ok_and(|detached| detached.contains(&attachment))
-}
-
-/// The monotonic deadline of a registration that runs on the host clock, or `None`.
-fn host_deadline(target: &Target, host_timers: bool) -> Option<i64> {
-    match *target {
-        Target::Timer { ref timer, ref control, .. } if host_timers => {
-            let canceled = control.as_deref().is_some_and(super::TimerControl::is_canceled);
-            (!canceled).then(|| timer.next_due().nanos())
-        }
-        Target::Triggered(ref state) if host_timers => state.schedule.next_fallback(),
-        _ => None,
-    }
 }
 
 /// Map a callback's status code back to a status, defaulting to a backend failure.
@@ -649,47 +593,6 @@ pub(crate) fn status_from_code(code: i32) -> HyphaStatus {
     HyphaStatus::from_i32(code)
 }
 
-/// How a rewind line names a plain timer: by its attachment id and period.
-pub(super) fn timer_subject(id: AttachmentId, period_nanos: i64) -> String {
-    let period_millis = period_nanos / 1_000_000;
-    format!("timer {id} (period {period_millis} ms)")
-}
-
 #[cfg(test)]
-mod timer_subject_tests {
-    use super::timer_subject;
-
-    #[test]
-    fn a_rewound_plain_timer_is_named_by_its_attachment_and_period() {
-        assert_eq!(timer_subject(7, 1_000_000_000), "timer 7 (period 1000 ms)");
-        assert_eq!(timer_subject(2, 2_500_000), "timer 2 (period 2 ms)");
-    }
-}
-
-#[cfg(test)]
-mod host_deadline_tests {
-    use std::sync::Arc;
-
-    use hypha_core::timer::Timer;
-    use hypha_time::{Duration, Time};
-
-    use super::{Target, host_deadline};
-    use crate::waitset::TimerControl;
-
-    #[test]
-    fn a_canceled_host_timer_holds_no_deadline_and_costs_no_wake_up() {
-        let timer = Timer::new(Duration::from_nanos(100), Time::from_nanos(1_000));
-        let control = TimerControl::new(&timer, false);
-        let shared = Some(Arc::clone(&control));
-        let target = Target::Timer {
-            timer,
-            callback: None,
-            cycle: None,
-            run_anchored: true,
-            control: shared,
-        };
-        assert_eq!(host_deadline(&target, true), Some(1_100));
-        control.cancel();
-        assert_eq!(host_deadline(&target, true), None);
-    }
-}
+#[path = "dispatch/subject_tests.rs"]
+mod slow_callback_subject_tests;

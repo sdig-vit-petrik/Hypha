@@ -154,3 +154,60 @@ fn a_loan_refused_as_too_large_leaves_no_gap_at_the_subscriber() {
     assert!(fixture.receive_one(), "the frame after the refused loan arrives");
     assert_eq!(fixture.missing(), 0, "the refused loan took no sequence number");
 }
+
+impl Fixture {
+    /// A loan of `size` bytes held by the caller, by `reserve` or by the plain loan.
+    fn hold(&self, size: usize, reserve: bool) -> Result<*mut HyphaLoan, HyphaStatus> {
+        let mut loan = ptr::null_mut();
+        let mut bytes = ptr::null_mut();
+        let status = unsafe {
+            if reserve {
+                hypha_publisher_reserve_frame(self.publisher, size, &raw mut loan, &raw mut bytes)
+            } else {
+                hypha_publisher_loan_frame(self.publisher, size, &raw mut loan, &raw mut bytes)
+            }
+        };
+        if status == HyphaStatus::Ok { Ok(loan) } else { Err(status) }
+    }
+}
+
+/// The publisher holds two loans. A third is `LoanLimit`, not `PoolExhausted`: the pool has
+/// room. Reserved, it is a question the caller may ask again and no frame is lost; asked
+/// for by the plain loan, whose caller sends at once, the message is dropped and counted.
+#[test]
+fn a_loan_past_the_loan_count_is_loan_limit_and_only_the_plain_loan_counts_a_lost_frame() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.send(4, b"one!"), HyphaStatus::Ok);
+    assert!(fixture.receive_one());
+
+    let first = fixture.hold(4, true).expect("the first loan");
+    let second = fixture.hold(4, true).expect("the second loan");
+    assert_eq!(fixture.hold(4, true).err(), Some(HyphaStatus::LoanLimit));
+    for held in [first, second] {
+        assert_eq!(unsafe { hypha_loan_send(held, -1) }, HyphaStatus::Ok);
+        assert!(fixture.receive_one());
+    }
+    assert_eq!(fixture.missing(), 0, "a refused reservation is not a lost frame");
+
+    let first = fixture.hold(4, false).expect("the first loan");
+    let second = fixture.hold(4, false).expect("the second loan");
+    assert_eq!(fixture.hold(4, false).err(), Some(HyphaStatus::LoanLimit));
+    for held in [first, second] {
+        assert_eq!(unsafe { hypha_loan_send(held, -1) }, HyphaStatus::Ok);
+        assert!(fixture.receive_one());
+    }
+    assert_eq!(fixture.missing(), 1, "a refused plain loan drops its message");
+}
+
+/// A reservation over the payload bound is `TooLarge` and, like every refused reservation,
+/// takes no sequence number.
+#[test]
+fn a_reservation_refused_as_too_large_leaves_no_gap() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.send(4, b"one!"), HyphaStatus::Ok);
+    assert!(fixture.receive_one());
+    assert_eq!(fixture.hold(BOUND + 1, true).err(), Some(HyphaStatus::TooLarge));
+    assert_eq!(fixture.send(4, b"two!"), HyphaStatus::Ok);
+    assert!(fixture.receive_one());
+    assert_eq!(fixture.missing(), 0, "the refused reservation took no sequence number");
+}

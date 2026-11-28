@@ -28,7 +28,7 @@ its check.
 | Field | Set by | Purpose |
 |---|---|---|
 | `magic` | library | Frame format version. Another value is refused. |
-| `schema_hash` | library, from the message MD5 | The message definition the sender used. |
+| `schema_hash` | library, from the message MD5 | The message definition the sender used. It also names the frame's stream (section 3). |
 | `publisher_id` | library, per publisher instance | Which sender the sequence belongs to. |
 | `sequence` | library, at each send | Order of the sender's frames. Wraps to zero. |
 | `transport_sent_nanos` | library, host monotonic clock | When the frame was sent. |
@@ -36,6 +36,40 @@ its check.
 | `crc` | library | CRC-32C over every field above and the payload, started from the code of the topic. The topic name is not sent. |
 
 The payload is the ROS 1 serialized message. The library never decodes it.
+
+The CRC-32C is computed by the `crc-fast` crate: the CPU's CRC-32C instructions fused
+with carry-less multiplication (PMULL on aarch64, PCLMULQDQ on x86_64), chosen at run
+time, and a table on a CPU with neither. Every path gives the standard CRC-32C:
+`hypha_wire/crc32c_check_value` pins it to the published check values and to
+`crc32c` 0.6.8, the implementation before, so frames of either build verify in the other.
+
+The code costs one read of the payload at each end: the publisher's at each send, and
+each subscriber endpoint's at each frame it takes. Two subscribers of one topic in one
+process each verify the frame. A cycle input verifies a frame when it drains it and
+decodes it later from its history with no second pass.
+
+On an Apple M1 Pro (macOS, release build, `cargo bench -p hypha_wire --bench integrity`)
+the code of a 15 MiB payload read from memory takes 0.33 ms, less than a `memcpy` of
+it (0.39 ms), and that of a 64-byte message 18 ns. Linux aarch64 on the same machine
+takes the same path and, measured in a container under heavy load, about half the time of
+a `memcpy` of the payload. x86_64 is not measured.
+
+### 2.1 Service frames
+
+A service's request and its response carry the same header and checks, sealed for
+their role (`docs/design/native-services.md` §5): a request for
+`<service>␟request`, a response for `<service>␟response␟<client id>␟<request sequence>`,
+`␟` the unit separator U+001F that no name holds. A response therefore verifies only
+against the request it answers, never as a request, a topic frame or the answer to
+another call. A response carries the sequence of the request it answers, so neither
+direction counts a sequence gap. The response flags carry the answer's kind inside the
+CRC: an answer, a refusal or a failure.
+
+A response that does not verify ends its call `ServerLost` with `invalid response:
+<check>` (crc, schema, sequence, flags) and is counted; a request that does not verify,
+or is above its bound, is refused with `invalid request: <check>` and counted, never
+dropped as if the server had left. Each call ends in exactly one outcome (FSR-42): the
+table of cpp-api.md §8.2.
 
 ## 3. Faults and the check that covers each
 
@@ -48,7 +82,7 @@ application and a counter of the subscriber grows. The counters are the
 |---|---|---|---|
 | Corruption | CRC-32C over header and payload | Refused | `corrupt_payload` |
 | Unknown or truncated frame | `magic`, sizes | Refused | `invalid_frame` |
-| Wrong message definition | `schema_hash` against the subscription | Refused | `schema_mismatch` |
+| Wrong message definition: a frame whose `schema_hash` is not its stream's | `schema_hash` against the subscription | Refused | `schema_mismatch` |
 | Repetition | `sequence` equal to the last accepted of that publisher | Refused | `sequence_gap` |
 | Re-sequencing | `sequence` older than the last accepted | Refused | `sequence_gap` |
 | Deletion | `sequence` jumps forward | Accepted; the skipped values are counted | `missingSequences()` |
@@ -61,17 +95,65 @@ application and a counter of the subscriber grows. The counters are the
 
 Notes:
 
+- A topic name carries one **stream** for each schema (topic name overloading): the
+  publishers of one MD5 send on the stream of that MD5, and a subscriber that names an
+  MD5 reads that stream alone ([interface-specification.md](interface-specification.md#streams)).
+  A frame of another message type, or of another version of the same type, is on another
+  stream: it never reaches the subscriber, so it is no fault and no counter grows. A
+  frame that does reach it with another `schema_hash` came from a sender that stamped a
+  schema other than its stream's, and is a `schema_mismatch`. A publisher of another
+  definition is detected all the same: the subscriber counts the other definitions of its
+  topic that a live publisher sends (`topic.other_schemas`) and its `~/state` row names
+  them (`RequiredInput.other_schemas`), also while its own definition is published too,
+  within a second while the node runs and "not checked" before; while its own stream has
+  no publisher it also logs them after its no-publisher delay (cpp-api.md §5).
 - Each check covers its own faults, and none stands in for another. The CRC says
   nothing about order, the sequence nothing about age, and the send time nothing
   about content.
 - A payload that does not change is not a fault. A periodic sender may publish the
   same value for ever; its sequence advances and its frames are current.
 - The sequence is tracked for each publisher. The first frame of a publisher is
-  accepted as it is, and a loss before it is not counted. A publisher that restarts
-  is a new publisher. A sequence half the range or more ahead is refused as not
-  newer.
-- Under simulated time (development only) a sample that a queue drops fails the run:
-  a replay that lost data is not faithful.
+  accepted as it is. A publisher that restarts is a new publisher. A sequence half the
+  range or more ahead is refused as not newer.
+- A publisher's first frame has sequence 1. A publisher whose port did not exist yet
+  when the subscriber was created owed it every frame it sent: a first frame of `n`
+  counts `n - 1` lost frames, on host time and on simulated time. The subscriber lists
+  the publisher ports of each stream right after its port on the stream exists. A port
+  that is not on that list, and is still registered at its first frame, registered
+  after the subscriber, and a publisher updates its connections before each send, so
+  none of its frames is from before the subscriber; a port that is not listed and no
+  longer registered may have left before the listing, and counts as one that may have
+  sent before (engineering-traps.md, the creation order). A publisher that was listed
+  may have sent before the subscriber existed: for it, a loss before its first frame
+  is not counted, and the frames before it are what a late joiner missed
+  (`sent_before_first`), not a loss. The two cases look alike in the queue, so a late
+  joiner is told apart only by that list. A subscriber that tracks more publishers
+  than its table holds (`MAX_TRACKED_PUBLISHERS`, 4096) forgets one, and from then on,
+  for the rest of its life, counts no first frame as lost: the publisher of one may be
+  the forgotten one. A subscription that outlives 4096 publishers, a node restarting
+  4096 times on its topic, loses this count and keeps every other.
+- Under simulated time (development only) a cycle input that loses a sample fails the
+  run: a transport gap, or a history eviction of a sample the input still needed; for a
+  `Latest` input, an evicted sample that a newer one supersedes is no loss. A
+  replay that lost data is not faithful. A queued input's `perStep` drops the oldest
+  samples of a step on purpose: counted in `work_limit_drops_total`, no failure.
+- In the replay lockstep a participant drains its cycle inputs before it acknowledges
+  each `/clock` ([replay-flow-control.md](replay-flow-control.md) §4.2, §6.7). A queue
+  of a topic that only the player publishes therefore does not overflow at an input of
+  a participant the player waits for: the player splits its chunks to fit the queue.
+  A topic that only a clock driver publishes holds the outputs of one driver step,
+  which nothing bounds: the queue does not overflow when they fit it. On those paths the
+  loss of a publisher's first frames is prevented. Elsewhere it is counted when the
+  publisher came after the subscriber (above), and fails the replay as any loss does;
+  for a publisher that existed before the subscriber it stays undetectable: on a topic
+  with another publisher, for that publisher's frames; at a participant the sender does
+  not wait for (a node with only plain callbacks, a node not yet heard in the first
+  chunk without `--nodes`, a `WaitSet` that has not reported yet, the open loop); at the
+  plain callback subscriptions of any node, which are not drained before its report;
+  for frames sent before the participant's first turn; and on host time. The player
+  opens its publishers when it starts, before the start barrier: a participant that
+  subscribed before the player started has the player's first frames counted, one that
+  started after the player has not.
 - A frame is bound to its topic, not to its sender: a trusted process that publishes
   the right message type on a topic is accepted. The deployment's access control is
   the measure against that.
@@ -104,7 +186,11 @@ The library detects; the application decides what a detected fault means.
 - No inhibit after repeated corruption. Every refused frame is independent.
 - No acceptance window: a forward jump of any size below half the sequence range is
   a counted loss, not an error.
-- The first frame of a publisher is trusted.
+- The first frame of a publisher that existed when the subscriber was created is
+  trusted, and a loss before it is not counted: the subscriber cannot tell it from the
+  frames a late joiner missed (section 3). A publisher that came after the subscriber
+  has its first frames counted. The replay lockstep prevents the loss on the paths of
+  section 3.
 - A 32-bit CRC does not detect every corruption. Random corruption of a frame
   passes with a probability of about 2^-32.
 - A plain subscriber is not supervised: silence and the life sign exist for cycle

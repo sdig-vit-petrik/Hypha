@@ -37,6 +37,8 @@ target_include_directories(hypha INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/log/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/base/include>
+  # Tier-2 robotics companions: opt-in headers over the SDK, with no C ABI of their own.
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/companions/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_compile_features(hypha INTERFACE cxx_std_23)
@@ -63,6 +65,17 @@ set(HYPHA_MSGS_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated/include")
 target_link_libraries(hypha INTERFACE $<BUILD_INTERFACE:hypha_standard_messages>)
 target_include_directories(hypha INTERFACE
   $<BUILD_INTERFACE:${HYPHA_MSGS_INCLUDE_DIR}>
+)
+
+# The companion headers of sensor_msgs that ROS 1 ships beside the messages
+# (point_cloud2_iterator.h, point_field_conversion.h, image_encodings.h,
+# distortion_models.h): ros/common_msgs unchanged, in upstream/common_msgs, which the
+# SDK installs into the include directory of sensor_msgs. The ROS 2 names of the same
+# headers (<sensor_msgs/point_cloud2_iterator.hpp>, ...) are include/sensor_msgs/*.hpp.
+set(HYPHA_COMMON_MSGS_INCLUDE_DIR
+  "${CMAKE_CURRENT_SOURCE_DIR}/upstream/common_msgs/sensor_msgs/include")
+target_include_directories(hypha SYSTEM INTERFACE
+  $<BUILD_INTERFACE:${HYPHA_COMMON_MSGS_INCLUDE_DIR}>
 )
 
 # hypha::testing_mcap: the static MCAP reader (crate hypha_testing_mcap) under
@@ -104,8 +117,10 @@ else()
   install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     PATTERN "mcap_*.h" EXCLUDE)
 endif()
+install(DIRECTORY "${HYPHA_COMMON_MSGS_INCLUDE_DIR}/" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY log/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY base/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY companions/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 # The library does not exist at configure time, so it is resolved at install time:
 # install(FILES) of a symlink would install the symlink, not the library.
@@ -146,6 +161,11 @@ foreach(package ${HYPHA_STANDARD_PACKAGE_DIRS})
   endif()
 endforeach()
 install(FILES "${HYPHA_MESSAGES_MODULE}"
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/hypha)
+
+# hypha_add_node(), which links a node executable with hypha::sdk and sets its install RPATH.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/hyphaNode.cmake")
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/hyphaNode.cmake"
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/hypha)
 
 # hypha_add_test(), which runs an application's test in a bus domain of its own.
@@ -202,6 +222,7 @@ if(HYPHA_BUILD_TESTS)
     base/test/test_clock.cpp
     base/test/test_duration_saturation.cpp
     base/test/test_time_saturation.cpp
+    base/test/test_seconds_precision.cpp
   )
   target_link_libraries(test_hypha_base PRIVATE hypha GTest::gtest)
   # Simulated time joins the bus, and base/test/test_main.cpp sets no domain.
@@ -222,6 +243,11 @@ if(HYPHA_BUILD_TESTS)
   # test apps/hypha_tools/tests/play_lockstep_waits.rs runs them under hypha_play.
   add_executable(replay_loop_peer test/replay_loop_peer.cpp)
   target_link_libraries(replay_loop_peer PRIVATE hypha)
+
+  # A participant with a Requests or a Calls port. The Rust test
+  # apps/hypha_tools/tests/service_lockstep.rs runs several under hypha play (FSR-44).
+  add_executable(service_lockstep_peer test/service_lockstep_peer.cpp)
+  target_link_libraries(service_lockstep_peer PRIVATE hypha hypha_test_srvs)
 
   # The exit code of a real runNode process: 0 clean, 78 configuration, 70 runtime.
   add_executable(run_node_exit_code_node test/run_node_exit_code_node.cpp)
@@ -279,6 +305,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_log_module_name.cpp
     test/test_log_module_default.cpp
     test/test_log_module_without_calls.cpp
+    test/test_publish_or_warn_log.cpp
   )
   target_link_libraries(test_hypha_log PRIVATE hypha GTest::gtest)
   add_test(NAME test_hypha_log COMMAND test_hypha_log)
@@ -299,16 +326,38 @@ if(HYPHA_BUILD_TESTS)
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target log_module_name_invalid)
   set_tests_properties(log_module_name_invalid_is_refused PROPERTIES WILL_FAIL TRUE)
 
+  # A loan of a message with no field to loan must stop the build, with the rule in words.
+  add_library(typed_loan_not_loanable OBJECT EXCLUDE_FROM_ALL test/typed_loan_not_loanable.cpp)
+  target_link_libraries(typed_loan_not_loanable PRIVATE hypha)
+  add_test(NAME typed_loan_of_a_message_without_an_array_is_refused
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target typed_loan_not_loanable)
+  set_tests_properties(typed_loan_of_a_message_without_an_array_is_refused PROPERTIES
+    PASS_REGULAR_EXPRESSION "this message has no single top-level array of numbers to write in place")
+
+  # A mutable iterator's field passed to printf must stop the build, not print garbage.
+  add_library(unaligned_ref_not_varargs OBJECT EXCLUDE_FROM_ALL companions/test/unaligned_ref_not_varargs.cpp)
+  target_link_libraries(unaligned_ref_not_varargs PRIVATE hypha)
+  add_test(NAME unaligned_ref_through_printf_is_refused
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target unaligned_ref_not_varargs)
+  set_tests_properties(unaligned_ref_through_printf_is_refused PROPERTIES
+    PASS_REGULAR_EXPRESSION "non-trivial|non-trivially")
+
   add_executable(test_hypha
     test/test_main.cpp
     test/wall_clock_listener.cpp
     test/test_publisher.cpp
+    test/test_typed_loan.cpp
+    test/test_typed_view.cpp
+    test/test_cycle_view.cpp
     test/test_subscriber.cpp
+    test/test_services.cpp
+    test/test_cycle_services.cpp
+    test/test_standard_services.cpp
     test/subscriber_latest_pair_is_consistent.cpp
     test/test_parameters.cpp
     test/test_parameter_lists.cpp
     test/test_config_views.cpp
-    test/test_plain_main_example.cpp
+    test/test_config_walk.cpp
     test/test_node.cpp
     test/test_node_creation_race.cpp
     test/test_schema.cpp
@@ -329,7 +378,11 @@ if(HYPHA_BUILD_TESTS)
     test/test_cycle_shutdown.cpp
     test/test_cycle_node.cpp
     test/test_triggered_cycle.cpp
+    test/test_cycle_timer.cpp
+    test/test_twist_mux_shape.cpp
+    test/test_newest_only.cpp
     test/test_transforms_port.cpp
+    test/test_cycle_clear.cpp
     test/test_transform_buffer.cpp
     test/test_subscriber_diagnostics.cpp
     test/test_cycle_sample_stamps.cpp
@@ -340,6 +393,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_input_supervision.cpp
     test/cycle_supervision_from_table.cpp
     test/cycle_step_exception_is_logged.cpp
+    test/test_application_doc_examples.cpp
     test/test_cycle_doc_examples.cpp
     test/test_quick_start_doc_examples.cpp
     test/test_cycle_verdict_mapping.cpp
@@ -352,10 +406,49 @@ if(HYPHA_BUILD_TESTS)
     test/test_unique_handle.cpp
     test/test_stop_signal.cpp
     test/test_fail_run.cpp
+    test/test_application_skeleton.cpp
+    test/test_worker_stop.cpp
+    test/test_handover.cpp
     test/test_step_harness.cpp
+    test/test_step_harness_services.cpp
+    test/test_sequence.cpp
+    companions/test/test_diagnostic_updater.cpp
+    companions/test/test_diagnostic_updater_state.cpp
     test/test_raw_endpoints.cpp
     test/test_qos.cpp
+    test/test_topic_overloading.cpp
+    test/test_sensor_msgs_companions.cpp
+    test/test_camera_info.cpp
+    companions/test/test_point_cloud2_unaligned.cpp
+    test/test_sensor_msgs_ros2_names.cpp
   )
+  # The services of test_services.cpp: the camera's typed setter, and a bounded echo; and
+  # String and Vec1, shaped as mrs_msgs/String and mrs_msgs/Vec1, for the takeoff sequence.
+  hypha_generate_messages(PACKAGE camera_control_msgs
+    SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/srv/camera_control_msgs"
+    OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_generated/include")
+  hypha_generate_messages(PACKAGE hypha_test_srvs
+    SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/srv/hypha_test_srvs"
+    OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_generated/include")
+  target_link_libraries(test_hypha PRIVATE camera_control_msgs hypha_test_srvs)
+  # The companions' tests share the fixtures of test/ (test_types.h).
+  target_include_directories(test_hypha PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  # The camera proof from the shell calls the setters with `hypha service call`.
+  if(HYPHA_BUILD_APPS)
+    target_compile_definitions(test_hypha PRIVATE
+      HYPHA_TEST_HYPHA_TOOL="$<TARGET_FILE:hypha::hypha>")
+  endif()
+  # A service and a message of the application's own, added to the SDK's package
+  # sensor_msgs (test_standard_services.cpp): the package's own definitions are read, not
+  # emitted again, and the target is sensor_msgs_additions.
+  hypha_generate_messages(PACKAGE sensor_msgs
+    MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/msg/sensor_msgs"
+    SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/srv/sensor_msgs"
+    OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_generated/include")
+  target_link_libraries(test_hypha PRIVATE sensor_msgs_additions)
+  # The ROS 2 names of sensor_msgs, for test_sensor_msgs_ros2_names.cpp.
+  hypha_generate_ros2_headers(test_hypha_ros2_headers PACKAGES sensor_msgs)
+  target_link_libraries(test_hypha PRIVATE test_hypha_ros2_headers)
   # Every public header compiles on its own: one generated translation unit each.
   file(GLOB_RECURSE HYPHA_PUBLIC_HEADERS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/include"
        CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h")
@@ -379,6 +472,29 @@ if(HYPHA_BUILD_TESTS)
   endif()
   target_compile_definitions(test_hypha_header_contract PRIVATE HYPHA_NO_LOGGING)
   add_dependencies(test_hypha test_hypha_header_contract)
+
+  # The companion headers of sensor_msgs compile on their own, first in their unit,
+  # under both names. Upstream's point_field_conversion.h does not include PointField.h
+  # (in ROS 1 neither); its unit does, which the ROS 2 name does itself.
+  set(HYPHA_COMPANION_HEADERS
+    sensor_msgs/point_cloud2_iterator.h sensor_msgs/point_field_conversion.h
+    sensor_msgs/image_encodings.h sensor_msgs/distortion_models.h
+    sensor_msgs/point_cloud2_iterator.hpp sensor_msgs/point_field_conversion.hpp
+    sensor_msgs/image_encodings.hpp sensor_msgs/distortion_models.hpp)
+  set(HYPHA_COMPANION_UNITS)
+  foreach(header IN LISTS HYPHA_COMPANION_HEADERS)
+    string(MAKE_C_IDENTIFIER "${header}" unit)
+    set(unit "${CMAKE_CURRENT_BINARY_DIR}/header_contract/companion_${unit}.cpp")
+    set(prelude "")
+    if(header STREQUAL "sensor_msgs/point_field_conversion.h")
+      set(prelude "#include <sensor_msgs/PointField.h>\n")
+    endif()
+    file(CONFIGURE OUTPUT "${unit}" CONTENT "${prelude}#include <${header}>\n")
+    list(APPEND HYPHA_COMPANION_UNITS "${unit}")
+  endforeach()
+  add_library(test_hypha_companion_headers OBJECT ${HYPHA_COMPANION_UNITS})
+  target_link_libraries(test_hypha_companion_headers PRIVATE hypha)
+  add_dependencies(test_hypha test_hypha_companion_headers)
 
   add_library(test_hypha_log_header_order OBJECT
     test/headers/log_status_first.cpp
@@ -406,6 +522,15 @@ if(HYPHA_BUILD_TESTS)
       ENVIRONMENT "GTEST_TOTAL_SHARDS=${HYPHA_TEST_SHARDS};GTEST_SHARD_INDEX=${shard}")
     hypha_gtest_report(test_hypha_${shard})
   endforeach()
+  # The typed loan's contract over every loanable standard type, in its own program: it
+  # publishes std_msgs/UInt8MultiArray under the default policy, which test_qos.cpp maps to
+  # a policy of its own (QosOf), and one program must see one QosOf per type.
+  add_executable(test_typed_loan_contract test/test_main.cpp test/test_typed_loan_contract.cpp)
+  target_link_libraries(test_typed_loan_contract PRIVATE hypha GTest::gtest)
+  target_compile_definitions(test_typed_loan_contract PRIVATE HYPHA_NO_LOGGING)
+  add_test(NAME test_typed_loan_contract COMMAND test_typed_loan_contract)
+  set_tests_properties(test_typed_loan_contract PROPERTIES LABELS "needs-iceoryx2")
+  hypha_gtest_report(test_typed_loan_contract)
   # The MCAP replay of the testing component, in its own program: test_hypha links
   # nothing of hypha::testing_mcap, as an application that does not replay links nothing.
   if(HYPHA_BUILD_TESTING_MCAP)
@@ -421,6 +546,16 @@ if(HYPHA_BUILD_TESTS)
     add_test(NAME test_hypha_mcap_replay COMMAND test_hypha_mcap_replay)
     set_tests_properties(test_hypha_mcap_replay PROPERTIES LABELS "needs-iceoryx2")
     hypha_gtest_report(test_hypha_mcap_replay)
+    # `hypha record` stores the bytes of a typed loan shrunk at the publish.
+    if(HYPHA_BUILD_APPS)
+      add_executable(test_typed_loan_record test/test_main.cpp test/test_typed_loan_record.cpp)
+      target_link_libraries(test_typed_loan_record PRIVATE hypha hypha::testing_mcap GTest::gtest)
+      target_compile_definitions(test_typed_loan_record PRIVATE
+        HYPHA_NO_LOGGING HYPHA_TEST_HYPHA_TOOL="$<TARGET_FILE:hypha::hypha>")
+      add_test(NAME test_typed_loan_record COMMAND test_typed_loan_record)
+      set_tests_properties(test_typed_loan_record PROPERTIES LABELS "needs-iceoryx2" TIMEOUT 120)
+      hypha_gtest_report(test_typed_loan_record)
+    endif()
   endif()
   foreach(alone
       NodeStopSignalProcess.StopSignalEndsTheRun
@@ -436,4 +571,20 @@ if(HYPHA_BUILD_TESTS)
       RUN_SERIAL TRUE)
     hypha_gtest_report(test_hypha_${wall_time})
   endforeach()
+endif()
+
+# The typed loan's and the views' tests under AddressSanitizer and UBSan, on request: a
+# moved-from loan, a loan that outlives its publisher, its node or its step, a span past
+# the publish, a view kept past its callback or its step, a cloud iterator over a field at an
+# odd offset.
+option(HYPHA_TYPED_LOAN_SANITIZE "Build test_typed_loan_sanitized with ASan and UBSan" OFF)
+if(HYPHA_BUILD_TESTS AND HYPHA_TYPED_LOAN_SANITIZE)
+  add_executable(test_typed_loan_sanitized
+    test/test_main.cpp test/test_typed_loan.cpp test/test_typed_loan_contract.cpp
+    test/test_typed_view.cpp test/test_cycle_view.cpp companions/test/test_point_cloud2_unaligned.cpp)
+  target_link_libraries(test_typed_loan_sanitized PRIVATE hypha GTest::gtest)
+  target_compile_definitions(test_typed_loan_sanitized PRIVATE HYPHA_NO_LOGGING)
+  target_compile_options(test_typed_loan_sanitized PRIVATE
+    -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g)
+  target_link_options(test_typed_loan_sanitized PRIVATE -fsanitize=address,undefined)
 endif()

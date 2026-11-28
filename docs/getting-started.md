@@ -1,105 +1,85 @@
 # Getting started
 
-## Build
+## Build and test
 
 ```sh
-./build.sh
+./build.sh        # Release: libhypha_ffi, the C++ SDK, CLI tools, examples, tests
+./test.sh         # clippy, Rust tests, ctest, the installed-SDK check
+./check.sh        # style, generated files, size and dependency rules
 ```
 
-That builds the shared library `libhypha_ffi.so`, the C++ SDK package
-(`hypha-cxx`), its tests, the CLI tools and the examples, in Release.
+`check.sh` and `scripts/format.sh` need `python3 -m pip install -r requirements-dev.txt`.
+For a compiler cache, set `RUSTC_WRAPPER=sccache` and `CMAKE_CXX_COMPILER_LAUNCHER=sccache`.
 
-The library is versioned by the root file `abi.revision`. Cargo writes the unversioned
-name. The CMake build directory holds a link with the versioned name:
-`libhypha_ffi.so.<revision>` on Linux (also its SONAME), and `libhypha_ffi.<revision>.dylib`
-on macOS (install name `@rpath/libhypha_ffi.<revision>.dylib`).
+Each test runs in its own bus domain under `t_`, so the tests can run beside a live hypha
+system on the same host. `test.sh` then removes the test domains that no process uses.
 
-Run the tests with `./test.sh` (clippy, Rust tests, ctest, installed SDK checks),
-and the style checks with `./check.sh`. Every test runs in a bus domain of its own
-under the test root `t_`, so the gate runs beside a hypha system on the same host;
-`test.sh` removes only the test domains that no live process uses
-(`hypha clean --domain t_`).
-
-For `sccache`, set `RUSTC_WRAPPER=sccache` and `CMAKE_CXX_COMPILER_LAUNCHER=sccache`
-in your environment.
-
-The Python tools of the gate (`check.sh`, `scripts/format.sh`) need the development requirements:
-
-```sh
-python3 -m pip install -r requirements-dev.txt
-```
+The library name carries the ABI revision from the file `abi.revision`:
+`libhypha_ffi.so.<revision>` on Linux (also its SONAME), `libhypha_ffi.<revision>.dylib` on
+macOS. A binary runs only with the revision it was built against.
 
 ## Use the SDK
 
-Install Core into a prefix, then build a consumer against that prefix:
+Install the SDK into a prefix, then build against it:
 
 ```sh
 cmake --install build --prefix /path/to/hypha-sdk
-cmake -S test/package_consumer -B build/consumer \
-  -DCMAKE_PREFIX_PATH=/path/to/hypha-sdk
+cmake -S test/package_consumer -B build/consumer -DCMAKE_PREFIX_PATH=/path/to/hypha-sdk
 cmake --build build/consumer
 ```
 
-The install prefix holds only the versioned library. Rebuild every consumer against
-an install whose library revision differs from the one the consumer was built with.
+`./install.sh [prefix]` installs the SDK and the CLI tools without the examples. The CMake
+options `HYPHA_BUILD_APPS` and `HYPHA_BUILD_EXAMPLES` (both `ON`) add the tools and the
+examples to the build and the install.
 
-A test that uses the bus registers with `hypha_add_test()`, which the SDK installs beside
-`hypha_generate_messages()`. It runs the test in a bus domain of its own,
-`t_<pid of ctest>_<n>`, so parallel tests, the tests of another build tree and a system
-running on the host never share a node name, topic or `/clock`:
+Add a node with `hypha_add_node()`. It links `hypha::sdk` and sets the RPATH, so the
+installed binary finds `libhypha_ffi`:
+
+```cmake
+find_package(hypha CONFIG REQUIRED)
+hypha_add_node(my_node src/main.cpp)
+install(TARGETS my_node RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+```
+
+Add a test that uses the bus with `hypha_add_test()`. It gives the test its own bus domain,
+so parallel tests and a running system never share a node name, a topic or `/clock`:
 
 ```cmake
 enable_testing()
+find_package(GTest REQUIRED)
 add_executable(my_node_test test/my_node_test.cpp)
 target_link_libraries(my_node_test PRIVATE hypha::sdk GTest::gtest_main)
 hypha_add_test(my_node_test)
-# A script or a command line: COMMAND, and WORKING_DIRECTORY as for add_test().
 hypha_add_test(my_flight COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/fly.sh" my_node_test)
 ```
 
-The [examples](../examples/README.md) are runnable nodes, such as `speed`. The [apps](../apps/README.md) are `hypha topic` and the other
-CLI tools. The CMake options `HYPHA_BUILD_APPS` and `HYPHA_BUILD_EXAMPLES` (both
-`ON` by default) add them to the build and to `cmake --install`. `./install.sh`
-installs the SDK and the CLI tools without the examples. `examples/check.sh`
-builds the examples against an installed SDK and flies the MRS scenarios; `./test.sh
-cpp` runs it, so it needs Eigen 3 (in the `hypha-builder` image).
+Start a new node package from `examples/speed`; its `CMakeLists.txt` shows the wiring. The
+C++ API is in [cpp-api.md](cpp-api.md). The Rust SDK is documented in its crate:
+`cargo doc --open -p hypha_node`.
 
-## If something goes wrong
+`examples/check.sh` builds the examples against an installed SDK and runs the MRS scenarios.
+`./test.sh cpp` runs it, so it needs Eigen 3 (in the `hypha-builder` image).
 
-`hypha ABI revision mismatch: SDK expects N, library reports M` means that the
-binary and the loaded library come from different builds. The SDK refuses to
-start, so no node runs. Rebuild the binary against the installed SDK, and check
-that the loader finds the versioned library of that SDK. See
-[cpp-api.md](cpp-api.md) section 2.1.
+## When something goes wrong
 
-A `PortError::Backend(...)` right after you change a transport capacity or
-switch versions is usually stale shared memory, not a code fault. The old
-segment keeps the old limits for as long as anything references it.
-A node that starts reclaims the resources of the dead runs of its own name
-and of every dead CLI tool node (`_hyphacli_<tool>`). If the dead run of its own
-name cannot be reclaimed, the node does not start. Any other dead node
-keeps its resources until a node of its name starts again. A segment whose
-owning process is alive but stuck, or a dead node whose name does not
-return, needs a clean of the stopped domain. `hypha clean` ships with the SDK
-(`docs/tools.md`) and kills nothing:
+**`hypha ABI revision mismatch: SDK expects N, library reports M`.** The binary and the
+library come from different builds, and no node starts. Rebuild the binary against the
+installed SDK and check that the loader finds that SDK's library ([cpp-api.md](cpp-api.md)
+§2.1).
+
+**`PortError::Backend(...)` after you change a transport capacity or a version.** Usually
+stale shared memory: an old segment keeps its old limits while anything uses it.
+
+- A starting node reclaims the dead runs of its own name and of every dead CLI tool node
+  (`_hyphacli_<tool>`). If it cannot reclaim its own name, it does not start.
+- Any other dead node keeps its resources until a node of its name starts again.
+- For a stuck process or a dead node whose name never returns, stop the domain and clean it.
+  `hypha clean` kills nothing ([tools.md](tools.md)):
 
 ```sh
-hypha clean --domain t_      # the test domains nobody uses
-hypha clean                  # the domain of HYPHA_DOMAIN, refused while a node of it lives
+hypha clean --domain t_   # the test domains no process uses
+hypha clean               # the domain of HYPHA_DOMAIN; refused while one of its nodes lives
 ```
 
-A stuck process keeps its domain in use; stop it first. In the repository,
-`./clean-shm.sh` wipes every domain of the host and refuses while a process holds
-a segment, and `./clean-shm.sh --force` kills the holders first.
-
-## Writing your own node
-
-See [cpp-api.md](cpp-api.md) for the C++ API. For Rust, the API
-documentation is the crate documentation:
-
-```sh
-cargo doc --open -p hypha
-```
-
-Copy `speed` from `examples/` as the starting layout for a C++ node package; its
-`CMakeLists.txt` shows the `find_package(hypha)` wiring.
+In the repository, `./clean-shm.sh` wipes every domain of the host and refuses while a
+process holds a segment; `./clean-shm.sh --force` kills those processes first.

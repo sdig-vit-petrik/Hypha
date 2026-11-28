@@ -6,9 +6,8 @@ Report it privately: **Security → Report a vulnerability** on this repository 
 security advisory). Do not open a public issue for it.
 
 Report privately, too, a defect that could let an application use wrong, old or missing
-data without a fault indication, even when no attacker is involved
-([docs/safety-plan.md](docs/safety-plan.md) §7). Users are told before the details are
-public.
+data without a fault indication, even when no attacker is involved. Its details become
+public with the fix, in a GitHub security advisory.
 
 Include the version or commit, the platform, what you did and what happened, and a way to
 reproduce it if you have one.

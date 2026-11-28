@@ -343,14 +343,28 @@ fn state_topic_is_latched() {
     await_state(&mut early, None, |state| state.applied_revision == 4);
     let config = std::path::absolute(&bench.config).expect("config path");
 
+    // Latched means the late subscriber's first sample was sent before it existed. The tool
+    // also republishes its state every 500 ms, so a window shorter than that, which a
+    // loaded host can miss, is not needed: the send stamp tells the latch from a republish.
+    let before = hypha_node::sdk::clock::steady_now_nanos();
     let mut late = bench.state_subscriber();
-    let deadline = Instant::now() + Duration::from_millis(200);
-    let mut state = None;
-    while state.is_none() && Instant::now() < deadline {
-        state = read_state(&mut late);
+    let deadline = Instant::now() + LIMIT;
+    let first = loop {
+        if let Some(sample) = late.try_receive().expect("state receive") {
+            break sample;
+        }
+        assert!(Instant::now() < deadline, "the late subscriber received no state");
         std::thread::sleep(Duration::from_millis(5));
-    }
-    let state = state.expect("a late subscriber receives the latched state at once");
+    };
+    let sent = first.identity().expect("identity").transport_sent_nanos;
+    assert!(
+        i64::try_from(sent).expect("a stamp") < before,
+        "the first state sample was sent after the late subscriber existed: not latched"
+    );
+    let message =
+        hypha_node::sdk::msgs::std_msgs::String::decode_from(first.bytes().expect("payload"))
+            .expect("std_msgs/String");
+    let state = toml::from_str::<BackendState>(&message.data).expect("state TOML");
     assert_eq!(state.backend, bench.name);
     assert_eq!(Path::new(&state.config_path), config.as_path());
 }
@@ -386,7 +400,17 @@ fn schema_change_reports_on_the_state_topic() {
     std::thread::sleep(Duration::from_millis(200));
     assert!(consumer.try_receive().expect("receive").is_none(), "nothing forwarded");
 
-    // Saving the interception again rebuilds it on the producer's new schema.
+    // Saving the interception again rebuilds it on the producer's new schema, which is a
+    // stream of its own on the output too.
+    let _new_output = bench
+        .bus
+        .publish_raw(&bench.output, DATA_TYPE, &md5, OTHER_DEFINITION)
+        .expect("the new output's opener");
+    let options = SubscriberOptions::default().keeping(8);
+    let mut consumer = bench
+        .bus
+        .subscribe_raw_with_schema(&bench.output, DATA_TYPE, &md5, options)
+        .expect("a consumer of the new schema");
     bench.write(2, true, &[("status", bits("0x0002"))]);
     let out = bench.await_output(&mut other, &mut consumer, &5_u32.to_le_bytes(), |_| true);
     assert_eq!(out, 7_u32.to_le_bytes());

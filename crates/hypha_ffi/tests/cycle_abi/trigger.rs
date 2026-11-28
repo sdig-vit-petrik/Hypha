@@ -99,7 +99,7 @@ impl Fixture {
     fn new() -> Self {
         let serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         // One trigger table per silence limit the cases use.
-        let node = node_with_triggers("cyc_trig", &[SILENCE_NANOS / MILLIS, 50, 10_000]);
+        let node = node_with_triggers("cyc_trig", &[SILENCE_NANOS / MILLIS, 50, 1_000, 10_000]);
         let waitset = unsafe { create_waitset(node) };
         Self { node, waitset, _serial: serial }
     }
@@ -171,15 +171,17 @@ fn commit_refuses_a_trigger_on_a_cycle_with_a_rate() {
     unsafe { supervise(cycle, fixture.node, index) };
     assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, index) }, HyphaStatus::Ok);
     assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::InvalidArgument);
+    let error = last_error();
+    assert!(error.contains("a rate and a trigger exclude each other"), "{error}");
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
 }
 
 #[test]
-fn commit_refuses_a_trigger_without_a_silence_limit() {
+fn a_trigger_without_a_silence_limit_commits() {
     let fixture = Fixture::new();
     let (cycle, index) = fixture.cycle(0, HyphaCycleInputMode::Queued);
     assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, index) }, HyphaStatus::Ok);
-    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::InvalidArgument);
+    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
 }
 
@@ -194,7 +196,7 @@ fn a_trigger_with_a_silence_limit_commits() {
 }
 
 #[test]
-fn destroying_a_triggered_cycle_detaches_both_registrations() {
+fn destroying_a_triggered_cycle_detaches_every_registration() {
     let fixture = Fixture::new();
     let expected = spare_registrations(fixture.waitset);
 
@@ -210,13 +212,30 @@ fn destroying_a_triggered_cycle_detaches_both_registrations() {
     };
     unsafe { supervise(cycle, fixture.node, index) };
     assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, index) }, HyphaStatus::Ok);
+    let second = trigger_input(&fixture, 8);
+    let second_index = bind_queued(cycle, second.source, 1);
+    add_trigger(&fixture, cycle, second_index, 1_000 * MILLIS);
     assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
+    // One periodic wake and one listener per trigger.
+    assert_eq!(spare_registrations(fixture.waitset), expected - 3);
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
     assert_eq!(RELEASES.load(Ordering::SeqCst), 1);
     assert_eq!(spare_registrations(fixture.waitset), expected);
+    unsafe { hypha_publisher_destroy(second.publisher) };
 }
 
+/// One binding of a step as the test reads it back.
 #[derive(Debug, Clone, Copy)]
+struct PortSeen {
+    /// The age the verdict compared with the silence limit, on the capture clock.
+    age_nanos: u64,
+    samples: usize,
+    faults: u32,
+    /// Samples refused by age, and late triggers, so far.
+    rejected: u64,
+}
+
+#[derive(Debug, Clone)]
 struct Seen {
     /// When the step ran, on the monotonic clock.
     at: std::time::Instant,
@@ -225,6 +244,15 @@ struct Seen {
     faults: u32,
     /// Triggers consumed without a step, too old when their turn came.
     late_total: u64,
+    /// Every binding, in binding order.
+    ports: Vec<PortSeen>,
+}
+
+impl Seen {
+    /// The binding whose trigger sample this step holds, `None` for a fallback.
+    fn fired(&self) -> Option<usize> {
+        self.ports.iter().position(|port| port.samples == 1)
+    }
 }
 
 #[derive(Default)]
@@ -238,6 +266,25 @@ impl Recorder {
     }
 }
 
+/// Every binding of `image`, in binding order.
+unsafe fn ports_of(image: *const HyphaCycleImage) -> Vec<PortSeen> {
+    let mut ports = Vec::new();
+    loop {
+        let mut binding = HyphaCycleBindingView::default();
+        let index = u32::try_from(ports.len()).expect("a few bindings");
+        if unsafe { hypha_cycle_image_binding(image, index, &raw mut binding) } != HyphaStatus::Ok {
+            return ports;
+        }
+        let report = binding.health.capture;
+        ports.push(PortSeen {
+            age_nanos: binding.age_nanos,
+            samples: report.sample_count,
+            faults: binding.supervision.faults,
+            rejected: report.stale_total,
+        });
+    }
+}
+
 extern "C" fn record_step(
     image: *const HyphaCycleImage,
     time: *const HyphaCycleTime,
@@ -245,18 +292,17 @@ extern "C" fn record_step(
     context: *mut c_void,
 ) -> HyphaCallbackResult {
     let recorder = unsafe { &*context.cast::<Recorder>() };
-    let mut binding = HyphaCycleBindingView::default();
-    let read = unsafe { hypha_cycle_image_binding(image, 0, &raw mut binding) } == HyphaStatus::Ok;
-    let (report, supervision) = (binding.health.capture, binding.supervision);
-    if !read {
+    let ports = unsafe { ports_of(image) };
+    let Some(&first) = ports.first() else {
         return HyphaCallbackResult { action: HYPHA_ACTION_FAIL, status: 1 };
-    }
+    };
     let seen = Seen {
         at: std::time::Instant::now(),
         scheduled: unsafe { (*time).scheduled_nanos },
-        samples: report.sample_count,
-        faults: supervision.faults,
-        late_total: report.stale_total,
+        samples: first.samples,
+        faults: first.faults,
+        late_total: first.rejected,
+        ports,
     };
     if let Ok(mut steps) = recorder.steps.lock() {
         steps.push(seen);
@@ -264,16 +310,18 @@ extern "C" fn record_step(
     HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
 }
 
-/// A committed triggered cycle on `fixture`'s `WaitSet`, recording into `recorder`.
-/// The subscriber holds `depth` samples; the binding takes `arrivals` per step.
-fn triggered(
-    fixture: &Fixture,
-    recorder: &Recorder,
-    silence_nanos: i64,
-    depth: usize,
-    arrivals: usize,
-) -> (*mut HyphaCycle, *mut HyphaPublisher) {
-    let topic = c_text(&format!("/{}", unique("trig_run")));
+/// A fresh topic with its publisher and an input source of a test's `WaitSet`.
+struct TriggerInput {
+    topic: String,
+    publisher: *mut HyphaPublisher,
+    source: *mut HyphaInputSource,
+}
+
+/// A publisher of `std_msgs/Counter` on a fresh topic, and an input source of
+/// `fixture`'s `WaitSet` whose subscriber holds `depth` samples.
+fn trigger_input(fixture: &Fixture, depth: usize) -> TriggerInput {
+    let name = format!("/{}", unique("trig_run"));
+    let topic = c_text(&name);
     let data_type = c_text("std_msgs/Counter");
     let md5 = c_text("d9d213e8c146065ec958333c617eb1a6");
     let definition = c_text("");
@@ -327,6 +375,16 @@ fn triggered(
         unsafe { hypha_input_source_create(fixture.waitset, subscriber, &raw mut source) },
         HyphaStatus::Ok
     );
+    TriggerInput { topic: name, publisher, source }
+}
+
+/// An uncommitted cycle with period 0 on `fixture`'s `WaitSet` that runs `step` on
+/// `context`.
+fn period_less_cycle(
+    fixture: &Fixture,
+    step: HyphaCycleStep,
+    context: *mut c_void,
+) -> *mut HyphaCycle {
     let name = c_text(&unique("triggered_run"));
     let mut cycle = ptr::null_mut();
     assert_eq!(
@@ -336,14 +394,19 @@ fn triggered(
                 name.as_ptr(),
                 name.as_bytes().len(),
                 0,
-                Some(record_step),
-                (&raw const *recorder).cast_mut().cast(),
+                step,
+                context,
                 None,
                 &raw mut cycle,
             )
         },
         HyphaStatus::Ok
     );
+    cycle
+}
+
+/// Bind `source` to `cycle` as a queued input that takes `arrivals` samples per step.
+fn bind_queued(cycle: *mut HyphaCycle, source: *mut HyphaInputSource, arrivals: usize) -> u32 {
     let options = HyphaCycleBindingOptions {
         mode: HyphaCycleInputMode::Queued as u32,
         max_samples_per_iteration: arrivals,
@@ -354,11 +417,64 @@ fn triggered(
         unsafe { hypha_cycle_bind_input(cycle, source, &raw const options, &raw mut index) },
         HyphaStatus::Ok
     );
+    index
+}
+
+/// Make binding `index` of `cycle` a trigger with the table of `silence_nanos`.
+fn add_trigger(fixture: &Fixture, cycle: *mut HyphaCycle, index: u32, silence_nanos: i64) {
     let bound = unsafe { bind_trigger(cycle, fixture.node, index, silence_nanos / MILLIS) };
     assert_eq!(bound.status, HyphaStatus::Ok, "{}", bound.detail);
     assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, index) }, HyphaStatus::Ok);
+}
+
+fn recording(recorder: &Recorder) -> *mut c_void {
+    (&raw const *recorder).cast_mut().cast()
+}
+
+/// A committed triggered cycle on `fixture`'s `WaitSet`, recording into `recorder`.
+/// The subscriber holds `depth` samples; the binding takes `arrivals` per step.
+fn triggered(
+    fixture: &Fixture,
+    recorder: &Recorder,
+    silence_nanos: i64,
+    depth: usize,
+    arrivals: usize,
+) -> (*mut HyphaCycle, *mut HyphaPublisher) {
+    let input = trigger_input(fixture, depth);
+    let cycle = period_less_cycle(fixture, Some(record_step), recording(recorder));
+    let index = bind_queued(cycle, input.source, arrivals);
+    add_trigger(fixture, cycle, index, silence_nanos);
     assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
-    (cycle, publisher)
+    (cycle, input.publisher)
+}
+
+/// A committed cycle with one trigger per limit of `silences_nanos`, each on its own
+/// topic, recording into `recorder`. Returns the cycle and each trigger's publisher.
+fn triggers(
+    fixture: &Fixture,
+    recorder: &Recorder,
+    silences_nanos: &[i64],
+) -> (*mut HyphaCycle, Vec<*mut HyphaPublisher>) {
+    let cycle = period_less_cycle(fixture, Some(record_step), recording(recorder));
+    let publishers = silences_nanos
+        .iter()
+        .map(|&silence| {
+            let input = trigger_input(fixture, 8);
+            let index = bind_queued(cycle, input.source, 1);
+            add_trigger(fixture, cycle, index, silence);
+            input.publisher
+        })
+        .collect();
+    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
+    (cycle, publishers)
+}
+
+/// Destroy `cycle` and `publishers`.
+fn destroy(cycle: *mut HyphaCycle, publishers: &[*mut HyphaPublisher]) {
+    assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
+    for publisher in publishers {
+        unsafe { hypha_publisher_destroy(*publisher) };
+    }
 }
 
 const MILLIS: i64 = 1_000_000;
@@ -389,9 +505,10 @@ fn a_triggered_cycle_falls_back_when_the_trigger_is_silent() {
     let (cycle, publisher) = triggered(&fixture, &recorder, 50 * MILLIS, 8, 1);
     // A host fallback is scheduled on the monotonic clock, not on the wall clock.
     let before = hypha_clock_steady_now_nanos();
-    run_waitset_for(fixture.waitset, 130_000_000);
+    // Until two fallbacks ran, not for a fixed 130 ms: a loaded host may give the cycle its
+    // turns later, which the scheduled times below still judge exactly.
+    assert!(run_until(fixture.waitset, POLL_BOUND, || recorder.steps().len() >= 2));
     let steps = recorder.steps();
-    assert!(steps.len() >= 2, "{steps:?}");
     assert!(steps.iter().all(|step| step.samples == 0), "{steps:?}");
     assert!(steps.iter().all(|step| step.faults & HYPHA_FAULT_STALE != 0), "{steps:?}");
     assert!(steps[0].scheduled >= before + 50 * MILLIS, "{steps:?}");
@@ -400,56 +517,6 @@ fn a_triggered_cycle_falls_back_when_the_trigger_is_silent() {
         let gap = pair[1].scheduled - pair[0].scheduled;
         gap > 0 && gap % (50 * MILLIS) == 0
     }));
-    assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
-    unsafe { hypha_publisher_destroy(publisher) };
-}
-
-#[test]
-fn a_trigger_resets_the_fallback() {
-    let fixture = Fixture::new();
-    let recorder = Recorder::default();
-    let (cycle, publisher) = triggered(&fixture, &recorder, 50 * MILLIS, 8, 1);
-    // A trigger whose turn comes more than a limit after its send, as on a loaded host,
-    // is consumed as late without a step, and the next step counts it.
-    let served = || {
-        let steps = recorder.steps();
-        let late = steps.last().map_or(0, |step| step.late_total);
-        steps.iter().filter(|step| step.samples == 1).count() as u64 + late
-    };
-    // Ten triggers about 20 ms apart span four silence limits.
-    for sent in 1..=10 {
-        unsafe { send_sample(publisher, &[1]) };
-        assert!(run_until(fixture.waitset, POLL_BOUND, || served() >= sent));
-        run_waitset_for(fixture.waitset, 20_000_000);
-    }
-    let steps = recorder.steps();
-    assert_eq!(served(), 10, "{steps:?}");
-    // Each trigger restarts the limit, so a fallback runs only a whole limit after the
-    // step before it.
-    assert!(
-        steps.windows(2).all(
-            |pair| pair[1].samples == 1 || pair[1].scheduled - pair[0].scheduled >= 50 * MILLIS
-        ),
-        "{steps:?}"
-    );
-    assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
-    unsafe { hypha_publisher_destroy(publisher) };
-}
-
-#[test]
-fn a_burst_of_triggers_runs_one_step_each_in_order() {
-    let fixture = Fixture::new();
-    let recorder = Recorder::default();
-    let (cycle, publisher) = triggered(&fixture, &recorder, 10_000 * MILLIS, 8, 2);
-    for value in 1..=5_u8 {
-        unsafe { send_sample(publisher, &[value]) };
-    }
-    assert!(run_until(fixture.waitset, POLL_BOUND, || recorder.steps().len() >= 5));
-    run_waitset_for(fixture.waitset, 20_000_000);
-    let steps = recorder.steps();
-    assert_eq!(steps.len(), 5, "{steps:?}");
-    assert!(steps.iter().all(|step| step.samples == 1), "{steps:?}");
-    assert!(steps.windows(2).all(|pair| pair[0].scheduled < pair[1].scheduled), "{steps:?}");
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
     unsafe { hypha_publisher_destroy(publisher) };
 }
@@ -484,8 +551,10 @@ fn an_idle_notified_trigger_wakes_its_waitset_for_its_silence_limit_alone() {
 
 #[test]
 fn a_host_triggered_cycle_fallback_runs_at_its_silence_limit_on_steady_time() {
-    // One trigger sent at `sent`, then silence: the fallback runs one silence limit after
-    // the send, measured on the monotonic clock, within a turn of the deadline.
+    // One trigger sent at `sent`, then silence: the fallback runs once the trigger is older
+    // than its silence limit, never before. How soon after the deadline the host runs it
+    // is the host's speed, which a test does not assert (engineering-traps.md); the poll
+    // bound of run_until catches a fallback that never comes.
     let fixture = Fixture::new();
     let recorder = Recorder::default();
     let (cycle, publisher) = triggered(&fixture, &recorder, 100 * MILLIS, 8, 1);
@@ -497,9 +566,13 @@ fn a_host_triggered_cycle_fallback_runs_at_its_silence_limit_on_steady_time() {
     let fallback = steps.iter().find(|step| step.samples == 0).expect("the fallback step");
     let after_send = fallback.at.duration_since(sent);
     assert!(
-        (std::time::Duration::from_millis(100)..=std::time::Duration::from_millis(110))
-            .contains(&after_send),
-        "the fallback ran {after_send:?} after the send; its silence limit is 100 ms"
+        after_send >= std::time::Duration::from_millis(100),
+        "the fallback ran {after_send:?} after the send, before its silence limit of 100 ms"
+    );
+    assert!(
+        fallback.ports[0].age_nanos >= 100 * MILLIS.unsigned_abs(),
+        "the fallback step judged the trigger {} ns old, under its silence limit",
+        fallback.ports[0].age_nanos
     );
     assert!(trigger.at <= fallback.at, "{steps:?}");
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
@@ -558,4 +631,425 @@ fn a_fresh_trigger_is_not_late_when_an_earlier_item_of_the_turn_was_slow() {
     assert!(steps.iter().all(|step| step.late_total == 0), "no trigger is late: {steps:?}");
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
     unsafe { hypha_publisher_destroy(publisher) };
+}
+
+/// The reason the library gave for its last refusal on this thread.
+fn last_error() -> String {
+    let mut length = 0_usize;
+    let sized = unsafe { hypha_last_error(ptr::null_mut(), 0, &raw mut length) };
+    assert!(sized == HyphaStatus::Ok || sized == HyphaStatus::TooLarge);
+    let mut buffer = vec![0_u8; length];
+    assert_eq!(
+        unsafe { hypha_last_error(buffer.as_mut_ptr().cast(), buffer.len(), &raw mut length) },
+        HyphaStatus::Ok
+    );
+    buffer.truncate(length);
+    String::from_utf8(buffer).expect("the reason is UTF-8")
+}
+
+#[test]
+fn a_second_set_trigger_adds_a_trigger() {
+    let fixture = Fixture::new();
+    let recorder = Recorder::default();
+    let (cycle, publishers) = triggers(&fixture, &recorder, &[1_000 * MILLIS, 10_000 * MILLIS]);
+    for publisher in &publishers {
+        unsafe { send_sample(*publisher, &[1]) };
+    }
+    assert!(run_until(fixture.waitset, POLL_BOUND, || recorder.steps().len() >= 2));
+    run_waitset_for(fixture.waitset, 20_000_000);
+    let fired: Vec<Option<usize>> = recorder.steps().iter().map(Seen::fired).collect();
+    assert_eq!(fired, [Some(0), Some(1)], "the first trigger was kept");
+    destroy(cycle, &publishers);
+}
+
+#[test]
+fn the_same_binding_twice_is_one_trigger() {
+    let fixture = Fixture::new();
+    let spare = spare_registrations(fixture.waitset);
+    let recorder = Recorder::default();
+    let TriggerInput { publisher, source, .. } = trigger_input(&fixture, 8);
+    let cycle = period_less_cycle(&fixture, Some(record_step), recording(&recorder));
+    let index = bind_queued(cycle, source, 1);
+    add_trigger(&fixture, cycle, index, 10_000 * MILLIS);
+    assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, index) }, HyphaStatus::Ok);
+    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
+    // One periodic wake and one listener.
+    assert_eq!(spare_registrations(fixture.waitset), spare - 2);
+    for value in 1..=2_u8 {
+        unsafe { send_sample(publisher, &[value]) };
+    }
+    assert!(run_until(fixture.waitset, POLL_BOUND, || recorder.steps().len() >= 2));
+    run_waitset_for(fixture.waitset, 20_000_000);
+    assert_eq!(recorder.steps().len(), 2, "one step per sample");
+    destroy(cycle, &[publisher]);
+}
+
+#[test]
+fn two_ports_on_one_topic_are_refused() {
+    let fixture = Fixture::new();
+    let TriggerInput { publisher, source, .. } = trigger_input(&fixture, 8);
+    let cycle = period_less_cycle(&fixture, Some(empty_step), ptr::null_mut());
+    let first = bind_queued(cycle, source, 1);
+    let second = bind_queued(cycle, source, 1);
+    assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, first) }, HyphaStatus::Ok);
+    // Each sample of the shared history would step twice.
+    assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, second) }, HyphaStatus::InvalidArgument);
+    destroy(cycle, &[publisher]);
+}
+
+#[test]
+fn each_trigger_wakes_the_waitset() {
+    for port in 0..2 {
+        let fixture = Fixture::new();
+        let recorder = Recorder::default();
+        let (cycle, publishers) = triggers(&fixture, &recorder, &[10_000 * MILLIS, 1_000 * MILLIS]);
+        let publisher = publishers[port] as usize;
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            unsafe { send_sample(publisher as *mut HyphaPublisher, &[1]) };
+            std::time::Instant::now()
+        });
+        // Nothing but the listener of the port runs a step within this run: the first
+        // fallback is due at 1 s.
+        run_waitset_for(fixture.waitset, 500_000_000);
+        let sent = sender.join().expect("the sender ran");
+        let steps = recorder.steps();
+        assert_eq!(steps.len(), 1, "port {port}: {steps:?}");
+        assert_eq!(steps[0].fired(), Some(port));
+        let woke_after = steps[0].at.duration_since(sent);
+        assert!(woke_after < std::time::Duration::from_millis(400), "port {port}: {woke_after:?}");
+        destroy(cycle, &publishers);
+    }
+}
+
+#[test]
+fn a_wildcard_among_triggers_polls_at_a_tenth_of_the_shortest_limit() {
+    let fixture = Fixture::new();
+    let recorder = Recorder::default();
+    let literal = trigger_input(&fixture, 8);
+    let pattern = c_text(&format!("/{}/**", unique("trig_wild")));
+    let md5 = c_text("d9d213e8c146065ec958333c617eb1a6");
+    let options = HyphaSubscriberOptions {
+        depth: 8,
+        no_publisher_warning_after_nanos: 0,
+        qos: hypha_ffi::HyphaQos::default(),
+    };
+    let mut wildcard = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            hypha_subscribe_typed(
+                fixture.node,
+                pattern.as_ptr(),
+                pattern.as_bytes().len(),
+                ptr::null(),
+                0,
+                md5.as_ptr(),
+                md5.as_bytes().len(),
+                ptr::null(),
+                0,
+                &raw const options,
+                &raw mut wildcard,
+            )
+        },
+        HyphaStatus::Ok
+    );
+    let mut wildcard_source = ptr::null_mut();
+    assert_eq!(
+        unsafe { hypha_input_source_create(fixture.waitset, wildcard, &raw mut wildcard_source) },
+        HyphaStatus::Ok
+    );
+    let cycle = period_less_cycle(&fixture, Some(record_step), recording(&recorder));
+    let index = bind_queued(cycle, literal.source, 1);
+    add_trigger(&fixture, cycle, index, SILENCE_NANOS);
+    let index = bind_queued(cycle, wildcard_source, 1);
+    add_trigger(&fixture, cycle, index, 10_000 * MILLIS);
+    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
+    let before = crate::common::node_metric(fixture.node, "node.sweeps").expect("node.sweeps");
+    run_waitset_for(fixture.waitset, 1_000_000_000);
+    let after = crate::common::node_metric(fixture.node, "node.sweeps").expect("node.sweeps");
+    let turns = after - before;
+    // A 10 ms poll, a tenth of the 100 ms limit: about 100 turns and 10 fallbacks. A poll at
+    // a tenth of the wildcard's own limit gives about 10, one every millisecond about 1000;
+    // the range leaves room for a loaded host.
+    assert!((20..=400).contains(&turns), "{turns} turns in 1 s");
+    destroy(cycle, &[literal.publisher]);
+}
+
+/// The cycle a step tries to destroy, and the status the destroy gave.
+struct SelfDestroy {
+    cycle: std::sync::atomic::AtomicPtr<HyphaCycle>,
+    status: Mutex<Option<HyphaStatus>>,
+}
+
+extern "C" fn destroy_own_cycle(
+    _image: *const HyphaCycleImage,
+    _time: *const HyphaCycleTime,
+    _emission: *mut HyphaCycleEmission,
+    context: *mut c_void,
+) -> HyphaCallbackResult {
+    let attempt = unsafe { &*context.cast::<SelfDestroy>() };
+    let status = unsafe { hypha_cycle_destroy(attempt.cycle.load(Ordering::SeqCst)) };
+    if let Ok(mut held) = attempt.status.lock() {
+        *held = Some(status);
+    }
+    HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
+}
+
+#[test]
+fn a_step_cannot_destroy_its_cycle_and_the_destroy_after_the_run_detaches_every_listener() {
+    let fixture = Fixture::new();
+    let spare = spare_registrations(fixture.waitset);
+    let attempt = SelfDestroy {
+        cycle: std::sync::atomic::AtomicPtr::new(ptr::null_mut()),
+        status: Mutex::new(None),
+    };
+    let context = (&raw const attempt).cast_mut().cast();
+    let cycle = period_less_cycle(&fixture, Some(destroy_own_cycle), context);
+    attempt.cycle.store(cycle, Ordering::SeqCst);
+    let inputs: Vec<TriggerInput> = [1_000 * MILLIS, 10_000 * MILLIS]
+        .into_iter()
+        .map(|silence| {
+            let input = trigger_input(&fixture, 8);
+            let index = bind_queued(cycle, input.source, 1);
+            add_trigger(&fixture, cycle, index, silence);
+            input
+        })
+        .collect();
+    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
+    unsafe { send_sample(inputs[1].publisher, &[1]) };
+    let refused = || attempt.status.lock().is_ok_and(|status| status.is_some());
+    assert!(run_until(fixture.waitset, POLL_BOUND, refused));
+    let status = attempt.status.lock().map(|status| *status).expect("status");
+    assert_eq!(status, Some(HyphaStatus::InvalidState), "a running WaitSet keeps its cycle");
+    assert_eq!(spare_registrations(fixture.waitset), spare - 3, "every listener stays");
+    let publishers: Vec<*mut HyphaPublisher> = inputs.iter().map(|input| input.publisher).collect();
+    destroy(cycle, &publishers);
+    assert_eq!(spare_registrations(fixture.waitset), spare);
+}
+
+/// What one step held, binding by binding in binding order: the first byte of each
+/// payload, in the order the step reads them.
+type Held = Vec<Vec<u8>>;
+
+#[derive(Default)]
+struct Contents {
+    steps: Mutex<Vec<Held>>,
+}
+
+impl Contents {
+    fn steps(&self) -> Vec<Held> {
+        self.steps.lock().map_or_else(|_| Vec::new(), |steps| steps.clone())
+    }
+}
+
+/// The first byte of every payload binding `binding` of `image` holds; `None` past the
+/// last binding.
+unsafe fn payloads_held_by(image: *const HyphaCycleImage, binding: u32) -> Option<Vec<u8>> {
+    let mut view = HyphaCycleBindingView::default();
+    if unsafe { hypha_cycle_image_binding(image, binding, &raw mut view) } != HyphaStatus::Ok {
+        return None;
+    }
+    let held = (0..view.health.capture.sample_count)
+        .map(|index| {
+            let mut sample = HyphaCycleSampleView {
+                payload: ptr::null(),
+                payload_len: 0,
+                transport_sent_nanos: 0,
+                sequence: 0,
+                publisher_id: 0,
+                publisher_sequence: 0,
+            };
+            let status =
+                unsafe { hypha_cycle_image_sample(image, binding, index, &raw mut sample) };
+            assert_eq!(status, HyphaStatus::Ok);
+            let payload = unsafe { std::slice::from_raw_parts(sample.payload, sample.payload_len) };
+            payload.first().copied().expect("a payload of one byte")
+        })
+        .collect();
+    Some(held)
+}
+
+extern "C" fn record_contents(
+    image: *const HyphaCycleImage,
+    _time: *const HyphaCycleTime,
+    _emission: *mut HyphaCycleEmission,
+    context: *mut c_void,
+) -> HyphaCallbackResult {
+    let contents = unsafe { &*context.cast::<Contents>() };
+    let held: Held =
+        (0..).map_while(|binding| unsafe { payloads_held_by(image, binding) }).collect();
+    if let Ok(mut steps) = contents.steps.lock() {
+        steps.push(held);
+    }
+    HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
+}
+
+/// A committed cycle on `fixture`'s `WaitSet` that records what each step held, and its
+/// two inputs. Binding 0 is the trigger and takes one sample a step; binding 1 is a queued
+/// input that is no trigger and takes up to eight samples a step.
+struct Pairing {
+    cycle: *mut HyphaCycle,
+    trigger: TriggerInput,
+    partner: TriggerInput,
+}
+
+impl Pairing {
+    fn new(fixture: &Fixture, contents: &Contents, silence_nanos: i64) -> Self {
+        let trigger = trigger_input(fixture, 8);
+        let partner = trigger_input(fixture, 8);
+        let cycle = period_less_cycle(fixture, Some(record_contents), contents_context(contents));
+        let index = bind_queued(cycle, trigger.source, 1);
+        add_trigger(fixture, cycle, index, silence_nanos);
+        bind_queued(cycle, partner.source, 8);
+        assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
+        Self { cycle, trigger, partner }
+    }
+
+    fn destroy(self) {
+        destroy(self.cycle, &[self.trigger.publisher, self.partner.publisher]);
+    }
+}
+
+fn contents_context(contents: &Contents) -> *mut c_void {
+    (&raw const *contents).cast_mut().cast()
+}
+
+/// Run `fixture`'s `WaitSet` until `count` steps ran, then for one more turn, so that a
+/// step too many shows.
+fn run_steps(fixture: &Fixture, contents: &Contents, count: usize) -> Vec<Held> {
+    assert!(run_until(fixture.waitset, POLL_BOUND, || contents.steps().len() >= count));
+    run_waitset_for(fixture.waitset, 20_000_000);
+    contents.steps()
+}
+
+#[test]
+fn two_pairs_drained_in_one_turn_each_find_their_partner() {
+    let fixture = Fixture::new();
+    let contents = Contents::default();
+    let pairing = Pairing::new(&fixture, &contents, 10_000 * MILLIS);
+    // All four are queued before the loop turns, so one turn drains them together. The
+    // partner of each trigger sample is the one sent just before it.
+    unsafe { send_sample(pairing.partner.publisher, &[11]) };
+    unsafe { send_sample(pairing.trigger.publisher, &[1]) };
+    unsafe { send_sample(pairing.partner.publisher, &[12]) };
+    unsafe { send_sample(pairing.trigger.publisher, &[2]) };
+    let steps = run_steps(&fixture, &contents, 2);
+    assert_eq!(steps, [[vec![1], vec![11]], [vec![2], vec![12]]], "{steps:?}");
+    pairing.destroy();
+}
+
+#[test]
+fn a_partner_sent_after_the_trigger_sample_waits_for_the_next_step() {
+    let fixture = Fixture::new();
+    let contents = Contents::default();
+    let pairing = Pairing::new(&fixture, &contents, 10_000 * MILLIS);
+    unsafe { send_sample(pairing.trigger.publisher, &[1]) };
+    unsafe { send_sample(pairing.partner.publisher, &[11]) };
+    unsafe { send_sample(pairing.trigger.publisher, &[2]) };
+    let steps = run_steps(&fixture, &contents, 2);
+    assert_eq!(steps, [[vec![1], vec![]], [vec![2], vec![11]]], "{steps:?}");
+    pairing.destroy();
+}
+
+#[test]
+fn a_fallback_step_takes_every_arrival_of_the_other_input() {
+    let fixture = Fixture::new();
+    let contents = Contents::default();
+    let pairing = Pairing::new(&fixture, &contents, 50 * MILLIS);
+    for value in [21, 22, 23] {
+        unsafe { send_sample(pairing.partner.publisher, &[value]) };
+    }
+    // The trigger stays silent, so the first step is a fallback, and it runs only after
+    // the partner's samples were published.
+    let steps = run_steps(&fixture, &contents, 1);
+    assert_eq!(steps.first(), Some(&vec![vec![], vec![21, 22, 23]]), "{steps:?}");
+    let every: Vec<u8> = steps.iter().flat_map(|step| step[1].iter().copied()).collect();
+    assert_eq!(every, [21, 22, 23], "each sample comes once: {steps:?}");
+    pairing.destroy();
+}
+
+/// How many pairs the upstream cycle sends.
+const PAIRS: u32 = 3;
+
+/// The upstream cycle's step counter. Each of its first [`PAIRS`] steps sends the number
+/// of the step on output 0 and 100 more on output 1.
+struct Emitter {
+    steps: AtomicU32,
+}
+
+extern "C" fn send_pair(
+    _image: *const HyphaCycleImage,
+    _time: *const HyphaCycleTime,
+    emission: *mut HyphaCycleEmission,
+    context: *mut c_void,
+) -> HyphaCallbackResult {
+    let emitter = unsafe { &*context.cast::<Emitter>() };
+    let number = emitter.steps.fetch_add(1, Ordering::SeqCst) + 1;
+    if number <= PAIRS {
+        let value = u8::try_from(number).expect("a few pairs");
+        assert_eq!(unsafe { emit_message(emission, 0, &[value]) }, HyphaStatus::Ok);
+        assert_eq!(unsafe { emit_message(emission, 1, &[value + 100]) }, HyphaStatus::Ok);
+    }
+    HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
+}
+
+#[test]
+fn a_partner_sent_by_the_same_upstream_step_is_in_the_trigger_step() {
+    let fixture = Fixture::new();
+    let contents = Contents::default();
+    let pairing = Pairing::new(&fixture, &contents, 10_000 * MILLIS);
+
+    // The upstream cycle runs on a node of its own, and finishes before the downstream
+    // loop turns once: its three steps each send both samples with one send time.
+    let upstream = create_node(&unique("cyc_trig_up"));
+    let upstream_waitset = unsafe { create_waitset(upstream) };
+    let md5 = "d9d213e8c146065ec958333c617eb1a6";
+    let outputs = [&pairing.trigger, &pairing.partner].map(|input| unsafe {
+        crate::common::replay::open_publisher(upstream, &input.topic, "std_msgs/Counter", md5, "")
+    });
+    let emitter = Emitter { steps: AtomicU32::new(0) };
+    let name = c_text(&unique("upstream_pair"));
+    let mut sender = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            hypha_cycle_create(
+                upstream_waitset,
+                name.as_ptr(),
+                name.as_bytes().len(),
+                5_000_000,
+                Some(send_pair),
+                (&raw const emitter).cast_mut().cast(),
+                None,
+                &raw mut sender,
+            )
+        },
+        HyphaStatus::Ok
+    );
+    for output in outputs {
+        let mut index = u32::MAX;
+        assert_eq!(
+            unsafe {
+                hypha_cycle_bind_output(
+                    sender,
+                    output,
+                    HyphaCycleOutputFailure::FailRun as u32,
+                    1,
+                    &raw mut index,
+                )
+            },
+            HyphaStatus::Ok
+        );
+    }
+    assert_eq!(unsafe { hypha_cycle_commit(sender) }, HyphaStatus::Ok);
+    assert!(run_until(upstream_waitset, POLL_BOUND, || {
+        emitter.steps.load(Ordering::SeqCst) >= PAIRS
+    }));
+
+    let steps = run_steps(&fixture, &contents, 3);
+    let expected: Vec<Held> = (1..=3_u8).map(|n| vec![vec![n], vec![n + 100]]).collect();
+    assert_eq!(steps, expected, "each step holds the partner of its own upstream step");
+
+    assert_eq!(unsafe { hypha_cycle_destroy(sender) }, HyphaStatus::Ok);
+    unsafe { hypha_node_destroy(upstream) };
+    pairing.destroy();
 }

@@ -16,10 +16,12 @@ set(HYPHA_TOOLS
     foxglove
     intercept
     launch
+    load
     node
     param
     play
     record
+    service
     top
     topic)
 set(HYPHA_TOOL_LINKS hy)
@@ -34,9 +36,7 @@ else()
   set(HYPHA_APP_PROFILE_DIR release)
 endif()
 
-set(HYPHA_APP_TARGET_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/../target/${HYPHA_APP_PROFILE_DIR}")
-cmake_path(NORMAL_PATH HYPHA_APP_TARGET_DIR)
+set(HYPHA_APP_TARGET_DIR "${HYPHA_CARGO_TARGET_DIR}/${HYPHA_APP_PROFILE_DIR}")
 
 # hypha::<tool> (hypha::topic for the link hytopic) names each tool's link, and
 # hypha::hypha and hypha::ros_bridge the executables, so an application runs

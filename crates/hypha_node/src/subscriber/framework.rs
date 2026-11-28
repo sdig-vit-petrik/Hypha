@@ -59,12 +59,16 @@ fn create_framework_subscriber(
     // A framework input declares no policy: it adopts the topic's service.
     let spec = TopicSpec::new(topic).keeping(depth).with_type(data_type).with_md5(md5);
     let port = transport.subscribe(&spec).map_err(Error::from)?;
-    let budget =
-        Arc::new(LoanBudget { budget: 1, held: AtomicUsize::new(0), refused: AtomicU64::new(0) });
+    let budget = Arc::new(LoanBudget {
+        budget: AtomicUsize::new(1),
+        held: AtomicUsize::new(0),
+        refused: AtomicU64::new(0),
+    });
     Ok(Box::new(HyphaSubscriber {
         owner_node: 0,
         topic: topic.to_owned(),
         data_type: data_type.to_owned(),
+        md5: md5.to_owned(),
         port,
         budget,
         // The node drains it itself; nothing else may claim it.
@@ -72,11 +76,13 @@ fn create_framework_subscriber(
         attached: AtomicBool::new(false),
         validator: FrameValidator::new(Some(schema_hash)),
         no_publisher_watch: NoPublisherWatch::new(Duration::ZERO, std::time::Instant::now()),
+        watch: None,
         rejection_report: super::RejectionReport::default(),
         introspection: crate::introspection::IntrospectionRow::new(
             introspection,
             crate::introspection::Row::Subscriber(hypha_core::introspection::EndpointRow {
                 queue_depth: depth,
+                md5: md5.to_owned(),
                 ..hypha_core::introspection::EndpointRow::new(topic, data_type)
             }),
         ),

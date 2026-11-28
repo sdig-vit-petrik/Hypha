@@ -1,10 +1,11 @@
 # Dependency assessment
 
 The software in `libhypha_ffi` that hypha did not write: what hypha needs from each
-part, what shows that it delivers, and what is not shown. It has the form IEC 61508-3
-asks for pre-existing software (7.4.2.12, 7.4.2.13). First issue, not reviewed.
+part, what shows that it delivers, and what is not shown. It answers the questions
+IEC 61508-3 asks of pre-existing software (7.4.2.12, 7.4.2.13), as engineering
+information; nobody has reviewed it.
 
-Readers: an assessor, and the engineer who updates a dependency.
+Readers: an integrator who judges the transport, and the engineer who updates a dependency.
 
 ## 1. Status
 
@@ -13,8 +14,7 @@ Readers: an assessor, and the engineer who updates a dependency.
 - The list is the output of `cargo tree --locked -p hypha_ffi -e normal` at C ABI
   revision 1. `Cargo.lock` pins every version; `cargo deny` checks advisories and
   licences on every change.
-- A dependency update follows [safety-plan.md](safety-plan.md) §6 and updates this
-  document in the same change.
+- A dependency update updates this document in the same change.
 
 ## 2. The parts
 
@@ -22,13 +22,13 @@ Readers: an assessor, and the engineer who updates a dependency.
 |---|---|---|---|
 | iceoryx2 0.10.1 | 28 (`iceoryx2`, `iceoryx2-cal` vendored with a patch, `iceoryx2-bb-*`, `iceoryx2-pal-*`, `iceoryx2-log*`) | Yes, always | The transport: shared-memory segments, lock-free queues, discovery, events, cleanup of dead processes |
 | Pulled in by iceoryx2 | `flatbuffers`, `postcard`, `cobs`, `sha1_smol`, `tiny-fn`, `enum-iterator` | Yes | Its service configuration files and naming |
-| Operating-system calls | `libc`, `rustix`, `linux-raw-sys`, `nix`, `memmap2`, `bitflags`, `cfg-if` | Yes | System calls and memory mapping |
-| Checksum | `crc32c` 0.6.8 | Yes, on every send and receive | The CRC-32C of the frame |
+| Operating-system calls | `libc`, `rustix`, `linux-raw-sys`, `bitflags` | Yes | System calls and memory mapping |
+| Checksum | `crc-fast` 1.10.0; `spin`, and `digest`, `crypto-common`, `generic-array`, `typenum`, which its `std` feature pulls in and hypha does not call | Yes, on every send and receive | The CRC-32C of the frame |
 | Configuration | `toml` 0.9.12 with `toml_parser`, `toml_datetime`, `toml_writer`, `serde_spanned`, `winnow`; `serde`, `serde_core` | At start-up | Parsing the node's parameter file |
 | Transforms | `transforms` 2.3.0, `approx`, `num-traits`, `libm` | When a node uses the transform buffer | Interpolation of coordinate transforms |
 | Containers and errors | `hashbrown`, `foldhash`, `equivalent`, `allocator-api2`, `thiserror`, `log` | Yes | Maps, error types, the log facade |
 | Build time only | `proc-macro2`, `quote`, `syn`, `unicode-ident`, `serde_derive`, `thiserror-impl`, `enum-iterator-derive`, `iceoryx2-bb-derive-macros` | No | Procedural macros; they generate code at compile time |
-| Rust runtime | `core`, `alloc`, `std` of the latest stable Rust, 1.98 or newer | Yes | The language runtime |
+| Rust runtime | `core`, `alloc`, `std` of the Rust version pinned in `rust-toolchain.toml` | Yes | The language runtime |
 | C++ runtime | The standard library of the builder image's GCC | In the application | The SDK headers use it |
 | Platform | Linux, the MMU, POSIX shared memory, the monotonic clock | — | Outside the item; an assumption of use |
 
@@ -46,7 +46,7 @@ does not cover.
 | TR-01 | never blocks a publisher on a slow or dead reader | `hypha_iceoryx2/subscriber_depth`, `hypha_node/peer_kill_isolation` | No analysis of its lock-free algorithms; no test under scheduling stress |
 | TR-02 | refuses a loan at once when the pool is empty | `hypha_iceoryx2/payload_capacity`, `hypha_ffi/publisher_payload_capacity` | |
 | TR-03 | uses no more shared memory than the declared limits of a bounded topic | `hypha_iceoryx2/shm_capacity`, `hypha_iceoryx2/resource_qos` | Memory over time under sustained overload is not measured |
-| TR-04 | lets survivors continue, without loss or refusal, when a participant is killed at any point | `hypha_iceoryx2/stale_resource_reclaim`, `hypha_node/peer_kill_isolation` | A publisher killed with an unsent loan; a kill between two sends |
+| TR-04 | lets survivors continue, without loss or refusal, when a participant is killed at any point | `hypha_iceoryx2/stale_resource_reclaim`, `hypha_node/peer_kill_isolation` | |
 | TR-05 | reclaims the resources of a dead participant when a node of the same name starts | `hypha_iceoryx2/stale_resource_reclaim` | |
 | TR-06 | establishes the same connections whatever the start order | `hypha_iceoryx2/start_order_matrix` | |
 | TR-07 | keeps two domains apart | `hypha_iceoryx2/domain_isolation` | |
@@ -67,12 +67,12 @@ changes no algorithm.
 
 | Part | hypha requires | Shown by | Not shown |
 |---|---|---|---|
-| `crc32c` | The CRC-32C (Castagnoli) of a byte sequence, the same on every platform | `hypha_wire/crc32c_check_value` (the published check value), `hypha_wire/frame` | The hardware and software paths of the crate are not tested separately |
+| `crc-fast` | The CRC-32C (Castagnoli) of a byte sequence, the same on every platform | `hypha_wire/crc32c_check_value` (the published and RFC 3720 check values, and equality with `crc32c` 0.6.8, the earlier implementation, over every length to 1 KiB at every alignment in a word and over arbitrary frames), `hypha_wire/frame` | Only the path the test machine selects is tested: aarch64 with PMULL and SHA3 (macOS, Linux); the x86_64 paths and the table fallback are not run here |
 | `toml`, `serde` | A parameter file parses to its values or to an error; no input aborts the process | `hypha_core/parameters`, the fuzz target `config_load` | |
 | Operating-system crates | Each call hypha makes behaves as the Linux manual states | The tests that exercise the calls | No list of the calls in use |
 | `transforms` | Interpolation between two stamped transforms | `hypha_ffi/transform_buffer`, `cxx:test_transform_buffer` | Numerical limits |
-| Procedural macros | Correct generated code | The tests of the code they generate | They are tools of class T3 ([safety-plan.md](safety-plan.md) §8) |
-| Rust `std` | — | — | Not assessed; see the compiler in [safety-plan.md](safety-plan.md) §8 |
+| Procedural macros | Correct generated code | The tests of the code they generate | A defect in them can put a defect in the code |
+| Rust `std` | — | — | Not assessed, like the compiler that ships it |
 
 ## 5. Functions that are present and not needed
 
@@ -84,8 +84,8 @@ type or a configuration path is linked and unreachable has not been checked.
 
 In order of cost:
 
-1. Tests for TR-04 (the two missing kill cases) and a fault-injection test for TR-11.
+1. A fault-injection test for TR-11 (#12).
 2. A list of the system calls in use, from the operating-system crates.
 3. For TR-11 and TR-12: an assessment of iceoryx2 as pre-existing software, or a
    certified variant from its vendor if one exists, or the system-level argument
-   above (watchdog and safe state) accepted by the assessor.
+   above (watchdog and safe state) accepted in the integrator's safety case.

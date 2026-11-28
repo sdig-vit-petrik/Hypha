@@ -51,6 +51,10 @@ impl Iox2WaitSet {
         let Ok(control_guard) = waitset.attach_notification(&self.control.listener) else {
             return RunReport::setup_failed(PortError::Backend(32));
         };
+        let _timer_guard = match self.timer.attach(&waitset) {
+            Ok(guard) => guard,
+            Err(cause) => return RunReport::setup_failed(cause),
+        };
 
         let (mut event_guards, mut interval_guards) = (Vec::new(), Vec::new());
         if let Err(report) = build_guards(
@@ -78,10 +82,14 @@ impl Iox2WaitSet {
             let Some(wait_slice) = next_wait_slice(deadline, has_pending_work, first) else {
                 return RunReport::deadline();
             };
-            let wait_slice = match dispatcher.next_timed_wait() {
-                Some(timed_wait) => wait_slice.min(timed_wait),
-                None => wait_slice,
-            };
+            let due = dispatcher.next_deadline();
+            let wait_slice = due.map_or(wait_slice, |due| wait_slice.min(time_until(due)));
+            // The timer ends a blocking wait at `due`, which the wait's timeout may overshoot.
+            if !wait_slice.is_zero()
+                && let Err(cause) = self.timer.arm(due)
+            {
+                return RunReport::runtime_failed(cause, None);
+            }
 
             let mut stop_requested = false;
             let wait = waitset.wait_and_process_once_with_timeout(
@@ -169,6 +177,12 @@ fn next_wait_slice(
     Some(slice.min(remaining))
 }
 
+/// How long from now until `deadline` on the host's monotonic clock; zero once it passed.
+fn time_until(deadline: hypha_time::Time) -> Duration {
+    let remaining = deadline.nanos().saturating_sub(hypha_time::steady_now().nanos());
+    Duration::from_nanos(u64::try_from(remaining).unwrap_or(0))
+}
+
 type EventGuards<'w, 'l> = Vec<(usize, iceoryx2::waitset::WaitSetGuard<'w, 'l, Ipc>)>;
 
 /// Native interval guards; `'static`, so apart from the event guards.
@@ -177,7 +191,7 @@ type IntervalGuards<'w> = Vec<(usize, iceoryx2::waitset::WaitSetGuard<'w, 'stati
 /// Create every native attachment for one run, before any callback runs.
 fn build_guards<'w, 'l>(
     waitset: &'w iceoryx2::waitset::WaitSet<Ipc>,
-    listeners: &'l [Option<Listener<Ipc>>],
+    listeners: &'l [Vec<Listener<Ipc>>],
     registrations: &[Registration],
     event_guards: &mut EventGuards<'w, 'l>,
     interval_guards: &mut IntervalGuards<'w>,
@@ -186,10 +200,13 @@ fn build_guards<'w, 'l>(
         if registration.trigger == Trigger::Timed {
             continue;
         }
-        let listener = listeners.get(index).and_then(Option::as_ref);
-        let attached = match (registration.trigger, listener) {
-            (Trigger::Event, Some(listener)) => {
-                waitset.attach_notification(listener).map(|guard| event_guards.push((index, guard)))
+        let attached = match (registration.trigger, listeners.get(index)) {
+            (Trigger::Event, Some(listeners)) if !listeners.is_empty() => {
+                listeners.iter().try_for_each(|listener| {
+                    waitset
+                        .attach_notification(listener)
+                        .map(|guard| event_guards.push((index, guard)))
+                })
             }
             (Trigger::Periodic(period), _) => {
                 waitset.attach_interval(period).map(|guard| interval_guards.push((index, guard)))
@@ -205,7 +222,7 @@ fn build_guards<'w, 'l>(
 
 /// Mark every attachment that has work, and consume its notifications.
 fn mark_ready(
-    listeners: &[Option<Listener<Ipc>>],
+    listeners: &[Vec<Listener<Ipc>>],
     registrations: &mut [Registration],
     event_guards: &EventGuards<'_, '_>,
     interval_guards: &IntervalGuards<'_>,
@@ -225,7 +242,7 @@ fn mark_ready(
 /// Consume a notified registration's notifications before the dispatcher reads, so an
 /// unread event cannot spin the run loop.
 fn mark_event_ready(
-    listeners: &[Option<Listener<Ipc>>],
+    listeners: &[Vec<Listener<Ipc>>],
     registrations: &[Registration],
     state: &TurnState,
     index: usize,
@@ -233,11 +250,9 @@ fn mark_event_ready(
     if !state.ready.get(index).copied().unwrap_or(false) {
         return None;
     }
-    let Some(Some(listener)) = listeners.get(index) else {
-        return None;
-    };
     let registration = registrations.get(index)?;
-    drain(listener).err().map(|cause| RunReport::runtime_failed(cause, Some(registration.id)))
+    let drained = listeners.get(index)?.iter().try_for_each(|listener| drain(listener).map(drop));
+    drained.err().map(|cause| RunReport::runtime_failed(cause, Some(registration.id)))
 }
 
 /// A periodic registration is ready for exactly one turn per tick.

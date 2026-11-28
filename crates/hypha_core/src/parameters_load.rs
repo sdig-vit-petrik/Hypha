@@ -18,7 +18,7 @@ const SINK_PATH_KEY: &str = "path";
 
 /// The file that wrote each scalar and list, by dotted name, `[log]` keys included.
 type Origins = BTreeMap<String, PathBuf>;
-const NESTED_LIST_REASON: &str = "lists inside list elements are not supported";
+const NESTED_LIST_REASON: &str = "a list cannot hold a list; put it in a field of a table element";
 /// How many include levels a file may sit below the root file.
 const MAX_INCLUDE_DEPTH: usize = 16;
 /// How many included files one composition reads, a file included twice counted twice.
@@ -385,8 +385,8 @@ fn flatten_table(
     Ok(())
 }
 
-/// Store the array `items` as the list `key`. An array inside a list element
-/// is refused. A list holds one kind of element: all scalars or all tables.
+/// Store the array `items` as the list `key`, of the table element `label` when it is not
+/// empty. A list holds one kind of element: all scalars or all tables, never lists.
 fn read_list(
     items: &[Value],
     key: &str,
@@ -394,27 +394,24 @@ fn read_list(
     label: &str,
     params: &mut Parameters,
 ) -> Result<(), ParameterLoadError> {
-    if !label.is_empty() {
-        let element_key = join_parameter_key(label, key);
-        return Err(load_error(path, &element_key, NESTED_LIST_REASON));
-    }
+    let full_key = join_parameter_key(label, key);
     let tables = items.iter().filter(|item| item.is_table()).count();
     let mixed = tables != 0 && tables != items.len();
     if mixed {
-        return Err(load_error(path, key, "a list cannot mix scalars and tables"));
+        return Err(load_error(path, &full_key, "a list cannot mix scalars and tables"));
     }
     let elements = items
         .iter()
         .enumerate()
-        .map(|(index, item)| read_element(item, key, index, path))
+        .map(|(index, item)| read_element(item, &full_key, index, path))
         .collect::<Result<_, _>>()?;
     if params.insert_list(key.to_string(), elements).is_some() {
-        return Err(load_error(path, key, "conflicts with another key"));
+        return Err(load_error(path, &full_key, "conflicts with another key"));
     }
     Ok(())
 }
 
-/// Read element `index` of the list `key`. A table element has no lists.
+/// Read element `index` of the list `key` (its full name). A table element may hold lists.
 fn read_element(
     item: &Value,
     key: &str,
@@ -445,14 +442,26 @@ fn scalar_value(value: &Value, path: &str, key: &str) -> Result<ParamValue, Para
     }
 }
 
-/// Refuse a list whose name equals, or dot-nests with, a scalar name.
+/// Refuse a list whose name equals, or dot-nests with, a scalar name, in `params` and in
+/// each of its table elements.
 fn refuse_name_conflicts(params: &Parameters, path: &str) -> Result<(), ParameterLoadError> {
+    refuse_name_conflicts_in(params, path, "")
+}
+
+fn refuse_name_conflicts_in(
+    params: &Parameters,
+    path: &str,
+    label: &str,
+) -> Result<(), ParameterLoadError> {
     for list in params.list_names() {
         let clash = params.names().into_iter().find(|scalar| names_overlap(list, scalar));
         if let Some(scalar) = clash {
             let reason = format!("conflicts with scalar `{scalar}`");
-            return Err(load_error(path, list, &reason));
+            return Err(load_error(path, &join_parameter_key(label, list), &reason));
         }
+    }
+    for (element_label, element) in params.table_elements() {
+        refuse_name_conflicts_in(element, path, &join_parameter_key(label, &element_label))?;
     }
     Ok(())
 }

@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use hypha_wire::frame::{FrameHeader, ParseError, ParsedFrame, TopicCode, verify};
-use hypha_wire::integrity::SequenceValidator;
+use hypha_wire::integrity::{FirstFrame, SequenceValidator};
 
 /// Why a subscriber refused one frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,7 +13,7 @@ pub enum FrameRejection {
     InvalidFrame,
     /// The frame checksum does not match its bytes.
     CorruptPayload,
-    /// The frame schema differs from the subscription contract.
+    /// The frame names another schema than the stream it arrived on.
     SchemaMismatch,
     /// The send time is later than the current host time.
     Future,
@@ -63,6 +63,7 @@ pub struct FrameValidator {
     expected_schema_hash: Option<u64>,
     sequences: Mutex<SequenceValidator>,
     missing_sequences: AtomicU64,
+    sent_before_first: AtomicU64,
     counters: RejectionCounters,
 }
 
@@ -74,12 +75,14 @@ impl FrameValidator {
             expected_schema_hash,
             sequences: Mutex::new(SequenceValidator::default()),
             missing_sequences: AtomicU64::new(0),
+            sent_before_first: AtomicU64::new(0),
             counters: RejectionCounters::default(),
         }
     }
 
     /// Validate one sample that arrived on `topic`, its header and payload, at
-    /// `now_nanos`. `Ok` carries the transport send time of the accepted frame.
+    /// `now_nanos`, from a publisher that may have existed before the subscription. `Ok`
+    /// carries the transport send time of the accepted frame.
     ///
     /// # Errors
     /// Returns the first rule that refuses the frame.
@@ -91,13 +94,18 @@ impl FrameValidator {
         now_nanos: u64,
     ) -> Result<u64, FrameRejection> {
         let mut cached_now = now_nanos;
-        self.validate_with_clock(topic, header, payload, &mut cached_now, || now_nanos)
+        self.validate_with_clock(topic, header, payload, || false, &mut cached_now, || now_nanos)
             .map(|frame| frame.transport_sent_nanos())
     }
 
     /// Validate once and return the borrowed frame, reusing a batch's host time.
     /// Refresh the clock only if a valid, schema-matching frame is newer than the cached
     /// time. A real future stamp is still refused and counted.
+    ///
+    /// `came_after` says whether the frame's publisher came after the subscription, so that
+    /// every frame it sent was owed to it: the frames before its first accepted one are then
+    /// counted as missing ([`FirstFrame::Owed`]). It is called only for the first frame of a
+    /// publisher the validator does not track, and never once its table forgot one.
     ///
     /// # Errors
     /// Returns the first rule that refuses the frame, without updating sequence
@@ -107,12 +115,14 @@ impl FrameValidator {
         topic: TopicCode,
         header: &FrameHeader,
         payload: &'a [u8],
+        came_after: impl FnOnce() -> bool,
         now_nanos: &mut u64,
         refresh: impl FnOnce() -> u64,
     ) -> Result<ParsedFrame<'a>, FrameRejection> {
         let frame = match verify(topic, header, payload) {
             Ok(frame) => frame,
-            Err(ParseError::CrcMismatch) => {
+            // A payload_len past the slice cannot be checked: a corrupt frame, as a bad CRC.
+            Err(ParseError::CrcMismatch | ParseError::LengthMismatch) => {
                 self.counters.corrupt_payload.fetch_add(1, Ordering::Relaxed);
                 return Err(FrameRejection::CorruptPayload);
             }
@@ -137,10 +147,18 @@ impl FrameValidator {
             return Err(FrameRejection::Future);
         }
 
-        let mut sequences =
-            self.sequences.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if sequences.accept(frame.publisher_id(), frame.sequence()) {
+        let mut sequences = crate::locked(&self.sequences);
+        let is_first = !sequences.tracks(frame.publisher_id());
+        let first = if is_first && !sequences.forgot_a_publisher() && came_after() {
+            FirstFrame::Owed
+        } else if frame.latched() {
+            FirstFrame::Latched
+        } else {
+            FirstFrame::Unknown
+        };
+        if sequences.accept_as(frame.publisher_id(), frame.sequence(), first) {
             self.missing_sequences.store(sequences.missing_sequences(), Ordering::Release);
+            self.sent_before_first.store(sequences.sent_before_first(), Ordering::Release);
             return Ok(frame);
         }
         self.counters.sequence_gap.fetch_add(1, Ordering::Relaxed);
@@ -157,6 +175,13 @@ impl FrameValidator {
             sequence_gap: self.counters.sequence_gap.load(Ordering::Acquire),
             invalid_timestamp: self.counters.invalid_timestamp.load(Ordering::Acquire),
         }
+    }
+
+    /// Frames the publishers of this subscription sent before the first one accepted from
+    /// each (see [`SequenceValidator::sent_before_first`]).
+    #[must_use]
+    pub fn sent_before_first(&self) -> u64 {
+        self.sent_before_first.load(Ordering::Acquire)
     }
 
     /// Total missing sequence values across accepted forward frames.

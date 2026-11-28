@@ -11,6 +11,10 @@ uint64 id
 string topic
 # The message type, such as std_msgs/Float64. Empty for an untyped endpoint.
 string data_type
+# The MD5 of the message definition: with the topic it names the endpoint's
+# stream, so two versions of one type on one topic are two endpoints. Empty for
+# an untyped endpoint.
+string md5
 # The receive queue depth of a subscriber; 0 otherwise.
 uint32 queue_depth
 # A publisher that latches its last message.

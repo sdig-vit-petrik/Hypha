@@ -10,6 +10,7 @@ use hypha_runtime::upstream_hold::{self as runtime, HoldError, Limit};
 use crate::cycle::CycleInputSource;
 use crate::node::HyphaNode;
 use crate::node_progress::{self, valid_clock};
+use crate::service::CycleServices;
 use crate::status::Error;
 use crate::subscriber::HyphaSubscriber;
 
@@ -27,11 +28,26 @@ pub(crate) struct UpstreamHold {
     pub(crate) hold: runtime::UpstreamHold,
     /// Registry scratch retained across turns, including while a progress input is busy.
     input_ids: Vec<u128>,
+    service_ids: Vec<u128>,
     progress_ids: Vec<u128>,
+    /// The service peers that report progress, as last found.
+    reporters: Vec<u128>,
+}
+
+/// The limits the upstream nodes of a replay cycle give now: those of its topic edges, and
+/// those of its request and response edges, which are cut strictly before a step's time.
+pub(crate) struct Limits {
+    pub(crate) topic: Limit,
+    pub(crate) service: Limit,
+    /// The node ids of the service peers that report progress, sorted: the cut of a step
+    /// binds their requests and answers only.
+    pub(crate) reporters: Vec<u128>,
 }
 
 impl UpstreamHold {
-    /// Resolve the upstream names of the cycle, and return the limit they give now.
+    /// Resolve the upstream names of the cycle, and return the limits they give now: the
+    /// publishers of its inputs, and the service peers of its `Requests` and `Calls` ports
+    /// (the clients of its servers, the servers of its clients).
     ///
     /// The limit is read before the inputs of the turn are drained, so every output that
     /// a reported clock covers is already queued when the drain runs. Before any
@@ -39,8 +55,9 @@ impl UpstreamHold {
     pub(crate) fn settle(
         &mut self,
         inputs: &[Arc<CycleInputSource>],
+        services: &CycleServices,
         node: &HyphaNode,
-    ) -> Result<Limit, Error> {
+    ) -> Result<Limits, Error> {
         let mut subscribers = Vec::with_capacity(inputs.len());
         for source in inputs {
             if let Some(subscriber) = input_subscriber(source)? {
@@ -53,27 +70,47 @@ impl UpstreamHold {
         }
         self.input_ids.sort_unstable();
         self.input_ids.dedup();
+        self.service_ids.clear();
+        services.peer_ids(&mut self.service_ids);
+        self.service_ids.sort_unstable();
+        self.service_ids.dedup();
         self.progress_ids.clear();
         {
             let Ok(progress) = node.progress_subscriber.try_lock() else {
-                return Ok(self.hold.limit_while_busy(clocks(node)));
+                let topic = self.hold.limit_while_busy(clocks(node));
+                let service = self.hold.service_limit(clocks(node));
+                return Ok(Limits { topic, service, reporters: self.reporters.clone() });
             };
             let Some(progress) = progress.as_deref() else {
                 self.hold.clear_resolution();
-                return Ok(self.hold.limit(clocks(node)));
+                self.reporters.clear();
+                return Ok(self.limits(node));
             };
             progress.port.publisher_node_ids(&mut self.progress_ids);
         }
         self.progress_ids.sort_unstable();
         self.progress_ids.dedup();
+        self.reporters.clear();
+        let progress_ids = &self.progress_ids;
+        let reporting = self.service_ids.iter().filter(|id| progress_ids.binary_search(id).is_ok());
+        self.reporters.extend(reporting);
         self.hold.resolve(
             &self.input_ids,
+            &self.service_ids,
             &self.progress_ids,
             &node.name,
             Instant::now(),
             |ids| node_names(ids).map_err(Error::from),
         )?;
-        Ok(self.hold.limit(clocks(node)))
+        Ok(self.limits(node))
+    }
+
+    fn limits(&self, node: &HyphaNode) -> Limits {
+        Limits {
+            topic: self.hold.limit(clocks(node)),
+            service: self.hold.service_limit(clocks(node)),
+            reporters: self.reporters.clone(),
+        }
     }
 }
 

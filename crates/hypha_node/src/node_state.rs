@@ -2,13 +2,15 @@
 //!
 //! A required input that is wired to a topic counts. The node is `WAITING` while a
 //! counted binding that never arrived is not ok, else `DEGRADED` while any counted
-//! binding is not ok, else `INPUTS_USABLE`. Bindings of one topic give one input with the
-//! worst verdict. Reading the state has no side effect.
+//! binding is not ok, else `INPUTS_USABLE`. Bindings of one stream (one topic, type and
+//! MD5) give one input with the worst verdict; two schemas of one topic are two inputs.
+//! A check the application reports (`node_checks`) at `ERROR` or `STALE` counts as a
+//! counted binding that is not ok: the node is `DEGRADED`, or `WAITING` when an input never
+//! arrived. A `WARN` check shows in the state and changes nothing else. Reading the state
+//! has no side effect.
 
-use std::sync::PoisonError;
-
-use hypha_core::introspection::{InputBindingRow, InputRole};
-use hypha_msgs::hypha_msgs::{CycleState, NodeState, RequiredInput};
+use hypha_core::introspection::{EndpointRow, InputBindingRow, InputRole};
+use hypha_msgs::hypha_msgs::{CycleState, NodeCheck, NodeState, RequiredInput, TopicSchema};
 
 use crate::cycle::InputCounts;
 use crate::cycle::{
@@ -36,9 +38,13 @@ fn severity(verdict: u8) -> u8 {
 }
 
 /// One counted binding at its cycle's last capture.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct Judged {
     topic: String,
+    /// The message type of the binding's subscriber.
+    data_type: String,
+    /// The MD5 of the binding's subscriber.
+    md5: String,
     /// The `RequiredInput` verdict.
     verdict: u8,
     ok: bool,
@@ -52,20 +58,33 @@ struct Judged {
     rejected: u64,
     /// The samples a port of its source could not decode.
     undecodable: u64,
+    /// The other schemas of its topic that are published; `None` before they were checked.
+    other_schemas: Option<Vec<TopicSchema>>,
 }
 
-/// The state that the judged bindings imply for `node`. A topic's row takes the verdict
-/// and age of its worst binding.
-fn state_of(node: &str, judged: &[Judged]) -> NodeState {
+/// Whether a check says the node cannot do its work: `ERROR`, and `STALE` (a check that
+/// cannot say is not one that passed). A level this code does not know is a fault too.
+fn blocks_readiness(check: &NodeCheck) -> bool {
+    !matches!(check.level, NodeCheck::OK | NodeCheck::WARN)
+}
+
+/// The state that the judged bindings and the application's checks imply for `node`. A
+/// stream's row takes the verdict and age of its worst binding.
+fn state_of(node: &str, judged: &[Judged], checks: Vec<NodeCheck>) -> NodeState {
     let mut inputs: Vec<RequiredInput> = Vec::new();
     let mut waiting = false;
-    let mut degraded = false;
+    let mut degraded = checks.iter().any(blocks_readiness);
     for binding in judged {
         if !binding.ok {
             degraded = true;
             waiting |= binding.verdict == RequiredInput::NEVER_ARRIVED;
         }
-        match inputs.iter_mut().find(|input| input.topic == binding.topic) {
+        let row_of_stream = |input: &&mut RequiredInput| {
+            input.topic == binding.topic
+                && input.data_type == binding.data_type
+                && input.md5 == binding.md5
+        };
+        match inputs.iter_mut().find(row_of_stream) {
             Some(known) => {
                 if severity(binding.verdict) > severity(known.verdict) {
                     known.verdict = binding.verdict;
@@ -76,10 +95,18 @@ fn state_of(node: &str, judged: &[Judged]) -> NodeState {
                 known.dropped = known.dropped.wrapping_add(binding.dropped);
                 known.rejected = known.rejected.max(binding.rejected);
                 known.undecodable = known.undecodable.max(binding.undecodable);
+                known.other_schemas_checked &= binding.other_schemas.is_some();
+                for schema in binding.other_schemas.iter().flatten() {
+                    if !known.other_schemas.contains(schema) {
+                        known.other_schemas.push(schema.clone());
+                    }
+                }
             }
             None => {
                 inputs.push(RequiredInput {
                     topic: binding.topic.clone(),
+                    data_type: binding.data_type.clone(),
+                    md5: binding.md5.clone(),
                     verdict: binding.verdict,
                     age_nanos: binding.age_nanos,
                     stagnant: binding.stagnant,
@@ -87,6 +114,8 @@ fn state_of(node: &str, judged: &[Judged]) -> NodeState {
                     dropped: binding.dropped,
                     rejected: binding.rejected,
                     undecodable: binding.undecodable,
+                    other_schemas_checked: binding.other_schemas.is_some(),
+                    other_schemas: binding.other_schemas.clone().unwrap_or_default(),
                 });
             }
         }
@@ -98,14 +127,22 @@ fn state_of(node: &str, judged: &[Judged]) -> NodeState {
     } else {
         NodeState::INPUTS_USABLE
     };
-    NodeState { node: node.to_owned(), state, inputs, ..NodeState::default() }
+    NodeState { node: node.to_owned(), state, inputs, checks, ..NodeState::default() }
 }
 
-fn judged_from(topic: &str, view: &HyphaCycleBindingView, counts: InputCounts) -> Judged {
+fn judged_from(
+    row: &InputBindingRow,
+    subscriber: &EndpointRow,
+    view: &HyphaCycleBindingView,
+    counts: InputCounts,
+    other_schemas: Option<Vec<TopicSchema>>,
+) -> Judged {
     let faults = view.supervision.faults;
     let health = &view.health;
     Judged {
-        topic: topic.to_owned(),
+        topic: row.topic.clone(),
+        data_type: subscriber.data_type.clone(),
+        md5: subscriber.md5.clone(),
         verdict: verdict_code(health.capture.verdict),
         ok: view.ok != 0,
         age_nanos: view.age_nanos,
@@ -114,20 +151,26 @@ fn judged_from(topic: &str, view: &HyphaCycleBindingView, counts: InputCounts) -
         dropped: health.overrun_total.wrapping_add(health.work_limit_drops_total),
         rejected: counts.rejected,
         undecodable: counts.undecodable,
+        other_schemas,
     }
 }
 
 /// The judgement of every required, wired binding at its cycle's last capture, and one
 /// row per committed cycle. A binding whose cycle cannot be read counts as never arrived.
-fn judge(node: &HyphaNode, bindings: &[InputBindingRow]) -> (Vec<Judged>, Vec<CycleState>) {
-    let waitset = node.default_waitset.lock().unwrap_or_else(PoisonError::into_inner);
+fn judge(
+    node: &HyphaNode,
+    bindings: &[InputBindingRow],
+    subscribers: &[EndpointRow],
+) -> (Vec<Judged>, Vec<CycleState>) {
+    let waitset = crate::locked(&node.default_waitset);
     let cycles = waitset.held().and_then(|set| set.cycles().ok());
     let mut rows = Vec::new();
     for cycle in cycles.iter().flat_map(|cycles| cycles.iter()) {
         if !cycle.is_committed() {
             continue;
         }
-        let health = *cycle.snapshots.health.lock().unwrap_or_else(PoisonError::into_inner);
+        let health = *crate::locked(&cycle.snapshots.health);
+        let steps = crate::locked(&cycle.snapshots.step_times).summary();
         rows.push(CycleState {
             name: cycle.name().to_owned(),
             steps: health.steps,
@@ -136,25 +179,51 @@ fn judge(node: &HyphaNode, bindings: &[InputBindingRow]) -> (Vec<Judged>, Vec<Cy
             max_step_nanos: health.max_step_nanos,
             overruns: health.overruns,
             output_drops: health.output_pool_drops,
+            step_p50_nanos: steps.p50_nanos,
+            step_p90_nanos: steps.p90_nanos,
+            step_p99_nanos: steps.p99_nanos,
+            recent_step_p50_nanos: steps.recent_p50_nanos,
+            recent_step_p90_nanos: steps.recent_p90_nanos,
+            recent_step_p99_nanos: steps.recent_p99_nanos,
+            recent_step_max_nanos: steps.recent_max_nanos,
         });
     }
-    let view_of = |row: &InputBindingRow| -> Option<Judged> {
+    let view_of = |row: &InputBindingRow, subscriber: &EndpointRow| -> Option<Judged> {
         let cycle = cycles.as_ref()?.iter().find(|cycle| cycle.name() == row.cycle)?;
         let index = usize::try_from(row.index).ok()?;
-        let views = cycle.snapshots.bindings.lock().unwrap_or_else(PoisonError::into_inner);
+        let views = crate::locked(&cycle.snapshots.bindings);
         let view = views.get(index)?;
-        let counts = cycle.snapshots.input_counts.lock().unwrap_or_else(PoisonError::into_inner);
+        let counts = crate::locked(&cycle.snapshots.input_counts);
         let source = counts.get(index).copied().unwrap_or_default();
-        Some(judged_from(&row.topic, view, source))
+        let watches = crate::locked(&cycle.snapshots.watches);
+        let others = watches
+            .get(index)
+            .and_then(Option::as_ref)
+            .and_then(crate::topic_streams::Watch::others);
+        let other_schemas = others.map(|others| {
+            others
+                .into_iter()
+                .map(|stream| TopicSchema {
+                    schema_hash: stream.schema_hash,
+                    data_type: stream.data_type,
+                    md5: stream.md5,
+                })
+                .collect()
+        });
+        Some(judged_from(row, subscriber, view, source, other_schemas))
     };
     let mut judged = Vec::new();
     for row in bindings {
-        let counted = row.role == InputRole::Required && row.subscriber.is_some();
-        if !counted {
+        if row.role != InputRole::Required {
             continue;
         }
-        let binding = view_of(row).unwrap_or_else(|| Judged {
+        let Some(id) = row.subscriber else { continue };
+        let unknown = EndpointRow::new(row.topic.clone(), "");
+        let subscriber = subscribers.iter().find(|endpoint| endpoint.id == id).unwrap_or(&unknown);
+        let binding = view_of(row, subscriber).unwrap_or_else(|| Judged {
             topic: row.topic.clone(),
+            data_type: subscriber.data_type.clone(),
+            md5: subscriber.md5.clone(),
             verdict: RequiredInput::NEVER_ARRIVED,
             ..Judged::default()
         });
@@ -163,13 +232,14 @@ fn judge(node: &HyphaNode, bindings: &[InputBindingRow]) -> (Vec<Judged>, Vec<Cy
     (judged, rows)
 }
 
-/// The `~/state` message of `node` now: the input verdicts of its cycles, its callback
-/// counts, the log engine's losses and whether the process runs on simulated time.
+/// The `~/state` message of `node` now: the input verdicts of its cycles, the checks of its
+/// application, its callback counts, the log engine's losses and whether the process runs on simulated time.
 #[must_use]
 pub fn node_state(node: &HyphaNode) -> NodeState {
     let snapshot = node.introspection.snapshot();
-    let (judged, cycles) = judge(node, &snapshot.input_bindings);
-    let mut state = state_of(&snapshot.identity.node, &judged);
+    let (judged, cycles) = judge(node, &snapshot.input_bindings, &snapshot.subscribers);
+    let checks = crate::locked(&node.checks).all();
+    let mut state = state_of(&snapshot.identity.node, &judged, checks);
     let (invoked, failures, slow) = node.health.callback_counts();
     state.callbacks_invoked = invoked;
     state.callback_failures = failures;
@@ -186,6 +256,15 @@ pub fn node_state(node: &HyphaNode) -> NodeState {
 mod tests {
     use super::*;
 
+    /// The state of a node with no application checks.
+    fn inputs_state(node: &str, judged: &[Judged]) -> NodeState {
+        state_of(node, judged, Vec::new())
+    }
+
+    fn check(name: &str, level: u8) -> NodeCheck {
+        NodeCheck { name: name.to_owned(), level, message: format!("{name} says {level}") }
+    }
+
     fn judged(rows: &[(&str, u8, bool)]) -> Vec<Judged> {
         rows.iter()
             .map(|(topic, verdict, ok)| Judged {
@@ -199,14 +278,14 @@ mod tests {
 
     #[test]
     fn a_node_without_required_inputs_is_usable() {
-        let state = state_of("n", &[]);
+        let state = inputs_state("n", &[]);
         assert_eq!(state.state, NodeState::INPUTS_USABLE);
         assert!(state.inputs.is_empty(), "{:?}", state.inputs);
     }
 
     #[test]
     fn the_worst_binding_of_a_topic_is_its_verdict_and_never_arrived_wins() {
-        let state = state_of(
+        let state = inputs_state(
             "n",
             &judged(&[
                 ("/a", RequiredInput::USABLE, true),
@@ -221,8 +300,36 @@ mod tests {
     }
 
     #[test]
+    fn two_schemas_of_one_topic_are_two_rows() {
+        let version = |md5: &str, verdict, ok| Judged {
+            topic: "/a".to_owned(),
+            data_type: "pkg/T".to_owned(),
+            md5: md5.to_owned(),
+            verdict,
+            ok,
+            ..Judged::default()
+        };
+        let state = inputs_state(
+            "n",
+            &[
+                version("d9d213e8c146065ec958333c617eb1a6", RequiredInput::USABLE, true),
+                version("581e4b1bda6a172aa19e1038a38e01eb", RequiredInput::NEVER_ARRIVED, false),
+            ],
+        );
+        let rows: Vec<(&str, u8)> =
+            state.inputs.iter().map(|input| (input.md5.as_str(), input.verdict)).collect();
+        assert_eq!(
+            rows,
+            [
+                ("d9d213e8c146065ec958333c617eb1a6", RequiredInput::USABLE),
+                ("581e4b1bda6a172aa19e1038a38e01eb", RequiredInput::NEVER_ARRIVED),
+            ]
+        );
+    }
+
+    #[test]
     fn a_stale_input_degrades_the_node() {
-        let state = state_of(
+        let state = inputs_state(
             "n",
             &judged(&[("/a", RequiredInput::USABLE, true), ("/b", RequiredInput::STALE, false)]),
         );
@@ -231,13 +338,14 @@ mod tests {
 
     #[test]
     fn the_state_follows_the_ok_bits_not_the_verdicts() {
-        let stagnant = state_of("n", &judged(&[("/a", RequiredInput::USABLE, false)]));
+        let stagnant = inputs_state("n", &judged(&[("/a", RequiredInput::USABLE, false)]));
         assert_eq!(stagnant.state, NodeState::DEGRADED, "a usable stagnant input is not ok");
-        let ignored = state_of("n", &judged(&[("/a", RequiredInput::STALE, true)]));
+        let ignored = inputs_state("n", &judged(&[("/a", RequiredInput::STALE, true)]));
         assert_eq!(ignored.state, NodeState::INPUTS_USABLE, "an ignored stale input is ok");
         let row = ignored.inputs.first().map(|input| input.verdict);
         assert_eq!(row, Some(RequiredInput::STALE), "the row keeps its verdict");
-        let ignored_waiting = state_of("n", &judged(&[("/a", RequiredInput::NEVER_ARRIVED, true)]));
+        let ignored_waiting =
+            inputs_state("n", &judged(&[("/a", RequiredInput::NEVER_ARRIVED, true)]));
         assert_eq!(ignored_waiting.state, NodeState::INPUTS_USABLE);
     }
 
@@ -252,6 +360,8 @@ mod tests {
     fn a_topic_row_takes_its_worst_binding_and_sums_what_was_dropped() {
         let usable = Judged {
             topic: "/a".to_owned(),
+            data_type: "pkg/T".to_owned(),
+            md5: "d9d213e8c146065ec958333c617eb1a6".to_owned(),
             verdict: RequiredInput::USABLE,
             ok: true,
             age_nanos: 5,
@@ -260,6 +370,7 @@ mod tests {
             dropped: 2,
             rejected: 7,
             undecodable: 1,
+            other_schemas: None,
         };
         let stale = Judged {
             verdict: RequiredInput::STALE,
@@ -270,7 +381,7 @@ mod tests {
             dropped: 3,
             ..usable.clone()
         };
-        let node = state_of("n", &[usable, stale]);
+        let node = inputs_state("n", &[usable, stale]);
         let rows: Vec<(u8, u64, bool, bool, u64, u64, u64)> = node
             .inputs
             .iter()
@@ -282,5 +393,38 @@ mod tests {
             })
             .collect();
         assert_eq!(rows, [(RequiredInput::STALE, 900, true, false, 5, 7, 1)]);
+    }
+
+    #[test]
+    fn an_error_check_degrades_a_node_whose_inputs_are_usable() {
+        let ok = judged(&[("/a", RequiredInput::USABLE, true)]);
+        for level in [NodeCheck::ERROR, NodeCheck::STALE] {
+            let state = state_of("n", &ok, vec![check("Device", level)]);
+            assert_eq!(state.state, NodeState::DEGRADED, "level {level}");
+            assert_eq!(state.checks, [check("Device", level)], "the row is kept");
+        }
+        let no_inputs = state_of("n", &[], vec![check("Device", NodeCheck::ERROR)]);
+        assert_eq!(no_inputs.state, NodeState::DEGRADED, "a driver has no inputs to degrade");
+    }
+
+    #[test]
+    fn a_warn_or_ok_check_shows_and_leaves_the_state_alone() {
+        let checks = vec![check("Rate", NodeCheck::WARN), check("Device", NodeCheck::OK)];
+        let state = state_of("n", &[], checks.clone());
+        assert_eq!(state.state, NodeState::INPUTS_USABLE);
+        assert_eq!(state.checks, checks);
+    }
+
+    #[test]
+    fn a_level_nobody_defined_is_a_fault_not_a_pass() {
+        let state = state_of("n", &[], vec![check("Device", 9)]);
+        assert_eq!(state.state, NodeState::DEGRADED);
+    }
+
+    #[test]
+    fn an_input_that_never_arrived_stays_waiting_beside_an_error_check() {
+        let waiting = judged(&[("/a", RequiredInput::NEVER_ARRIVED, false)]);
+        let state = state_of("n", &waiting, vec![check("Device", NodeCheck::ERROR)]);
+        assert_eq!(state.state, NodeState::WAITING);
     }
 }

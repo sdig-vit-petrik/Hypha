@@ -5,10 +5,11 @@ use std::process::Command;
 
 const HYPHA: &str = env!("CARGO_BIN_EXE_hypha");
 
-const TOOLS: [&str; 11] = [
+const TOOLS: [&str; 13] = [
     "topic",
     "top",
     "node",
+    "service",
     "record",
     "play",
     "convert",
@@ -17,6 +18,7 @@ const TOOLS: [&str; 11] = [
     "launch",
     "param",
     "clean",
+    "load",
 ];
 
 #[test]

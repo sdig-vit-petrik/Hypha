@@ -46,13 +46,21 @@ pub struct HyphaNode {
     /// True while a committed cycle of this node drives `/clock`.
     pub(crate) drives_clock: std::sync::atomic::AtomicBool,
     pub(crate) schema: crate::schema::SchemaState,
+    /// The `[log] slow_callback_ms` of the parameter file: the budget of every callback of
+    /// this node, 0 for no warning line. `None` leaves each callback its own default
+    /// (`hypha_core::dispatch::callback_budget`).
+    pub(crate) slow_callback_ms: Option<u32>,
     /// Execution counters every `WaitSet` on this node adds to.
     pub(crate) health: std::sync::Arc<crate::node_health::ExecutionHealth>,
+    /// The checks the application reports about itself, for `~/state`.
+    pub(crate) checks: std::sync::Mutex<crate::node_checks::NodeChecks>,
     /// The rows of the node introspection. Endpoints keep a handle to it.
     pub(crate) introspection: std::sync::Arc<crate::introspection::IntrospectionRegistry>,
     /// Set once by [`node_destroy`]: the node has left the bus. Every publisher of the node
     /// holds a share and sends nothing afterwards (#97).
     pub(crate) left: std::sync::Arc<AtomicBool>,
+    /// The streams of the topics this node subscribes to, refreshed by its housekeeping.
+    pub(crate) topic_streams: crate::topic_streams::Registry,
     /// Declared last so every port owned by `HyphaNode` drops before the iceoryx2 node.
     pub(crate) transport: hypha_iceoryx2::Iox2Transport,
 }
@@ -158,6 +166,32 @@ fn report_invalid(cause: &str) -> Error {
     Error::InvalidArgument
 }
 
+/// The `node.name` parameter, or `None` when the file does not set it.
+pub(crate) fn configured_node_name(
+    parameters: &hypha_core::parameters::Parameters,
+) -> Result<Option<&str>, Error> {
+    match parameters.value("node.name") {
+        None => Ok(None),
+        Some(hypha_core::parameters::ParamValue::Text(text)) => Ok(Some(text.as_str())),
+        Some(_) => {
+            log::error!(target: "hypha", "hypha: the parameter node.name must be text");
+            Err(Error::InvalidArgument)
+        }
+    }
+}
+
+/// Refuse a name that is neither a node name nor a CLI tool name.
+pub(crate) fn check_node_name(node_name: &str) -> Result<(), Error> {
+    let is_valid_name =
+        hypha_core::port::is_cli_node_name(node_name) || hypha_core::port::is_node_name(node_name);
+    if !is_valid_name {
+        log::error!(target: "hypha", "hypha: '{node_name}' is not a node name: use [a-z][a-z0-9_], at most {} characters, \
+                 or {}<name> for a CLI tool", hypha_core::port::MAX_NODE_NAME_LENGTH, hypha_core::port::CLI_NODE_PREFIX);
+        return Err(Error::InvalidArgument);
+    }
+    Ok(())
+}
+
 /// The node name: the `node.name` parameter when the file sets it, else the name from
 /// code. Refuses an invalid name, and one an alive node of another process in this
 /// domain holds; a CLI tool name is never held.
@@ -165,21 +199,9 @@ fn effective_node_name(
     code_name: &str,
     parameters: &hypha_core::parameters::Parameters,
 ) -> Result<String, Error> {
-    let node_name = match parameters.value("node.name") {
-        None => code_name,
-        Some(hypha_core::parameters::ParamValue::Text(text)) => text.as_str(),
-        Some(_) => {
-            log::error!(target: "hypha", "hypha: the parameter node.name must be text");
-            return Err(Error::InvalidArgument);
-        }
-    };
+    let node_name = configured_node_name(parameters)?.unwrap_or(code_name);
+    check_node_name(node_name)?;
     let is_cli_name = hypha_core::port::is_cli_node_name(node_name);
-    let is_valid_name = is_cli_name || hypha_core::port::is_node_name(node_name);
-    if !is_valid_name {
-        log::error!(target: "hypha", "hypha: '{node_name}' is not a node name: use [a-z][a-z0-9_], at most {} characters, \
-                 or {}<name> for a CLI tool", hypha_core::port::MAX_NODE_NAME_LENGTH, hypha_core::port::CLI_NODE_PREFIX);
-        return Err(Error::InvalidArgument);
-    }
     if is_cli_name {
         return Ok(node_name.to_string());
     }
@@ -302,6 +324,7 @@ pub fn node_create(
     let use_sim_time = sim_time_requested().map_err(|cause| report_invalid(&cause))?;
     let open_loop = use_sim_time && !lockstep;
     let node_name = effective_node_name(name, parameters)?;
+    let slow_callback_ms = parameters.log_table().and_then(hypha_log::slow_callback_ms);
     let transport = hypha_iceoryx2::Iox2Transport::with_name(&node_name).map_err(|cause| {
         log::error!(target: "hypha", "hypha: node creation refused: the iceoryx2 node '{node_name}' cannot be opened: {cause:?}");
         Error::from(cause)
@@ -379,9 +402,12 @@ pub fn node_create(
         committed_cycles: std::sync::atomic::AtomicUsize::new(0),
         drives_clock: std::sync::atomic::AtomicBool::new(false),
         schema: crate::schema::SchemaState::default(),
+        slow_callback_ms,
         health: std::sync::Arc::default(),
+        checks: std::sync::Mutex::default(),
         introspection,
         left: std::sync::Arc::default(),
+        topic_streams: crate::topic_streams::Registry::default(),
         transport,
     };
     // A process that a backward seek restarted waits here, before any port of its own.

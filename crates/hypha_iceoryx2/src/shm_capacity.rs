@@ -2,13 +2,13 @@
 //!
 //! The pool is a sparse tmpfs file, and a write past the free space of `/dev/shm`
 //! raises SIGBUS with no error to return, so hypha warns at creation when a full
-//! pool cannot fit.
+//! pool cannot fit, or when one pool takes more than half of the whole `/dev/shm`: the
+//! topics of a domain share it, and a pool that large leaves them little.
 //! In a bounded deployment (`domain::bounded_memory`) it refuses the publisher instead.
 
 use hypha_core::port::PortError;
 
 /// Bytes of one pool sample carrying `payload` bytes, headers and alignment included.
-#[cfg(any(target_os = "linux", test))]
 pub(crate) fn sample_bytes(payload: usize) -> usize {
     use core::mem::{align_of, size_of};
     use iceoryx2::service::header::publish_subscribe::Header;
@@ -19,6 +19,31 @@ pub(crate) fn sample_bytes(payload: usize) -> usize {
         .saturating_add(frame);
     let alignment = align_of::<Header>().max(align_of::<crate::header::Iox2FrameHeader>());
     align(headers.saturating_add(payload), alignment)
+}
+
+/// The share of the whole `/dev/shm`, in percent, above which one full pool is warned of.
+#[cfg(any(target_os = "linux", test))]
+const LARGE_SHARE_PERCENT: u64 = 50;
+
+/// What a full pool of `need` bytes makes of the `free` bytes of a `/dev/shm` of `total`.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fit {
+    /// It fits, and leaves the rest of the topics room.
+    Fits,
+    /// It fits what is free, but takes more than [`LARGE_SHARE_PERCENT`] of the whole.
+    LargeShare,
+    /// It cannot become resident in what is free.
+    Shortfall,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn judge(need: u64, free: u64, total: u64) -> Fit {
+    if need > free {
+        return Fit::Shortfall;
+    }
+    let share_limit = total.saturating_mul(LARGE_SHARE_PERCENT) / 100;
+    if need > share_limit { Fit::LargeShare } else { Fit::Fits }
 }
 
 /// The backend code of a check that could not read the free space of `/dev/shm`.
@@ -45,8 +70,17 @@ pub(crate) fn check(
         PortError::Backend(CHECK_FAILED)
     })?;
     let free = stat.f_bavail.saturating_mul(stat.f_frsize);
+    let total = stat.f_blocks.saturating_mul(stat.f_frsize);
     let need = u64::try_from(samples.saturating_mul(sample_bytes(payload))).unwrap_or(u64::MAX);
-    let pool_cannot_fit = need > free;
+    let fit = judge(need, free, total);
+    let pool_cannot_fit = fit == Fit::Shortfall;
+    if fit == Fit::LargeShare {
+        log::warn!(target: "hypha/transport",
+            "hypha_iceoryx2: topic '{topic}': a full publisher pool takes {need} bytes of the {total} bytes of \
+             /dev/shm ({samples} samples of {payload} bytes), more than {LARGE_SHARE_PERCENT} %, and the other \
+             topics of the domain share it. Lower the topic's payload limit or its policy's subscribers or depth, \
+             or enlarge /dev/shm (container: shm_size or the tmpfs volume).");
+    }
     if pool_cannot_fit && refuse_shortfall {
         log::error!(target: "hypha/transport",
             "hypha_iceoryx2: topic '{topic}' needs {need} bytes of shared memory for its publisher pool \
@@ -79,6 +113,20 @@ pub(crate) fn check(
 
 #[cfg(test)]
 mod tests {
+    use super::{Fit, judge};
+
+    #[test]
+    fn a_pool_is_judged_against_the_free_space_and_its_share_of_the_whole() {
+        let gib = 1_u64 << 30;
+        assert_eq!(judge(gib, 4 * gib, 4 * gib), Fit::Fits);
+        assert_eq!(judge(2 * gib, 4 * gib, 4 * gib), Fit::Fits, "exactly half is not above it");
+        assert_eq!(judge(2 * gib + 1, 4 * gib, 4 * gib), Fit::LargeShare);
+        assert_eq!(judge(gib + 1, gib, 4 * gib), Fit::Shortfall, "free space decides first");
+        // A /dev/shm that is mostly used: the pool fits the rest but takes half of the whole.
+        assert_eq!(judge(3 * gib, 3 * gib, 4 * gib), Fit::LargeShare);
+        assert_eq!(judge(0, 0, 0), Fit::Fits);
+    }
+
     #[test]
     fn a_sample_carries_104_bytes_of_headers_aligned_to_8() {
         assert_eq!(super::sample_bytes(8), 112);

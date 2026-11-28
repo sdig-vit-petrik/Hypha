@@ -85,20 +85,43 @@
 pub mod clean {
     pub use crate::clean::{
         CleanOutcome, CleanReport, DomainSelection, KeepReason, KeptDomain, RemovedDomain, clean,
-        domain_label,
+        domain_label, domain_shared_memory,
     };
 }
 pub mod clock;
 /// The acknowledgement rules of a lockstep `/clock`, shared with the clock driver.
 pub use hypha_runtime::clock_barrier;
 pub(crate) mod ffi;
+mod follow;
 mod loan;
 mod metrics;
 mod options;
 mod raw;
 pub mod schema;
+mod service;
 mod status;
 pub mod waitset;
+
+/// The pool of one publisher of a topic whose policy has these limits, for messages of at most
+/// `payload` serialized bytes, holding `loaned_samples` loans: the rule of the transport
+/// (`hypha_iceoryx2::qos::pool_size`), the numbers of the "may need" warning and of the
+/// start-up line of a publisher. The topic is an ordinary one: the subscribers include the
+/// slots reserved for observers.
+///
+/// # Errors
+/// A message that names the first limit outside what a policy admits.
+pub fn pool_size(
+    max_publishers: usize,
+    max_subscribers: usize,
+    max_depth: usize,
+    loaned_samples: usize,
+    payload: usize,
+) -> Result<PoolSize, String> {
+    let policy =
+        hypha_core::port::QosPolicy::new("pool", max_publishers, max_subscribers, max_depth);
+    policy.validate()?;
+    Ok(hypha_iceoryx2::qos::pool_size("/topic", &policy, loaned_samples, payload))
+}
 
 /// The operating-system calls a tool needs that only `unsafe` code can make, reached
 /// through `hypha_sys`.
@@ -108,18 +131,35 @@ pub mod sys {
     pub use hypha_sys::{ReadOnlyMap, map_read_only};
 }
 
-pub use loan::{RawSample, RawSubscriber, ReceiveError, ReceivedSample, SampleIdentity};
+pub use follow::{FollowError, Refusal, StreamFollower, StreamKey, StreamListings, StreamSelector};
+pub use loan::{
+    RawSample, RawSubscriber, ReceiveError, ReceivedSample, SampleIdentity, StreamSubscribeError,
+    SubscriberCounters,
+};
 pub use options::{PayloadCapacity, PublisherOptions, SubscriberOptions};
 pub use raw::{
-    BusNode, NodeInfo, RawPublisher, TopicInfo, WaitResult, domain, is_cli_node_name, list_nodes,
-    topic_matches_pattern,
+    BusNode, GraphWatch, NodeInfo, RawPublisher, TopicInfo, WaitResult, domain, is_cli_node_name,
+    list_nodes, topic_matches_pattern,
 };
 pub use schema::{ResolvedSchema, SCHEMA_RETRY_INTERVAL, SchemaError, SchemaIdentityCache};
+pub use service::{
+    CallOutcome, CallResult, ListedService, ServiceClient, ServiceDefinitions, ServicePolicy,
+    call_log_topic,
+};
 pub use waitset::{AttachmentId, Delivery, RunResult, StopReason, WaitSet};
 
 pub use hypha_core::message;
 /// The parameter-file loader a node uses: includes, `${NAME}`, duplicate refusal.
 pub use hypha_core::parameters;
+/// What a publisher's pool reserves, and how many loans a publisher holds by default.
+pub use hypha_core::port::PUBLISHER_LOANED_SAMPLES as DEFAULT_LOANED_SAMPLES;
+/// The queue depth of hypha's `default` policy, which a publisher that declares no policy
+/// creates its topic with: what a subscriber depth of 0 keeps on such a topic.
+pub use hypha_iceoryx2::qos::DEFAULT_MAX_DEPTH;
+pub use hypha_iceoryx2::qos::PoolSize;
+/// Subscribers a topic admits beyond its policy from endpoints that declare no policy:
+/// tools, bridges, `hypha load` workers. A further undeclared subscriber is refused.
+pub use hypha_iceoryx2::qos::RESERVED_OBSERVER_SUBSCRIBERS as UNDECLARED_SUBSCRIBER_SLOTS;
 pub use hypha_msgdef as msgdef;
 pub use hypha_msgdef::md5;
 /// The standard message types (`std_msgs`, `geometry_msgs`, ..., `hypha_msgs`).

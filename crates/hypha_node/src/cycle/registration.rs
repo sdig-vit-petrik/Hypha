@@ -54,7 +54,7 @@ pub fn cycle_create(
                 period_nanos: u64::try_from(period_nanos).ok().filter(|period| *period > 0),
                 inputs: 0,
                 outputs: 0,
-                trigger: None,
+                triggers: Vec::new(),
             }),
         ),
         step: RefCell::new(step),
@@ -67,16 +67,26 @@ pub fn cycle_create(
 fn capture_options(
     selected: &HyphaCycleBindingOptions,
 ) -> Result<hypha_cycle::BindingOptions, Error> {
-    let mode = match HyphaCycleInputMode::try_from(selected.mode) {
-        Ok(HyphaCycleInputMode::Latest) => hypha_cycle::CaptureMode::Latest,
-        Ok(HyphaCycleInputMode::Queued) => hypha_cycle::CaptureMode::Queued,
-        Err(()) => return Err(Error::InvalidArgument),
+    let (mode, share) = match HyphaCycleInputMode::try_from(selected.mode) {
+        Ok(HyphaCycleInputMode::Latest) => {
+            (hypha_cycle::CaptureMode::Latest, selected.max_samples_per_iteration)
+        }
+        Ok(HyphaCycleInputMode::Queued) => {
+            (hypha_cycle::CaptureMode::Queued, selected.max_samples_per_iteration)
+        }
+        // Newest only: a share of one; the older pending samples are work-limit drops. A
+        // trigger takes one sample per step whatever its share; the schedule passes the
+        // older ones.
+        Ok(HyphaCycleInputMode::Newest) if selected.max_samples_per_iteration > 0 => {
+            (hypha_cycle::CaptureMode::Queued, 1)
+        }
+        Ok(HyphaCycleInputMode::Newest) | Err(()) => return Err(Error::InvalidArgument),
     };
     Ok(hypha_cycle::BindingOptions {
         mode,
         // The silence limit comes from the port's supervision, never from here.
         silence_nanos: 0,
-        max_samples_per_iteration: selected.max_samples_per_iteration,
+        max_samples_per_iteration: share,
         overflow_policy: hypha_cycle::QueueOverflowPolicy::DropOldest,
     })
 }
@@ -113,6 +123,8 @@ pub(crate) fn bind_input(
     if options.mode == hypha_cycle::CaptureMode::Queued {
         input.inner.queued_bindings.fetch_add(1, Ordering::AcqRel);
         input.inner.reserve_arrivals(selected.max_samples_per_iteration);
+    } else {
+        input.inner.latest_bindings.fetch_add(1, Ordering::AcqRel);
     }
     let binding = match input.inner.history.as_ref() {
         Some(history) => registration.runtime.add_binding(Arc::clone(history), options),
@@ -229,12 +241,14 @@ fn reserve_output<'cycle>(
     Ok(OutputSlot { registration, index, policy })
 }
 
-/// Makes the uncommitted, period-less cycle `cycle` of `set` run one step per sample of
-/// its queued input `binding_index`.
+/// Adds the queued input `binding_index` to the triggers of the uncommitted, period-less
+/// cycle `cycle` of `set`: the cycle runs one step per sample of any trigger. A repeat
+/// adds nothing.
 ///
 /// # Errors
 /// `InvalidArgument` for a cycle `set` does not hold, an unknown, latest or unwired
-/// binding; `InvalidState` for a committed cycle or a running `WaitSet`.
+/// binding, or one whose history another trigger reads; `ResourceLimit` past the most
+/// triggers a cycle has; `InvalidState` for a committed cycle or a running `WaitSet`.
 pub fn cycle_set_trigger(
     set: &HyphaWaitSet,
     cycle: CycleId,
@@ -278,7 +292,7 @@ pub fn cycle_set_class_based(
     Ok(())
 }
 
-/// Commits the cycle `cycle` of `set`: attaches its timer, trigger or clock driver. A
+/// Commits the cycle `cycle` of `set`: attaches its timer, triggers or clock driver. A
 /// refusal with a reason records it for `hypha_last_error`.
 ///
 /// # Errors
@@ -306,57 +320,77 @@ pub fn cycle_commit(set: &HyphaWaitSet, cycle: CycleId) -> Result<(), Error> {
     if registration.class_based {
         apply_cycle_config(&mut registration, node)?;
     }
-    let silence = trigger_silence(cycle, &registration)?;
+    let silences = trigger_silences(cycle, &registration)?;
     let driver = registration.driver.is_some();
     check_clock_owner(node, cycle, driver)?;
-    // A downstream can see a replay cycle wait for its first clock.
+    // A downstream can see a replay cycle wait for its first clock, and the cycle cuts
+    // its inputs by stamp.
     if node.on_sim_time() {
         crate::node_progress::ensure_publisher(node).map_err(Error::from_status)?;
+        for source in &registration.inputs {
+            source.replayed.store(true, Ordering::Release);
+        }
     }
     let step: &mut CycleStep = &mut registration;
     step.supervision.resize_with(step.inputs.len(), RefCell::default);
     // The step must not be borrowed across the attach.
-    let attach = match silence {
+    let attach = match silences {
         None if driver => Attach::Driver(registration.driver.clone().ok_or(Error::InvalidState)?),
-        Some(silence) => {
-            let trigger =
-                registration.runtime.trigger().and_then(|index| registration.inputs.get(index));
-            let subscriber = trigger
-                .and_then(|source| source.subscriber.as_deref())
-                .ok_or(Error::InvalidState)?;
-            // A wildcard subscriber has no listener of its own; the periodic wake serves it.
-            let listener = subscriber.port.open_listener().map_err(Error::from)?;
-            Attach::Triggered { silence, listener: listener.map(Box::new) }
-        }
+        Some(silences) => Attach::Triggered {
+            silences,
+            newest: newest_triggers(step)?,
+            listeners: trigger_listeners(step)?,
+        },
         None => Attach::Timer,
     };
     drop(registration);
     let attached = match attach {
         Attach::Driver(setup) => {
-            crate::waitset::attach_driver_cycle(set, cycle, &setup).map(|id| (id, 0))
+            crate::waitset::attach_driver_cycle(set, cycle, &setup).map(|id| (id, Vec::new()))
         }
-        Attach::Triggered { silence, listener } => {
-            crate::waitset::attach_triggered_cycle(set, cycle, silence, listener)
+        Attach::Triggered { silences, newest, listeners } => {
+            crate::waitset::attach_triggered_cycle(set, cycle, silences, newest, listeners)
         }
-        Attach::Timer => crate::waitset::attach_cycle_timer(set, cycle).map(|id| (id, 0)),
+        Attach::Timer => crate::waitset::attach_cycle_timer(set, cycle).map(|id| (id, Vec::new())),
     };
-    let (attachment, trigger_attachment) = attached?;
+    let (attachment, trigger_attachments) = attached?;
     let mut registration = cycle.step_mut()?;
     registration.attachment = attachment;
-    registration.trigger_attachment = trigger_attachment;
+    registration.trigger_attachments = trigger_attachments;
     node.committed_cycles.fetch_add(1, Ordering::AcqRel);
     node.drives_clock.fetch_or(driver, Ordering::AcqRel);
-    if let Some(source) = registration.runtime.trigger().and_then(|i| registration.inputs.get(i)) {
-        cycle.introspection.set_cycle_trigger(&source.topic);
-    }
+    let triggers = registration.runtime.triggers().iter();
+    let topics = triggers.filter_map(|&index| registration.inputs.get(index));
+    cycle.introspection.set_cycle_triggers(topics.map(|source| source.topic.clone()).collect());
     cycle.snapshots.committed.store(true, Ordering::Release);
     Ok(())
 }
 
 enum Attach {
     Timer,
-    Triggered { silence: i64, listener: Option<Box<hypha_iceoryx2::Iox2Listener>> },
+    Triggered {
+        silences: Vec<i64>,
+        newest: hypha_cycle::TriggerPorts,
+        listeners: Vec<Vec<hypha_iceoryx2::Iox2Listener>>,
+    },
     Driver(super::DriverSetup),
+}
+
+/// The listeners of each trigger of `registration`, in port order: one per stream it
+/// reads. A wildcard subscriber has none: the periodic wake serves it.
+fn trigger_listeners(
+    registration: &CycleStep,
+) -> Result<Vec<Vec<hypha_iceoryx2::Iox2Listener>>, Error> {
+    registration
+        .runtime
+        .triggers()
+        .iter()
+        .map(|&index| {
+            let source = registration.inputs.get(index);
+            let subscriber = source.and_then(|source| source.subscriber.as_deref());
+            subscriber.ok_or(Error::InvalidState)?.port.open_listeners().map_err(Error::from)
+        })
+        .collect()
 }
 
 /// Refuse a commit that would put two clocks in play: a driver in a process already on
@@ -381,10 +415,11 @@ fn check_clock_owner(
     ))
 }
 
-/// The trigger's silence limit in nanoseconds for a triggered cycle, `None` for a rate
-/// cycle. A cycle with both a rate and a trigger, with neither, or with a trigger that
-/// has no positive silence limit is refused.
-fn trigger_silence(cycle: &Cycle, registration: &CycleStep) -> Result<Option<i64>, Error> {
+/// The silence limit of each trigger in nanoseconds, in port order, for a triggered
+/// cycle, zero for an untimed trigger (`silence_ms = 0` or `unsupervised`), which runs no
+/// fallback of its own; `None` for a rate cycle. A cycle with both a rate and a trigger,
+/// or with neither, is refused.
+fn trigger_silences(cycle: &Cycle, registration: &CycleStep) -> Result<Option<Vec<i64>>, Error> {
     let name = cycle.name();
     let refuse = |reason: &str| {
         crate::last_error::refuse(
@@ -392,26 +427,49 @@ fn trigger_silence(cycle: &Cycle, registration: &CycleStep) -> Result<Option<i64
             &format!("cycle '{name}' is refused: {reason}"),
         )
     };
-    let Some(trigger) = registration.runtime.trigger() else {
+    let triggers = registration.runtime.triggers();
+    if triggers.is_empty() {
         if cycle.period_nanos() == 0 {
             return Err(refuse("it has neither a rate nor a trigger"));
         }
         return Ok(None);
-    };
+    }
     if cycle.period_nanos() != 0 {
         return Err(refuse("a rate and a trigger exclude each other"));
     }
-    let silence = registration
-        .runtime
-        .binding_capture(trigger)
-        .and_then(hypha_cycle::BindingCapture::supervision)
-        .map(|supervision| supervision.limits().silence_nanos)
-        .and_then(|nanos| i64::try_from(nanos).ok())
-        .filter(|nanos| *nanos > 0);
-    let Some(silence) = silence else {
-        return Err(refuse("its trigger input needs a positive silence limit (silence_ms)"));
+    let silence_of = |index: usize| {
+        let capture = registration.runtime.binding_capture(index);
+        let silence = capture
+            .and_then(hypha_cycle::BindingCapture::supervision)
+            .map_or(0, |supervision| supervision.limits().silence_nanos);
+        i64::try_from(silence).map_err(|_| {
+            let input = input_name(registration, index);
+            refuse(&format!("its trigger input {input} has a silence limit past i64"))
+        })
     };
-    Ok(Some(silence))
+    triggers.iter().map(|&index| silence_of(index)).collect::<Result<_, _>>().map(Some)
+}
+
+/// The trigger ports of `registration` bound newest only, by port.
+fn newest_triggers(registration: &CycleStep) -> Result<hypha_cycle::TriggerPorts, Error> {
+    let newest = |index: &usize| {
+        registration
+            .input_options
+            .get(*index)
+            .is_some_and(|options| options.mode == HyphaCycleInputMode::Newest as u32)
+    };
+    let triggers = registration.runtime.triggers().iter().enumerate();
+    let ports = triggers.filter(|(_, index)| newest(index)).map(|(port, _)| port);
+    hypha_cycle::TriggerPorts::of(ports).ok_or(Error::InvalidState)
+}
+
+/// Input `index` of `registration` in a refusal: `'<port>'`, or `(<topic>)` without a table.
+fn input_name(registration: &CycleStep, index: usize) -> String {
+    if let Some(port) = registration.port_names.get(index).filter(|port| !port.is_empty()) {
+        return format!("'{port}'");
+    }
+    let topic = registration.inputs.get(index).map_or("", |source| source.topic.as_str());
+    format!("({topic})")
 }
 
 /// Apply the `[cycle]` table of a class-based cycle. `rate_hz` is only checked here: the
@@ -489,8 +547,11 @@ pub fn cycle_destroy(set: &HyphaWaitSet, cycle: CycleId) -> Result<(), Error> {
     let (attachments, committed_driver) = {
         let held = set.cycle(cycle)?;
         let step = held.step_ref()?;
-        ([step.attachment, step.trigger_attachment], step.driver.is_some())
+        let listeners = step.trigger_attachments.iter().copied();
+        let attachments: Vec<_> = std::iter::once(step.attachment).chain(listeners).collect();
+        (attachments, step.driver.is_some())
     };
+    // Each detached registration leaves the record, so a refused destroy can be repeated.
     for attachment in attachments.into_iter().filter(|id| *id != 0) {
         crate::waitset::waitset_detach(set, attachment)?;
         let held = set.cycle(cycle)?;
@@ -498,7 +559,7 @@ pub fn cycle_destroy(set: &HyphaWaitSet, cycle: CycleId) -> Result<(), Error> {
             if step.attachment == attachment {
                 step.attachment = 0;
             } else {
-                step.trigger_attachment = 0;
+                step.trigger_attachments.retain(|id| *id != attachment);
             }
         }
     }

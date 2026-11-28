@@ -118,11 +118,14 @@ pub unsafe extern "C" fn hypha_cycle_bind_output(
     })
 }
 
-/// Make an uncommitted cycle, created with `period_nanos == 0`, run one step per sample
-/// of its queued, wired input `binding_index`; the trigger drops no arrival. Commit
-/// requires the binding's silence limit to be positive; after that limit without a
-/// sample a fallback step runs. `InvalidArgument`: null cycle, unknown, latest or unwired
-/// binding. `InvalidState`: committed cycle or running `WaitSet`.
+/// Add the queued, wired input `binding_index` to the triggers of an uncommitted cycle
+/// created with `period_nanos == 0`: the cycle runs one step per sample of any trigger,
+/// in send-stamp order, a tie in binding order. Each call adds one trigger, a repeat adds
+/// nothing, and the order of the calls has no meaning; a trigger drops no arrival.
+/// Commit requires each trigger's silence limit to be positive; after the shortest limit
+/// without a step a fallback step runs. `InvalidArgument`: null cycle, unknown, latest or
+/// unwired binding, or a binding whose source another trigger reads. `ResourceLimit`:
+/// more than 64 triggers. `InvalidState`: committed cycle or running `WaitSet`.
 ///
 /// # Safety
 /// `cycle` is null or a live handle.
@@ -180,9 +183,10 @@ pub unsafe extern "C" fn hypha_cycle_set_class_based(
     })
 }
 
-/// Atomically attach the cycle timer, trigger or clock driver after all bindings; an
+/// Atomically attach the cycle timer, triggers or clock driver after all bindings; an
 /// uncommitted cycle never runs. `InvalidArgument`: neither a period nor a trigger, both,
-/// a trigger binding without a positive silence limit, or a refused `[cycle]` key.
+/// or a refused `[cycle]` key. A trigger binding without a silence limit is untimed: it
+/// runs no fallback of its own, and a cycle of untimed triggers runs no fallback.
 /// `InvalidState`: a committed cycle, a running `WaitSet`, any cycle on a CLI tool node
 /// or on a node with a clock driver, and a driver in a process already on simulated
 /// time, on a node with another cycle, or while another process publishes `/clock`. A

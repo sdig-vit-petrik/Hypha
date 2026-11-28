@@ -19,6 +19,7 @@ transforms = "=2.3.0"
 
 [dev-dependencies]
 hypha_msgdef = { path = "../hypha_msgdef" }
+proptest = { workspace = true }
 
 [lints]
 workspace = true

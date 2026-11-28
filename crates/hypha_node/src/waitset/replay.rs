@@ -8,7 +8,7 @@ use std::time::Instant;
 use super::dispatch::CallbackDispatcher;
 use super::upstream::UpstreamHold;
 use super::{AttachmentId, HyphaStatus, Progression, Registration, Target, invoke_cycle};
-use crate::cycle::{Cycle, CycleId, TIME_BASE_BOUND_PERIODS};
+use crate::cycle::{Cycle, CycleId, DrainClock, TIME_BASE_BOUND_PERIODS};
 use crate::status::Error;
 use hypha_runtime::replay_steps::{Step, window_steps};
 use hypha_runtime::upstream_hold::{Admit, Limit, Window, nth_deadline};
@@ -64,7 +64,7 @@ impl CallbackDispatcher<'_> {
             Ok(limit) => limit,
             Err(status) => return self.fail(attachment, HyphaStatus::from(status)),
         };
-        if let Err(status) = crate::cycle::drain_inputs(cycle) {
+        if let Err(status) = crate::cycle::drain_inputs(cycle, DrainClock::Simulated) {
             return self.fail(attachment, HyphaStatus::from(status));
         }
         let new = (periods > 0).then_some(Window { first_nanos, periods });
@@ -145,11 +145,19 @@ impl CallbackDispatcher<'_> {
         super::dispatch::fail_with(&mut self.failure, attachment, status)
     }
 
-    /// Resolve the upstream names of `cycle`, and return the limit they give now.
+    /// Resolve the upstream names of `cycle`, and return the limit they give now: of its
+    /// topic edges, of its request and response edges (a deadline `D` needs those
+    /// upstreams at `D - 1 ns`, as a topic's), and of the cycles of this `WaitSet` that
+    /// send what it reads or are its service peers, which hold it in the same way.
     fn upstream_limit(&mut self, attachment: AttachmentId, cycle: &Cycle) -> Result<Limit, Error> {
+        let local = self.local_limits(attachment, cycle)?;
         let node = self.node;
         let upstream = upstream_of(self.registrations, attachment)?;
-        upstream.settle(&cycle.step_ref()?.inputs, node)
+        let step = cycle.step_ref()?;
+        let limits = upstream.settle(&step.inputs, &step.services, node)?;
+        drop(step);
+        cycle.step_mut()?.services.set_reporters(limits.reporters);
+        Ok(limits.topic.min(limits.service).min(local.topic).min(local.service))
     }
 
     /// Run one replay step at `deadline`, with the inputs cut at that deadline.
@@ -166,6 +174,7 @@ impl CallbackDispatcher<'_> {
             return self.fail(attachment, HyphaStatus::from(status));
         }
         let result = invoke_cycle(self.health, cycle, self.set, 0);
+        self.steps_run = self.steps_run.wrapping_add(1);
         // Clearing it here keeps a step that never ran from leaking its cut.
         if let Ok(mut step) = cycle.step_mut() {
             step.input_cut = None;

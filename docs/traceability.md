@@ -7,23 +7,22 @@ and the evidence that verifies it. A test reference is `<crate>/<binary>` (a Rus
 test binary under `<crate>/tests/`), `cxx:<file>` (a gtest source file of
 `crates/hypha-cxx`) or `run:<name>` (a whole run: `check.sh`, coverage, Miri,
 fuzzing, a sanitizer); `*` stands for any name. The gap column says what the stated
-method still lacks. The letters and numbers in brackets (R1, P4, ...) are the items
-of the former backlog document. `scripts/traceability.py report` writes the result
-of every row from a test run.
+method still lacks. `scripts/traceability.py report` writes the result of every
+row from a test run.
 
 ## Functional requirements
 
 | ID | Verified by | Gap |
 |---|---|---|
 | FSR-01 | `hypha_iceoryx2/conformance`, `hypha_node/framework_stamp_cross_language`, `hypha_iceoryx2/domain_isolation`; `framework_stamp_cross_language` runs a C++ and a Rust process |  |
-| FSR-02 | Analysis: iceoryx2 writes a sample once and appends an offset per connection | No test measures publish time against subscriber count (R7). |
+| FSR-02 | `hypha_iceoryx2/publish_cost_per_subscriber`; `publish_cost_per_subscriber`: for 1, 2, 4 and 8 subscribers each publish takes a slot of its own and reaches each subscriber once, and each subscriber reads it at a constant shift from the publisher's addresses; on Linux only, at the publisher's file and offset (`/proc/self/maps`), which shows one shared sample and no copy; analysis: iceoryx2 appends one offset per connection, so the publish is O(s). No test measures time: a test does not depend on the speed of its host |  |
 | FSR-03 | `hypha_ffi/cycle_single_copy`, `hypha_ffi/pubsub_framed_samples`, `hypha_wire/frame` |  |
 | FSR-04 | `hypha_msgdef/golden_md5`, `cxx:test_ros1_codec_encode`, `hypha_msgs/messages`, `hypha_wire/schema_record`; `golden_md5` covers every repository message |  |
-| FSR-05 | `hypha_core/frame_validation`, `cxx:test_typed_schema_identity`, `hypha_node/client_facade_round_trip`; R4 harness, by hand (wrong schema hash: all rejected and counted) |  |
+| FSR-05 | `hypha_core/frame_validation`, `cxx:test_typed_schema_identity`, `cxx:test_topic_overloading`, `hypha_node/client_facade_round_trip`, `hypha_node/topic_overloading`, `hypha_ffi/subscriber_no_publisher_warning`, `hypha_ffi/other_schemas`; a harness, by hand (wrong schema hash: all rejected and counted) |  |
 | FSR-06 | `hypha_iceoryx2/payload_capacity`, `hypha_ffi/publisher_payload_capacity`, `cxx:test_publish_receive_status` |  |
 | FSR-07 | `hypha_iceoryx2/latch_history`, `hypha_iceoryx2/latch_publisher_lifetime`, `hypha_iceoryx2/latch_raw_payload`, `hypha_node/latch_late_joiner_integrity` |  |
 | FSR-09 | `hypha_wire/mandatory_integrity_footer`, `hypha_wire/frame`, `hypha_wire/publisher_identity` |  |
-| FSR-10 | `hypha_core/frame_validation`, `hypha_wire/sequence_validator`, `hypha_node/subscriber_integrity_stats`, `hypha_ffi/delivery_transport_age`; R4 harness, by hand (corrupt, future, reordered frames from a peer process) | The zero-copy window after the check is accepted (architecture §3.4). |
+| FSR-10 | `hypha_core/frame_validation`, `hypha_wire/sequence_validator`, `hypha_node/subscriber_integrity_stats`, `hypha_ffi/delivery_transport_age`, `hypha_cycle/trigger_capture`; a harness, by hand (corrupt, future, reordered frames from a peer process). A trigger sample of a triggered cycle is judged by age once, by the trigger schedule when its turn drains it (`hypha_runtime::trigger_schedule`, Late: excluded and counted in `age_rejections_total`); the capture delivers it without a second check, so a step that runs later in the turn holds it although the capture judges the port Stale (execution-model §6.6 item 2; `the_firing_sample_is_delivered_even_past_its_limit_at_capture`). | The zero-copy window after the check is accepted (architecture §3.4). The trigger schedule's age check is a unit test of `hypha_runtime`, which a test reference cannot name. |
 | FSR-11 | `hypha_cycle/input_judgement`, `hypha_cycle/input_supervision`, `cxx:test_input_supervision` |  |
 | FSR-12 | `hypha_ffi/subscriber_delivery_mode`, `cxx:test_subscriber` |  |
 | FSR-13 | `hypha_iceoryx2/notification`, `hypha_ffi/waitset_wakeups`, `hypha_iceoryx2/waitset_wake_cadence` |  |
@@ -35,12 +34,12 @@ of every row from a test run.
 | FSR-19 | `run:check`; `scripts/check-deps.sh` (`check.sh`): only `hypha_node` depends on `hypha_iceoryx2`, and no Rust crate depends on `hypha_ffi`; `check.sh` checks the generated header |  |
 | FSR-20 | `cxx:*`, `hypha_node/*` |  |
 | FSR-21 | `hypha_msggen/*`, `hypha_msgs/messages`; the installed SDK flow (`scripts/test-installed-sdk.sh`) |  |
-| FSR-22 | `hypha_tools/echo_plot_cli`, `hypha_tools/topic_follower`, `hypha_ffi/introspection_rows` | The O(1) clause has no measurement (R7). |
+| FSR-22 | `hypha_tools/echo_plot_cli`, `hypha_node/stream_follower`, `hypha_ffi/introspection_rows` |  |
 | FSR-23 | `hypha_ffi/schema`, `hypha_ffi/schema_hash_resolution`, `hypha_iceoryx2/schema_retention` |  |
 | FSR-24 | `hypha_tools/test_recorder_player_core`, `hypha_tools/record_sync`, `hypha_tools/utc_replay_bus`, `hypha_tools/play_flow_control`, `hypha_ffi/replay_callbacks` |  |
 | FSR-25 | `hypha_iceoryx2/start_order_matrix` |  |
 | FSR-26 | `hypha_iceoryx2/schema_retention`, `cxx:test_handle_lifetime`; `schema_retention`: a closed topic leaves no record; an MRS flight leaves nothing in `/tmp/iceoryx2` | No test checks that a clean shutdown leaves no segment. |
-| FSR-27 | `hypha_iceoryx2/stale_resource_reclaim`, `hypha_node/peer_kill_isolation`; `peer_kill_isolation`: SIGKILL of a publisher, of a reader and of a reader that holds samples, and a restarted publisher: no loss, no rejection, no refused publish for the survivors; R3 harness, by hand | No test kills a publisher that holds an unsent loan, or a process between two sends of one cycle step. |
+| FSR-27 | `hypha_iceoryx2/stale_resource_reclaim`, `hypha_node/peer_kill_isolation`; `peer_kill_isolation`: SIGKILL of a publisher, of a reader, of a reader that holds samples, of a publisher that holds an unsent loan and of a peer that reproduces a cycle between the two sends of one step, and a restarted publisher: no loss, no rejection, no refused publish for the survivors; a harness, by hand |  |
 | FSR-40 | `hypha_iceoryx2/domain_isolation`, `hypha_node/domain` |  |
 | FSR-28 | `hypha_ros_bridge/direction_routing`, `hypha_ros_bridge/packet_framing`, `hypha_ros_bridge/automatic_typed_ros_ingress` |  |
 | FSR-29 | `hypha_ros_bridge/manifest_validation`, `hypha_ros_bridge/automatic_routing` |  |
@@ -53,21 +52,24 @@ of every row from a test run.
 | FSR-38 | `hypha_cycle/*`, `hypha_ffi/cycle_*`, `cxx:test_cycle_node`, `cxx:test_cycle_step_faults` |  |
 | FSR-39 | `hypha_cycle/input_supervision`, `cxx:test_input_supervision` |  |
 | FSR-41 | `hypha_ffi/introspection_snapshot`, `cxx:test_node_introspection` |  |
+| FSR-42 | `hypha_iceoryx2/service_transport`, `hypha_node/service_calls`, `hypha_tools/service_cli`, `cxx:test_services`, `cxx:test_cycle_services` |  |
+| FSR-43 | `hypha_node/service_calls`, `hypha_tools/service_cli`, `cxx:test_services` |  |
+| FSR-44 | `hypha_tools/service_lockstep`, `cxx:test_cycle_services` |  |
 
 ## Non-functional requirements
 
 | ID | Verified by | Gap |
 |---|---|---|
 | NFR-01 | Inspection: `libhypha_ffi` is the one deliverable; the C++ SDK uses it through `include/hypha/backend/` |  |
-| NFR-02 | `run:miri`, `run:asan`, `run:tsan`; Rust core; `unsafe` forbidden by lint level outside `hypha_ffi` (the C boundary), `hypha_sys` (OS calls), the test-only `hypha_testkit/src/env.rs` and the C boundary module `hypha_testing_mcap/src/ffi.rs` of the test-only MCAP reader; `hypha_node` and the tools forbid it; sanitizer and Miri runs, 2026-11-11 (R1); `scripts/miri.sh` (Miri over the crates without transport and the node-free `hypha_node` tests); `scripts/sanitize.sh` (C++ tests) | Miri and the sanitizers are not in CI; Miri cannot run a node, `hypha_ffi` or `hypha_sys` (P4). |
-| NFR-03 | None | No automated evidence. macOS 3-hop p99 2–6 ms; no Linux measurement (R7). |
-| NFR-04 | None | No automated evidence (R7). |
-| NFR-05 | `hypha_iceoryx2/subscriber_depth`, `hypha_iceoryx2/resource_qos`, `hypha_iceoryx2/shm_capacity`, `hypha_cycle/cycle_history` | Growth under sustained overload is not measured (R8). |
-| NFR-06 | None | No evidence (R8). |
+| NFR-02 | `run:miri`, `run:asan`, `run:tsan`; Rust core; `unsafe` forbidden by lint level outside `hypha_ffi` (the C boundary), `hypha_sys` (OS calls), the test-only `hypha_testkit/src/env.rs` and the C boundary module `hypha_testing_mcap/src/ffi.rs` of the test-only MCAP reader; `hypha_node` and the tools forbid it; sanitizer and Miri runs, 2026-11-11; `scripts/miri.sh` (Miri over the crates without transport and the node-free `hypha_node` tests); `scripts/sanitize.sh` (C++ tests) | Miri and the sanitizers are not in CI; Miri cannot run a node, `hypha_ffi` or `hypha_sys`. |
+| NFR-03 | None | The rated-load run (examples/load/rated.toml, scripts/rated-load.sh, measurement `rated_load` of the qualification) checks the 500 µs p99, but on no reference platform, so it verifies nothing yet. No Linux measurement. |
+| NFR-04 | None | The rated-load run (examples/load/rated.toml, scripts/rated-load.sh, measurement `rated_load` of the qualification) checks zero loss at the rated load, but on no reference platform, so it verifies nothing yet; its per-topic split is constructed from the three totals. |
+| NFR-05 | `hypha_iceoryx2/subscriber_depth`, `hypha_iceoryx2/resource_qos`, `hypha_iceoryx2/shm_capacity`, `hypha_cycle/cycle_history` | The overload run exists (examples/load/overload.toml, scripts/overload.sh, measurement `overload` of the qualification); its counted limits passed on a development host. It has not run on Linux, where alone written shared memory is measured; after a Linux run confirms its limits it becomes the reference `run:overload`. |
+| NFR-06 | None | No evidence: the 168 h run has not been made (#7). |
 | NFR-07 | Inspection: iceoryx2 is brokerless; no hypha daemon exists |  |
-| NFR-08 | `hypha_wire/*_properties`, `hypha_msgdef/*_properties`, `hypha_core/*_properties`, `hypha_msgs/*_properties`, `hypha_tools/*_properties`, `run:fuzz`; Workspace lints (panic, indexing, arithmetic); the tests are the property tests of every input parser and decoder; fuzzing, 2026-11-11 (R2); `scripts/fuzz.sh` (a `fuzz/` target per parser and decoder) | Fuzzing is not in CI and runs by hand (P4). |
+| NFR-08 | `hypha_wire/*_properties`, `hypha_msgdef/*_properties`, `hypha_core/*_properties`, `hypha_msgs/*_properties`, `hypha_tools/*_properties`, `run:fuzz`; Workspace lints (panic, indexing, arithmetic); the tests are the property tests of every input parser and decoder; fuzzing, 2026-11-11; `scripts/fuzz.sh` (a `fuzz/` target per parser and decoder) | Fuzzing is not in CI and runs by hand. |
 | NFR-09 | `hypha_ffi/node_health`, `cxx:cycle_step_exception_is_logged`; `node_health`: a foreign callback status 7; abort: the release library links no unwinder entry (`_Unwind_RaiseException`), checked by inspection |  |
-| NFR-10 | `run:coverage`; `scripts/coverage.sh` (`--fail-under-lines 80` per crate) | The coverage gate is not in CI; the apps have no coverage gate. |
-| NFR-11 | `hypha_ffi/startup_latency`; `startup_latency`: node creation to first publish; exec to first sample measured 2026-11-11 (R9) |  |
+| NFR-10 | `run:coverage`; `scripts/coverage.sh` (`--fail-under-lines 80` per crate) | The coverage gate runs by hand; the apps, `hypha_node` and the C++ SDK have none (#15). |
+| NFR-11 | `hypha_ffi/startup_latency`; `startup_latency`: node creation, the publisher and the first send succeed on the first call, with no handshake to wait for | The 100 ms is a speed of the host, which no test asserts (#64); a target until a reference platform exists. |
 | NFR-12 | `hypha_iceoryx2/payload_capacity`, `hypha_ffi/publisher_payload_capacity`; `examples/large_payload` |  |
 | NFR-13 | `hypha_wire/sequence_validator`, `hypha_core/frame_validation`, `hypha_core/identifier_allocation`, `hypha_core/timer_missed_count`, `hypha_cycle/cycle_history` |  |

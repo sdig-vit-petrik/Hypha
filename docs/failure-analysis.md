@@ -1,11 +1,10 @@
 # Failure analysis
 
 The failure modes of hypha as a software element, what hypha does about each, and
-what the integrator must do about the rest. First issue, not reviewed by a second
-person.
+what the integrator must do about the rest. One author wrote it; nobody else has
+reviewed it. Section 6 is what an integrator needs to use hypha in a safety function.
 
-Readers: an integrator who writes the safety case of a system that uses hypha, and
-an assessor (see [sil2-readiness.md](sil2-readiness.md)).
+Readers: an integrator who writes the safety case of a system that uses hypha.
 
 ## 1. Method and limits
 
@@ -23,8 +22,8 @@ an assessor (see [sil2-readiness.md](sil2-readiness.md)).
 - **Sources.** Each measure is taken from the specification documents and names its
   requirement and a test. A row marked *not analysed* is an open item of section 5.
 - **Systematic faults** of hypha itself, of the compiler and of the dependencies are
-  not failure modes of a function. They are treated in
-  [sil2-readiness.md](sil2-readiness.md) §4.6 and §4.12.
+  not failure modes of a function and are not analysed here. What hypha requires of
+  its dependencies is in [dependency-assessment.md](dependency-assessment.md).
 
 Classes:
 
@@ -64,7 +63,7 @@ Classes:
 |---|---|---|---|---|---|---|
 | FM-10 | Corruption | Memory fault, a stray write into shared memory | The CRC-32C over header and payload fails; the frame is refused and counted (`corrupt_payload`). A corruption passes with a probability of about 2^-32. | FSR-09, FSR-10; `hypha_core/frame_validation` | C | AoU-09 |
 | FM-11 | Truncated or unknown frame | A peer of another version; a damaged header | Refused and counted (`invalid_frame`). | FSR-10; `hypha_core/frame_validation` | C | |
-| FM-12 | Wrong message definition | Publisher and subscriber built from different definitions | Refused and counted (`schema_mismatch`). | FSR-05; `cxx:test_typed_schema_identity` | C | |
+| FM-12 | Wrong message definition | Publisher and subscriber built from different definitions | Each definition is its own stream of the topic: no frame of another definition is delivered. The node's housekeeping, after the turns of its default `WaitSet` and never in a step, refreshes the topics it subscribes to after a graph event and at least once a second, and records the other definitions of the topic with a publisher whose process is alive: `topic.other_schemas` in the subscriber counters and `RequiredInput.other_schemas` in `~/state`, by schema hash, type and MD5. Until the first refresh, and in a node whose default `WaitSet` does not run, the fact reads "not checked" (`HYPHA_NOT_CHECKED`, `other_schemas_checked` false). A log line comes only while the subscriber's own stream has no publisher, after its no-publisher delay (5 s in C++), and at most once in 10 s: none while another publisher of the own stream is alive, none with a delay of 0, none before the first refresh after an own publisher crashed (a refresh judges its port dead). The verdict says what the data says: `NeverArrived` before a first frame, `Stale` after the silence limit, `Usable` on the last old value for an input without a limit. A refresh that cannot read a stream keeps the topic's last result. A frame that names another definition than its stream is refused and counted (`schema_mismatch`). | FSR-05; `cxx:test_typed_schema_identity`, `cxx:test_topic_overloading`, `hypha_ffi/other_schemas` | C | |
 | FM-13 | Repetition | Transport fault | A sequence equal to the last accepted one of that publisher is refused and counted. | FSR-10; `hypha_wire/sequence_validator` | C | |
 | FM-14 | Wrong order | Transport fault | A sequence older than the last accepted one is refused and counted. | FSR-10; `hypha_wire/sequence_validator` | C | |
 | FM-15 | Loss | The reader's queue overflowed; a refused send | The next frame is accepted and the skipped sequence numbers are counted (`missingSequences()`). The lost data is not recovered. | FSR-10; `hypha_ffi/subscriber_missing_sequences` | R | AoU-04, AoU-07 |
@@ -87,7 +86,7 @@ Classes:
 | FM-31 | A callback never returns | Application defect, a blocking call | Every callback, timer and cycle of that `WaitSet` stops, and so does the node's `~/state`. Nothing inside the process notices: hypha creates no thread. Other nodes see FM-17. | FSR-14; `execution-model.md` §6.3 | U in the process | AoU-01 |
 | FM-32 | A callback is late | Another callback of the same `WaitSet` runs long; a burst on another topic | Dispatch is bounded per turn, so one busy topic cannot starve the rest; a slow callback is counted and logged. No deadline is guaranteed. | `hypha_core/dispatch_batch_turn`; `execution-model.md` §5, §6.2 | R | AoU-01, AoU-15 |
 | FM-33 | A timer or cycle period is missed | Overload, scheduling | The miss is counted (`Timer::missedCount()`, `CycleTime::missed`). The period is not made up. | FSR-15; `hypha_core/timer_missed_count` | R | AoU-01, AoU-04 |
-| FM-34 | More input than a step takes | A publisher faster than the cycle | The oldest pending samples are discarded and counted; the newest are examined. | NFR-05; `hypha_cycle/cycle_history` | R | AoU-07 |
+| FM-34 | More input than a step takes | A publisher faster than the cycle | The oldest pending samples are discarded and counted; the newest are examined. | NFR-05; `hypha_cycle/cycle_history`; the measurement `overload` counts every loss of slow readers on the bus (not yet evidence: no run on Linux) | R | AoU-07 |
 | FM-35 | Internal fault of the library | A defect in hypha or a dependency | The process aborts. No status is returned; destructors and log flushes do not run. Other nodes see FM-17. | NFR-09; `architecture.md` §3.3 | F | AoU-01 |
 | FM-36 | A stale or absent value is used as current | Application reads the value without the verdict | A read of a stale or absent cycle input reports "unavailable"; the last value is reachable only through `lastKnown()`. A plain subscriber gives no verdict. | FSR-11; `hypha_cycle/input_judgement` | C (cycle input), U (plain subscriber) | AoU-02, AoU-03 |
 | FM-37 | Two threads use one `WaitSet` at once | The application starts a run, or a call, while another of its threads is inside a call or a run on that `WaitSet` | Each call and each run claims the `WaitSet` with one compare-and-swap of its owner and releases it when it returns (#83). Whichever comes second, a call during a run or a run during a call, is refused with `InvalidState` and changes nothing. | `interface-specification.md` (Threading), `HyphaWaitSet` (C header); `hypha_ffi/waitset_cross_thread_refusals`, `hypha_ffi/waitset_claim` | R | AoU-22 |
@@ -96,7 +95,7 @@ Classes:
 
 | ID | Failure mode | Cause | Effect and measure | Evidence | Class | Covered by |
 |---|---|---|---|---|---|---|
-| FM-40 | A process dies | Crash, kill, abort (FM-35), SIGBUS (FM-50) | No surviving node fails, loses data or has a publish refused. The dead node keeps its ports until a node of the same name starts. Not tested: a publisher killed with an unsent loan, a kill between two sends of one step. | FSR-27; `hypha_node/peer_kill_isolation`, `hypha_iceoryx2/stale_resource_reclaim` | F | AoU-01, AoU-16 |
+| FM-40 | A process dies | Crash, kill, abort (FM-35), SIGBUS (FM-50) | No surviving node fails, loses data or has a publish refused. The dead node keeps its ports until a node of the same name starts. A frame it had on loan and not sent never arrives and is not counted as lost. Killed between two sends of one step, it has sent the first output of that step and not the second; both inputs of a consumer then go `Stale` after their silence limit. | FSR-27; `hypha_node/peer_kill_isolation`, `hypha_iceoryx2/stale_resource_reclaim` | F | AoU-01, AoU-16 |
 | FM-41 | A process restarts for ever | A fault that returns at every start | Outside the item. hypha's own launcher gives up after repeated restarts, and it is a tool. | — | U | AoU-16 |
 | FM-42 | Two nodes take one name | Deployment error | The second node is refused while the first is alive. | `hypha_node/node_identity` | C | |
 | FM-43 | Nodes start in another order | Deployment, restart | No effect on what connects. | FSR-25; `hypha_iceoryx2/start_order_matrix` | C | |
@@ -127,7 +126,7 @@ Classes:
 ## 4. Assumptions of use
 
 What the integrator must ensure. Each is a condition of any claim made for hypha;
-together they are the core of a safety manual.
+together with section 6 they are what an integrator needs from hypha.
 
 | ID | Assumption |
 |---|---|
@@ -145,7 +144,7 @@ together they are the core of a safety manual.
 | AoU-12 | Only hypha processes of one system run under the domain's UID, and nothing else can open its shared memory. |
 | AoU-13 | No tool, bridge or replay runs in the domain of a safety function in operation, or a system-level argument shows it cannot affect the function. |
 | AoU-14 | A restart of a producer is a defined event for its consumers. `Usable` means a fresh sample arrived, not that the producer has converged. |
-| AoU-15 | The work of a safety function runs on its own `WaitSet` and thread, or in its own process, with no callback of lower integrity beside it. |
+| AoU-15 | The work of a safety function runs in its own process, with no callback of lower integrity beside it: a node has one `WaitSet` and one thread, so every callback of the process shares them. |
 | AoU-16 | A supervisor outside the item restarts or stops failed processes and limits restarts. |
 | AoU-17 | Simulated time is not enabled in operation. |
 | AoU-18 | All processes of a domain run on one host and one kernel. |
@@ -158,12 +157,76 @@ together they are the core of a safety manual.
 
 | ID | Item | From |
 |---|---|---|
-| O-1 | The effect of damage to iceoryx2's connection and discovery segments on a surviving node: can it block, crash or deliver wrong data past the frame checks? Needs a fault-injection test. | FM-23 |
+| O-1 | The effect of damage to iceoryx2's connection and discovery segments on a surviving node: can it block, crash or deliver wrong data past the frame checks? Needs a fault-injection test (#12). | FM-23 |
 | O-2 | Behaviour when allocation fails, in the library and in the C++ SDK. | FM-53 |
 | O-3 | Behaviour of two hypha versions in one domain beyond the frame format: service creation, discovery, limits. | FM-72 |
-| O-4 | The two untested kill cases: a publisher with an unsent loan, a kill between two sends of one step. | FM-40 |
+| O-4 | Closed 2026-11-25. The two kill cases, a publisher with an unsent loan and a kill between two sends of one step, are tested (`hypha_node/peer_kill_isolation`). The second is a peer that reproduces a cycle's emission on the bus: a cycle itself offers no point to kill it between two sends. | FM-40 |
 | O-5 | The repository has no test that corrupts shared memory from another process. The frame checks of FM-10 to FM-14 and FM-18 were exercised that way by hand only (`traceability.md`, FSR-10). | 3.2 |
 | O-6 | Failure modes of the C++ SDK layer on its own (decoding, the transform buffer, the parameter views) are not broken down here. | 1 |
 | O-8 | Closed 2026-11-20. Destroying a started cycle node from a callback of the running `WaitSet` leaked about 84 kB: the handle of an input source was refused during a run although its cycle still owned the source, and the C++ SDK then dropped it. The handle of a bound source is now released at any time (`hypha_ffi/waitset_cross_thread_refusals`). | Sanitizer run |
 | O-9 | Closed 2026-11-20 as false reports. ThreadSanitizer reported two data races on memory allocated inside the library; both blocks are guarded by a mutex in safe Rust, which the sanitizer cannot see because the library is not instrumented. `scripts/tsan-suppressions.txt` ignores calls made from inside the library. Open: no ThreadSanitizer run with an instrumented Rust build exists. | Sanitizer run |
 | O-7 | This analysis has one author. It needs a review by a second person and by an integrator with a real hazard list. | 1 |
+
+## 6. Using hypha in a safety function
+
+### 6.1 The claim
+
+hypha is SIL 0 software. Nobody has assessed it, and it claims compliance with no
+standard. An integrator who uses it in a safety function carries the whole argument:
+in that system hypha is software of unknown pedigree, and this document is engineering
+information. hypha has no safety function of its own. It detects communication and
+execution faults and reports them; what a fault means, and the safe state, belong to the
+application.
+
+| | |
+|---|---|
+| Item | The library `libhypha_ffi`, its C interface (`hypha/hypha_ffi.h`) and the C++ SDK headers (`hypha/`, `ros/` and the directories of the standard message packages, such as `std_msgs/` and `hypha_msgs/`) |
+| Version | The release tag; the C ABI revision of `abi.revision` is part of the library file name |
+| Platform | Linux on amd64 or arm64, one host ([release-policy.md](release-policy.md) §3) |
+| Function | Publish-subscribe communication between processes of one host over shared memory, with a checked frame around each message; periodic and triggered cycles with supervised inputs; services; timers; node parameters |
+| Not in the item | The tools (`hypha topic`, `record`, `play`, `launch` and the others), the ROS 1 bridge, the Foxglove adapter, simulated time and replay, the Rust SDK of the tools, the companions of `crates/hypha-cxx/companions/`, the examples |
+
+### 6.2 What hypha does not detect
+
+A process or callback that hangs (FM-31); wrong content sent with a valid checksum
+(FM-04); a message from the wrong sender on the right topic (FM-20); a change of the data
+after the check (FM-21); and anything about a plain subscriber's data age (FM-16).
+
+The transport (iceoryx2 and the shared memory) is the plain channel, and hypha's frame
+checks are the measures against corruption, repetition, wrong order, loss, delay and a
+wrong address (a frame is bound to its topic). Two parts are missing: nothing binds a
+frame to its sender, and no residual error rate has been calculated (#13). A safety
+function whose integrity depends on the message content therefore applies AoU-09 and
+AoU-10.
+
+### 6.3 Configuration
+
+- Build the application and the library from one release. A different C ABI revision is
+  refused at start.
+- Declare the limits of a topic (payload limit, queue depth, publishers and subscribers)
+  in one header every node of the system includes. Two nodes that declare different
+  limits for one topic do not connect; the second is refused.
+- A node refuses to start on a missing, malformed or unknown parameter. Treat that as a
+  deployment fault, not a case to retry.
+- Give each system on a host its own domain and its own UID.
+
+### 6.4 What to verify in the system
+
+On the target, the integrator's validation should show that:
+
+1. Each safety-related input turns `Stale` within its limit when its producer is killed,
+   stopped (SIGSTOP) and restarted.
+2. The watchdog reaches the safe state when a safety-related process hangs.
+3. Under the worst-case load, no loss counter of a safety-related input grows, and the
+   cycle misses no period beyond the system's tolerance.
+4. The shared-memory volume is not exhausted with every topic at its payload limit.
+5. No tool or bridge process is present in the domain in operation.
+
+No latency, load or endurance figure has been measured on a reference platform
+([requirements-specification.md](requirements-specification.md), NFR-03, NFR-04, NFR-06).
+
+### 6.5 Reporting a defect
+
+A defect that lets an application use wrong, old or missing data without a fault
+indication is reported privately ([SECURITY.md](../SECURITY.md)). State the release, the
+ABI revision, the platform and the counters of the affected node.

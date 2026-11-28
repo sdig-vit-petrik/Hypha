@@ -23,10 +23,10 @@ fn a_waitset_attach_reports_a_full_event_service_as_a_backend_error() {
     let slots =
         hypha_iceoryx2::qos::subscriber_capacity(&topic, &QosPolicy::new("default", 8, 16, 32));
     for _ in 0..slots {
-        listeners.push(first.open_listener().expect("listener"));
+        listeners.push(first.open_listeners().expect("listener"));
     }
 
-    let attached = match first.open_listener() {
+    let attached = match first.open_listeners() {
         Ok(listener) => waitset.attach(listener, Trigger::Event),
         Err(cause) => Err(cause),
     };

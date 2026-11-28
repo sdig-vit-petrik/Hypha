@@ -121,6 +121,7 @@ fn endpoint_message(row: &EndpointRow) -> IntrospectedEndpoint {
         id: row.id,
         topic: row.topic.clone(),
         data_type: row.data_type.clone(),
+        md5: row.md5.clone(),
         queue_depth: u32::try_from(row.queue_depth).unwrap_or(u32::MAX),
         latched: row.latched,
         output_cycle,
@@ -135,7 +136,7 @@ fn cycle_message(row: &CycleRow) -> IntrospectedCycle {
         period_nanos: row.period_nanos.unwrap_or(0),
         inputs: u32::try_from(row.inputs).unwrap_or(u32::MAX),
         outputs: u32::try_from(row.outputs).unwrap_or(u32::MAX),
-        trigger: row.trigger.clone().unwrap_or_default(),
+        triggers: row.triggers.clone(),
     }
 }
 

@@ -26,6 +26,7 @@ mod loan;
 mod log;
 mod metrics;
 mod node;
+mod node_checks;
 mod node_discovery;
 mod node_state;
 mod param_topic;
@@ -33,7 +34,9 @@ mod parameter_constraints;
 mod parameter_parse;
 mod publisher;
 mod schema;
+mod service;
 mod status;
+mod step_services;
 mod subscriber;
 mod transform_buffer;
 pub mod waitset;
@@ -41,23 +44,25 @@ pub mod waitset;
 pub use abi::hypha_abi_revision;
 pub use clock::{
     hypha_clock_advance_sim_time, hypha_clock_disable_sim_time, hypha_clock_enable_sim_time,
-    hypha_clock_is_sim_time, hypha_clock_now_nanos, hypha_clock_set_sim_time,
+    hypha_clock_is_sim_time, hypha_clock_is_valid, hypha_clock_now_nanos, hypha_clock_set_sim_time,
     hypha_clock_steady_now_nanos,
 };
 pub use config::{
     hypha_config_create, hypha_config_destroy, hypha_config_ignore, hypha_config_resolve_key,
-    hypha_config_unread_keys, hypha_node_config,
+    hypha_config_table_names, hypha_config_unread_keys, hypha_node_config,
 };
 pub use cycle::{HyphaCycle, cycle_timer_tick};
 pub use cycle::{
     hypha_cycle_bind_input, hypha_cycle_bind_input_supervision, hypha_cycle_bind_output,
     hypha_cycle_bind_transforms, hypha_cycle_binding, hypha_cycle_commit, hypha_cycle_create,
-    hypha_cycle_destroy, hypha_cycle_emission_commit, hypha_cycle_emission_reserve,
+    hypha_cycle_destroy, hypha_cycle_emission_commit, hypha_cycle_emission_lend,
+    hypha_cycle_emission_reserve, hypha_cycle_emission_return, hypha_cycle_emission_send,
     hypha_cycle_expect_participant, hypha_cycle_health, hypha_cycle_image_alive,
-    hypha_cycle_image_binding, hypha_cycle_image_held, hypha_cycle_image_lookup_transform,
-    hypha_cycle_image_reject_sample, hypha_cycle_image_sample, hypha_cycle_image_set_ignored,
-    hypha_cycle_set_class_based, hypha_cycle_set_clock_driver, hypha_cycle_set_host_clock,
-    hypha_cycle_set_trigger, hypha_input_source_create, hypha_input_source_destroy,
+    hypha_cycle_image_binding, hypha_cycle_image_clear, hypha_cycle_image_held,
+    hypha_cycle_image_lookup_transform, hypha_cycle_image_reject_sample, hypha_cycle_image_sample,
+    hypha_cycle_image_set_ignored, hypha_cycle_set_class_based, hypha_cycle_set_clock_driver,
+    hypha_cycle_set_host_clock, hypha_cycle_set_trigger, hypha_input_source_create,
+    hypha_input_source_destroy,
 };
 pub use hypha_node::config::HyphaConfig;
 pub use hypha_node::cycle::{
@@ -73,19 +78,25 @@ pub use hypha_node::loan::HyphaLoan;
 pub use hypha_node::log::{HyphaLogLevel, HyphaLogModule};
 pub use hypha_node::metrics::HyphaMetricCallback;
 pub use hypha_node::node::HyphaNode;
+pub use hypha_node::node_checks::HyphaNodeCheck;
 pub use hypha_node::node_discovery::{
     HyphaNodeCallback, HyphaNodeInfo, HyphaServicePortCallback, HyphaServicePortInfo,
 };
+pub use hypha_node::safe::HyphaStepServices;
 pub use introspection_abi::{
     hypha_config_record_config, hypha_node_introspect, hypha_node_record_config,
 };
 pub use last_error::hypha_last_error;
-pub use loan::{hypha_loan_drop, hypha_loan_send, hypha_publisher_loan_frame};
+pub use loan::{
+    hypha_loan_drop, hypha_loan_send, hypha_loan_shrink, hypha_publisher_loan_frame,
+    hypha_publisher_reserve_frame,
+};
 pub use log::{hypha_log_enabled, hypha_log_module_register, hypha_log_write};
 pub use metrics::hypha_node_metrics;
 pub use node::{
     hypha_node_create, hypha_node_destroy, hypha_node_name, hypha_node_ok, hypha_node_shutdown,
 };
+pub use node_checks::hypha_node_set_checks;
 pub use node_discovery::{
     hypha_list_nodes, hypha_list_service_ports, hypha_topic_validate_public_name,
 };
@@ -94,13 +105,16 @@ pub use param_topic::hypha_param_topic;
 
 pub use abi_constants::{
     HYPHA_ACTION_CONTINUE, HYPHA_ACTION_FAIL, HYPHA_ACTION_STOP, HYPHA_ATTACH_SUBSCRIPTION,
-    HYPHA_ATTACH_TIMER, HYPHA_CONFIG_SOURCE_APPLICATION, HYPHA_CONFIG_SOURCE_COMMAND_LINE,
-    HYPHA_CONFIG_SOURCE_DEFAULT, HYPHA_CONFIG_SOURCE_PARAMETER, HYPHA_CONFIG_VALUE_BOOL,
-    HYPHA_CONFIG_VALUE_FLOAT, HYPHA_CONFIG_VALUE_INT, HYPHA_CONFIG_VALUE_TEXT,
+    HYPHA_ATTACH_TIMER, HYPHA_CALL_ANSWERED, HYPHA_CALL_BUSY, HYPHA_CALL_NO_SERVER,
+    HYPHA_CALL_NOT_SENT, HYPHA_CALL_REFUSED, HYPHA_CALL_SENT, HYPHA_CALL_SERVER_LOST,
+    HYPHA_CALL_TIMEOUT, HYPHA_CALL_TOO_LARGE, HYPHA_CONFIG_SOURCE_APPLICATION,
+    HYPHA_CONFIG_SOURCE_COMMAND_LINE, HYPHA_CONFIG_SOURCE_DEFAULT, HYPHA_CONFIG_SOURCE_PARAMETER,
+    HYPHA_CONFIG_VALUE_BOOL, HYPHA_CONFIG_VALUE_FLOAT, HYPHA_CONFIG_VALUE_INT,
+    HYPHA_CONFIG_VALUE_TEXT, HYPHA_CYCLE_CLEAR_INPUT, HYPHA_CYCLE_CLEAR_TRANSFORMS,
     HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, HYPHA_CYCLE_VERDICT_STALE, HYPHA_CYCLE_VERDICT_USABLE,
     HYPHA_DEFAULT_ARRIVALS_PER_STEP, HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS,
-    HYPHA_DEFAULT_TF_CACHE_NANOS, HYPHA_FAULT_STAGNANT, HYPHA_FAULT_STALE, HYPHA_PORT_INPUT,
-    HYPHA_PORT_OUTPUT, HYPHA_PORT_TOPIC_OPTIONAL, HYPHA_PORT_TOPIC_REQUIRED,
+    HYPHA_DEFAULT_TF_CACHE_NANOS, HYPHA_FAULT_STAGNANT, HYPHA_FAULT_STALE, HYPHA_NOT_CHECKED,
+    HYPHA_PORT_INPUT, HYPHA_PORT_OUTPUT, HYPHA_PORT_TOPIC_OPTIONAL, HYPHA_PORT_TOPIC_REQUIRED,
     HYPHA_RUN_REASON_DEADLINE, HYPHA_RUN_REASON_RUNTIME_FAILED, HYPHA_RUN_REASON_SETUP_FAILED,
     HYPHA_RUN_REASON_STOPPED, HYPHA_TF_AFTER_BUFFER, HYPHA_TF_BEFORE_BUFFER, HYPHA_TF_FOUND,
     HYPHA_TF_INVALID_FRAME, HYPHA_TF_NOT_CONNECTED, HYPHA_TF_REFUSED, HYPHA_TF_UNKNOWN_FRAME,
@@ -110,6 +124,7 @@ pub use hypha_node::parameter_parse::{HyphaConfigValue, HyphaParamResult};
 pub use hypha_node::port_limits::HyphaSupervisionRanges;
 pub use hypha_node::publisher::{HyphaPublisher, HyphaPublisherOptions};
 pub use hypha_node::qos::HyphaQos;
+pub use hypha_node::sample::{HyphaDeliveryHolder, HyphaReceivedSample};
 pub use hypha_node::status::HyphaStatus;
 pub use hypha_node::subscriber::{
     HyphaSampleIdentity, HyphaSubscriber, HyphaSubscriberCounters, HyphaSubscriberOptions,
@@ -123,12 +138,31 @@ pub use publisher::{
     hypha_publisher_subscriber_count,
 };
 pub use schema::hypha_schema_lookup;
+pub use service::{
+    HYPHA_ANSWER_REFUSE, HYPHA_ANSWER_REPLY, HyphaCallDoneCallback, HyphaCallResult,
+    HyphaClientStatus, HyphaRequestView, HyphaServeCallback, HyphaServiceDesc, HyphaServicePolicy,
+    hypha_client_call, hypha_client_status, hypha_client_wait_for_server, hypha_cycle_bind_client,
+    hypha_cycle_bind_server, hypha_cycle_call, hypha_cycle_next_result, hypha_cycle_requests,
+    hypha_cycle_unread_results, hypha_request_answer, hypha_request_defer, hypha_request_destroy,
+    hypha_service_client_create, hypha_service_client_destroy, hypha_service_server_create,
+    hypha_service_server_destroy,
+};
+pub use step_services::{
+    HYPHA_STEP_REQUEST_DEFERRED, HYPHA_STEP_REQUEST_FAILED, HYPHA_STEP_REQUEST_QUEUED,
+    HYPHA_STEP_REQUEST_REFUSED, HYPHA_STEP_REQUEST_REPLIED, HyphaStepRequestState,
+    HyphaStepRequestStateCallback, HyphaStepSentCallback, HyphaStepServicesStep,
+    hypha_step_services_bind, hypha_step_services_calls, hypha_step_services_create,
+    hypha_step_services_deliver, hypha_step_services_destroy, hypha_step_services_feed,
+    hypha_step_services_request, hypha_step_services_step,
+};
 pub use subscriber::{
-    hypha_subscribe_typed, hypha_subscriber_counters, hypha_subscriber_destroy,
-    hypha_subscriber_missing_sequences, hypha_subscriber_publisher_count, hypha_subscriber_topic,
+    hypha_delivery_retain, hypha_received_sample_release, hypha_subscribe_typed,
+    hypha_subscriber_counters, hypha_subscriber_destroy, hypha_subscriber_missing_sequences,
+    hypha_subscriber_publisher_count, hypha_subscriber_topic,
 };
 pub use transform_buffer::{
-    hypha_transform_buffer_create, hypha_transform_buffer_destroy, hypha_transform_buffer_lookup,
+    hypha_transform_buffer_create, hypha_transform_buffer_create_fed,
+    hypha_transform_buffer_destroy, hypha_transform_buffer_feed, hypha_transform_buffer_lookup,
     hypha_transform_check,
 };
 pub use waitset::{

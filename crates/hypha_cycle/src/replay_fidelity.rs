@@ -76,6 +76,10 @@ pub struct ReplayFidelity {
     time_base: WarningGate,
     /// The warning gate of the short-history check.
     short_history: WarningGate,
+    /// The gate of the publisher count: it is read at most once per interval.
+    publishers: WarningGate,
+    /// The publisher count already warned of; zero when the input has one publisher.
+    warned_publishers: usize,
 }
 
 impl ReplayFidelity {
@@ -125,6 +129,29 @@ impl ReplayFidelity {
              wall time cannot feed a simulated-time cycle; check that every node uses the same \
              time base",
             bound_nanos / 1_000_000
+        ))
+    }
+
+    /// Whether the publisher count of the input is to be read at `now`: once per interval.
+    pub fn publishers_due(&mut self, now: Instant) -> bool {
+        self.publishers.due(now, WARNING_INTERVAL)
+    }
+
+    /// The warning for an input with `count` live publishers, once for each count above
+    /// one, or `None`. With several publishers on one topic the order of their samples in
+    /// the history, and so what a step takes, depends on when the node had a turn.
+    pub fn record_publishers(&mut self, topic: &str, count: usize) -> Option<String> {
+        if count < 2 {
+            self.warned_publishers = 0;
+            return None;
+        }
+        if std::mem::replace(&mut self.warned_publishers, count) == count {
+            return None;
+        }
+        Some(format!(
+            "{count} publishers on {topic} feed one replay input: the order of their samples, \
+             and so what a step receives, depends on when the node had a turn; a deterministic \
+             replay needs one publisher per topic of a replay input"
         ))
     }
 
@@ -242,6 +269,23 @@ mod tests {
         assert!(
             fidelity.record_short_history("/kinematics", 1, 120_000_000, later(start)).is_some()
         );
+    }
+
+    #[test]
+    fn a_second_publisher_is_warned_of_once_for_each_count() {
+        let start = Instant::now();
+        let mut fidelity = ReplayFidelity::default();
+        assert!(fidelity.publishers_due(start));
+        assert!(!fidelity.publishers_due(start), "the count is read once per interval");
+        assert!(fidelity.publishers_due(later(start)));
+        assert_eq!(fidelity.record_publishers("/imu", 1), None);
+        let first =
+            fidelity.record_publishers("/imu", 2).expect("the second publisher is warned of");
+        assert!(first.starts_with("2 publishers on /imu feed one replay input"), "{first}");
+        assert_eq!(fidelity.record_publishers("/imu", 2), None);
+        assert!(fidelity.record_publishers("/imu", 3).is_some(), "a third is news");
+        assert_eq!(fidelity.record_publishers("/imu", 1), None);
+        assert!(fidelity.record_publishers("/imu", 2).is_some(), "a second again, after one");
     }
 
     #[test]

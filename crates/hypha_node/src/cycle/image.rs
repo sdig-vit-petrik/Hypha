@@ -62,6 +62,8 @@ pub(super) struct SupervisionCopy {
 pub(super) struct SupervisionUpdate {
     pub(super) alive: Option<u64>,
     pub(super) ignored: Option<bool>,
+    /// The step cleared the input: applied after it returns.
+    pub(super) clear: bool,
 }
 
 impl SupervisionCopy {
@@ -112,12 +114,95 @@ pub struct EmissionView<'a, 'b> {
     /// True between a reserve and its commit.
     pub(super) open: bool,
     pub(super) error: Option<Error>,
+    /// The cycle's servers and clients, for the step's requests, outcomes and calls.
+    pub(super) services: &'a mut crate::service::CycleServices,
+    /// The loans the step holds (`emission_lend`), by token; `None` once sent or returned.
+    /// Those left when the step returns go back unsent.
+    pub(super) lent: &'a mut Vec<Option<LentMessage>>,
+}
+
+impl<'a, 'b> EmissionView<'a, 'b> {
+    /// The view of a step that has staged nothing yet.
+    pub(super) fn new(
+        emissions: &'a mut Vec<StagedMessage<Option<HyphaLoan>>>,
+        outputs: &'a [CycleOutput],
+        budget: &'a mut EmissionBudget<'b>,
+        services: &'a mut crate::service::CycleServices,
+        lent: &'a mut Vec<Option<LentMessage>>,
+    ) -> Self {
+        Self { emissions, outputs, budget, open: false, error: None, services, lent }
+    }
+}
+
+/// Run `body` with the emission of a step that has services and no output: a step test's
+/// (`hypha::testing::StepHarness`), whose outputs the SDK keeps itself. The service
+/// functions of the C ABI take it as any step's emission.
+pub fn with_service_emission<R>(
+    services: &mut crate::service::CycleServices,
+    body: impl FnOnce(&mut EmissionView<'_, '_>) -> R,
+) -> R {
+    let mut emissions = Vec::new();
+    let mut budget = EmissionBudget::without_outputs();
+    let mut lent = Vec::new();
+    let mut view = EmissionView::new(&mut emissions, &[], &mut budget, services, &mut lent);
+    body(&mut view)
+}
+
+/// The requests the step reads from its server `server` (`docs/design/native-services.md`
+/// §2): on the first call of the step, those due; the same ones on a later call.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown server.
+pub fn emission_requests<'view>(
+    view: &'view mut EmissionView<'_, '_>,
+    server: u32,
+) -> Result<&'view mut [crate::service::StepRequest], Error> {
+    view.services.requests(server)
+}
+
+/// The next outcome of its client `client` that the step reads; `None` when none is left.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown client.
+pub fn emission_next_result(
+    view: &mut EmissionView<'_, '_>,
+    client: u32,
+) -> Result<Option<crate::service::CallResult>, Error> {
+    view.services.next_result(client)
+}
+
+/// The outcomes of its client `client` that successful steps did not read and dropped.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown client.
+pub fn emission_unread_results(view: &mut EmissionView<'_, '_>, client: u32) -> Result<u64, Error> {
+    view.services.unread_results(client)
+}
+
+/// Stage a call of its client `client` with `request`, sent after the step succeeds.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown client.
+pub fn emission_call(
+    view: &mut EmissionView<'_, '_>,
+    client: u32,
+    request: &[u8],
+) -> Result<crate::service::CallStatus, Error> {
+    view.services.call(client, request)
+}
+
+/// A loan of an output that the step fills in place and sends by its token.
+pub(crate) struct LentMessage {
+    output: u32,
+    loan: HyphaLoan,
 }
 
 fn sample_view(sample: &hypha_cycle::HistorySample) -> HyphaCycleSampleView {
+    // Valid for the step: bytes read in place move only between steps.
+    let (payload, payload_len) = sample.payload.raw_parts();
     HyphaCycleSampleView {
-        payload: sample.payload.as_ptr(),
-        payload_len: sample.payload.len(),
+        payload,
+        payload_len,
         transport_sent_nanos: sample.transport_sent_nanos,
         sequence: sample.sequence,
         publisher_id: sample.origin.publisher_id,
@@ -200,13 +285,92 @@ pub fn emission_reserve<'view>(
             let staged = view.emissions.last_mut().and_then(|message| message.value.as_mut());
             Ok(staged.and_then(HyphaLoan::payload_mut))
         }
-        Err(Error::PoolExhausted) => {
+        Err(Error::PoolExhausted | Error::LoanLimit) => {
             // No loan is free: the output's policy decides at dispatch.
             view.emissions.push(StagedMessage { output: output_index, len, value: None });
             Ok(None)
         }
         Err(error) => Err(latch(view, error)),
     }
+}
+
+/// Lends `capacity` bytes of output `output_index` for one message the step fills in place,
+/// held until [`emission_send`] or [`emission_return`] with the returned token, or the end
+/// of the step, which returns it unsent. A step may hold several, of any outputs, beside
+/// reserves. The message counts against the output's per-step count from here.
+///
+/// # Errors
+/// `PoolExhausted` or `LoanLimit` when no loan is free, and the message is not counted: a
+/// refusal is no lost message. A refusal of the step's budget (`ResourceLimit` past the
+/// count, `TooLarge` past the payload limit), `InvalidArgument` for an unknown output, and
+/// `ResourceLimit` when the list of loans cannot grow; none of them latches.
+pub fn emission_lend<'view>(
+    view: &'view mut EmissionView<'_, '_>,
+    output_index: u32,
+    capacity: usize,
+) -> Result<(u64, &'view mut [u8]), Error> {
+    if let Some(error) = view.error {
+        return Err(error);
+    }
+    view.budget.admit(output_index, capacity).map_err(Error::from_code)?;
+    let output = usize::try_from(output_index).ok().and_then(|i| view.outputs.get(i));
+    let lent = output.ok_or(Error::InvalidArgument).and_then(|output| {
+        view.lent.try_reserve(1).map_err(|_| Error::ResourceLimit)?;
+        view.emissions.try_reserve(1).map_err(|_| Error::ResourceLimit)?;
+        crate::loan::lend_frame(&output.publisher, capacity)
+    });
+    let loan = match lent {
+        Ok(loan) => loan,
+        Err(error) => {
+            view.budget.refund(output_index);
+            return Err(error);
+        }
+    };
+    let token = u64::try_from(view.lent.len()).map_err(|_| Error::ResourceLimit)?;
+    view.lent.push(Some(LentMessage { output: output_index, loan }));
+    let buffer = view
+        .lent
+        .last_mut()
+        .and_then(Option::as_mut)
+        .and_then(|lent| lent.loan.payload_mut())
+        .ok_or(Error::InvalidState)?;
+    Ok((token, buffer))
+}
+
+fn take_lent(view: &mut EmissionView<'_, '_>, token: u64) -> Result<LentMessage, Error> {
+    let index = usize::try_from(token).map_err(|_| Error::InvalidArgument)?;
+    view.lent.get_mut(index).and_then(Option::take).ok_or(Error::InvalidArgument)
+}
+
+/// Stages the loan `token` for dispatch after the step with its first `len` bytes, in the
+/// order of the sends and commits of the step. The loan is consumed either way.
+///
+/// # Errors
+/// The latched error of the step; `InvalidArgument` for a token the step does not hold (sent,
+/// returned or unknown) or a `len` past the loan, which returns the loan unsent.
+pub fn emission_send(view: &mut EmissionView<'_, '_>, token: u64, len: usize) -> Result<(), Error> {
+    if let Some(error) = view.error {
+        return Err(error);
+    }
+    let LentMessage { output, mut loan } = take_lent(view, token)?;
+    if let Err(error) = crate::loan::loan_shrink(&mut loan, len) {
+        view.budget.refund(output);
+        return Err(error);
+    }
+    view.emissions.push(StagedMessage { output, len, value: Some(loan) });
+    Ok(())
+}
+
+/// Returns the loan `token` unsent: its slot goes back to the pool, and the output may lend
+/// or send another message in its place.
+///
+/// # Errors
+/// `InvalidArgument` for a token the step does not hold.
+pub fn emission_return(view: &mut EmissionView<'_, '_>, token: u64) -> Result<(), Error> {
+    let LentMessage { output, loan } = take_lent(view, token)?;
+    drop(loan);
+    view.budget.refund(output);
+    Ok(())
 }
 
 /// Closes the message the last [`emission_reserve`] opened.
@@ -268,6 +432,37 @@ pub fn image_set_ignored(
     Ok(())
 }
 
+/// Asks to clear input `index` (`HYPHA_CYCLE_CLEAR_INPUT`) or the TF input `index`
+/// (`HYPHA_CYCLE_CLEAR_TRANSFORMS`) when the step returns; a repeat in one step asks once.
+/// The rest of the step still reads what it captured.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown kind or index, or a trigger port; `InvalidState`
+/// while the binding is borrowed.
+pub fn image_clear(view: &ImageView<'_>, kind: u32, index: u32) -> Result<(), Error> {
+    match kind {
+        super::types::HYPHA_CYCLE_CLEAR_INPUT => {
+            let capture = usize::try_from(index).ok().and_then(|i| view.captures.get(i));
+            // The pending samples of a trigger port are the steps its schedule plans.
+            if capture.is_none_or(hypha_cycle::BindingCapture::is_trigger) {
+                return Err(Error::InvalidArgument);
+            }
+            let cell = supervision_copy(view, index).ok_or(Error::InvalidArgument)?;
+            cell.try_borrow_mut().map_err(|_| Error::InvalidState)?.update.clear = true;
+            Ok(())
+        }
+        super::types::HYPHA_CYCLE_CLEAR_TRANSFORMS => {
+            let input = usize::try_from(index)
+                .ok()
+                .and_then(|i| view.transforms.get(i))
+                .ok_or(Error::InvalidArgument)?;
+            input.request_clear();
+            Ok(())
+        }
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
 /// The view of input `binding_index` in the step, after any rejection of the step.
 ///
 /// # Errors
@@ -320,7 +515,7 @@ pub fn image_reject_sample(
     let history = input.history.as_ref().ok_or(Error::NotAvailable)?;
     let cell = view.supervision.get(index).ok_or(Error::InvalidArgument)?;
     let mut copy = cell.try_borrow_mut().map_err(|_| Error::InvalidState)?;
-    let history = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let history = crate::locked(history);
     let newly = history_reject(history, sequence, capture, &mut copy);
     if newly {
         copy.newly_rejected = copy.newly_rejected.wrapping_add(1);
@@ -364,5 +559,27 @@ pub(super) fn binding_report(capture: &hypha_cycle::BindingCapture) -> HyphaCycl
         lost_total: capture.counters.overrun_total,
         stale_since_capture: capture.stale_since_capture,
         stale_total: capture.counters.age_rejections_total,
+    }
+}
+
+/// Clear each input the finished step asked to clear, and log it once per clear.
+pub(super) fn apply_clears(
+    cycle_name: &str,
+    inputs: &[std::sync::Arc<super::source::CycleInputSource>],
+    port_names: &[String],
+    runtime: &mut hypha_cycle::CycleRuntime,
+    copies: &mut [std::cell::RefCell<SupervisionCopy>],
+) {
+    for (index, copy) in copies.iter_mut().enumerate() {
+        if !std::mem::take(&mut copy.get_mut().update.clear) {
+            continue;
+        }
+        let Ok(dropped) = runtime.clear_binding(index) else {
+            continue;
+        };
+        let topic = inputs.get(index).map_or("", |source| source.topic.as_str());
+        let port = port_names.get(index).map_or("", String::as_str);
+        let subject = super::tick::input_subject(cycle_name, port, topic);
+        log::info!(target: "hypha", "hypha: {subject} cleared: {dropped} pending sample(s) dropped");
     }
 }

@@ -204,6 +204,65 @@ class TimerFailApp final : public hypha::ApplicationNode
     hypha::Timer timer_;
 };
 
+/// Reports a configuration fault found after start from a worker thread that the application
+/// owns. The stop is a hang guard that the run should never reach.
+class ThreadConfigFailApp final : public hypha::ApplicationNode
+{
+  public:
+    void setup(hypha::Node& node) override
+    {
+        this->worker_.start(std::thread(FailNow{this}));
+        this->stopper_.arm(node, std::chrono::seconds(5));
+    }
+
+  private:
+    struct FailNow
+    {
+        ThreadConfigFailApp* app;
+
+        void operator()() const
+        {
+            app->failRun(hypha::ConfigError("the first frame exceeds image_max_bytes"));
+        }
+    };
+
+    Stopper       stopper_;
+    JoinOnDestroy worker_;
+};
+
+/// Reports a configuration fault found after start from a timer callback on the run thread.
+class TimerConfigFailApp final : public hypha::ApplicationNode
+{
+  public:
+    void setup(hypha::Node& node) override
+    {
+        this->timer_ = node.timer(
+            hypha::Duration::fromMillis(10), hypha::bind<&TimerConfigFailApp::tick>(*this)
+        );
+        this->stopper_.arm(node);
+    }
+
+    void tick()
+    {
+        this->failRun(hypha::ConfigError("the pixel format is not offered"));
+    }
+
+  private:
+    Stopper      stopper_;
+    hypha::Timer timer_;
+};
+
+/// Reports a runtime failure, then a configuration fault: the first one decides the exit code.
+class RuntimeThenConfigFailApp final : public hypha::ApplicationNode
+{
+  public:
+    void setup(hypha::Node&) override
+    {
+        this->failRun("the device is gone");
+        this->failRun(hypha::ConfigError("the pixel format is not offered"));
+    }
+};
+
 /// Refuses start-up from setup() of a cycle node. The commit must not run, so
 /// step() is never called. The stop is a hang guard that the run should never reach.
 class SetupRefusesCycleApp final : public hypha::CycleNode
@@ -279,6 +338,19 @@ class QosMismatchApp final : public hypha::ApplicationNode
     hypha::Publisher<std_msgs::Float64> second_;
 };
 
+/// Subscribes to a port that has no table in the parameter file.
+class MissingPortTableApp final : public hypha::ApplicationNode
+{
+  public:
+    void setup(hypha::Node& node) override
+    {
+        this->input_ = node.subscribe<std_msgs::Float64>("k8_unwired");
+    }
+
+  private:
+    hypha::Subscriber<std_msgs::Float64> input_;
+};
+
 /// A cycle port that declares another policy than the topic its setup() opened.
 class CyclePortQosMismatchApp final : public hypha::CycleNode
 {
@@ -324,6 +396,64 @@ class MissingSilenceApp final : public hypha::CycleNode
 {
   public:
     Latest<std_msgs::Float64> speed{*this, "speed"};
+
+    void setup(hypha::Node&) override
+    {
+        this->setRate(hypha::Hz(100.0));
+    }
+
+    void step(const hypha::CycleTime&) override
+    {
+    }
+};
+
+/// A queued input whose perStep, fixed in code, is above the maxDepth (32) of its policy.
+class ConstantPerStepApp final : public hypha::CycleNode
+{
+  public:
+    Arrivals<std_msgs::Float64> samples{*this, hypha::Topic{"/k8_per_step"}, perStep(33)};
+
+    void setup(hypha::Node&) override
+    {
+        this->setRate(hypha::Hz(100.0));
+    }
+
+    void step(const hypha::CycleTime&) override
+    {
+    }
+};
+
+/// A queued input whose perStep is the `queue_size` of its port table, passed on as read:
+/// the framework cannot tell that the number came from the file.
+class FilePerStepApp final : public hypha::CycleNode
+{
+  public:
+    Arrivals<std_msgs::Float64> imu{
+        *this, "imu", perStep(hypha::config("ports.inputs.imu").required<uint32_t>("queue_size"))
+    };
+
+    void setup(hypha::Node&) override
+    {
+        this->setRate(hypha::Hz(100.0));
+    }
+
+    void step(const hypha::CycleTime&) override
+    {
+    }
+};
+
+/// The same, with the port's own range check: the way to refuse a file value with 78.
+class CheckedFilePerStepApp final : public hypha::CycleNode
+{
+  public:
+    Arrivals<std_msgs::Float64> imu{
+        *this,
+        "imu",
+        perStep(
+            hypha::config("ports.inputs.imu")
+                .required<uint32_t>("queue_size", hypha::constraints::range(1, 32))
+        )
+    };
 
     void setup(hypha::Node&) override
     {
@@ -439,6 +569,42 @@ TEST(RunNodeLifecycle, AnInvalidEnvironmentReferenceReturnsTheConfigurationCode)
     EXPECT_NE(output.find("node failed in configuration loading"), std::string::npos) << output;
 }
 
+TEST(RunNodeLifecycle, AnInvalidLogLevelReturnsTheConfigurationCode)
+{
+    const std::filesystem::path path =
+        parameterFile("hypha_k8_log_level.toml", "[log]\nlevel = \"loud\"\n");
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithFile(&hypha::runNode<TimerApp>, path);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    std::filesystem::remove(path);
+    EXPECT_EQ(exitCode, hypha::kExitConfiguration);
+    EXPECT_NE(output.find("[log] level: unknown level"), std::string::npos) << output;
+}
+
+TEST(RunNodeLifecycle, AnInvalidNodeNameInTheParameterFileReturnsTheConfigurationCode)
+{
+    const std::filesystem::path path =
+        parameterFile("hypha_k8_node_name.toml", "[node]\nname = \"Bad Name\"\n");
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithFile(&hypha::runNode<TimerApp>, path);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    std::filesystem::remove(path);
+    EXPECT_EQ(exitCode, hypha::kExitConfiguration);
+    EXPECT_NE(output.find("'Bad Name' is not a node name"), std::string::npos) << output;
+}
+
+TEST(RunNodeLifecycle, AnInvalidNodeNameInTheCodeReturnsTheRuntimeCode)
+{
+    EXPECT_TRUE(hypha::disableSimTime());
+    char  program[] = "prog";
+    char* argv[] = {program, nullptr};
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = hypha::runNode<TimerApp>(1, argv, "Bad Name");
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    EXPECT_EQ(exitCode, hypha::kExitRuntime);
+    EXPECT_NE(output.find("'Bad Name' is not a node name"), std::string::npos) << output;
+}
+
 TEST(RunNodeLifecycle, AParameterErrorInSetupReturnsTheConfigurationCode)
 {
     ::testing::internal::CaptureStderr();
@@ -465,6 +631,15 @@ TEST(RunNodeLifecycle, AQosMismatchReturnsTheConfigurationCode)
     const std::string output = ::testing::internal::GetCapturedStderr();
     EXPECT_EQ(exitCode, hypha::kExitConfiguration);
     EXPECT_NE(output.find("QosMismatch"), std::string::npos) << output;
+}
+
+TEST(RunNodeLifecycle, AMissingPortTableReturnsTheConfigurationCode)
+{
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithoutArguments(&hypha::runNode<MissingPortTableApp>);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    EXPECT_EQ(exitCode, hypha::kExitConfiguration);
+    EXPECT_NE(output.find("ports.inputs.k8_unwired"), std::string::npos) << output;
 }
 
 TEST(RunNodeLifecycle, AQosMismatchOfACyclePortReturnsTheConfigurationCode)
@@ -527,6 +702,27 @@ TEST(RunNodeLifecycle, FailRunFromAnotherThreadReturnsTheRuntimeCode)
 TEST(RunNodeLifecycle, FailRunFromATimerReturnsTheRuntimeCode)
 {
     EXPECT_EQ(runWithoutArguments(&hypha::runNode<TimerFailApp>), hypha::kExitRuntime);
+}
+
+TEST(RunNodeLifecycle, FailRunWithAConfigErrorFromAWorkerReturnsTheConfigurationCode)
+{
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithoutArguments(&hypha::runNode<ThreadConfigFailApp>);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    EXPECT_EQ(exitCode, hypha::kExitConfiguration);
+    EXPECT_EQ(
+        countOccurrences(output, "application failed: the first frame exceeds image_max_bytes"), 1
+    );
+}
+
+TEST(RunNodeLifecycle, FailRunWithAConfigErrorFromATimerReturnsTheConfigurationCode)
+{
+    EXPECT_EQ(runWithoutArguments(&hypha::runNode<TimerConfigFailApp>), hypha::kExitConfiguration);
+}
+
+TEST(RunNodeLifecycle, TheFirstFailureDecidesWhetherItIsAConfigurationFault)
+{
+    EXPECT_EQ(runWithoutArguments(&hypha::runNode<RuntimeThenConfigFailApp>), hypha::kExitRuntime);
 }
 
 TEST(RunNodeLifecycle, FailRunFromSetupOfACycleNodeSkipsTheCommit)
@@ -594,11 +790,55 @@ TEST(RunNodeLifecycle, AMissingSilenceLimitReturnsTheConfigurationCode)
     EXPECT_EQ(exitCode, hypha::kExitConfiguration);
     EXPECT_NE(
         output.find(
-            "input 'speed': missing key 'silence_ms': a required input needs a limit, or "
+            "input 'speed': missing key 'silence_ms': an input needs a limit, 0 for none, or "
             "the tag hypha::unsupervised: NotAvailable"
         ),
         std::string::npos
     ) << output;
+}
+
+TEST(RunNodeLifecycle, APerStepAboveTheLimitFixedInCodeReturnsTheRuntimeCodeAndNamesTheLimit)
+{
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithoutArguments(&hypha::runNode<ConstantPerStepApp>);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    EXPECT_EQ(exitCode, hypha::kExitRuntime) << output;
+    EXPECT_NE(output.find("node failed in application construction"), std::string::npos) << output;
+    EXPECT_NE(
+        output.find(
+            "a queue of 33 samples per step (perStep) exceeds the maxDepth of its QoS policy "
+            "'default' (publishers 8, subscribers 16, maxDepth 32)"
+        ),
+        std::string::npos
+    ) << output;
+}
+
+TEST(RunNodeLifecycle, APerStepAboveTheLimitPassedOnFromTheFileStillReturnsTheRuntimeCode)
+{
+    const std::filesystem::path path = parameterFile(
+        "hypha_run_node_per_step_file.toml",
+        "[ports.inputs.imu]\ntopic = '/k8_per_step_file'\nqueue_size = 33\nsilence_ms = 100\n"
+    );
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithFile(&hypha::runNode<FilePerStepApp>, path);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    std::filesystem::remove(path);
+    EXPECT_EQ(exitCode, hypha::kExitRuntime) << output;
+    EXPECT_NE(output.find("maxDepth 32"), std::string::npos) << output;
+}
+
+TEST(RunNodeLifecycle, ARangeCheckOfAPerStepReadFromTheFileReturnsTheConfigurationCode)
+{
+    const std::filesystem::path path = parameterFile(
+        "hypha_run_node_per_step_checked.toml",
+        "[ports.inputs.imu]\ntopic = '/k8_per_step_checked'\nqueue_size = 33\nsilence_ms = 100\n"
+    );
+    ::testing::internal::CaptureStderr();
+    const int         exitCode = runWithFile(&hypha::runNode<CheckedFilePerStepApp>, path);
+    const std::string output = ::testing::internal::GetCapturedStderr();
+    std::filesystem::remove(path);
+    EXPECT_EQ(exitCode, hypha::kExitConfiguration) << output;
+    EXPECT_NE(output.find("queue_size"), std::string::npos) << output;
 }
 
 TEST(RunNodeLifecycle, ASetupThatSendsFailsTheNodeNamingTheOutput)

@@ -1,5 +1,6 @@
-//! A cycle that drives `/clock` for a simulator: once every participant acknowledged the
-//! current value, the cycle steps at the next value and only then publishes `/clock` for it.
+//! A cycle that drives `/clock` for a simulator: it publishes the start value with no
+//! step; once every participant acknowledged the current value, the cycle steps at the
+//! next value and only then publishes `/clock` for it.
 
 use std::time::{Duration, Instant};
 
@@ -56,12 +57,16 @@ pub(crate) fn attach_driver_cycle(
         }
     };
     let node = set.node();
-    // One clock per bus: another process that publishes `/clock` would fight this one.
-    let probe =
-        crate::subscriber::create_sim_clock_subscriber(&node.transport, &node.introspection)?;
-    let publishers = probe.port.publisher_count().map_err(Error::from)?;
-    drop(probe);
-    if publishers > 0 {
+    // One clock per bus: another process that publishes `/clock` would fight this one,
+    // whatever schema it sends it with, as `hypha play` judges it; a dead node's port is
+    // no publisher.
+    let listed = node.transport.list_service_ports().map_err(Error::from)?;
+    let mut taken = false;
+    for stream in listed.iter().filter(|stream| stream.name == "/clock" && stream.publishers > 0) {
+        let live = node.transport.live_publishers(&stream.name, stream.schema_hash);
+        taken |= live.map_err(Error::from)?.is_some_and(|publishers| publishers > 0);
+    }
+    if taken {
         log::error!(target: "hypha", "hypha: clock driver '{}' is refused: another process already publishes /clock in this domain", registration.name());
         return Err(Error::InvalidState);
     }
@@ -89,7 +94,7 @@ pub(crate) fn attach_driver_cycle(
 }
 
 impl CallbackDispatcher<'_> {
-    /// One turn of the driver cycle `attachment`: read the reports, then step, resend,
+    /// One turn of the driver cycle `attachment`: read the reports, then step, announce,
     /// wait or fail as its schedule says.
     pub(super) fn run_driver(&mut self, attachment: AttachmentId) -> Progression {
         self.driver_turn(attachment)
@@ -144,9 +149,8 @@ impl CallbackDispatcher<'_> {
                 log::error!(target: "hypha", "hypha: clock driver '{}': the next clock value is not representable", cycle.name());
                 Err(Error::InvalidState)
             }
-            DriverAction::Resend { value } => {
-                publish_clock(&state.clock, value)?;
-                state.schedule.sent(value, 0, Instant::now());
+            DriverAction::Announce { value } => {
+                publish_clock(state, value)?;
                 Ok(Progression::Continue)
             }
             DriverAction::Fail { silent, last_clock_nanos } => {
@@ -159,7 +163,7 @@ impl CallbackDispatcher<'_> {
             }
             DriverAction::Step { deadline } => {
                 crate::clock::clock_set_sim_time(deadline)?;
-                crate::cycle::drain_inputs(cycle)?;
+                crate::cycle::drain_inputs(cycle, crate::cycle::DrainClock::Simulated)?;
                 {
                     let mut step = cycle.step_mut()?;
                     step.scheduled_nanos = deadline;
@@ -173,22 +177,22 @@ impl CallbackDispatcher<'_> {
                 if decision != Progression::Continue {
                     return Ok(decision);
                 }
-                let floor = u64::try_from(hypha_time::steady_now().nanos())
-                    .map_err(|_| Error::InvalidState)?;
-                publish_clock(&state.clock, deadline)?;
-                state.schedule.sent(deadline, floor, Instant::now());
+                publish_clock(state, deadline)?;
                 Ok(Progression::Continue)
             }
         }
     }
 }
 
-/// Publish `/clock = nanos`.
-fn publish_clock(clock: &HyphaPublisher, nanos: i64) -> Result<(), Error> {
+/// Publish `/clock = nanos` and tell the schedule, with the floor taken just before.
+fn publish_clock(state: &mut DriverCycle, nanos: i64) -> Result<(), Error> {
     let payload = clock_payload(nanos).ok_or(Error::InvalidState)?;
-    crate::publisher::send_frame_with(clock, payload.len(), |buffer| {
+    let floor = u64::try_from(hypha_time::steady_now().nanos()).map_err(|_| Error::InvalidState)?;
+    crate::publisher::send_frame_with(&state.clock, payload.len(), |buffer| {
         buffer.copy_from_slice(&payload);
         Ok(())
     })
-    .map_err(Error::from_status)
+    .map_err(Error::from_status)?;
+    state.schedule.sent(nanos, floor, Instant::now());
+    Ok(())
 }

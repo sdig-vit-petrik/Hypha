@@ -94,7 +94,7 @@ fn an_event_driven_subscription_delivers_queued_data_on_the_calling_thread() {
 
     let mut waitset = receiver.waitset(&unique_name("waitset_event_ctl")).expect("waitset");
     let subscriber = subscriber;
-    let listener = subscriber.open_listener().expect("open a listener");
+    let listener = subscriber.open_listeners().expect("open a listener");
     let attachment = waitset.attach(listener, Trigger::Event).expect("attach");
 
     let mut loan = publisher.loan(4).expect("loan");
@@ -119,7 +119,7 @@ fn a_periodic_subscription_ticks_without_any_publisher() {
 
     let mut waitset = receiver.waitset(&unique_name("waitset_periodic_ctl")).expect("waitset");
     let subscriber = subscriber;
-    let listener = subscriber.open_listener().expect("open a listener");
+    let listener = subscriber.open_listeners().expect("open a listener");
     let attachment =
         waitset.attach(listener, Trigger::Periodic(Duration::from_millis(10))).expect("attach");
 
@@ -140,7 +140,7 @@ fn a_stop_handle_ends_a_run_from_another_thread() {
     let subscriber = receiver.subscribe(&spec).expect("subscribe");
     let mut waitset = receiver.waitset(&unique_name("waitset_stop_ctl")).expect("waitset");
     let subscriber = subscriber;
-    let listener = subscriber.open_listener().expect("open a listener");
+    let listener = subscriber.open_listeners().expect("open a listener");
     let attachment =
         waitset.attach(listener, Trigger::Periodic(Duration::from_millis(10))).expect("attach");
 
@@ -180,8 +180,8 @@ fn two_waitsets_run_on_two_application_threads() {
     let mut waitset_b = transport_b.waitset(&unique_name("waitset_pair_ctl_b")).expect("ws b");
     let subscriber_a = subscriber_a;
     let subscriber_b = subscriber_b;
-    let listener_a = subscriber_a.open_listener().expect("open a listener");
-    let listener_b = subscriber_b.open_listener().expect("open a listener");
+    let listener_a = subscriber_a.open_listeners().expect("open a listener");
+    let listener_b = subscriber_b.open_listeners().expect("open a listener");
     let attachment_a =
         waitset_a.attach(listener_a, Trigger::Periodic(Duration::from_millis(10))).expect("a");
     let attachment_b =
@@ -225,7 +225,7 @@ fn the_caller_owned_path_adds_no_thread() {
     let subscriber = receiver.subscribe(&spec).expect("subscribe");
     let mut waitset = receiver.waitset(&unique_name("waitset_nothread_ctl")).expect("waitset");
     let subscriber = subscriber;
-    let listener = subscriber.open_listener().expect("open a listener");
+    let listener = subscriber.open_listeners().expect("open a listener");
     waitset.attach(listener, Trigger::Event).expect("attach");
     let after = thread_count();
 
@@ -245,7 +245,7 @@ fn a_bounded_run_takes_one_turn_even_when_its_limit_passed_during_setup() {
     let subscriber = receiver.subscribe(&spec).expect("subscribe");
 
     let mut waitset = receiver.waitset(&unique_name("waitset_one_turn_ctl")).expect("waitset");
-    let listener = subscriber.open_listener().expect("open a listener");
+    let listener = subscriber.open_listeners().expect("open a listener");
     let attachment = waitset.attach(listener, Trigger::Event).expect("attach");
 
     let mut loan = publisher.loan(4).expect("loan");

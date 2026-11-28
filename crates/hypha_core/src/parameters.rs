@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
 use toml::Table;
 
@@ -16,17 +16,17 @@ struct ReadSet(Mutex<BTreeSet<String>>);
 
 impl ReadSet {
     fn insert(&self, name: &str) {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
+        crate::locked(&self.0).insert(name.to_string());
     }
 
     fn contains(&self, name: &str) -> bool {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).contains(name)
+        crate::locked(&self.0).contains(name)
     }
 }
 
 impl Clone for ReadSet {
     fn clone(&self) -> Self {
-        let cloned = self.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let cloned = crate::locked(&self.0).clone();
         Self(Mutex::new(cloned))
     }
 }
@@ -57,7 +57,7 @@ struct IgnoreSet(Mutex<Vec<IgnoredKey>>);
 impl IgnoreSet {
     /// Adds `entry` unless its key is already ignored; true when it was added.
     fn insert(&self, entry: IgnoredKey) -> bool {
-        let mut entries = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut entries = crate::locked(&self.0);
         if entries.iter().any(|known| known.key == entry.key) {
             return false;
         }
@@ -66,11 +66,11 @@ impl IgnoreSet {
     }
 
     fn snapshot(&self) -> Vec<IgnoredKey> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        crate::locked(&self.0).clone()
     }
 
     fn covers(&self, key: &str) -> bool {
-        let entries = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let entries = crate::locked(&self.0);
         entries.iter().any(|entry| key_is_under(key, &entry.key))
     }
 }
@@ -93,6 +93,19 @@ impl fmt::Debug for IgnoreSet {
     }
 }
 
+/// `list[index]` or `list[index].inner` as the list, the index and what follows the dot.
+fn split_element_name(name: &str) -> Option<(&str, usize, &str)> {
+    let (list, after_bracket) = name.split_once('[')?;
+    let (index_text, after_index) = after_bracket.split_once(']')?;
+    let index_is_digits =
+        !index_text.is_empty() && index_text.bytes().all(|byte| byte.is_ascii_digit());
+    if !index_is_digits {
+        return None;
+    }
+    let inner = if after_index.is_empty() { "" } else { after_index.strip_prefix('.')? };
+    Some((list, index_text.parse().ok()?, inner))
+}
+
 /// True when `key` is `prefix` or a dotted or indexed name under it.
 pub(crate) fn key_is_under(key: &str, prefix: &str) -> bool {
     key == prefix
@@ -103,7 +116,7 @@ pub(crate) fn key_is_under(key: &str, prefix: &str) -> bool {
 
 impl fmt::Debug for ReadSet {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let set = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let set = crate::locked(&self.0);
         fmt::Debug::fmt(&*set, out)
     }
 }
@@ -173,7 +186,7 @@ pub struct ParameterOverride {
 pub enum ListElement {
     /// A scalar element.
     Scalar(ParamValue),
-    /// A table element. It has its own scalar keys and tables, and no lists.
+    /// A table element. It has its own scalar keys, tables and lists.
     Table(Parameters),
 }
 
@@ -200,7 +213,7 @@ impl ListElement {
 /// The validated parameters one node was started with.
 ///
 /// Scalars and tables are flat dotted names. A TOML array is a list, held apart from
-/// the scalars; a list has no nested lists. Any duplicate across included files is refused.
+/// the scalars; a list holds scalars or tables, never lists (a table element may hold lists of its own). Any duplicate across included files is refused.
 ///
 /// `node`, `ports` and `log` are reserved. The `log` table is not a parameter and is
 /// left out of the flat map; read it with `log_table`.
@@ -283,22 +296,89 @@ impl Parameters {
         self.log.as_ref()
     }
 
-    /// True when `name` is a scalar with a value. Does not mark `name` as read.
+    /// True when `name` is a scalar with a value, or a scalar of a table element
+    /// (`sensors[1].topic`). Does not mark `name` as read.
     #[must_use]
     pub fn has(&self, name: &str) -> bool {
         self.values.contains_key(name)
+            || self.element_of(name, false).is_some_and(|(element, inner)| element.has(inner))
     }
 
-    /// True when `name` is a list. Does not mark `name` as read.
+    /// True when `name` is a list, or `list[index].inner` is a list of a table element.
+    /// Does not mark `name` as read.
     #[must_use]
     pub fn has_list(&self, name: &str) -> bool {
         self.lists.contains_key(name)
+            || self.element_of(name, false).is_some_and(|(element, inner)| element.has_list(inner))
     }
 
-    /// The value of the scalar `name`, if present. Marks `name` as read when present.
+    /// The table element that `name` starts in, and the rest of `name` inside it:
+    /// `sensors[1].gains` is element 1 of `sensors` and `gains`. Marks the element as
+    /// read when `mark` is set.
+    fn element_of<'s, 'n>(
+        &'s self,
+        name: &'n str,
+        mark: bool,
+    ) -> Option<(&'s Parameters, &'n str)> {
+        let (list, index, inner) = split_element_name(name)?;
+        let element = self.lists.get(list)?.get(index)?.table()?;
+        if mark {
+            self.read_lists.insert(list);
+            self.read_values.insert(&format!("{list}[{index}]"));
+        }
+        Some((element, inner))
+    }
+
+    /// The names of the tables directly under `prefix` (`ports.inputs`; the empty prefix
+    /// is the top level, and `sensors[0]` is a table element), sorted: `["a", "b"]` for
+    /// `[ports.inputs.a]` and `[ports.inputs.b]`. A name that holds a scalar or a list is
+    /// no table, and a table with no key is not there. Marks nothing as read.
+    #[must_use]
+    pub fn table_names(&self, prefix: &str) -> Vec<String> {
+        if let Some((element, inner)) = self.element_of(prefix, false) {
+            return element.table_names(inner);
+        }
+        let mut names = BTreeSet::new();
+        for key in self.values.keys().chain(self.lists.keys()) {
+            let below = if prefix.is_empty() {
+                Some(key.as_str())
+            } else {
+                key.strip_prefix(prefix).and_then(|rest| rest.strip_prefix('.'))
+            };
+            if let Some((table, _)) = below.and_then(|rest| rest.split_once('.')) {
+                names.insert(table.to_string());
+            }
+        }
+        names.into_iter().collect()
+    }
+
+    /// Each table element of every list, as `list[index]` and its parameters. Marks nothing.
+    pub(crate) fn table_elements(&self) -> Vec<(String, &Parameters)> {
+        let mut found = Vec::new();
+        for (list, elements) in &self.lists {
+            for (index, element) in elements.iter().enumerate() {
+                if let ListElement::Table(table) = element {
+                    found.push((format!("{list}[{index}]"), table));
+                }
+            }
+        }
+        found
+    }
+
+    /// True when the scalar `name` has been read. Does not mark `name` as read.
+    #[must_use]
+    pub fn is_read(&self, name: &str) -> bool {
+        self.read_values.contains(name)
+    }
+
+    /// The value of the scalar `name`, if present; `name` may be a scalar of a table
+    /// element (`sensors[1].topic`). Marks `name` as read when present.
     #[must_use]
     pub fn value(&self, name: &str) -> Option<&ParamValue> {
-        let found = self.values.get(name)?;
+        let Some(found) = self.values.get(name) else {
+            let (element, inner) = self.element_of(name, true)?;
+            return element.value(inner);
+        };
         self.read_values.insert(name);
         Some(found)
     }
@@ -314,19 +394,28 @@ impl Parameters {
         self.values.keys().map(String::as_str).collect()
     }
 
-    /// The number of elements in the list `name`. Marks `name` as read when present.
+    /// The number of elements in the list `name`, which may be a list inside a table
+    /// element (`sensors[1].gains`). Marks `name` as read when present.
     #[must_use]
     pub fn list_len(&self, name: &str) -> Option<usize> {
-        let list = self.lists.get(name)?;
+        let Some(list) = self.lists.get(name) else {
+            let (element, inner) = self.element_of(name, true)?;
+            return element.list_len(inner);
+        };
         self.read_lists.insert(name);
         Some(list.len())
     }
 
-    /// Element `index` of the list `name`, in TOML order. Marks the list and
-    /// `name[index]` as read when present.
+    /// Element `index` of the list `name`, in TOML order; `name` may name a list inside a
+    /// table element (`sensors[1].gains`). Marks the list and `name[index]` as read when
+    /// present.
     #[must_use]
     pub fn list_element(&self, name: &str, index: usize) -> Option<&ListElement> {
-        let element = self.lists.get(name)?.get(index)?;
+        let Some(list) = self.lists.get(name) else {
+            let (element, inner) = self.element_of(name, true)?;
+            return element.list_element(inner, index);
+        };
+        let element = list.get(index)?;
         self.read_lists.insert(name);
         self.read_values.insert(&format!("{name}[{index}]"));
         Some(element)
@@ -405,7 +494,8 @@ impl Parameters {
             if has_tables {
                 for (index, item) in elements.iter().enumerate() {
                     if let ListElement::Table(table) = item {
-                        if table.values.is_empty() && !self.read_lists.contains(list_name) {
+                        let is_empty = table.values.is_empty() && table.lists.is_empty();
+                        if is_empty && !self.read_lists.contains(list_name) {
                             unread.push(format!("{list_name}[{index}]"));
                         } else {
                             for sub_key in table.unread_keys_inner(true) {

@@ -1,20 +1,25 @@
-//! Triggered cycles: one step per trigger sample, and a fallback step when the trigger
-//! falls silent. The schedule rules are in `hypha_runtime::trigger_schedule`.
+//! Triggered cycles: one step per sample of any trigger port, and a fallback step when the
+//! triggers fall silent. The schedule rules are in `hypha_runtime::trigger_schedule`.
 
-use hypha_runtime::trigger_schedule::{TriggerEvent, TriggerSchedule};
+use hypha_cycle::TriggerStep;
+use hypha_runtime::trigger_schedule::{TriggerAdmit, TriggerClock, TriggerEvent, TriggerSchedule};
 use hypha_runtime::upstream_hold::Limit;
 
+use super::dispatch::{CallbackDispatcher, fail_with, record_action};
 use super::upstream::UpstreamHold;
-use crate::cycle::{Cycle, CycleId};
+use super::{AttachmentId, ExecutionHealth, Progression, Registration, Target, invoke_cycle};
+use crate::cycle::{Cycle, CycleId, DrainClock};
 use crate::status::Error;
+use crate::waitset::{HyphaCallbackResult, HyphaWaitSet};
 
 /// The registration state of one triggered cycle. Only the dispatcher reads it.
 pub(super) struct TriggeredCycle {
     pub(super) cycle: CycleId,
     pub(super) schedule: TriggerSchedule,
     pub(super) upstream: UpstreamHold,
-    /// The trigger stamps still pending after the last turn, for the progress report.
-    pub(super) pending: Vec<i64>,
+    /// The stamps each trigger port still holds after the last turn, for the progress
+    /// report.
+    pub(super) pending: Vec<Vec<i64>>,
     /// The upstream limit of the last turn, for the progress report.
     pub(super) limit: Limit,
     /// Scratch for the events of one turn.
@@ -24,7 +29,7 @@ pub(super) struct TriggeredCycle {
 }
 
 impl TriggeredCycle {
-    /// The state of `cycle`, whose trigger falls silent after `schedule`'s limit.
+    /// The state of `cycle`, whose trigger ports fall silent after `schedule`'s limits.
     pub(super) fn new(cycle: CycleId, schedule: TriggerSchedule) -> Box<Self> {
         Box::new(Self {
             cycle,
@@ -36,9 +41,43 @@ impl TriggeredCycle {
             last_now: None,
         })
     }
-}
 
-use hypha_runtime::trigger_schedule::{TriggerAdmit, TriggerClock};
+    /// Take the clock of a turn: the first evaluation starts the silence of every trigger
+    /// port, and a clock that went back ends the run.
+    fn observe(&mut self, cycle: &Cycle, now: i64) -> Result<(), Error> {
+        match self.last_now {
+            None => {
+                let clock = u64::try_from(now).map_err(|_| Error::InvalidState)?;
+                cycle.step_mut()?.runtime.start_trigger_silence(clock);
+            }
+            Some(last) if now < last => {
+                let subject = format!("cycle '{}'", cycle.name());
+                let rewound = crate::replay_restart::refuse_rewind(&subject, now);
+                return Err(Error::from_status(rewound));
+            }
+            Some(_) => {}
+        }
+        self.last_now = Some(now);
+        Ok(())
+    }
+
+    /// Read the stamps each trigger port of `cycle` holds.
+    fn read_pending(&mut self, cycle: &Cycle) -> Result<(), Error> {
+        let step = cycle.step_ref()?;
+        step.runtime.pending_trigger_stamps(&mut self.pending).map_err(Error::from_code)
+    }
+
+    /// Admit the events of this turn on `clock` into `events`.
+    fn admit(&mut self, cycle: &Cycle, clock: TriggerClock<'_>) -> Result<(), Error> {
+        match self.schedule.admit(&self.pending, clock, &mut self.events)? {
+            TriggerAdmit::Run => Ok(()),
+            TriggerAdmit::OutOfOrder { stamp, before } => {
+                log::error!(target: "hypha", "hypha: cycle '{}' has a trigger stamped {stamp} ns after a step at {before} ns: under simulated time the trigger stamps of each port must ascend, and each publisher must report its progress", cycle.name());
+                Err(Error::SequenceGap)
+            }
+        }
+    }
+}
 
 /// The state of the triggered cycle `attachment`; its absence is an invalid state.
 fn triggered_state(
@@ -55,15 +94,12 @@ fn triggered_state(
         .ok_or(Error::InvalidState)
 }
 
-use super::dispatch::{CallbackDispatcher, fail_with, record_action};
-use super::{AttachmentId, Progression, Registration, Target, invoke_cycle};
-
 impl CallbackDispatcher<'_> {
-    /// Run the due steps of the triggered cycle `attachment` at `now`: one per trigger
-    /// sample, oldest first, and a fallback for each silence limit without one.
+    /// Run the due steps of the triggered cycle `attachment` at `now`: one per sample of
+    /// any trigger port, in merge order, and the fallbacks due before them.
     ///
     /// Under simulated time a step at `t` runs once the clock reached `t` and every
-    /// upstream reported at least `t - 1`, and its other inputs are cut strictly before `t`.
+    /// upstream reported at least `t`, and every input is read through `t`.
     pub(super) fn run_triggered(&mut self, attachment: AttachmentId, now: i64) -> Progression {
         self.triggered_turn(attachment, now)
             .unwrap_or_else(|status| fail_with(&mut self.failure, attachment, status))
@@ -88,48 +124,41 @@ impl CallbackDispatcher<'_> {
         let detached = self.detached;
         let id = triggered_state(self.registrations, attachment)?.cycle;
         let cycle: &Cycle = self.cycle(id)?;
+        let local = if sim { Some(self.local_limits(attachment, cycle)?) } else { None };
         // The steps reach the dispatcher's other fields directly, never the dispatcher as a whole.
         let state = triggered_state(self.registrations, attachment)?;
-        let trigger = cycle.step_ref()?.runtime.trigger().ok_or(Error::InvalidState)?;
-        let rewound = state.last_now.is_some_and(|last| now < last);
-        match state.last_now {
-            None => {
-                let clock = u64::try_from(now).map_err(|_| Error::InvalidState)?;
-                cycle.step_mut()?.runtime.start_silence(trigger, clock);
-            }
-            Some(_) if rewound => {
-                let subject = format!("cycle '{}'", cycle.name());
-                return Err(Error::from_status(crate::replay_restart::refuse_rewind(
-                    &subject, now,
-                )));
-            }
-            Some(_) => {}
-        }
-        state.last_now = Some(now);
-        state.limit = if sim {
-            state.upstream.settle(&cycle.step_ref()?.inputs, node)?
+        state.observe(cycle, now)?;
+        // A step at `t` reads its topics through `t`, so their upstreams must have reported
+        // `t`; requests and responses are cut before `t`, so those upstreams need only
+        // `t - 1 ns` (execution-model.md §6.6 item 5). Requests and responses step no cycle,
+        // so they bound the steps that may run, not the progress the cycle reports. A cycle
+        // of this `WaitSet` that sends a topic the cycle reads is a topic upstream: it may
+        // still send a trigger, so it bounds the progress too.
+        let (limit, admit) = if let Some(local) = local {
+            let step = cycle.step_ref()?;
+            let limits = state.upstream.settle(&step.inputs, &step.services, node)?;
+            drop(step);
+            cycle.step_mut()?.services.set_reporters(limits.reporters.clone());
+            let topic = limits.topic.min(local.topic);
+            let strict = limits.service.min(local.service).through_strict_edge();
+            let admit = topic.clone().min(strict);
+            (topic, admit)
         } else {
-            hypha_runtime::upstream_hold::Limit { at: None, blocking: None }
+            (Limit { at: None, blocking: None }, Limit { at: None, blocking: None })
         };
-        crate::cycle::drain_inputs(cycle)?;
-        cycle
-            .step_mut()?
-            .runtime
-            .pending_trigger_stamps(&mut state.pending)
-            .map_err(Error::from_code)?;
+        let drain = if sim { DrainClock::Simulated } else { DrainClock::Host };
+        crate::cycle::drain_inputs(cycle, drain)?;
+        state.read_pending(cycle)?;
         let clock = if sim {
-            TriggerClock::Sim { now, limit: &state.limit }
+            TriggerClock::Sim { now, limit: &admit }
         } else {
             TriggerClock::Host { wall, steady: now }
         };
-        let admitted = state.schedule.admit(&state.pending, clock, &mut state.events);
-        match admitted.map_err(Error::from)? {
-            TriggerAdmit::Run => {}
-            TriggerAdmit::OutOfOrder { stamp, before } => {
-                log::error!(target: "hypha", "hypha: cycle '{}' has a trigger stamped {stamp} ns after a step at {before} ns: under simulated time the trigger stamps must ascend, and each publisher must report its progress", cycle.name());
-                return Err(Error::SequenceGap);
-            }
+        state.admit(cycle, clock)?;
+        if state.limit.at != limit.at {
+            self.limits_moved = self.limits_moved.wrapping_add(1);
         }
+        state.limit = limit;
         let mut decision = Progression::Continue;
         for &event in &state.events {
             // A step may detach its own cycle's registration: no further step then.
@@ -137,38 +166,65 @@ impl CallbackDispatcher<'_> {
             if gone {
                 break;
             }
-            let (time, take) = match event {
-                TriggerEvent::Trigger(time) => (time, 1),
-                TriggerEvent::Fallback(time) => (time, 0),
-                TriggerEvent::Late(_) => {
-                    // Stamped before a step that ran, or older than the limit: consumed
-                    // and counted as an age rejection, with no step.
-                    cycle.step_mut()?.runtime.refuse_trigger().map_err(Error::from_code)?;
+            let (time, trigger) = match event {
+                TriggerEvent::Trigger { time, port } => (time, TriggerStep::Sample { port }),
+                TriggerEvent::Fallback { time, due } => (time, TriggerStep::Fallback { due }),
+                TriggerEvent::Superseded { port, .. } => {
+                    // A newer sample of a newest-only port is due with it: consumed and
+                    // counted as a work-limit drop of that port, with no step.
+                    let passed = hypha_cycle::Passed::Superseded;
+                    cycle
+                        .step_mut()?
+                        .runtime
+                        .pass_trigger(port, passed)
+                        .map_err(Error::from_code)?;
+                    continue;
+                }
+                TriggerEvent::Late { port, .. } => {
+                    // Older than its port's limit, or stamped before its port's last step:
+                    // consumed and counted as an age rejection of that port, with no step.
+                    let passed = hypha_cycle::Passed::Late;
+                    cycle
+                        .step_mut()?
+                        .runtime
+                        .pass_trigger(port, passed)
+                        .map_err(Error::from_code)?;
                     continue;
                 }
             };
-            {
-                let mut step = cycle.step_mut()?;
-                step.scheduled_nanos = time;
-                step.input_cut = sim.then_some(time);
-                step.trigger_take = Some(take);
-            }
-            let result = invoke_cycle(health, cycle, set, 0);
-            // Clearing them keeps a step that never ran from leaking them.
-            if let Ok(mut step) = cycle.step_mut() {
-                step.input_cut = None;
-                step.trigger_take = None;
-            }
+            let result = step_triggered(cycle, set, health, time, trigger, sim)?;
+            self.steps_run = self.steps_run.wrapping_add(1);
             decision = record_action(node, &mut self.failure, attachment, result);
             if decision != Progression::Continue {
                 break;
             }
         }
-        cycle
-            .step_mut()?
-            .runtime
-            .pending_trigger_stamps(&mut state.pending)
-            .map_err(Error::from_code)?;
+        state.read_pending(cycle)?;
         Ok(decision)
     }
+}
+
+/// Run one step of `cycle` at `time`, its trigger ports holding `trigger`; under simulated
+/// time its inputs are read through `time`.
+fn step_triggered(
+    cycle: &Cycle,
+    set: &HyphaWaitSet,
+    health: &ExecutionHealth,
+    time: i64,
+    trigger: TriggerStep,
+    sim: bool,
+) -> Result<HyphaCallbackResult, Error> {
+    {
+        let mut step = cycle.step_mut()?;
+        step.scheduled_nanos = time;
+        step.input_cut = sim.then_some(time);
+        step.trigger_step = Some(trigger);
+    }
+    let result = invoke_cycle(health, cycle, set, 0);
+    // Clearing them keeps a step that never ran from leaking them.
+    if let Ok(mut step) = cycle.step_mut() {
+        step.input_cut = None;
+        step.trigger_step = None;
+    }
+    Ok(result)
 }

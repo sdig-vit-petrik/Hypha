@@ -20,12 +20,21 @@ hypha_generate_messages(PACKAGE consumer_msgs
   SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/srvs/consumer_msgs"
   DEPENDS std_msgs)
 
+# What an application adds to a package of the SDK: a service and a message of its own in
+# sensor_msgs, naming sensor_msgs/RegionOfInterest of the SDK without DEPENDS. The headers
+# land beside the SDK's, the target is sensor_msgs_additions, and the standard services of
+# the SDK (nav_msgs/GetMap, sensor_msgs/SetCameraInfo) are there without a declaration.
+hypha_generate_messages(PACKAGE sensor_msgs
+  MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msgs/sensor_msgs"
+  SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/srvs/sensor_msgs")
+
 # ROS 2 names for a standard package, one it reaches and the application's own, so that
 # ros2_style.cpp includes nothing but ROS 2 paths.
 hypha_generate_ros2_headers(consumer_ros2_headers
-  PACKAGES std_msgs geometry_msgs consumer_msgs)
+  PACKAGES std_msgs geometry_msgs sensor_msgs nav_msgs consumer_msgs)
 
 # short_namespace.cpp uses only hy::, own_global_hy.cpp opts out of it beside a hy of its own.
 add_executable(hypha_package_consumer main.cpp ros2_style.cpp short_namespace.cpp
-  own_global_hy.cpp)
-target_link_libraries(hypha_package_consumer PRIVATE hypha::sdk consumer_msgs consumer_ros2_headers)
+  own_global_hy.cpp sensor_companions.cpp sensor_companions_ros2.cpp standard_services.cpp)
+target_link_libraries(hypha_package_consumer PRIVATE
+  hypha::sdk consumer_msgs sensor_msgs_additions consumer_ros2_headers)

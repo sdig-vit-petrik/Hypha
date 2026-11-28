@@ -22,7 +22,7 @@ Inside a release line only fixes are made. These do not change:
 | The wire frame format | [interface-specification.md](interface-specification.md), wire frame |
 | The recording format (MCAP layout and metadata) | [tools.md](tools.md) |
 | Source compatibility of the public C++ headers: an application that built against one patch release builds against the next | `crates/hypha-cxx/include/` |
-| The requirements and the assumptions of use | [requirements-specification.md](requirements-specification.md), [safety-manual.md](safety-manual.md) |
+| The requirements and the assumptions of use | [requirements-specification.md](requirements-specification.md), [failure-analysis.md](failure-analysis.md) §4 |
 
 A fix that cannot keep one of these starts a new release line.
 
@@ -35,34 +35,31 @@ mix two lines in one domain.
 |---|---|
 | Operating system | Ubuntu 26.04, on amd64 and arm64 |
 | C++ compiler | The GCC of that distribution; C++23 |
-| Rust | The latest stable, 1.98 or newer (`rust-toolchain.toml`, `rust-version`); not pinned |
+| Rust | One exact version for development and CI, `channel` of `rust-toolchain.toml`; the MSRV, `rust-version` of `Cargo.toml`, is the highest `rust-version` of the dependencies (1.89), and `test.sh` and CI build the workspace with it too |
 | Builder image | `docker/Dockerfile`, which installs exactly these |
 
-macOS is a development platform with no guarantee: CI builds the workspace there and
-runs clippy, no test. CI (`.github/workflows/ci.yml`) runs the gate on amd64 for every
-push and pull request, and nightly on `develop` (or on demand) the C++ suite on arm64
-and the qualification on amd64. The Rust suite and the qualification run on amd64 only,
-so an arm64 release runs them by hand in the builder image and the release notes say so.
+macOS is a development platform with no guarantee. `.github/workflows/ci.yml` defines the
+gate on amd64 for pushes and pull requests, and a nightly run of the arm64 C++ suite and the
+qualification. CI minutes are limited, so the workflow is switched off and the owner
+enables it for a run; the gate that counts is the local one, `./check.sh` and
+`./test.sh --clean`, in the builder image.
 
 ## 4. What a release must pass
 
 1. `./check.sh` and `./test.sh --clean` in the builder image.
-2. `scripts/qualify.sh` on the release commit: the report of CI's `qualification` job
-   (nightly or started by hand), or of a run in the builder image, is attached to the
-   release. Every requirement of class S is verified, or the release notes name
-   the exception and its reason.
-3. For the first release of a line, and after a change to the transport or the run
-   loop: the endurance run of NFR-06. For every release: a 24 hour run. Neither run
-   exists yet ([sil2-readiness.md](sil2-readiness.md), G-28); until they do, the
-   release notes say so.
-4. The release notes, `docs/releases/X.Y.Z.md`, written by hand and reviewed in the
-   pull request of the release: a summary; the breaking changes and the upgrade; the
-   changes, with their issues; the defects fixed and the known open ones, each with
-   its class ([safety-plan.md](safety-plan.md) §7); whether an assumption of use
-   changed; the qualification, with every requirement not verified and its reason;
-   the platforms tested by hand. The tag and the GitHub release are made in the same
-   step, never a bare tag: the GitHub release takes this file as its text and the
-   qualification report as an attachment:
+2. `scripts/qualify.sh` on the release commit, in the builder image. Its report is
+   attached to the GitHub release and lists every requirement that is not verified, with
+   the reason.
+3. A triage and compaction pass ([features.md](features.md) §2): remove unused public
+   surface, merge duplicated test harnesses, fold or delete implemented `docs/design/`
+   notes, and shrink the files pinned in `scripts/check-size-and-boundaries.sh`.
+4. The release notes, `docs/releases/X.Y.Z.md`, reviewed in the release's pull request:
+   a summary; the breaking changes and the upgrade; the changes, with their issues; the
+   known open defects; whether an assumption of use
+   ([failure-analysis.md](failure-analysis.md) §4) changed; the requirements the
+   qualification did not verify; the platforms tested by hand. The tag and the GitHub
+   release are made in one step, never a bare tag, with this file as the text and the
+   qualification report attached:
    `gh release create vX.Y.Z --target main --notes-file docs/releases/X.Y.Z.md report.md`.
 
 ## 5. Upgrade and rollback
@@ -81,7 +78,7 @@ and applications until the new release has run in the system.
 ## 6. Support
 
 Before 1.0.0, a release line receives no fixes once the next line is released: every
-fix, of any class, lands in the next release, and an upgrade is the way to get it. From
+fix lands in the next release, and an upgrade is the way to get it. From
 1.0.0 on, the release notes of a line state how long it receives fixes.
 
 ## 7. Branches

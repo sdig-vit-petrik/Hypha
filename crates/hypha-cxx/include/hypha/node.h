@@ -8,6 +8,7 @@
 #include "hypha/publisher.h"
 #include "hypha/raw.h"
 #include "hypha/raw_api.h"
+#include "hypha/service_client.h"
 #include "hypha/status.h"
 #include "hypha/subscriber.h"
 #include "hypha/topic.h"
@@ -150,6 +151,8 @@ class Node
 {
   public:
     /// A handle that joins no session; its members use the process session when one exists.
+    /// Create a named Node first: without a session `advertise` and `subscribe` throw
+    /// `InvalidState: no session exists`.
     Node() = default;
 
     /// Leaves the bus when this is the last Node that joined the session. Leaving destroys
@@ -171,22 +174,29 @@ class Node
     }
 
     /// A name is `[a-z][a-z0-9_]`, at most 64 characters; the `node.name` key of
-    /// @p parameterFile overrides it. A second Node joins the session and keeps the
-    /// first name.
-    /// @throws std::runtime_error when the node cannot be created.
+    /// @p parameterFile overrides it. A second Node joins the session, keeps the first
+    /// name and shares the process configuration: a process reads one parameter file, so
+    /// the second Node names no file or the first Node's file, and any other file is
+    /// refused.
+    /// @throws std::runtime_error when the node cannot be created; for another parameter
+    ///         file than the process holds it names both files.
     Node(const std::string& name, const std::string& parameterFile)
     {
-        const Status status = backend::init(name, parameterFile);
+        std::string  refusal;
+        const Status status = backend::init(name, parameterFile, nullptr, &refusal);
         this->joined_ = status == Status::Ok;
         if (status != Status::Ok) {
-            throw std::runtime_error(detail::failureText("node '" + name + "' creation", status));
+            throw std::runtime_error(
+                detail::failureText("node '" + name + "' creation", status, refusal)
+            );
         }
     }
 
     /// @brief A publisher on the topic of `[ports.outputs.<port>]`. Options: optionalTopic,
     ///        latched, maxPayloadDynamic(), a Qos. With optionalTopic a table without a
     ///        topic gives a disabled publisher. Create endpoints before run().
-    /// @throws std::runtime_error naming the port when the endpoint is refused.
+    /// @throws ConfigError when its port table is missing or refused, or the policy
+    ///         mismatches (QosMismatch); std::runtime_error for any other refusal.
     template <typename M, PublisherOption... Options>
     [[nodiscard]] Publisher<M> advertise(std::string port, Options... options)
     {
@@ -199,7 +209,8 @@ class Node
 
     /// @brief A publisher on a topic that code fixes: `advertise<M>(hypha::Topic{"/tf"})`.
     ///        Options: latched, maxPayloadDynamic(), a Qos.
-    /// @throws std::runtime_error naming the topic when the endpoint is refused.
+    /// @throws ConfigError for a policy mismatch (QosMismatch); std::runtime_error for any
+    ///         other refusal.
     template <typename M, PublisherOption... Options>
         requires(detail::FixedTopicOption<Options> && ...)
     [[nodiscard]] Publisher<M> advertise(Topic topic, Options... options)
@@ -214,7 +225,8 @@ class Node
     ///        @p callback for each sample. Options: optionalTopic, a Qos. With
     ///        optionalTopic a table without a topic gives a disabled subscriber. Create
     ///        endpoints before run().
-    /// @throws std::runtime_error naming the port when the endpoint is refused.
+    /// @throws ConfigError when its port table is missing or refused, or the policy
+    ///         mismatches (QosMismatch); std::runtime_error for any other refusal.
     template <typename M, SubscriberOption... Options>
     [[nodiscard]] Subscriber<M>
     subscribe(std::string port, typename Subscriber<M>::Callback callback = {}, Options... options)
@@ -229,7 +241,8 @@ class Node
     }
 
     /// @brief A subscriber on a topic, or a wildcard pattern, that code fixes. Option: a Qos.
-    /// @throws std::runtime_error naming the topic when the endpoint is refused.
+    /// @throws ConfigError for a policy mismatch (QosMismatch); std::runtime_error for any
+    ///         other refusal.
     template <typename M, SubscriberOption... Options>
         requires(detail::FixedTopicOption<Options> && ...)
     [[nodiscard]] Subscriber<M>
@@ -254,6 +267,63 @@ class Node
         return Timer(require(backend::createTimer(period, std::move(callback)), "timer"));
     }
 
+    /// @brief The server of the service `[ports.servers.<port>]` names. The run calls
+    ///        @p handler for each request, which replies, refuses or defers it. Create
+    ///        servers before run().
+    /// @throws ConfigError for a missing or refused table, or a policy mismatch;
+    ///         std::runtime_error for any other refusal, a live server of the name among them.
+    template <typename Srv>
+    [[nodiscard]] ServiceServer
+    advertiseService(std::string port, std::function<void(Request<Srv>&)> handler)
+    {
+        return detail::serve<Srv>(
+            detail::declarationOf<Srv>(std::move(port), false), std::move(handler)
+        );
+    }
+
+    /// @brief The server of a service that code fixes: `hypha::Service{"~/set_exposure"}`.
+    template <typename Srv>
+    [[nodiscard]] ServiceServer
+    advertiseService(Service service, std::function<void(Request<Srv>&)> handler)
+    {
+        return detail::serve<Srv>(
+            detail::declarationOf<Srv>(std::move(service.name), true), std::move(handler)
+        );
+    }
+
+    /// @brief A client of the service `[ports.clients.<port>]` names, whose outcomes the run
+    ///        delivers. A server need not exist. Create clients before run().
+    /// @throws As advertiseService().
+    template <typename Srv>
+    [[nodiscard]] ServiceClient<Srv> serviceClient(std::string port, Timeout timeout = {})
+    {
+        return ServiceClient<Srv>(clientOf<Srv>(std::move(port), false, timeout, false));
+    }
+
+    template <typename Srv>
+    [[nodiscard]] ServiceClient<Srv> serviceClient(Service service, Timeout timeout = {})
+    {
+        return ServiceClient<Srv>(clientOf<Srv>(std::move(service.name), true, timeout, false));
+    }
+
+    /// @brief A blocking client, for a worker thread, a test or a tool: its callAndWait()
+    ///        waits on the calling thread, and is refused on the run's thread.
+    template <typename Srv>
+    [[nodiscard]] BlockingServiceClient<Srv>
+    serviceClient(std::string port, Blocking, Timeout timeout = {})
+    {
+        return BlockingServiceClient<Srv>(clientOf<Srv>(std::move(port), false, timeout, true));
+    }
+
+    template <typename Srv>
+    [[nodiscard]] BlockingServiceClient<Srv>
+    serviceClient(Service service, Blocking, Timeout timeout = {})
+    {
+        return BlockingServiceClient<Srv>(
+            clientOf<Srv>(std::move(service.name), true, timeout, true)
+        );
+    }
+
     /// @brief Run this node's callbacks on the calling thread until it stops.
     ///
     /// Attach every subscription and timer before this call: a subscription created
@@ -273,6 +343,17 @@ class Node
     }
 
   private:
+    template <typename Srv>
+    static backend::UniqueClient
+    clientOf(std::string name, bool literal, Timeout timeout, bool isBlocking)
+    {
+        backend::ServiceDeclaration declaration =
+            detail::declarationOf<Srv>(std::move(name), literal);
+        declaration.timeout = timeout.value;
+        declaration.blocking = isBlocking;
+        return backend::createClient(declaration);
+    }
+
     bool joined_{false};
 };
 

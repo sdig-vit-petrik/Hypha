@@ -39,8 +39,8 @@ impl Session<'_> {
         }
         // A latched sample of the old pass would reach a restarted subscriber.
         self.publishers.clear();
-        let (publishers, _) = create_channel_publishers(self.bus, self.player, &self.config)?;
-        self.publishers = publishers;
+        self.publishers =
+            create_channel_publishers(self.bus, self.player, &self.config)?.publishers;
         self.limits.clear();
         self.participants = Participants::new(Instant::now());
         self.config.sync.nodes = names;

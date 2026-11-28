@@ -1,14 +1,18 @@
 //! Production cycle capture, emission validation, and output failure policy.
 
 use std::fmt;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 mod arrivals;
+mod emission;
+mod triggers;
+pub use emission::EmissionBudget;
 mod helpers;
 use helpers::{message_stamp_fits_ros_time, shares_history};
 
 use super::{
     BindingCapture, BindingOptions, CaptureClock, CycleHistory, Supervision, SupervisionLimits,
+    TriggerStep,
 };
 
 const STATUS_INVALID_ARGUMENT: i32 = 1;
@@ -22,7 +26,7 @@ const NANOS_PER_SECOND: i64 = 1_000_000_000;
 ///
 ///
 /// The caller sets `scheduled_nanos`, `capture_steady_nanos`, `missed_periods`,
-/// `replay_cut_nanos` and `trigger_samples`; the runtime derives the rest.
+/// `replay_cut_nanos` and `trigger_step`; the runtime derives the rest.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CycleTime {
     /// Framework time the timer was scheduled to fire. Set by the caller.
@@ -43,12 +47,12 @@ pub struct CycleTime {
     /// True when the message stamp is present and a `RosTime` can hold it. Derived.
     pub message_stamp_valid: bool,
     /// The data-time cut of a replay step, in framework nanoseconds: only samples stamped
-    /// before it are admitted, and ages count from it. `None` judges in host time.
+    /// before it are admitted, or at it in a step of a triggered cycle, and ages count from
+    /// it. `None` judges in host time.
     pub replay_cut_nanos: Option<u64>,
-    /// The trigger samples a step takes: `Some(1)` for a trigger step, `Some(0)` for a
-    /// fallback, `None` for a rate cycle. Under a replay cut the trigger stamped at the cut
-    /// is taken.
-    pub trigger_samples: Option<usize>,
+    /// What the trigger ports hold in a step of a triggered cycle; `None` for a rate cycle.
+    /// Under a replay cut every input of such a step admits its samples through the cut.
+    pub trigger_step: Option<TriggerStep>,
 }
 
 /// Cumulative cycle counters.
@@ -154,50 +158,15 @@ pub struct CycleRuntime {
     /// The monotonic capture time of the previous step, for `elapsed_nanos` on host time.
     last_capture_steady: Option<i64>,
     health: CycleHealth,
-    /// The binding a triggered cycle runs on, outside the arrival budget.
-    trigger: Option<usize>,
+    /// The trigger bindings of a triggered cycle, in binding order, outside the arrival
+    /// budget. A trigger port is named by its position here.
+    triggers: Vec<usize>,
 }
 
 struct OutputBinding {
     policy: OutputFailurePolicy,
     max_payload_bytes: usize,
     max_messages_per_iteration: u32,
-}
-
-/// The output limits of one step, which admits each message as the step stages it.
-///
-///
-/// A message over its output's count gets `STATUS_RESOURCE_LIMIT`, one over its
-/// payload limit `STATUS_TOO_LARGE`, and an unknown output `STATUS_INVALID_ARGUMENT`.
-pub struct EmissionBudget<'a> {
-    outputs: &'a [OutputBinding],
-    counts: &'a mut [u32],
-}
-
-impl<'a> EmissionBudget<'a> {
-    fn new(outputs: &'a [OutputBinding], counts: &'a mut Vec<u32>) -> Self {
-        counts.resize(outputs.len(), 0);
-        counts.fill(0);
-        Self { outputs, counts }
-    }
-
-    /// Count one message of `len` payload bytes on `output`.
-    ///
-    /// # Errors
-    /// The status code of the limit the message breaks, as documented on the type.
-    pub fn admit(&mut self, output: u32, len: usize) -> Result<(), i32> {
-        let index = usize::try_from(output).map_err(|_| STATUS_INVALID_ARGUMENT)?;
-        let limits = self.outputs.get(index).ok_or(STATUS_INVALID_ARGUMENT)?;
-        let count = self.counts.get_mut(index).ok_or(STATUS_INVALID_ARGUMENT)?;
-        if *count >= limits.max_messages_per_iteration {
-            return Err(STATUS_RESOURCE_LIMIT);
-        }
-        if len > limits.max_payload_bytes {
-            return Err(STATUS_TOO_LARGE);
-        }
-        *count = count.checked_add(1).ok_or(STATUS_RESOURCE_LIMIT)?;
-        Ok(())
-    }
 }
 
 impl CycleRuntime {
@@ -231,7 +200,7 @@ impl CycleRuntime {
                 max_step_nanos: 0,
                 overruns: 0,
             },
-            trigger: None,
+            triggers: Vec::new(),
         }
     }
 
@@ -245,22 +214,6 @@ impl CycleRuntime {
             return Err(STATUS_INVALID_ARGUMENT);
         }
         self.arrival_budget = budget;
-        Ok(())
-    }
-
-    /// Make `index` the trigger binding of a triggered cycle. Each step then takes
-    /// exactly [`CycleTime::trigger_samples`] samples of it, outside its limits and the
-    /// arrival budget.
-    ///
-    /// # Errors
-    /// Returns `STATUS_INVALID_ARGUMENT` unless the binding exists, is queued and has a
-    /// source.
-    pub fn set_trigger(&mut self, index: usize) -> Result<(), i32> {
-        let slot = self.bindings.get(index).ok_or(STATUS_INVALID_ARGUMENT)?;
-        if slot.options.mode != super::CaptureMode::Queued || slot.history.is_none() {
-            return Err(STATUS_INVALID_ARGUMENT);
-        }
-        self.trigger = Some(index);
         Ok(())
     }
 
@@ -292,33 +245,6 @@ impl CycleRuntime {
         Ok(())
     }
 
-    /// The trigger binding, if this is a triggered cycle.
-    #[must_use]
-    pub const fn trigger(&self) -> Option<usize> {
-        self.trigger
-    }
-
-    /// Replace `out` with the framework send stamps of the trigger samples not yet
-    /// taken, oldest first. Empty when no trigger is set.
-    ///
-    /// # Errors
-    /// Returns `STATUS_INVALID_ARGUMENT` for a stamp beyond `i64::MAX`.
-    pub fn pending_trigger_stamps(&self, out: &mut Vec<i64>) -> Result<(), i32> {
-        out.clear();
-        let Some(index) = self.trigger else {
-            return Ok(());
-        };
-        let history = self.bindings.get(index).and_then(|slot| slot.history.as_ref());
-        let (Some(history), Some(capture)) = (history, self.captures.get(index)) else {
-            return Err(STATUS_INVALID_ARGUMENT);
-        };
-        let history = history.lock().unwrap_or_else(PoisonError::into_inner);
-        for stamp in capture.pending_stamps(&history) {
-            out.push(i64::try_from(stamp).map_err(|_| STATUS_INVALID_ARGUMENT)?);
-        }
-        Ok(())
-    }
-
     /// Add a live source binding, starting its cursor at current retained data.
     ///
     /// # Errors
@@ -330,7 +256,7 @@ impl CycleRuntime {
         history: Arc<Mutex<CycleHistory>>,
         options: BindingOptions,
     ) -> Result<u32, i32> {
-        let held = history.lock().unwrap_or_else(PoisonError::into_inner);
+        let held = crate::locked(&history);
         let capture = BindingCapture::new(&held, options.mode, options.max_samples_per_iteration)
             .ok_or(STATUS_INVALID_ARGUMENT)?;
         drop(held);
@@ -411,14 +337,13 @@ impl CycleRuntime {
         let Ok(capture_steady_u64) = u64::try_from(time.capture_steady_nanos) else {
             return self.fail(STATUS_INVALID_ARGUMENT);
         };
-        let clock = match time.replay_cut_nanos {
-            Some(cut_nanos) => CaptureClock::Replay { cut_nanos },
-            None => CaptureClock::Host { steady_nanos: capture_steady_u64 },
-        };
-        if let Err(status) = self.arrival_assignments(clock) {
+        let triggered = time.trigger_step.is_some();
+        let clock = CaptureClock::of_step(time.replay_cut_nanos, triggered, capture_steady_u64);
+        let sent_through = self.firing_sent_nanos(clock, time);
+        if let Err(status) = self.arrival_assignments(clock, sent_through) {
             return self.fail(status);
         }
-        if let Err(status) = self.capture_bindings(clock, time) {
+        if let Err(status) = self.capture_bindings(clock, sent_through, time) {
             return self.fail(status);
         }
         let callback_start_nanos = callback_start();
@@ -497,9 +422,34 @@ impl CycleRuntime {
         emissions.iter().try_for_each(|staged| budget.admit(staged.output, staged.len))
     }
 
+    /// Host monotonic send time of the sample a trigger step on host time fires on; `None`
+    /// for a fallback, a rate step and a replay step.
+    ///
+    /// It bounds what the step's queued inputs that are no trigger take: the samples sent
+    /// up to it. One sent after it belongs to a later step, so the trigger samples drained
+    /// in one turn each find their own arrivals, as they do under a replay cut. A sample
+    /// sent with the firing one, by one step of one upstream cycle, carries the same send
+    /// time and is taken.
+    fn firing_sent_nanos(&self, clock: CaptureClock, time: CycleTime) -> Option<u64> {
+        let (CaptureClock::Host { .. }, Some(TriggerStep::Sample { port })) =
+            (clock, time.trigger_step)
+        else {
+            return None;
+        };
+        let index = *self.triggers.get(port)?;
+        let history = self.bindings.get(index)?.history.as_ref()?;
+        self.captures.get(index)?.next_transport_sent_nanos(&crate::locked(history))
+    }
+
     /// Capture every binding. A shared history is locked once, so all read one snapshot.
-    fn capture_bindings(&mut self, clock: CaptureClock, time: CycleTime) -> Result<(), i32> {
-        let trigger = self.trigger;
+    /// With `sent_through`, the queued inputs that are no trigger take the samples sent up
+    /// to it ([`Self::firing_sent_nanos`]).
+    fn capture_bindings(
+        &mut self,
+        clock: CaptureClock,
+        sent_through: Option<u64>,
+        time: CycleTime,
+    ) -> Result<(), i32> {
         for (first, slot) in self.bindings.iter().enumerate() {
             let Some(history) = slot.history.as_ref() else {
                 if let Some(capture) = self.captures.get_mut(first) {
@@ -511,35 +461,27 @@ impl CycleRuntime {
             if self.bindings.iter().take(first).any(|earlier| shares_history(earlier, slot)) {
                 continue;
             }
-            let guard = history.lock().unwrap_or_else(PoisonError::into_inner);
+            let guard = crate::locked(history);
             for (index, (other, capture)) in
                 self.bindings.iter().zip(&mut self.captures).enumerate().skip(first)
             {
                 if !shares_history(slot, other) {
                     continue;
                 }
-                if trigger == Some(index) {
-                    let take = time.trigger_samples.ok_or(STATUS_INVALID_ARGUMENT)?;
-                    let options = BindingOptions {
-                        max_samples_per_iteration: take.max(1),
-                        overflow_policy: super::QueueOverflowPolicy::Carry,
-                        ..other.options
-                    };
-                    let clock = match clock {
-                        CaptureClock::Replay { cut_nanos } => CaptureClock::Replay {
-                            cut_nanos: cut_nanos.checked_add(1).ok_or(STATUS_INVALID_ARGUMENT)?,
-                        },
-                        host @ CaptureClock::Host { .. } => host,
-                    };
-                    capture.capture_assigned_on(&guard, options, take, clock);
-                    if take == 0 {
-                        // The capture clock may differ a little from the schedule's, so the fallback states
-                        // the trigger stale.
+                if let Some(port) = self.triggers.iter().position(|&trigger| trigger == index) {
+                    let step = time.trigger_step.ok_or(STATUS_INVALID_ARGUMENT)?;
+                    let options = other.options;
+                    capture.capture_trigger(&guard, options, step.fires(port), clock);
+                    // The schedule found the port silent; the capture clock may read a
+                    // little earlier than the schedule's.
+                    if step.is_due(port) {
                         capture.mark_stale(options.silence_nanos);
                     }
                 } else if other.options.mode == super::CaptureMode::Queued {
                     let assigned = self.assignments.get(index).copied().unwrap_or_default();
-                    capture.capture_assigned_on(&guard, other.options, assigned, clock);
+                    // The transform input keeps every arrival: a lookup wants the newest.
+                    let sent_through = sent_through.filter(|_| !other.exempt);
+                    capture.capture_arrivals(&guard, other.options, assigned, clock, sent_through);
                 } else if capture.host_clock() {
                     let steady_nanos = u64::try_from(time.capture_steady_nanos)
                         .map_err(|_| STATUS_INVALID_ARGUMENT)?;
@@ -571,30 +513,6 @@ impl CycleRuntime {
         let capture = self.captures.get_mut(index).ok_or(STATUS_INVALID_ARGUMENT)?;
         capture.set_supervision(Some(supervision));
         Ok(())
-    }
-
-    /// Start the silence count of a binding at `clock_nanos` on its capture clock, unless
-    /// a capture started it. Ignored when the index is unknown.
-    pub fn start_silence(&mut self, index: usize, clock_nanos: u64) {
-        if let Some(capture) = self.captures.get_mut(index) {
-            capture.start_at(clock_nanos);
-        }
-    }
-
-    /// Consume the oldest pending trigger sample without a step, and count it as an age
-    /// rejection.
-    ///
-    /// # Errors
-    ///
-    /// Returns `STATUS_INVALID_ARGUMENT` without a trigger or a pending sample.
-    pub fn refuse_trigger(&mut self) -> Result<(), i32> {
-        let index = self.trigger.ok_or(STATUS_INVALID_ARGUMENT)?;
-        let history = self.bindings.get(index).and_then(|slot| slot.history.as_ref());
-        let (Some(history), Some(capture)) = (history, self.captures.get_mut(index)) else {
-            return Err(STATUS_INVALID_ARGUMENT);
-        };
-        let history = history.lock().unwrap_or_else(PoisonError::into_inner);
-        if capture.refuse_pending(&history) { Ok(()) } else { Err(STATUS_INVALID_ARGUMENT) }
     }
 
     /// Report the alive counter of a binding's newest accepted sample.
@@ -634,6 +552,22 @@ impl CycleRuntime {
         }
     }
 
+    /// Clear binding `index` after the step that captured it last: see
+    /// [`BindingCapture::clear`]. Returns the pending samples it dropped.
+    ///
+    /// # Errors
+    /// Returns `STATUS_INVALID_ARGUMENT` if `index` names no binding, or a trigger port,
+    /// whose pending samples are the steps the schedule has planned.
+    pub fn clear_binding(&mut self, index: usize) -> Result<u64, i32> {
+        let slot = self.bindings.get(index).ok_or(STATUS_INVALID_ARGUMENT)?;
+        let capture = self.captures.get_mut(index).ok_or(STATUS_INVALID_ARGUMENT)?;
+        if capture.is_trigger() {
+            return Err(STATUS_INVALID_ARGUMENT);
+        }
+        let history = slot.history.as_ref().map(|history| crate::locked(history));
+        Ok(capture.clear(history.as_deref()))
+    }
+
     /// Re-judge binding `index` after the step rejected its sample `sequence` as
     /// undecodable. Ignored for an unknown index or a binding without a source.
     pub fn reject_sample(&mut self, index: usize, sequence: u64) {
@@ -643,7 +577,7 @@ impl CycleRuntime {
         let Some(capture) = self.captures.get_mut(index) else {
             return;
         };
-        let history = history.lock().unwrap_or_else(PoisonError::into_inner);
+        let history = crate::locked(history);
         capture.reject(&history, sequence);
     }
 

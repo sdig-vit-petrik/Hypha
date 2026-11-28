@@ -4,7 +4,7 @@
 mod common;
 
 use common::Responder;
-use hypha_node::sdk::{BusNode, RawSubscriber, SubscriberOptions};
+use hypha_node::sdk::{BusNode, RawSubscriber, StreamKey, SubscriberOptions};
 use hypha_tools::play_session::{channel_publisher_options, publish_channel};
 use hypha_tools::player::ChannelResolution;
 use hypha_tools::utc_time::parse_utc_nanos;
@@ -53,6 +53,7 @@ fn a_topic_opened_before_its_subscriber_is_still_published() {
         .subscribe_raw_with_schema(&topic, DATA_TYPE, &md5, SubscriberOptions::default().keeping(4))
         .expect("the subscriber joins the opened topic");
     let channel = ChannelResolution {
+        stream: StreamKey { topic: topic.clone(), schema_hash: 0 },
         topic: topic.clone(),
         data_type: DATA_TYPE.to_string(),
         md5,
@@ -129,10 +130,16 @@ fn a_chunk_is_split_so_a_small_subscriber_queue_keeps_every_sample() {
     // The subscriber drains its queue before it answers each clock sample.
     let began = Instant::now();
     let mut values = Vec::new();
+    let mut clock_values: Vec<u64> = Vec::new();
     let status = loop {
         let exited = child.try_wait().expect("the child status");
         let clocks = responder.receive();
         drain_values(&mut data, &mut values);
+        for clock in &clocks {
+            if clock_values.last() != Some(&clock.nanos) {
+                clock_values.push(clock.nanos);
+            }
+        }
         if let Some(newest) = clocks.last().copied() {
             responder.answer(newest);
         }
@@ -152,4 +159,10 @@ fn a_chunk_is_split_so_a_small_subscriber_queue_keeps_every_sample() {
 
     assert_eq!(values, (0..BURST).collect::<Vec<u8>>(), "every message arrives, in order");
     assert_eq!(data.missing_sequences().expect("the sequence count"), 0);
+    // The fifth and the ninth message would overflow the queue of 4: each shortened chunk
+    // closes one nanosecond before it, so it holds every message stamped at or before its
+    // clock. The grid boundary at 100 ms ends the pass.
+    let millis = |ms: u64| start + ms * 1_000_000;
+    let expected = vec![start, millis(5) - 1, millis(9) - 1, millis(100)];
+    assert_eq!(clock_values, expected, "the chunks close before the messages that overflow");
 }

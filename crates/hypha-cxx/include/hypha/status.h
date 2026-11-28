@@ -38,6 +38,7 @@ struct Status
         InvalidState = HYPHA_STATUS_INVALID_STATE,
         ClockRewound = HYPHA_STATUS_CLOCK_REWOUND,
         ApplicationFailed = HYPHA_STATUS_APPLICATION_FAILED,
+        LoanLimit = HYPHA_STATUS_LOAN_LIMIT,
     };
 
     Code code{Ok};
@@ -125,6 +126,8 @@ struct Status
                 return "ClockRewound";
             case ApplicationFailed:
                 return "ApplicationFailed";
+            case LoanLimit:
+                return "LoanLimit";
         }
         return "Unknown";
     }
@@ -140,10 +143,16 @@ class ConfigError : public std::runtime_error
 
 namespace detail {
 
-/// @brief The text of a failed call: its context and the name of the status.
-inline std::string failureText(std::string_view context, Status status)
+/// @brief The text of a failed call: its context, the name of the status and, when there is
+///        one, the reason that the library gives for it.
+inline std::string
+failureText(std::string_view context, Status status, std::string_view reason = {})
 {
-    return "hypha: " + std::string(context) + " failed: " + std::string(status.name());
+    std::string text = "hypha: " + std::string(context) + " failed: " + std::string(status.name());
+    if (!reason.empty()) {
+        text += ": " + std::string(reason);
+    }
+    return text;
 }
 
 /// @brief Throw the failure of @p context: ConfigError for QosMismatch, std::runtime_error

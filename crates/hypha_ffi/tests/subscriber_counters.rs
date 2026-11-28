@@ -20,13 +20,15 @@ fn counters(subscriber: *const HyphaSubscriber) -> HyphaSubscriberCounters {
         loan_budget: u64::MAX,
         loan_held: u64::MAX,
         loan_refused: u64::MAX,
+        other_schemas: u64::MAX,
     };
     // SAFETY: `subscriber` is live; `out` is a local.
     assert_eq!(unsafe { hypha_subscriber_counters(subscriber, &raw mut out) }, HyphaStatus::Ok);
     out
 }
 
-/// The eight counters, read from the metrics the subscriber emits by name.
+/// The counters, read from the metrics the subscriber emits by name; `other_schemas` has
+/// no metric, and a subscriber that no run of its node drove has not checked it.
 fn emitted(subscriber: *const HyphaSubscriber) -> HyphaSubscriberCounters {
     // SAFETY: `subscriber` is live.
     let value = |name: &str| unsafe { subscriber_metric(subscriber, name) }.expect(name);
@@ -39,6 +41,7 @@ fn emitted(subscriber: *const HyphaSubscriber) -> HyphaSubscriberCounters {
         loan_budget: value("loan.budget"),
         loan_held: value("loan.held"),
         loan_refused: value("loan.refused"),
+        other_schemas: hypha_ffi::HYPHA_NOT_CHECKED,
     }
 }
 

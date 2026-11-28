@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <stdexcept>
 
 namespace {
 
@@ -137,12 +138,37 @@ TEST_F(ParameterFixture, ARequiredPortWithoutATableIsRefusedAndTheRefusalNamesIt
     EXPECT_NE(refusal.find("NotAvailable"), std::string::npos) << refusal;
 }
 
+TEST_F(ParameterFixture, AMissingPortTableIsAConfigurationFaultForBothEndpoints)
+{
+    // runNode returns 78 for a ConfigError and 70 for any other exception.
+    EXPECT_THROW(
+        static_cast<void>(hypha::Node().advertise<hypha_test::Reading>("unwired")),
+        hypha::ConfigError
+    );
+    EXPECT_THROW(
+        static_cast<void>(hypha::Node().subscribe<hypha_test::Reading>("unwired")),
+        hypha::ConfigError
+    );
+}
+
 TEST_F(ParameterFixture, AnEmptyLiteralTopicIsRefused)
 {
     const std::string refusal = hypha_test::refusalOf([] {
         static_cast<void>(hypha::Node().subscribe<hypha_test::Reading>(hypha::Topic{}));
     });
     EXPECT_NE(refusal.find("InvalidArgument"), std::string::npos) << refusal;
+}
+
+TEST_F(ParameterFixture, AnEmptyLiteralTopicIsARuntimeErrorAndNoConfigurationFault)
+{
+    try {
+        static_cast<void>(hypha::Node().subscribe<hypha_test::Reading>(hypha::Topic{}));
+        FAIL() << "the empty topic was accepted";
+    } catch (const hypha::ConfigError& error) {
+        FAIL() << "a literal topic is no configuration fault: " << error.what();
+    } catch (const std::runtime_error&) {
+        SUCCEED();
+    }
 }
 
 TEST_F(ParameterFixture, AValueKeepsItsTypeAndAReadOfAnotherTypeThrows)

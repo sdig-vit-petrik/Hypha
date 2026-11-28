@@ -21,12 +21,14 @@ Read these before you start: [cpp-api.md](cpp-api.md) §2, §5.4 (cycle node), �
 (parameters), §11 (logging), [execution-model.md](execution-model.md) §2 and
 §3. The reference for a cycle node is
 [examples/scan_cycle](../examples/scan_cycle/README.md): its entry point, the contract
-of each input, and a test at each of three levels. The reference for a plain node is
+of each input, and a test at each of three levels. The reference for an `ApplicationNode` is
 [examples/sensor_pipeline](../examples/sensor_pipeline/README.md) (section 10).
 
 A node is a `hypha::CycleNode` with its ports as members, started by
 `hypha::runNode<App>()` (see [cpp-api.md](cpp-api.md) §5.4). A node whose ports
-are built at run time uses `hypha::Cycle` ([cpp-api.md](cpp-api.md) §5.5).
+are built at run time uses `hypha::Cycle` ([cpp-api.md](cpp-api.md) §5.5). A node that
+owns worker threads, or a shim of a ROS client library, is a
+`hypha::ApplicationNode`, started by the same call ([section 10.1](#101-which-target)).
 
 ---
 
@@ -36,12 +38,12 @@ Use it for one ROS 1 C++ node that subscribes, computes and publishes, with or
 without timers, parameters and services. The procedure ends in a `CycleNode`:
 
 - A node whose work runs from a timer becomes a **rate cycle** (`rate_hz`).
-- A node whose work runs on each sample of one input becomes a **triggered cycle**:
-  `setTrigger(port)` on that input's `Arrivals` port, one step per sample at the
-  sample's time ([Step 2](#step-2-design-the-cycle)).
-- A plain `hypha::Node` is only for a node whose callbacks publish on more than one
-  input, a node that owns worker threads, and a shim of a ROS client library: see
-  [section 10](#10-porting-an-event-driven-node-to-a-plain-hyphanode).
+- A node whose work runs on each sample of one or several inputs becomes a **triggered
+  cycle**: `setTrigger(port)` on the `Arrivals` port of each of those inputs, one step
+  per sample at the sample's time ([Step 2](#step-2-design-the-cycle)).
+- A `hypha::ApplicationNode` is only for a node that owns worker threads and a shim of a
+  ROS client library: see
+  [section 10](#10-porting-an-event-driven-node-an-applicationnode).
 
 Do not use it, and ask the user first, when the node needs one of the items in
 [section 7](#7-stop-and-ask). hypha has no equivalent for them.
@@ -72,7 +74,10 @@ Sort every line of the ROS node into one of three classes:
   configuration of the repository that owns the node.
 - **Keep every comment.** When the line under a comment changes, keep the
   comment. Change its text only when it now states a false fact (for example it
-  names a ROS call that is gone).
+  names a ROS call that is gone). A comment on glue that is removed moves to the code
+  that replaces that glue, when that code does what the comment says (step 5 does this
+  for `speedCallback`). A comment that no remaining code matches goes with
+  its glue, and the change description lists it.
 - **Do not refactor the logic.** Do not rename, extract, inline or "clean up".
   Change a logic line only when it does not compile against hypha types
   ([section 5](#5-message-types-and-the-minimal-logic-edits)), and then change
@@ -148,6 +153,7 @@ Write this table in your working notes. Do not write code yet.
 | Services | Name, type, server or client, timeout. |
 | Time | Use of `ros::Time::now()`, `header.stamp`, `ros::Duration`, `use_sim_time`. |
 | Own staleness checks | Every place the code compares a message time with now. |
+| Diagnostics | Each `diagnostic_updater` task and topic diagnostic: name, levels, values, period; the `/diagnostics` consumers (section 4). |
 | TF | Broadcaster, static broadcaster, listener. |
 | Tests | Each test file, its framework, and whether it needs a ROS master. |
 | Items of [section 7](#7-stop-and-ask) | Each one. |
@@ -157,22 +163,29 @@ If the table has an item of section 7, stop and ask.
 
 ### Step 2: Design the cycle
 
-Map the inventory to one cycle for each timer rate or for its one event input. A node
-with one timer has one rate cycle. A node with no timer, whose work runs in the callback
-of one subscription, has one triggered cycle on that input. One process has one
-`CycleNode`; a second rate is a composed `hypha::Cycle` with its own name.
+Map the inventory to one cycle for each timer rate or for its event inputs. A node with
+one timer has one rate cycle. A node with no timer, whose work runs in the callbacks of
+one or several subscriptions, has one triggered cycle with those inputs as its
+triggers. A second timer whose callback works on the node's state (a slower loop, a
+status publish, a gains update) is a `hypha::CycleTimer` that the step polls first. One
+process has one `CycleNode`; a second step with inputs of its own is a composed
+`hypha::Cycle` with its own name.
 
 | ROS 1 | hypha cycle |
 |---|---|
 | Timer callback that computes and publishes | The `step()` method of the cycle node, at `rate_hz` under `[cycle]` in the TOML file. |
-| The one subscription whose callback computes and publishes, in a node with no timer | A `hypha::Arrivals<T>` member made the trigger with `setTrigger(port)` in `setup()`, and no `rate_hz`. `step()` runs once for each sample, which `samples()` holds alone; it calls the original callback with it. |
+| Each subscription whose callback computes and publishes, in a node with no timer | A `hypha::Arrivals<T>` member made a trigger with `setTrigger(port)` in `setup()`, one call per such subscription, and no `rate_hz`. `step()` runs once for each sample of any trigger: the port that fired holds that sample alone in `samples()`, and every other trigger holds none. The step calls the original callback of the port whose `samples()` is not empty. |
 | Subscription whose callback only stores the latest value | A `hypha::Latest<T>` member. |
 | Subscription whose callback does work for each message (counts, integrates, buffers, filters) | A `hypha::Arrivals<T>` member. The step calls the original callback once for each sample, in order. |
 | Publisher | A `hypha::Output<T>` member. Call `send(message)`. |
 | Member variables of the node class that the logic changes | Members of the cycle node. Use the original logic class as a member when one exists. |
 | Constant tuning (`gain`, limits) | Members of the cycle node, read from TOML in the constructor or `setup()`. |
 | Own staleness check (`now - stamp > timeout`) | Replace it with the port's `silence_ms` (carry the old timeout's value) and read `usable()` or `stale()`. Delete the timeout parameter. A use of the source time as data stays (logic). |
+| A timeout of 0.0 (no timeout: valid until replaced, `twist_mux`'s locks and inputs) | `silence_ms = 0` in the port's table: the input has no time limit, is `NeverArrived` before its first sample and `Usable` from it on, never stale. Declare the port as for any timeout; code that treated an expired input and a never-set untimed one differently reads `port.untimed()`, not `silence_ms`. An input that may never be published (a pause switch) is also `advisory`, so that `~/state` does not wait for it. A trigger with `silence_ms = 0` runs no fallback of its own. Leaving the key out is refused: there is no untimed input by omission. An input that has no limit in any deployment is tagged `unsupervised` instead. |
 | A store-then-take buffer between callback and timer (input image, slot, double buffer) | Delete it: the `Latest` port is the buffer. Read `*port` when `fresh()`; `lastKnown()` holds the old value. |
+| A second `ros::Timer` in the node (a 10 Hz status beside a 100 Hz loop, a gains timer) | A `hypha::CycleTimer` member at the timer's rate. The first lines of `step()` poll it: `if (const auto tick = timer.poll(time)) { onTimer(tick); }`, or `for (auto n = timer.poll(time).periods; n > 0; --n) { onTimer(); }` where the body must run once per period to equal upstream. The step then reads its ports ([cpp-api.md](cpp-api.md) §5.4, "A second rate in a step"). |
+| `timer.start()`, `timer.stop()`; `createTimer(..., autostart = false)` | `timer.start(time)`, `timer.stop()`; `stop()` in the constructor for `autostart = false`. |
+| `ros::TimerEvent` of that timer | `CycleTimer::Tick`: `expected` is `current_expected`; `elapsed` is `current_real - last_real`, empty for the first tick after a start; `missed()` counts the periods the poll covered beyond the first. |
 
 `silence_ms` judges the age from the time the sender sent the sample, not from
 `header.stamp`. When the old timeout and `silence_ms` differ, the old timeout
@@ -192,18 +205,29 @@ effect for each message (a counter, an integrator, a queue) must use an
   trigger in `setup()` with `this->setTrigger(this->ground_truth)`. Its table in
   `examples/mrs/config/estimation_manager.toml` has a `silence_ms` (100), and no
   `[cycle]` table sets `rate_hz`: a rate and a trigger exclude each other.
-- The trigger needs a `silence_ms`, also when the port is `unsupervised`; `start()`
-  fails without one. Carry the old timeout of the input when the node had one, else
-  the longest gap the input may have.
-- When no trigger sample came for `silence_ms`, one **fallback step** runs with
-  `samples().empty()` and the port `stale()`, and repeats every `silence_ms`. Handle it
-  in `step()`: `estimation_manager` publishes no estimate and logs the input as stale.
-- A step at the trigger's send time T sees every other input cut before T on simulated
-  time, and its outputs carry T. The other subscriptions become `Latest` or `Arrivals`
-  ports as in the table above, and a TF listener a `hypha::Transforms` port.
+- Each trigger has its own `silence_ms`. Carry the old timeout of the input when the
+  node had one, else the longest gap the input may have; a timeout of 0.0 is
+  `silence_ms = 0`, a trigger with no limit, which runs no fallback of its own.
+- When no step ran for the shortest `silence_ms` of the triggers, one **fallback step**
+  runs with every trigger's `samples().empty()`, and each trigger past its own limit
+  `stale()`; it repeats every shortest `silence_ms`. Handle it in `step()`:
+  `estimation_manager` publishes no estimate and logs the input as stale.
+- In every step each trigger is judged by its newest sample against its own limit, so
+  `usable()` of a trigger that did not fire says whether its last sample is still
+  valid. A trigger that may be idle for long, such as a joystick, is `advisory`, so that
+  its silence does not degrade `~/state`.
+- On simulated time a step runs at the send time T of its trigger sample, sees every other
+  input cut before T, and its outputs carry T. On host time its time, and the stamp of its
+  outputs, is the wall time at the start of the step, later than the sample's own stamp
+  (execution-model.md §6.6 item 2). The other subscriptions become `Latest` or
+  `Arrivals` ports as in the table above, and a TF listener a `hypha::Transforms` port.
 
-A node with two inputs whose callbacks each publish is not one triggered cycle: it
-stays a plain node (section 10).
+A node with several inputs whose callbacks each publish is one triggered cycle with
+one trigger per input. Samples at one instant step in the construction order of the
+ports, so a node that chooses between its inputs, as `twist_mux` does by priority,
+decides with `usable()` of every trigger and forwards only the sample of the port that
+fired; its output is then the same in either order
+(`crates/hypha-cxx/test/test_twist_mux_shape.cpp`).
 
 **Check:** each subscription has one input port, and each publication has one
 output port.
@@ -257,6 +281,17 @@ rotation_count = 3
 - A relative log path resolves against the directory of the TOML file.
 - `${NAME}` in any string, `[log]` and `include` included, expands from the
   environment. An unset or empty variable stops the node.
+- A value that belongs to one input, such as the priority of each input of a multiplexer
+  (`priority = 100` in `[ports.inputs.joystick]`), is a key of its table beside `topic` and
+  `silence_ms`. The node reads it with `hypha::config("ports.inputs.joystick")` in its
+  constructor or `setup()`, before the cycle starts; a key of an input table that nothing
+  has read by then fails `start()` as an unknown key, a typo of `silence_ms` included.
+  Do not repeat the input in a table of the node.
+- Port names are unique per direction. Each `[ports.inputs.<name>]` is one table, so two
+  inputs cannot share a name, and the same holds for `[ports.outputs.<name>]`. When an
+  upstream configuration uses one name for two inputs (a velocity input and a lock both
+  called `joystick`), rename one of them in its TOML table and in its port declaration,
+  for example `joystick_lock`.
 
 **Check:** every parameter and topic row of the inventory has one TOML entry.
 
@@ -402,7 +437,7 @@ What changed and why:
   (manifest, `~/introspection`, `~/state`) and runs until a stop. It names the phase in the
   error line `node failed in <phase>: <what>`. It returns 78 when the configuration is refused
   before the run (the file, an unread key, a `hypha::ParameterError` or a QoS mismatch), 70
-  when the run fails or `failRun()` is called, and 2 for more than one argument. Without the
+  when the run fails or `failRun(reason)` is called (`failRun(ConfigError)`: 78), and 2 for more than one argument. Without the
   file the node starts with no parameters and no `[log]` table, so the first required key
   stops it.
 - `[node].name` overrides the name in code.
@@ -418,9 +453,11 @@ separate class. Remove its ROS members (`ros::Subscriber`, `ros::Publisher`,
 
 - **gtest tests of logic** compile against hypha message types with the
   include edits of section 5. Do not change their assertions or names.
-- **Tests of a callback or a timer** run the step of a node that was not started
-  through `hypha::testing::StepHarness` (`hypha/testing.h`). Keep the test name and
-  every assertion. Add one test for each verdict that the ROS test did not cover:
+- **Tests of a callback or a timer** of a cycle node run its `step` through
+  `hypha::testing::StepHarness` (`hypha/testing.h`), without starting the node. A callback
+  of an `ApplicationNode` has no step, and `StepHarness` does not run it: test its logic as
+  in this step, and its start-up and bus as in [section 10.10](#1010-test-an-application).
+  Keep the test name and every assertion. Add one test for each verdict that the ROS test did not cover:
   usable, stale, never arrived.
 
 ```cpp
@@ -443,12 +480,50 @@ TEST(SpeedControllerStep, CommandsAfterAUsableSpeedArrived)
 
   The harness setters (`set`, `setStale`, `setNeverArrived`, `setStagnant`) give a
   port what a capture would give, for `Latest` and `Arrivals` ports alike; see
-  `docs/cpp-api.md`, "Test a step without a bus". The harness moves no clock: the
+  `docs/cpp-api.md`, "Test a step without a bus". An `optionalTopic` input or output is
+  enabled in the harness only when the test's TOML gives its table a non-empty `topic`
+  (below); with no table, no `topic` or `topic = ""` it is disabled, and `deliver()`,
+  `set()`, `setStale()` and `setStagnant()` on a disabled input throw. A `Transforms`
+  port gets its transforms from `harness.deliver(node.tf, {...})` (`/tf`) and
+  `harness.deliverStatic(node.tf, {...})` (`/tf_static`), so a step that transforms a
+  measurement from a sensor frame is tested with that frame's transform, not only with
+  identity frames. The harness moves
+  no clock: the
   step reads the `CycleTime` it is given, for its decisions and for the stamps it
   writes. Ported code that still calls `hypha::now()` gets the process clock in a
   harness step; until it is changed, the test sets simulated time to the step's time
   (`hypha::enableSimTime`, `hypha::setSimTime`). `steadyNow()` measures real elapsed
   time and is never set.
+
+  To test the branch behind an optional input, wire it in the TOML of the test. The wired
+  input needs a `silence_ms` as well, which `deliver()` reads:
+
+```toml
+[ports.inputs.mag]
+topic = "/test/mag"
+silence_ms = 100
+[ports.outputs.debug]
+topic = "/test/debug"
+```
+
+```cpp
+TEST(ImuFilterStep, ReadsTheMagnetometerWhenItIsUsable)
+{
+    hypha::ConfigContext        ctx{"test/with_mag.toml"};  // before the harness
+    ImuFilterNode               node;
+    hypha::testing::StepHarness harness{node};
+    harness.deliver(node.mag, sensor_msgs::MagneticField{}, hypha::Time::fromNanos(1'000'000'000));
+    hypha::CycleTime time;
+    time.now = hypha::Time::fromNanos(1'050'000'000);
+    harness.step(node, time);
+    EXPECT_EQ(node.mag.verdict(), hypha::InputVerdict::Usable);
+}
+```
+
+  The `ConfigContext` (or a `Node` that holds the file) exists before the harness is
+  built, because the harness reads the `topic` then. Only one exists at a time, so the
+  branch for a port that is left out (`topic = ""` or no table) is a second fixture with
+  its own file and its own `ConfigContext`.
 - **Recorded regression tests** (golden fixtures of a ROS bag and the outputs of
   the ROS node): convert each bag with `mcap convert`. Replay it through
   `StepHarness` and through the bus (`hypha play --clock` with `hypha record
@@ -481,6 +556,8 @@ TEST(DetectorGolden, Fixture01MatchesTheRosNode)
     }
 }
 ```
+- **An `ApplicationNode`** has no step, so `StepHarness` does not run it: see
+  [section 10.10](#1010-test-an-application).
 - **rostest tests** need a ROS master and do not run under hypha. Port the
   harness to a test that starts the node with a test TOML and drives it with
   `runFor()`, or to step tests. Keep every case. Report a case you cannot port.
@@ -499,21 +576,28 @@ Reading the diff is not verification. Run the binary.
 2. Read the manifest on `~/introspection` (`hypha topic echo /<node>/introspection`,
    or `hypha::introspect()`). Compare its configuration rows, endpoints and
    cycle rows with the TOML file: the resolved topics and the rate.
-3. `hypha topic list` shows every topic of the inventory.
+3. `hypha topic list` shows every topic of the inventory the node has opened, with its
+   type, whether or not a sample was sent (`-v` adds the publishers and subscribers of
+   each). A topic of the inventory that is missing has not been opened by anyone yet. Check the rate of a topic
+   with `hypha topic hz <topic>` (item 5) once traffic starts.
 4. With no input publisher, `hypha topic echo /<node>/state` (published by
    `runNode`) shows `WAITING`, and the outputs follow the approved missing-input
    response.
 5. Start the input (a peer node, `hypha play`, or `hypha_ros_bridge` from the
    ROS system). `~/state` shows `INPUTS_USABLE`. `hypha topic hz` on each
-   output shows `rate_hz`, or the rate the step publishes at.
+   output shows `rate_hz`, or the rate the step publishes at. `hypha topic delay
+   <input> <output>` is the `rostopic delay` of the node: the median, the p99 and the
+   worst time from an input to the output it causes, for a triggered node and for a
+   rate node, with no payload decoded. `~/state` (`hypha top`) shows the step time as
+   median, p99 and maximum, since the start and over the last 10 to 20 seconds.
 6. Stop the input. After its `silence_ms`, `~/state` shows `DEGRADED` and
    the outputs follow the approved stale-input response.
 7. Compare the outputs with the ROS node for the same input. Record both
    (`hypha record`), or run the ROS node through the bridge beside the hypha
    node. A recorded input is replayed with `hypha play --topics <inputs>` and the
    input topics only: golden outputs must never reach the live output topics.
-   For a plain node, `examples/sensor_pipeline/replay_check.sh` runs this replay and
-   compares two outputs by stamp ([section 10.8](#108-a-runnable-sensor-node-and-its-replay-check)).
+   For an `ApplicationNode`, `examples/sensor_pipeline/replay_check.sh` runs this replay and
+   compares two outputs by stamp ([section 10.9](#109-a-runnable-sensor-node-and-its-replay-check)).
 8. Negative start checks: remove a required `[ports.inputs.<name>]` table, write a number as
    text, pass a second argument. Each one stops the node with a message and a
    non-zero exit status.
@@ -553,31 +637,100 @@ included, uses the same `HYPHA_DOMAIN`.
 | `ros::init`, `ros::NodeHandle` | `hypha::runNode<App>(argc, argv, name)`, with the TOML file as `argv[1]` |
 | `ros::spin()` | `hypha::runNode` runs `node.run()` |
 | `pnh.param("x", v, d)`, rosparam YAML | Top-level TOML key, `hypha::config().required<T>("x")` |
+| `pnh.getParam("list", std::vector<T>&)`, a YAML list | TOML array, `hypha::config().requiredArray<T>("list")`; a parameter that is one value or a list: `requiredScalarOrArray<T>("list")` ([section 10.8](#108-a-list-of-scalars-in-the-parameter-file)) |
+| `XmlRpc::XmlRpcValue` of a struct or array, `getParam("sensors", xmlrpc_value)` | `hypha::config().list("sensors")`, one table for each entry, and in an entry arrays and lists of its own (`entry.requiredArray<double>("weights")`, `entry.list("points")`) |
+| A namespace of parameters (`~inputs/a/..`, `~inputs/b/..`) whose names the node finds with `getParamNames` or `XmlRpc` | `hypha::config("ports.inputs").tables()`: each table, `key()` its name |
+| A matrix parameter, a flat list read with `mrs_lib::ParamLoader::loadMatrixDynamic` | `hypha::config().requiredMatrix<double>("mixer", rows, cols)`; 0 for one size takes it from the length |
+| A value from a short list (a baud rate, a mode), checked by hand after `getParam` | `hypha::config().required<T>("baud_rate", hypha::constraints::oneOf({4800, 9600, 19200}))` |
 | `<remap>`, `ns=` | `[ports.inputs.<name>]` or `[ports.outputs.<name>]` table with the full `topic` |
 | Private topic `~x` | `~/x` in a ports table |
+| A topic under `/hypha/` | A topic of another namespace: `/hypha` and the names under it are the framework's, and a port on one is refused with `InvalidTopic` |
 | `nh.subscribe` that stores the latest value | `hypha::Latest<T>` port |
 | `nh.subscribe` with work for each message | `hypha::Arrivals<T>` port |
-| `message_filters` synchroniser | `Arrivals` ports; match `header.stamp` in the step |
-| `nh.advertise` + `publish` | `hypha::Output<T>` port: call `send(message)` |
-| `nh.createTimer` | The cycle rate, `rate_hz` under `[cycle]` |
+| `nh.subscribe(topic, 1, callback)`: only the newest message | An `Arrivals<T>` port with `newestOnly`, a trigger when the callback did the work (cpp-api.md §5.4); the older pending messages are counted, not delivered. A `Latest<T>` port when the callback only stored the value |
+| `message_filters` synchroniser | `Arrivals` ports; match `header.stamp` in the step. Trigger on the input that is published last: its step holds the partner samples sent before it, or with it by one step of one node, live and in a lockstep replay ([execution-model.md](execution-model.md) §6.6). A partner sent after the trigger sample is not in that step |
+| `nh.advertise` + `publish` | `hypha::Output<T>` port: call `send(message)`. A step sends one message per Output. A step that sends two declares the Output with `hypha::perStep(2)`: `hypha::Output<T> name{*this, "name", hypha::perStep(2)};` |
+| `nh.createTimer` | The cycle rate, `rate_hz` under `[cycle]`; a second timer, a `hypha::CycleTimer` polled first in the step (Step 2) |
 | `ros::TimerEvent` | `const hypha::CycleTime&`: `dt` (no value in the first step), `missed` |
+| `ros::ok()` in the loop of a worker thread | `stop.stop_requested()`, `stop` being `this->stopToken()`, the `std::stop_token` that `runNode` stops when the run ends ([section 10.6](#106-threads)). The loop ends there, or at the `false` of a sleep or a rate below. Every other blocking read in the loop takes a timeout that returns to this check, or a `std::stop_callback` that wakes it: a read with no way back never sees the stop, and the join then waits forever |
+| `ros::Rate rate(hz)` and `rate.sleep()` in a worker thread | `hypha::Rate rate(hz, stop)` from `<hypha/worker.h>`; `do { work(); } while (rate.sleep());`. `sleep()` returns `false` when the node stopped, not, as in ROS, when the pass overran: overruns count in `rate.missedCount()`. The grid and the skip of missed periods: [cpp-api.md](cpp-api.md#25-a-worker-thread-ends-at-the-nodes-stop). Host time, also under simulated time |
+| `ros::Duration(s).sleep()`, `ros::WallDuration::sleep()`, `ros::Duration::sleep()` in a worker thread | `if (!hypha::sleepFor(stop, hypha::Duration::fromSeconds(s))) { return; }` (or a `std::chrono` span), which returns `false` at the stop. `sleepUntil(stop, steadyDeadline)` waits for a time point. A call whose result is dropped is a compile warning: a stopped sleep returns at once, so such a loop would spin |
+| `tf_prefix` (added to every frame id) | None. Read it with `hypha::config().required<std::string>("tf_prefix")` and write each frame id in full, prefix included |
 | Hand-written message age check (decides whether an input may be used) | The port's `silence_ms`, verdict `Stale`. A use of the source time as data stays logic |
 | `ros::Time::now()` for a stamp | In a cycle step `time.stamp`; elsewhere `hypha::toRosTime(hypha::now())`. See cpp-api.md §3 |
 | `header.seq` | The publisher writes it |
-| `ros::ServiceServer` | An `Arrivals<Srv::Request>` port on a request topic and an `Output<Srv::Response>` on a reply topic, matched by an identifier (cpp-api.md §8) |
-| `ros::ServiceClient::call` | An `Output` of requests and an `Arrivals` of replies; the step tracks the pending request and its own deadline (cpp-api.md §8) |
+| `nh.advertiseService` in a plain or application node | `auto s = node.advertiseService<Srv>("<port>", [](hypha::Request<Srv>& r) { r.reply({...}); });` and `[ports.servers.<port>] service = "~/<name>"` (cpp-api.md §8.1) |
+| a service callback `return false` | `r.refuse()` or `r.refuse("why")` |
+| a service callback that works over time, or on another thread's device | `r.defer()`, then answer the `hypha::Deferred<Srv>` from the thread that finishes it; one destroyed unanswered refuses |
+| `nh.serviceClient<Srv>(name)` in a plain or application node | `node.serviceClient<Srv>("<port>")`; the timeout is the policy's (1 s), or `timeout_ms` in `[ports.clients.<port>]` |
+| `client.call(srv)` in a callback | `client.call(srv.request, onResult)`: `onResult` runs at a later turn with a `CallResult`. A blocking call on the run thread is refused (`InvalidState`) |
+| `client.call(srv)` in a worker thread, a test or a tool | `node.serviceClient<Srv>(name, hypha::blocking)`, then `callAndWait(request)` |
+| `ros::service::waitForExistence(name, t)`, `client.waitForExistence(t)` | In a node: nothing; a call waits for its server until its timeout. In a test or a tool: `blockingClient.waitForServer(t)` |
+| `client.exists()` | `client.exists()` (`ready()`) |
+| `serviceClient(name, true)` (persistent) | The default: every client stays connected |
+| a service whose response is a map, a path or a cloud | `nav_msgs/GetMap` and `GetPlan` are shipped: serve them with a `ServicePolicyOf` whose response bound fits the map (64 MiB at most). A bigger or continuing stream of data goes on a latched topic (cpp-api.md §8.4) |
+| `std_srvs/*` | Shipped by the SDK: `Empty`, `Trigger`, `SetBool` |
+| `nh.advertiseService(name, &C::cb, this)` in a `CycleNode` | A `Requests<Srv>` port: `for (auto& r : port.requests()) r.reply({...});` in the step, named by `[ports.servers.<port>] service` (cpp-api.md §8.5) |
+| `client.call(srv)` in a `CycleNode` | A `Calls<Srv>` port: `port.call(srv.request)` in one step, `port.result()` in a later one (cpp-api.md §8.5) |
+| a service callback that makes a chain of blocking calls (`call()` A, then B on A's success, then reply), or sleeps between them | A `hypha::Sequence<Srv>`: `seq.start(request.defer(), this->run())` and `seq.advance(time)` in every step; `run()` is a `hypha::Task<Srv::Response>` written in the callback's order, `auto a = co_await hypha::call(portA, {...}); if (!a.ok()) co_return {...};`, `co_await hypha::sleepFor(d)` for `ros::Duration(d).sleep()`, and its `co_return` is the reply (cpp-api.md §8.6) |
+| `rosservice call` against the node under test, or a fake server node, in a test | `hypha::testing::StepHarness`: `auto r = harness.request(node.port, {...});` and after `harness.step(node, time)` `r.replied()`, `r.response()`; for a client, `harness.calls(node.port)` and `harness.answer(node.port, {...})` or `harness.outcome(node.port, hypha::CallOutcome::Timeout)`; no process, no bus (cpp-api.md §5.4, "Test a step without a bus") |
+| `nav_msgs/GetMap`, `GetPlan`, `LoadMap`, `SetMap`, `sensor_msgs/SetCameraInfo`, `diagnostic_msgs/AddDiagnostics`, `SelfTest`, `tf2_msgs/FrameGraph` | Shipped by the SDK under their ROS names and with ROS's MD5: `node.advertiseService<nav_msgs::GetMap>(...)`. Do not copy the `.srv` into a package of the node's own (`map_server_msgs/GetMap`): its type name and MD5 would no longer be ROS's. A map is larger than the default bound: specialize `hypha::ServicePolicyOf<nav_msgs::GetMap>` (cpp-api.md §8.4) |
+| a service of a package the SDK ships that ROS 1 does not have (the node's own `sensor_msgs/Foo.srv`) | `hypha_generate_messages(PACKAGE sensor_msgs SRV_DIR ...)` adds it beside the SDK's (cpp-api.md §1.1, "Adding to a package of the SDK"); link `sensor_msgs_additions` |
 | `ROS_INFO("%f", x)` | `HYPHA_LOG_INFO("{}", x)`: a `std::format` string |
 | `ROS_WARN_THROTTLE(1, ...)` | `HYPHA_LOG_WARN_THROTTLE(1.0, ...)` |
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(condition, false, ...)`: writes when the condition becomes true |
 | `tf2_ros::TransformBroadcaster` | Output on `/tf` of type `tf2_msgs::TFMessage` |
 | `tf2_ros::StaticTransformBroadcaster` | An `Output<tf2_msgs::TFMessage>` declared with `latched` and `topic = "/tf_static"` in its ports table |
+| A reset that clears state: robot_localization's `reset` service and `set_pose` (`tfBuffer_.clear()`, `clearMeasurementQueue()`), an EKF reinitialisation, a tracker reset | In the step: `port.clear()` on each input whose old samples must not reach the next step and `transforms.clear()` on the `Transforms` port (static transforms stay), beside the node's own reset. Applied when the step returns; later steps see only later samples, the inputs are `NeverArrived` until one arrives (cpp-api.md §5.4, execution-model.md §6.8). A queue the node keeps itself is the node's to empty |
+| `diagnostic_updater::Updater updater;` with `updater.setHardwareID(id)`, `updater.add("Name", this, &Class::method)` | `hypha::DiagnosticUpdater updater{diagnostics};` over an `Output<diagnostic_msgs::DiagnosticArray> diagnostics{*this, "diagnostics"}` (`[ports.outputs.diagnostics] topic = "/diagnostics"`); the calls stay (`<hypha/diagnostic_updater.h>`, cpp-api.md §2.7) |
+| A diagnostic task as the only place that says the device is absent (no one reads `/diagnostics`), or the driver's own health in a log line | The same task: `hypha::DiagnosticUpdater updater;` with no sink and no port. Its rows are in `~/state` (`NodeState.checks`), an `ERROR` one makes the node `DEGRADED` and `hypha top` shows it; a `WARN` one only shows. A node that has an aggregator builds it over the `Output` as above and gets both from the one declaration (cpp-api.md §2.7) |
+| The updater's own timer, `~diagnostic_period`, `updater.update()` / `force_update()` | `updater.update()` in `step()` (it runs the tasks once per period, default 1 s); the period is a top-level key read with `hypha::config()` and given to `setPeriod`; `forceUpdate()` runs now |
+| `diagnostic_updater::DiagnosticStatusWrapper`: `summary`, `summaryf`, `mergeSummary`, `add`, `addf`, `clear` | `hypha::DiagnosticStatusWrapper`, the same calls; the levels are `diagnostic_msgs::DiagnosticStatus::OK`, `WARN`, `ERROR`, `STALE` |
+| `FrequencyStatusParam`, `FrequencyStatus`, `TimeStampStatus`, `TopicDiagnostic`, `HeaderlessTopicDiagnostic` | The same names in `hypha::` (`<hypha/diagnostic_functions.h>`); `tick(msg.header.stamp)` takes the `RosTime` stamp |
+| `diagnostic_updater::DiagnosedPublisher` | An `Output` and a `TopicDiagnostic`: `diag.tick(stamp)` before `output.send(msg)` |
 | `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment; for `ros2 bag play`'s behaviour, outside the replay lockstep, `HYPHA_REPLAY_LOCKSTEP=0` for the player and every node of the launch |
-| rosbag record / play | `hypha record` / `hypha play` (`apps/`) |
+| rosbag record / play | `hypha record` / `hypha play` (`apps/`); a topic recorded with two versions of a message is two channels, replayed as two streams |
+| `rosservice call /set_enabled "data: true"`, `rosservice call /move_to '{goal: {x: 1.0, y: 2.0}}'` (YAML) | `hypha service call /set_enabled 'data = true'`, `hypha service call /move_to 'goal = { x = 1.0, y = 2.0 }'` or `'goal.x = 1.0' 'goal.y = 2.0'` (TOML; tools.md, `hypha service`). Rewrite the request: `key: value` becomes `key = value`, `{a: 1}` becomes `{ a = 1 }`, text is quoted (`name = "left"`), `True` is `true`, a time is `{ secs = 1, nsecs = 0 }`. The response prints as TOML too. `rosservice list` / `info` are `hypha service list` / `info` |
 | roslaunch | `hypha launch` |
 | roscore | None. Nodes find each other through shared memory |
+| A second message type or MD5 on a topic: roscore refuses the connection (`md5sum mismatch`) | Each type and each version (MD5) is its own stream of the topic: both are delivered, each to its own subscribers, and two versions of a message can run side by side during a migration. A subscriber whose version nobody publishes gets nothing; its counters (`otherSchemas`) and its `~/state` row (`other_schemas`) name the version that is published, and after 5 s without a publisher of its own it logs `topic '<t>' has publishers, none of type <T> (<md5>): published are <T> (<other md5>)`. Its input is `NeverArrived` if it never had a publisher, else `Stale` after its `silence_ms`, or `Usable` on the last value when it has no limit (cpp-api.md §5) |
+
+**Diagnostics (`diagnostic_updater`):** a status task the application owns (the device is
+absent, a fix is lost, a rate is low) keeps its task and its name: the node publishes it with
+`hypha::DiagnosticUpdater` as above, and the system's `diagnostic_aggregator` reads
+`/diagnostics` as in ROS. The same task is in `~/state` and `hypha top`: an `ERROR` or
+`STALE` level makes the node `DEGRADED` (not ready, as a required input that is stale does),
+`WARN` does not. So a ported node whose device or fix is absent is no longer `INPUTS_USABLE`
+for lack of an input to degrade: choose the level by that rule (`ERROR` for the fact
+without which the node cannot do its job, `WARN` for the one that only needs a look). A
+node with no `diagnostic_aggregator` in its system still declares the tasks, with the updater
+that has no sink. An application counter that had nowhere to go (a queue's drops, grabs
+without an image) becomes a `WARN` task with the number in the message. Three kinds of
+diagnostic are not tasks:
+
+- A check of the age of an input (`now - stamp > timeout`) is the port's `silence_ms`
+  (section 2.1); `~/state` shows it and `hypha top` reads it. Drop the task, unless the
+  system's aggregator configuration names that item: then keep it and say so in the report.
+- A task that only says "the node is running" is `~/state`; drop it.
+- A task that mirrors a rate of an output is `TopicDiagnostic`, or `FrequencyStatus`, with
+  `tick()` where the node sends.
+
+A task keeps its logic as it is: the method that fills the `DiagnosticStatusWrapper`
+changes only the include and the namespace. The updater needs a node name: a node under
+`hypha::runNode` has one. A task that throws, or sets no summary, is an ERROR status
+that names the reason: keep it that way and do not catch it. Test the tasks with
+`testing::StepHarness` (`harness.sent(node.diagnostics)`), as the other outputs.
+The aggregator is another node: its input on `/diagnostics` needs a `silence_ms` of
+the longest diagnostic period, and a `perStep` for the burst of all publishers.
 
 **Queue sizing:** `queue_size` has no counterpart: there are no transport depths,
-history samples or history byte limits to tune. A topic's service policy (`hypha::Qos`,
+history samples or history byte limits to tune. A `queue_size` of 1, "only the newest",
+is the reader's choice alone: `newestOnly` on an `Arrivals<T>` port (a trigger or not)
+keeps the queue of its `perStep()`, examines the newest pending sample and counts the
+older ones in `bindingHealth().work_limit_drops_total` and, for a required input, the
+`dropped` of its `~/state` row. The publishers and the topic's policy do not change, and a replay steps
+the same on every run (execution-model.md §6.6). A plain `subscribe` callback has no such
+option: a callback with `queue_size` 1 is ported as a triggered cycle. A topic's service policy (`hypha::Qos`,
 cpp-api.md §7) sets the deepest queue a subscriber may ask for, its `maxDepth`: 32 for
 the `default` policy of a type the stack maps to no other. A plain `Subscriber<T>`
 queues that many samples, and so does a `Latest<T>` cycle input. On an `Arrivals<T>`
@@ -591,6 +744,15 @@ its largest message with `maxPayloadDynamic(bytes)` (on `advertise` or an `Outpu
 its policy does (`Qos::maxPayloadDynamic`), which bounds the publisher's shared memory.
 A fixed-size message is bounded to its own size whatever is named.
 
+**An image or a point cloud** is megabytes, and the pool of its publisher holds a queue of it for
+every subscriber the policy admits, so a ROS node that published one with `queue_size` 1 needs
+two things the port names: a policy (`hypha::imageQos` or `hypha::cloudQos` as the option of the
+port on both ends, or one of your own) and the bound,
+`hypha::maxPayloadDynamic(hypha::serializedSize(head, maxPoints * pointStep))`; a cloud whose
+point count varies names the count it accepts, and a larger one is `TooLarge`. The `default`
+policy would reserve 649 slots of that bound, over a gigabyte for a 1.7 MB cloud. The pool formula, the
+worked numbers and `hypha topic pool` are in cpp-api.md §7.1.
+
 **`Header` in a new message type:** a ported ROS type keeps its `Header`; removing it
 changes the definition and its MD5. A message type written for hypha carries a `Header`
 only when it needs the time the data describes (a measurement time for TF lookup,
@@ -602,8 +764,8 @@ A step stamps its messages with `time.stamp`. Outside a step,
 `hypha::toRosTime(hypha::now())` converts the node's time; it throws only for a time
 no clock gives (negative, or after 2106).
 
-A service name does not resolve from the ports tables. Read it with
-`hypha::config().required<std::string>("<key>")` and pass the value.
+A service name resolves from the ports tables: `[ports.servers.<port>]` and
+`[ports.clients.<port>]`, key `service` (cpp-api.md §8).
 
 ---
 
@@ -617,13 +779,40 @@ of ROS's own; it cannot include both. Make only these edits:
 
 | ROS 1 | hypha | Edit |
 |---|---|---|
-| `boost::array<double, 9>` | `std::array<double, 9>` | Only where the logic names the type. |
-| `header.stamp` is `ros::Time` | `header.stamp` is `hypha_msgs::RosTime{secs, nsecs}` | `stamp.sec` to `stamp.secs`, `stamp.nsec` to `stamp.nsecs`. A call such as `stamp.toSec()` needs a helper; write one free function in the node file, do not edit each use. |
+| `boost::array<double, 9>` | `std::array<double, 9>` | Only where the logic names the type. A message field is a `std::array`. |
+| `header.stamp` is `ros::Time` | `header.stamp` is `hypha_msgs::RosTime{secs, nsecs}` | `stamp.sec` to `stamp.secs`, `stamp.nsec` to `stamp.nsecs`. A call such as `stamp.toSec()` becomes `hypha::fromRosTime(stamp)` (`hypha/message_stamp.h`), which returns `std::optional<hypha::Time>`, empty when `nsecs` is one second or more. Check the optional, then call `.seconds()` on the value. Write no helper. |
 | `ros::Time`, `ros::Duration` in logic | `hypha::Time`, `hypha::Duration` | Only when the logic itself measures time. |
-| `ros::Time::now()` in logic | `hypha::now()` for framework time, `hypha::steadyNow()` for an interval | Keep the meaning of the original call. |
+| `ros::Duration::toSec()`, `ros::Duration::toNSec()`, `ros::Time::toSec()`, and `ros::Time` / `ros::Duration` arithmetic | `hypha::Duration::seconds()` (`double`), `hypha::Duration::nanos()` (`int64_t`), `hypha::Time::seconds()`. The operators keep their meaning: `Time + Duration`, `Time - Duration`, and `Time - Time`, which is a `Duration` | Rename the call. `ros::Duration(s)` is `hypha::Duration::fromSeconds(s)`, which throws `std::invalid_argument` for NaN or infinite `s`. |
+| `ros::Time::now()` in logic | `hypha::now()` for framework time, `hypha::steadyNow()` for an interval. For a stamp, `hypha::toRosTime(hypha::now())` (`hypha/message_stamp.h`) | Keep the meaning of the original call. |
+| `ros::Time::isSystemTime()` | `!hypha::isSimTime()` (`hypha_base/clock.h`, included by `hypha/hypha.h`) | Edit the call only. |
+| `ros::Time::isValid()` of `ros::Time::now()`, and `ros::Time::waitForValid()` | `hypha::isClockValid()` (`hypha_base/clock.h`): true on host time, and on simulated time once the first `/clock` sample (or a set) arrived. There is no wait: the run reads `/clock`, so a loop in a constructor or `setup()` would wait for ever | In a cycle step delete the call: a step does not run before the first sample (execution-model.md section 11.1), so `time.now` is valid. In a callback of an `ApplicationNode`, test `isClockValid()` before a stamp is taken from `hypha::now()`; a worker thread polls it. A constructor or `setup()` has no clock yet: take the time at the first callback or step. |
+| `hypha::now()` before the first `/clock` sample, on a node with `HYPHA_USE_SIM_TIME=1` (`hypha_base/clock.h`) | The placeholder zero: `Time` 0 ns, not a clock value. `hypha::isSimTime()` is already true and `hypha::isClockValid()` is false | Inside a step, use `time.now`. Elsewhere, ask `hypha::isClockValid()` (execution-model.md section 11.1: "The zero that a node starts with is a placeholder, not a value"). |
+| `void cb(const Msg::ConstPtr& msg)` whose logic keeps the pointer | `samples()` gives a `const Msg&` for one step, and it is valid only until the step returns (section 6). | Copy the value into a member of the node (`Msg last;`, then `last = sample;`). If the callback only stores the latest value, use a `Latest` port instead (Step 2). |
+| `void cb(const sensor_msgs::PointCloud2ConstPtr& msg)` (or `Image`) on a large message, a filter that reads it | `node.subscribe<hypha::View<sensor_msgs::PointCloud2>>(port, cb)` with `void cb(const hypha::ViewPtr<sensor_msgs::PointCloud2>& msg)`; in a cycle, `Arrivals<hypha::View<PointCloud2>>` (`samples()` gives a `ViewPtr` each) or `Latest<hypha::View<PointCloud2>>` (cpp-api.md section 5.0) | Rename the pointer type, one line (`using PointCloud2ConstPtr = hypha::ViewPtr<sensor_msgs::PointCloud2>;`, marked `// hypha port:` in a vendored core). The body reads unchanged: `msg->data.size()`, `msg->data[i]`, `PointCloud2ConstIterator(*msg, "x")`. An upstream test that passes a `shared_ptr<const PointCloud2>` compiles unchanged. Code that takes `const PointCloud2&` gets `hypha::toMessage(*msg)` (a copy). |
+| A driver that copies its SDK's frame into `msg.data` and publishes (`memcpy(&image.data[0], pixels, n); pub.publish(image);`) | `auto loan = pub.loan(head, n); memcpy(loan->data().data(), pixels, n); pub.publish(std::move(*loan));` (cpp-api.md section 4) | Write the frame into the loan instead of `msg.data`; the head is the message without its data. A refused loan (`PoolExhausted`, `LoanLimit`) is no lost frame: fall back to `publish(msg)` or skip the frame. A cloud whose point count is known at the end: `publish(std::move(*loan), count * point_step)`. In a cycle, `Output<M>::loan()` and `send(std::move(*loan), used)`. |
+| `boost::shared_ptr<Msg>`, `boost::make_shared<Msg>(...)` | `std::shared_ptr<Msg>`, `std::make_shared<Msg>(...)`. The generated `Msg::Ptr` is `std::shared_ptr` (for example `std_msgs/Float64.h`). | Glue only (the paragraph below the table): change the namespace and the include (`<memory>`). Nothing else. |
+| `#include <sensor_msgs/point_cloud2_iterator.h>`, `<sensor_msgs/point_field_conversion.h>` (`PointCloud2Modifier`, `PointCloud2Iterator`, `PointCloud2ConstIterator`, `readPointCloud2BufferValue`) | Works unchanged: the SDK installs ROS's own headers beside the messages (cpp-api.md §1.1). `*iter` reads and writes with `memcpy`, so it is safe on a received view too | None for `*it = v`, `v = *it`, `it[i]`, `++it`, `it != it.end()`. A `float&` or `float*` of an element (`float& r = *it`, `&*it`), `std::max(*it, 1.0F)` on a mutable iterator and `printf("%f", *it)` do not compile or read wrong: copy into a `float` first. Do not write a field table or byte copies by hand. For ROS 2 code, `<sensor_msgs/point_cloud2_iterator.hpp>`. |
+| `#include <sensor_msgs/image_encodings.h>`, `<sensor_msgs/distortion_models.h>` (`image_encodings::BGR8`, `bitDepth`, `numChannels`, `isColor`, `isMono`, `isBayer`, `distortion_models::PLUMB_BOB`) | Works unchanged: the SDK installs ROS's own headers beside the messages (cpp-api.md §1.1) | None. Do not copy the file into the node. For ROS 2 code, `.hpp`. |
+| `camera_info_manager::CameraInfoManager` (`loadCameraInfo(url)`, `getCameraInfo()`, `setCameraInfo()`, `isCalibrated()`), `camera_calibration_parsers::readCalibration(file, name, info)` / `writeCalibration`, the `camera_info_url` parameter and the calibration YAML | `#include <hypha/camera_info.h>`; `std::optional<sensor_msgs::CameraInfo> info = hypha::readCameraInfoIfPresent(hypha::config().path("camera_info_url"), &cameraName);` in the constructor or `setup()` (no value: uncalibrated, as `isCalibrated()` false), `hypha::readCameraInfo(path)` where the file is required, and `hypha::writeCameraInfo(path, info, cameraName)` in the `set_camera_info` handler. The calibration is TOML with the same keys (cpp-api.md section 9, *Camera calibration*); a calibration in the node's own file is a `[camera_info]` table, `hypha::readCameraInfo(hypha::config("camera_info"))` | Convert the YAML once by hand, key by key: `image_width: 640` becomes `image_width = 640`, likewise `image_height`, `binning_x`, `binning_y`; `camera_name: left` becomes `camera_name = "left"` and `distortion_model: plumb_bob` becomes `distortion_model = "plumb_bob"` (TOML text is quoted); each matrix block (`camera_matrix`, `distortion_coefficients`, `rectification_matrix`, `projection_matrix`) with `rows`, `cols` and `data: [...]` becomes the key with its `data` as a flat array, `camera_matrix = [fx, 0, cx, 0, fy, cy, 0, 0, 1]` (9 numbers for `camera_matrix` and `rectification_matrix`, 12 for `projection_matrix`, the length of `data` for `distortion_coefficients`); drop `rows` and `cols`, the reader checks the length; a `roi:` block becomes a `[roi]` table at the end of the file, `do_rectify = true` or `false`. Name the file `.toml`, beside the parameter file, and write its path in `camera_info_url`, not a `file://` or `package://` URL. `header` is empty: set `frame_id` and the stamp when sending. A bad file throws `ConfigError` naming the file and the key, and the node exits 78; a leftover `rows`/`cols`/`data` block is refused with the flat form to write. A missing file is no error with `readCameraInfoIfPresent`: log that the camera is uncalibrated, as `camera_info_manager` warns |
+| A header-only library that ROS installs but that is not ROS API, such as `tf2/LinearMath` (`tf2::Quaternion`, `tf2::Matrix3x3`) | The same headers, copied into the node as third-party files with their licence. The SDK ships no math types. | Keep every use in the logic. In the copied headers edit only their ROS lines (`#include <ros/macros.h>` goes, `ROS_DEPRECATED` becomes `[[deprecated]]`), and list the copy and those edits in the change description. |
+| `std::mutex` that only guards callbacks | No mutex. | Delete the mutex and its lock calls. Callbacks of one `WaitSet` never run at the same time (execution-model.md section 10.1), and a cycle step runs on that `WaitSet` (execution-model.md section 6.1). Keep a mutex only where a worker thread shares the data. |
+| `pub.publish(msg);` on a plain `Publisher` (`publish` is `[[nodiscard]]`, `hypha/publisher.h`) | `pub.publishOrWarn(msg);` | A refused message is logged as a warning with the topic and the status, at most once a second for each publisher, and the call returns `false`. Use `if (!pub.publish(msg)) { ... }` with `pub.lastPublishStatus()` when the node reacts to a refusal. `publish` stays `[[nodiscard]]`: a dropped result is a silent failure. A cycle `Output::send` returns nothing, so this row does not apply to it. |
+| `nh.subscribe("a", 1, &C::cb, this)` for several inputs of one class, where the callback must know which one (`boost::bind(&C::cb, this, _1, i)`) | `hypha::bind<&C::onInput>(*this, i)`: the arguments after the object are bound and come first in the call, as `std::bind_front` does: `void onInput(size_t i, const hypha::MessagePtr<M>& message)` | No named functor per input. A bound pointer must outlive the subscription. |
+
+The `tf2/LinearMath` row does not cover `tf2/convert.h` (`tf2::convert`): it uses
+`ros::Time`, so do not copy that header. Convert the fields by hand, one assignment for
+each field, and list them in the
+change description.
+
+In glue, each `boost::` type becomes its `std::` equivalent, as the rows above say. A
+logic file keeps its `boost::` types (section 2.1), except a type that names a message
+field. The SDK ships no Boost, so the node's
+own build must provide the Boost headers that its logic includes.
 
 A message type that hypha does not ship becomes a `.msg` file of the node and
-a `hypha_generate_messages()` call. Copy the `.msg` file without changes.
+a `hypha_generate_messages()` call. Copy the `.msg` file without changes. A standard
+service that hypha ships (`nav_msgs/GetMap`, `sensor_msgs/SetCameraInfo`, ...) is not
+copied: it is used under its ROS name.
 
 A `bool` field decodes as ROS 1 decodes it: a zero byte is `false`, and every
 other byte is `true`. Some ROS 1 producers send a nonzero byte other than 1
@@ -648,8 +837,9 @@ or 1.
 - **Do not keep a pointer to a sample of `Arrivals::samples()`.** Samples are
   valid until the step returns. Copy what must outlive the step into a member.
   A `Latest` port keeps its value between steps (`*port`).
-- **No timer of your own beside the cycle for the same work.** One rate, one
-  cycle.
+- **No `Node::timer` beside the cycle for the step's work.** Its callback runs
+  between steps, in an order the step cannot see. A second rate over the step's state
+  is a `hypha::CycleTimer`, polled first in the step.
 - **`INPUTS_USABLE` is not readiness.** It means only that the inputs are
   fresh. Publish an application readiness topic when the system needs one.
 - **One `[log]` table for each process.** A second node in the same process
@@ -662,18 +852,26 @@ or 1.
   back; the process
   exits 75 and its supervisor starts it again
   ([execution-model.md](execution-model.md) §11.1). Every member is built anew, so
-  the node needs no reset code; do not write one.
+  the node needs no reset code for this; do not write one. Only simulated time restarts
+  it: a step of the host wall clock does not ([execution-model.md](execution-model.md)
+  §6.7, §11). When the ROS node resets its state on a backward header stamp, that reset
+  is logic: keep it.
 - **`replay not faithful`, or `the input history is shorter than one replay chunk`,
-  under `hypha play --clock`** is a sizing fault of the replay, not of the step. One
-  chunk carried more samples of the topic than the input keeps. Check in this order:
+  under `hypha play --clock`** is a sizing fault of the replay, not of the step. The
+  input's history could not hold what the cycle had not read yet. Check in this order:
   1. The line names the topic. Take its rate from the recording
      (`hypha topic hz` during an open-loop `hypha play`).
-  2. Samples in one chunk = rate x `--chunk` (100 ms unless set). Compare with what
-     the input keeps: the policy's `maxDepth` (32 for `default`) for a `Latest` port,
-     `perStep(n)` (8 unless set) for an `Arrivals` port.
-  3. Lower `--chunk <ms>` until a chunk fits, or give the topic a deeper policy or the
-     port a larger `perStep` ([cpp-api.md](cpp-api.md) section 7). A burst counts by
-     its peak, not by the mean rate.
+  2. For an `Arrivals` port, samples in one period of the cycle = rate x period.
+     Compare with `perStep(n)` (8 unless set), and give the port a larger `perStep`
+     ([cpp-api.md](cpp-api.md) section 7). A burst counts by its peak, not by the
+     mean rate.
+  3. For a `Latest` port, or when `perStep` suffices, look for a second publisher of
+     the topic, or one that stamps ahead of the clock: the player splits its own
+     chunks to fit the queue, but no other publisher's
+     ([replay-flow-control.md](replay-flow-control.md) §6.7). Give the topic a deeper
+     policy for them. A publisher that keeps sending while the node drains its inputs
+     can also leave samples queued after the node's report, and the next chunk then
+     overflows the queue.
 
 ---
 
@@ -682,7 +880,7 @@ or 1.
 hypha has no equivalent for these. Stop and ask the user before you continue:
 
 - A transform lookup that waits: `waitForTransform`, `lookupTransform` with a timeout,
-  or `canTransform` in a loop. `hypha::TransformBuffer` lookups never wait (§10.6;
+  or `canTransform` in a loop. `hypha::TransformBuffer` lookups never wait (§10.7;
   [cpp-api.md](cpp-api.md) section 10.2): the node holds its message until a later
   callback finds the transform, or drops it.
 - `dynamic_reconfigure`, or a parameter changed at run time. Parameters are
@@ -690,8 +888,9 @@ hypha has no equivalent for these. Stop and ask the user before you continue:
 - `actionlib`.
 - `nodelet` and in-process zero-copy between nodes. hypha nodes are processes;
   shared memory gives zero-copy between them.
-- A service whose caller blocks on the reply. hypha has no RPC: the call becomes a
-  request topic and a reply topic, and the caller a state over steps.
+- A service whose caller blocks on the reply inside a callback. A plain node calls with
+  `call(request, onResult)`; a cycle with a `Calls` port, and the caller becomes a state
+  over steps.
 - Missing or stale input with no rule in the ROS node. Ask which output is
   safe.
 - A per-message latency requirement that a triggered step does not meet on the
@@ -714,8 +913,8 @@ Report these:
 - **Blocker:** the node cannot be migrated without the missing item. Example:
   a lookup that must wait for its transform.
 - **Gap:** the migration is possible, but a hypha feature would make it
-  smaller or safer. Example: a service name
-  that does not resolve from the ports tables.
+  smaller or safer. Example: a service called from a cycle step, which needs the
+  request and reply topics until the cycle ports exist.
 - **Defect:** hypha does not do what its documentation says. Example: a
   verdict, a status code or a rate that differs from the documented one.
 - **Documentation fault:** a page in `docs/` that describes an API that does
@@ -769,7 +968,8 @@ Report each item in the change description, with the evidence.
 - [ ] Every input port has a `silence_ms` chosen from the input rate.
 - [ ] No input has an age limit besides `silence_ms`.
 - [ ] The response to each missing or stale input is explicit and approved.
-- [ ] `main` only calls `hypha::runNode`: one TOML file at most, a second argument stops the node with status 2.
+- [ ] `main` only calls `hypha::runNode`, for a `CycleNode` and an `ApplicationNode` alike: one TOML file at most, a second argument stops the node with status 2.
+- [ ] Every `diagnostic_updater` task is a `DiagnosticUpdater` task, or is replaced by `silence_ms` or `~/state` with the reason reported (section 4).
 - [ ] The logged snapshot shows the expected topics and period.
 - [ ] Step 7 was done on the bus, and its results are recorded.
 - [ ] A `hypha launch` unit and an installed TOML file exist.
@@ -778,42 +978,136 @@ Report each item in the change description, with the evidence.
 
 ---
 
-## 10. Porting an event-driven node to a plain `hypha::Node`
+## 10. Porting an event-driven node: an `ApplicationNode`
 
-Steps 1 to 8 end in a `CycleNode`. This section covers the other target: a plain
-`hypha::Node` with typed subscriptions, publishers and timers. Step 1 (inventory),
-Step 3 (TOML) and Step 4 (build) apply unchanged. The rules of
-[section 2](#2-rules) apply, except the cycle items. The names below are in
-[cpp-api.md](cpp-api.md) §1, §3, §4, §5, §7 and §9.
+Steps 1 to 8 end in a `CycleNode`. This section covers the other target: a
+`hypha::ApplicationNode` with typed subscriptions, publishers and timers, started by
+`hypha::runNode<App>()` like a `CycleNode`. Step 1 (inventory), Step 3 (TOML) and
+Step 4 (build), Step 7 (run on the bus) and Step 8 (deploy) apply unchanged, except
+the items of Step 7 on input verdicts. The rules of [section 2](#2-rules) apply, except
+the cycle items; of [section 9](#9-production-ready-checklist), the items on steps,
+`silence_ms` and verdicts do not apply, and the `main`, launch-unit and installed-file
+items do. The names below are in [cpp-api.md](cpp-api.md) §1, §3, §4, §5, §7 and §9.
 
 ### 10.1 Which target
 
 | The ROS node | Target |
 |---|---|
 | Its work runs from a timer | A rate `CycleNode` (Step 2) |
-| Its work runs on each sample of one input | A triggered `CycleNode`: `setTrigger(port)` (Step 2) |
-| Its callbacks publish on more than one input | A plain `hypha::Node` |
-| It owns worker threads | A plain `hypha::Node` |
-| It is a shim of a ROS client library (#59) | A plain `hypha::Node` |
+| Its work runs on each sample of one or several inputs | A triggered `CycleNode`: `setTrigger(port)` once per input (Step 2) |
+| It owns worker threads | An `ApplicationNode` |
+| It is a shim of a ROS client library (#59) | An `ApplicationNode` |
 
-What a triggered cycle adds over a plain node, and what it costs:
+What a triggered cycle adds over an `ApplicationNode`, and what it costs:
 
 | A triggered cycle adds | It costs |
 |---|---|
-| A verdict for each input (`stale()`, `Latest::usable()`), and `~/state` rows under `runNode` | A `silence_ms` for each supervised input, the trigger's included |
-| Outputs held until the step succeeds: a failed step publishes nothing ([execution-model.md](execution-model.md) §6.1) | A fallback step to handle when the trigger is silent |
-| Replay order: under simulated time the step runs at the sample's time, with the other inputs cut before it, and waits for its upstream nodes (§6.6) | One decode of each sample into its port before the step, and a payload copy in the input's history (§6.2) |
-| `~/introspection` and the refusal of an unread parameter key, from `runNode` | On host time, a trigger older than its `silence_ms` runs no step and counts in `age_rejections_total` |
+| A verdict for each input (`stale()`, `usable()`), and the input rows of `~/state` | A `silence_ms` for each supervised input, every trigger's included |
+| Outputs held until the step succeeds: a failed step publishes nothing ([execution-model.md](execution-model.md) §6.1) | A fallback step to handle when every trigger is silent for the shortest `silence_ms` |
+| Replay order: under simulated time the step runs at the sample's time, with the other inputs cut before it, and waits for its upstream nodes ([execution-model.md](execution-model.md) §6.6) | One decode of each sample into its port before the step, and a payload copy in the input's history ([execution-model.md](execution-model.md) §6.2) |
+| | On host time, a trigger older than its port's `silence_ms` runs no step and counts in that port's `age_rejections_total` |
 
-A plain `hypha::Node` has none of the first column: freshness is judged for cycle
-inputs only ([cpp-api.md](cpp-api.md) §5.1), and without `runNode` the node publishes
-no `~/state` and `~/introspection` and refuses no unread parameter key
-([cpp-api.md](cpp-api.md) §2). `Node::run()` calls every callback on the calling
-thread, and each `publish()` goes out at once. The model is in
-[execution-model.md](execution-model.md) §3, §4 and §11.2. Write the reason for a
-plain node in the change description.
+`runNode` gives both targets `~/introspection`, `~/state`, the refusal of an unread
+parameter key and the exit codes of §10.2. An `ApplicationNode` has none of the first
+column: freshness is judged for cycle inputs only ([cpp-api.md](cpp-api.md) §5.1).
+`Node::run()` calls every callback on one thread, and each `publish()` goes out at
+once. The model is in [execution-model.md](execution-model.md) §3, §4 and §11.2. Write
+the reason for an `ApplicationNode` in the change description.
 
-### 10.2 Literal topic or port name
+### 10.2 The application
+
+Write the node as one class and start it with `runNode`. `main` is one line.
+
+```cpp
+#include <hypha/hypha.h>
+#include <hypha/transform_buffer.h>
+
+#include <geometry_msgs/PoseStamped.h>
+#include <sensor_msgs/PointCloud2.h>
+
+class Locator final : public hypha::ApplicationNode
+{
+  public:
+    // The bus is not joined yet. Read and check the parameters here: a refused value
+    // ends the run with exit 78.
+    Locator() : gain_(hypha::config().required<double>("gain", hypha::constraints::positive()))
+    {
+    }
+
+    // Create every subscription, publisher, timer and transform buffer here, and
+    // nowhere else. The members hold them.
+    void setup(hypha::Node& node) override
+    {
+        this->scan_ = node.subscribe<sensor_msgs::PointCloud2>(
+            "scan", hypha::bind<&Locator::onScan>(*this)
+        );  // [ports.inputs.scan]
+        this->pose_ = node.advertise<geometry_msgs::PoseStamped>("pose");  // [ports.outputs.pose]
+        this->timer_ =
+            node.timer(hypha::Duration::fromMillis(100), hypha::bind<&Locator::onTick>(*this));
+        this->tf_ = hypha::TransformBuffer(node);  // a member like the others, assigned here
+    }
+
+  private:
+    void onScan(const hypha::MessagePtr<sensor_msgs::PointCloud2>& scan)
+    {
+        geometry_msgs::PoseStamped pose;
+        pose.header = scan->header;
+        pose.pose.position.x = this->gain_ * static_cast<double>(scan->width);  // the node's logic
+        this->pose_.publishOrWarn(pose);  // a refusal is logged: topic, status, once a second
+    }
+
+    void onTick()
+    {
+        // periodic work
+    }
+
+    double                                       gain_;
+    hypha::Subscriber<sensor_msgs::PointCloud2>  scan_;
+    hypha::Publisher<geometry_msgs::PoseStamped> pose_;
+    hypha::Timer                                 timer_;
+    hypha::TransformBuffer                       tf_;
+};
+
+int main(int argc, char** argv)
+{
+    return hypha::runNode<Locator>(argc, argv, "locator");
+}
+```
+
+`runNode` loads the parameter file (`argv[1]`, optional), constructs the class, joins the
+bus, calls `setup()`, refuses an unread parameter key, publishes `~/introspection` and
+`~/state`, calls `started()` and runs until a stop. An exception ends the run with the
+line `node failed in <phase>: <what>`, `failRun()` with `application failed: <reason>`, a
+failed run with `node run failed`. It returns an exit code that a supervisor reads:
+
+| Code | Constant | When | `hypha launch` |
+|---|---|---|---|
+| 0 | `kExitClean` | the run stopped as requested | the unit's restart policy |
+| 2 | `kExitUsage` | more than one argument | the unit's restart policy |
+| 78 | `kExitConfiguration` | the parameter file, a parameter or an endpoint policy is refused; an unread key; `failRun(ConfigError)` | never restarts |
+| 75 | `kExitRewind` | simulated time went back (`Status::ClockRewound`) | always restarts |
+| 70 | `kExitRuntime` | anything else, and `failRun(reason)` | the unit's restart policy |
+
+- The constructor and `setup()` throw `hypha::ConfigError` or `hypha::ParameterError` for
+  a refused configuration (78); any other exception is 70. `subscribe` and `advertise` throw
+  `ConfigError` for a port whose table is missing or refused, so a missing
+  `[ports.inputs.<name>]` exits 78.
+- `started(hypha::Node&)` runs after every check, just before the run. Start worker
+  threads and send latched messages there. Throw to refuse the run (70).
+- `failRun("reason")` ends the run as failed from any thread (70). `failRun(hypha::ConfigError("reason"))`
+  does the same for a configuration fault found after start, such as a first frame larger than
+  the configured limit, and returns 78, which `hypha launch` does not restart. The first report
+  decides the code.
+- The destructor runs on every way out: its body first, then the members (the endpoints),
+  then the node. Stop and join every thread of the class in the body.
+- A callback runs in the run, on one thread. It must not block.
+
+A custom `main()` that builds a `hypha::Node` is for a bounded probe or tool that ends
+by itself ([cpp-api.md](cpp-api.md) §2). It publishes no `~/state` and no
+`~/introspection`, refuses no unread key, and maps its own exit codes. A node that runs
+until stopped is never written that way.
+
+### 10.3 Literal topic or port name
 
 `hypha::Topic{...}` names a literal topic that code fixes. A bare string names a
 port table of the parameter file. ROS 1:
@@ -825,15 +1119,17 @@ auto scan = nh.subscribe(scanTopic, 5, &Locator::onScan, this);
 auto pose = nh.advertise<geometry_msgs::PoseStamped>("pose", 1);
 ```
 
-hypha, with the topic names in the TOML file:
+hypha, with the topic names in the TOML file, in `setup(hypha::Node& node)`:
 
 ```cpp
-hypha::Node node("locator", argv[1]);                       // argv[1]: the parameter file
-auto scan = node.subscribe<sensor_msgs::PointCloud2>(
-    "scan", hypha::bind<&Locator::onScan>(*this));          // [ports.inputs.scan]
-auto pose = node.advertise<geometry_msgs::PoseStamped>("pose");   // [ports.outputs.pose]
-auto tf = node.advertise<tf2_msgs::TFMessage>(hypha::Topic{"/tf"});  // a literal topic
+this->scan_ = node.subscribe<sensor_msgs::PointCloud2>(
+    "scan", hypha::bind<&Locator::onScan>(*this));                 // [ports.inputs.scan]
+this->pose_ = node.advertise<geometry_msgs::PoseStamped>("pose");  // [ports.outputs.pose]
+this->tfOut_ = node.advertise<tf2_msgs::TFMessage>(hypha::Topic{"/tf"});  // a literal topic
 ```
+
+Assign each endpoint to a member of the application, as in §10.2: an endpoint held by
+a local is destroyed when `setup()` returns.
 
 ```toml
 [ports.inputs.scan]
@@ -851,38 +1147,23 @@ topic = "~/pose"
   empty `topic = ""` then disables it, and `enabled()` is false:
 
 ```cpp
-auto odom = node.subscribe<nav_msgs::Odometry>(
+this->odom_ = node.subscribe<nav_msgs::Odometry>(
     "odom", hypha::bind<&Locator::onOdom>(*this), hypha::optionalTopic);
-if (!odom.enabled()) {
+if (!this->odom_.enabled()) {
     HYPHA_LOG_INFO("odometry input is off");
 }
 ```
 
-- `runNode` refuses a parameter key that nothing read. A custom `main()` does not;
-  it checks the keys itself, after it has read its parameters and created its
-  endpoints:
-
-```cpp
-const std::vector<std::string> unread = hypha::config().unreadKeys();
-if (!unread.empty()) {
-    HYPHA_LOG_ERROR("unread parameter(s): {}", unread.front());
-    return hypha::kExitConfiguration;
-}
-```
-
-  `unreadKeys()` returns the unread keys sorted. `kExitConfiguration` is 78, the
-  code that `runNode` returns for a refused configuration and that a supervisor
-  does not restart (`hypha/application_node.h`).
-
-### 10.3 Time, status and logging
+### 10.4 Time, status and logging
 
 | ROS 1 | hypha | Meaning |
 |---|---|---|
 | `msg.header.stamp.toSec()` | `hypha::fromRosTime(msg.header.stamp)` (`hypha/message_stamp.h`) | Returns `std::optional<hypha::Time>`. Empty when `nsecs` is one second or more. `Time::nanos()` gives integer nanoseconds. |
 | `header.stamp = ros::Time::now()` | `header.stamp = hypha::toRosTime(hypha::now())` | Throws `std::out_of_range` for a time before the epoch or after 2106. |
-| `ros::spin()` | `const hypha::RunResult result = node.run();` | `[[nodiscard]]`. `result.ok()` is true when the call succeeded and the run stopped as requested or at its time limit. `reason()`, `status()` and `call()` say why not. |
-| `ros::shutdown()` from another thread | `hypha::requestStop()` | The one call that another thread may make on a running node. |
-| `pub.publish(msg)` (no result) | `publish(msg)` returns `bool` (`[[nodiscard]]`); `lastPublishStatus()` returns the `Status` of the last attempt | The status names the reason: a disabled publisher, a message that is too large, an exhausted pool, a transport failure. |
+| `header.stamp = ros::Time(seconds)`, `ros::Time(sec, nsec)`, `ros::Time().fromNSec(n)` | `hypha::rosTimeFromSeconds(seconds)`, `hypha::rosTimeFromNanos(n)` (`hypha/message_stamp.h`) | The same checks as `toRosTime`. They are named by unit, not overloads of `toRosTime`: an integer is never taken for seconds. |
+| `ros::spin()` | `hypha::runNode<App>(argc, argv, "name")` | Runs `node.run()` and returns the exit code of §10.2. |
+| `ros::shutdown()` from another thread | `hypha::requestStop()` | The one call that another thread may make on a running node. For a failure, `failRun(reason)` in the application. |
+| `pub.publish(msg)` (no result) | `publish(msg)` returns `bool` (`[[nodiscard]]`); `lastPublishStatus()` returns the `Status` of the last attempt; `publishOrWarn(msg)` logs a refusal | The status names the reason: a disabled publisher, a message that is too large, an exhausted pool, a transport failure. |
 | `ROS_WARN_THROTTLE(1, ...)` | `HYPHA_LOG_WARN_THROTTLE(1.0, "{}", x)` | The first call writes, later calls at most once per period. Host monotonic time. |
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(state, false, ...)` | Writes when `state` changes from false to true at that call site. |
 | `pub.getNumSubscribers()` | `pub.subscriberCount()` | `std::optional<size_t>`. Empty: the count is unavailable (the publisher is disabled, or the transport cannot count). `0`: counted, no subscriber now. |
@@ -900,7 +1181,7 @@ if (!nobodyListens) {
 The count is the subscribers of every node on the machine at that instant. It is
 not delivery. A cycle `Output::hasSubscribers()` treats an empty count as watched.
 
-### 10.4 Queue depth
+### 10.5 Queue depth
 
 A subscriber queues the `maxDepth` of its topic's policy. The limit of 32 belongs
 to the `default` policy. A topic that needs a deeper queue, such as a ROS IMU
@@ -935,30 +1216,121 @@ struct hypha::QosOf<sensor_msgs::Imu>
   `default`, and a typed endpoint with the deeper policy is then refused. Start the
   application nodes first, or map the type to `default`.
 
-### 10.5 Threads
+### 10.6 Threads
 
-`Node::run()` runs every subscription and timer callback on the calling thread.
-The framework creates no thread. One endpoint belongs to one thread at a time. A
-worker thread that publishes therefore owns its publisher, or every access to that
-publisher is serialized by the application. Only `hypha::requestStop()` may be
-called from another thread while the node runs.
+`Node::run()` runs every subscription and timer callback on one thread. The framework
+creates no thread. One endpoint belongs to one thread at a time. A worker thread that
+publishes therefore owns its publisher, or every access to that publisher is serialized
+by the application. Only `hypha::requestStop()` and `failRun()` may be called from another
+thread while the node runs.
+
+The application starts a worker in `started()` and joins it in its destructor. The
+node's stop is `this->stopToken()`, a `std::stop_token` that `runNode` stops when the run
+ends, before the destructor runs, whatever ended it (`requestStop()`, a signal,
+`failRun()`, a refused start-up). The worker takes it by copy and ends its waits on it:
+`hypha::sleepFor()` and `hypha::Rate` of `<hypha/worker.h>`
+([cpp-api.md](cpp-api.md#25-a-worker-thread-ends-at-the-nodes-stop)) return `false` at the
+stop, so a ten-second wait ends with the node. A blocking read in the loop takes a
+timeout that returns to the loop check: a read with no timeout never sees the stop, and
+the join then waits forever. A thread that fails calls `failRun()`:
+
+```cpp
+#include <hypha/hypha.h>
+
+#include <sensor_msgs/PointCloud2.h>
+
+#include <exception>
+#include <stop_token>
+#include <thread>
+
+sensor_msgs::PointCloud2 readFromDevice();  // the driver's blocking read, with a timeout
+
+class LidarNode final : public hypha::ApplicationNode
+{
+  public:
+    ~LidarNode() override
+    {
+        if (this->worker_.joinable()) {
+            this->worker_.join();  // the stop is already requested
+        }
+    }
+
+    void setup(hypha::Node& node) override
+    {
+        this->points_ = node.advertise<sensor_msgs::PointCloud2>("points");
+    }
+
+    void started(hypha::Node& /*node*/) override
+    {
+        this->worker_ = std::thread(&LidarNode::readLoop, this, this->stopToken());  // after the checks
+    }
+
+  private:
+    // The only user of points_ once the thread runs.
+    void readLoop(std::stop_token stop)
+    {
+        hypha::Rate rate(10.0, stop);  // ros::Rate rate(10)
+        do {
+            try {
+                const bool sent = this->points_.publish(readFromDevice());
+                if (!sent) {
+                    HYPHA_LOG_WARN_THROTTLE(
+                        1.0, "cloud not sent: {}", this->points_.lastPublishStatus().name()
+                    );
+                }
+            } catch (const std::exception& error) {
+                this->failRun(error.what());
+                return;
+            }
+        } while (rate.sleep());  // false: the node stopped
+    }
+
+    hypha::Publisher<sensor_msgs::PointCloud2> points_;
+    std::thread                                worker_;
+};
+```
+
+A vendor SDK that calls back on its own threads (a lidar's cloud, IMU and fault callbacks)
+may not publish from them: a publisher belongs to one thread. The callbacks push into a
+`hypha::Handover<Kinds...>` (`<hypha/handover.h>`), and the one worker above pops and
+publishes. It is ROS's callback queue, bounded, with the drops counted:
+
+```cpp
+using Messages = hypha::Handover<sensor_msgs::PointCloud2, sensor_msgs::Imu, hesai::LossPacket>;
+
+// the node's member; the depth is per kind, so a burst of IMU samples never pushes a cloud out
+Messages handover_{hypha::config().required<uint32_t>("handover_depth"), this->stopToken()};
+
+// the vendor's threads (never waits; a full kind drops its oldest message, counts it, warns)
+void onCloud(const Cloud& cloud) { this->handover_.push(toRos(cloud)); }
+void onImu(const Imu& imu)       { this->handover_.push(toRos(imu)); }
+
+// the worker, in the place of its sleep or rate: ends at the node's stop, after the drain
+while (auto message = this->handover_.pop()) {
+    std::visit([this](const auto& content) { this->send(content); }, *message);
+}
+HYPHA_LOG_INFO("hand-over: {} messages dropped", this->handover_.dropped());
+```
+
+`popFor(timeout)` returns empty at the timeout too (`stopped()` tells the two apart), for a
+worker that also checks a state between messages. A subscriber callback that must not
+block (a write to a serial port) pushes the same way, and the device's thread pops. The
+count is in `dropped()` and `dropped<Kind>()`, and in the log; it is not yet in `~/state`.
+[examples/sensor_pipeline](../examples/sensor_pipeline/README.md) uses it for one kind.
 
 A timer counts the periods it did not fire in, because a callback or the run loop
 ran longer than one period:
 
 ```cpp
-hypha::Timer timer = node.timer(hypha::Duration::fromMillis(100), OnTick{&state});
-...
-const uint64_t missed = timer.missedCount();   // periods never fired in
+const uint64_t missed = this->timer_.missedCount();   // periods never fired in
 ```
 
-`OnTick` is a named functor with `void operator()()`. Read `missedCount()` where
-the node can log it. A subscriber counts the samples it lost before it read them, and
-the frames it refused:
+Read `missedCount()` where the node can log it. A subscriber counts the samples it lost
+before it read them, and the frames it refused:
 
 ```cpp
-const uint64_t lost = imu.missingSequences();      // frames lost before they were read
-const hypha::SubscriberMetrics m = imu.metrics();  // m.sequenceGap, m.invalidFrame, ...
+const uint64_t lost = this->scan_.missingSequences();      // frames lost before they were read
+const hypha::SubscriberMetrics m = this->scan_.metrics();  // m.sequenceGap, m.invalidFrame, ...
 ```
 
 `missingSequences()` grows on a queue overflow. `m.sequenceGap` counts frames that
@@ -966,7 +1338,7 @@ arrived and were refused because their sequence was not newer; a lost frame does
 raise it. Both may be read from any thread while the node runs
 ([cpp-api.md](cpp-api.md) §7).
 
-### 10.6 TF in a plain node
+### 10.7 TF in an application
 
 The facts of [cpp-api.md](cpp-api.md) §10 apply:
 
@@ -982,13 +1354,23 @@ The facts of [cpp-api.md](cpp-api.md) §10 apply:
 ```cpp
 #include <hypha/transform_buffer.h>
 
-hypha::TransformBuffer tf{node};                  // before node.run()
-hypha::StaticTransformBroadcaster statics{node};
+// members of the application
+hypha::TransformBuffer            tf_;
+hypha::StaticTransformBroadcaster statics_;
 
-// in a callback, or in a worker thread while node.run() runs:
+// in setup(hypha::Node& node):
+this->tf_ = hypha::TransformBuffer(node);
+this->statics_ = hypha::StaticTransformBroadcaster(node);
+
+// in started(), after the checks:
+if (!this->statics_.send(baseToLidar)) {
+    throw std::runtime_error("/tf_static not sent");
+}
+
+// in a callback, or in a worker thread while the node runs:
 const std::optional<hypha::Time> stamp = hypha::fromRosTime(scan.header.stamp);
 if (stamp.has_value()) {
-    const auto found = tf.lookup("map", "lidar", *stamp);
+    const auto found = this->tf_.lookup("map", "lidar", *stamp);
     if (!found) {
         // found.error() is a hypha::TransformError: UnknownFrame, NotConnected,
         // BeforeBuffer, AfterBuffer or InvalidFrame
@@ -996,13 +1378,13 @@ if (stamp.has_value()) {
 }
 ```
 
-  Create and destroy the buffer on the thread that configures the node, not while the
-  node runs on another thread. Nothing is ingested unless the node runs. The buffer
-  keeps 10 s of dynamic transforms per frame unless the constructor gets another
-  duration. `hypha::Transforms` is the port of a cycle; its lookup throws
+- The application creates the buffer in `setup()` and destroys it with itself, as the
+  header requires, and joins a worker thread before that. Nothing is ingested unless the
+  node runs. The buffer keeps 10 s of dynamic transforms per frame unless the constructor
+  gets another duration. `hypha::Transforms` is the port of a cycle; its lookup throws
   `std::logic_error` outside a step.
 
-### 10.7 A list of scalars in the parameter file
+### 10.8 A list of scalars in the parameter file
 
 A TOML array of numbers, flags or text is read with `requiredArray`:
 
@@ -1018,99 +1400,51 @@ const std::optional<std::vector<double>> offsets = hypha::config().optionalArray
 `std::optional` only when the key is absent. Each element gets the conversion and the
 range check of `required<T>`, and an error names the element, for example
 `lidar_extrinsic[2]`. Check the range of the values in the application. `ConfigList`
-remains for a list of tables (`[[sensors]]`).
+remains for a list of tables (`[[sensors]]`), whose entries may hold arrays and lists
+themselves. A parameter that ROS accepts as one value or as a list is read with
+`requiredScalarOrArray<T>(key)`; a flat list that is a matrix, with
+`requiredMatrix<T>(key, rows, cols)`; a list of lists (`[[1, 0], [0, 1]]`) is not read,
+write the flat list.
 
-### 10.8 A runnable sensor node and its replay check
+### 10.9 A runnable sensor node and its replay check
 
-[examples/sensor_pipeline](../examples/sensor_pipeline/README.md) applies 10.2 to 10.7 in
-one plain node: a 400 Hz IMU with `maxDepth = 200`, 10 Hz point clouds of 262144 bytes of
-data, one timer, and one worker thread that owns the result publisher, looks the
+[examples/sensor_pipeline](../examples/sensor_pipeline/README.md) applies 10.2 to 10.8 in
+two `ApplicationNode`s: a 400 Hz IMU with `maxDepth = 200`, 10 Hz point clouds of 262144
+bytes of data, one timer, and one worker thread that owns the result publisher, looks the
 transform up at the cloud's stamp and publishes. Its replay recipe, `replay_check.sh`,
 runs the node on simulated time from a recorded fixture of 98296 bytes with `hypha play
 --clock` and `hypha record --sync`, and makes three checks:
 
 - **Loss.** The node prints `missingSequences()` and `metrics()` of each subscriber. A
   replay at `--rate 1` reports `missing=0`; slow mode (`[slow] enabled = true`) shows a
-  growing count, live and in a replay, since nothing waits for a plain node.
+  growing count, live and in a replay, since nothing waits for an `ApplicationNode`.
 - **Timer misses.** The node prints `Timer::missedCount()`; the stalls of slow mode
   show as misses.
 - **Comparison by stamp.** `sensor_pipeline_compare` reads two recordings with the test
   MCAP reader and pairs the outputs by `header.stamp`: two runs of the node, or a run and
   the ROS node's golden output.
 
-A plain node on simulated time takes no part in the replay lockstep (#153): its
+An `ApplicationNode` on simulated time takes no part in the replay lockstep (#153): its
 callbacks run as their samples arrive, and the player does not wait for it
 ([execution-model.md](execution-model.md) §11.2). Its replays are not identical from
 run to run; a node that needs a deterministic replay is built from cycles.
 
+### 10.10 Test an application
 
-### 10.9 The exit code of a custom `main`
+`StepHarness` runs cycle steps, and an `ApplicationNode` has none. Test it at three levels,
+as [examples/sensor_pipeline](../examples/sensor_pipeline/README.md) does for the bus:
 
-`runNode` maps every way out to an exit code that a supervisor reads
-(`hypha/application_node.h`). A custom `main` does the same itself. `result.ok() ? 0 : 1`
-loses two facts: a refused configuration, which a restart cannot fix, and a backward
-seek of the replay, after which the process must start again.
-
-| Code | Constant | When | `hypha launch` |
-|---|---|---|---|
-| 0 | `kExitClean` | the run stopped as requested | the unit's restart policy |
-| 2 | `kExitUsage` | wrong arguments | the unit's restart policy |
-| 78 | `kExitConfiguration` | the parameter file, a parameter or an endpoint policy is refused; an unread key | never restarts |
-| 75 | `kExitRewind` | simulated time went back: the run ended with `Status::ClockRewound` | always restarts |
-| 70 | `kExitRuntime` | anything else | the unit's restart policy |
-
-A plain node sees `ClockRewound` too: a timer on simulated time ends the run with it
-([execution-model.md](execution-model.md) §11).
-
-```cpp
-#include <hypha/application_node.h>   // the exit codes
-#include <hypha/hypha.h>
-
-/// The exit code of a run that ended: 0, 75 after simulated time went back, else 70.
-int exitCodeOf(const hypha::RunResult& result)
-{
-    const bool rewound = result.status() == hypha::Status::ClockRewound;
-    if (rewound) {
-        return hypha::kExitRewind;
-    }
-    return result.ok() ? hypha::kExitClean : hypha::kExitRuntime;
-}
-
-int main(int argc, char** argv)
-{
-    const bool tooManyArguments = argc > 2;
-    if (tooManyArguments) {
-        std::cerr << "usage: locator [parameter_file]\n";
-        return hypha::kExitUsage;
-    }
-    const std::string parameterFile = argc == 2 ? std::string(argv[1]) : std::string{};
-    try {
-        // Loaded first and alone: a file that is missing or does not parse is a
-        // configuration fault, which a restart cannot fix.
-        const hypha::ConfigContext configuration(parameterFile);
-        try {
-            hypha::Node   node("locator", parameterFile);
-            const Locator locator(node);   // reads its parameters, creates its endpoints
-            const std::vector<std::string> unread = hypha::config().unreadKeys();
-            if (!unread.empty()) {
-                std::cerr << "unread parameter(s): " << unread.front() << '\n';
-                return hypha::kExitConfiguration;
-            }
-            return exitCodeOf(node.run());
-        } catch (const hypha::ConfigError& error) {   // ParameterError, QosMismatch
-            std::cerr << "configuration refused: " << error.what() << '\n';
-            return hypha::kExitConfiguration;
-        } catch (const std::exception& error) {
-            std::cerr << "start-up failed: " << error.what() << '\n';
-            return hypha::kExitRuntime;
-        }
-    } catch (const std::exception& error) {
-        std::cerr << "parameter file refused: " << error.what() << '\n';
-        return hypha::kExitConfiguration;
-    }
-}
-```
-
-`crates/hypha-cxx/test/test_plain_main_example.cpp` compiles and runs this `main`. Test
-the backward seek under the supervisor: `hypha play --clock --loop` restarts the unit at
-each pass.
+1. **Logic.** Keep the ROS node's logic in classes that need no `Node`, and test them
+   as in Step 6. A callback of the application then only calls them.
+2. **Start-up.** Run the binary with a missing parameter file, a malformed one and one
+   without its `[ports.*]` tables, and expect exit 78: `startup_exit_code.cmake`,
+   registered for each case in the example's `CMakeLists.txt` with `hypha_add_test`.
+   `startup_exit_code.cmake` is not installed with the SDK, but `hypha_add_test` is
+   (`hyphaTesting.cmake`). A port against the installed SDK copies
+   `examples/sensor_pipeline/startup_exit_code.cmake` from the hypha source tree into its
+   own test folder, and registers each case with `hypha_add_test` and `-P` on that copy, as
+   the example's `CMakeLists.txt` does. Installing the script beside `hyphaTesting.cmake`
+   is a follow-up.
+3. **The bus.** Replay a recorded input into the running node and compare its output
+   by stamp: `replay_check.sh`, registered as `sensor_pipeline_replay_check`. The
+   recipe, and the comparison with a ROS golden, are in the example's README.

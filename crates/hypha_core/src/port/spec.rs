@@ -9,6 +9,15 @@ use crate::port::error::PortError;
 /// The transport sets it on every publisher it creates.
 pub const PUBLISHER_LOANED_SAMPLES: usize = 2;
 
+/// The longest topic name, in bytes without its leading `/`: a stream's service name is
+/// the name with `@` and 16 hex digits of the schema hash, in iceoryx2's 255 bytes.
+pub const MAX_TOPIC_NAME_BYTES: usize = 238;
+
+/// The longest topic name, in bytes without its leading `/`, of an endpoint that names an
+/// MD5 and so writes its stream's record: the schema store names the directory of a topic
+/// by the whole name in hex, two characters a byte, in a 255-byte file name.
+pub const MAX_RECORDED_TOPIC_NAME_BYTES: usize = 126;
+
 /// The largest publisher count a declared policy may name.
 pub const MAX_POLICY_PUBLISHERS: usize = 256;
 
@@ -93,7 +102,7 @@ impl core::fmt::Display for QosPolicy {
 
 /// True for a policy name: 1 to [`MAX_POLICY_NAME_LENGTH`] characters, starting with
 /// an ASCII letter or digit, then ASCII letters, digits, `_`, `-` or `.`.
-fn is_policy_name(name: &str) -> bool {
+pub(crate) fn is_policy_name(name: &str) -> bool {
     let starts_with_alphanumeric = name.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
     let within_length = !name.is_empty() && name.len() <= MAX_POLICY_NAME_LENGTH;
     let only_name_characters =
@@ -102,7 +111,7 @@ fn is_policy_name(name: &str) -> bool {
 }
 
 /// Checks one count of a declared policy: at least one, and at most `max`.
-fn check_policy_count(field: &str, value: usize, max: usize) -> Result<(), String> {
+pub(crate) fn check_policy_count(field: &str, value: usize, max: usize) -> Result<(), String> {
     if value == 0 {
         return Err(format!("QoS policy {field} must be at least 1"));
     }
@@ -152,6 +161,8 @@ pub struct TopicSpec {
     pub initial_payload: usize,
     /// The service policy this endpoint declares, or none.
     pub qos: QosRequest,
+    /// The streams of the topic a subscription reads. A publisher sends on its own.
+    pub schemas: SchemaScope,
 }
 
 impl TopicSpec {
@@ -169,6 +180,7 @@ impl TopicSpec {
             payload_capacity: PayloadCapacity::default(),
             initial_payload: 0,
             qos: QosRequest::Undeclared,
+            schemas: SchemaScope::Own,
         }
     }
 
@@ -227,9 +239,9 @@ impl TopicSpec {
         let Some(bare) = self.name.strip_prefix('/') else {
             return false;
         };
-        // Only the bare product name is reserved; applications publish below it.
-        let is_reserved = self.name == "/hypha";
+        let is_reserved = is_reserved_topic_name(&self.name);
         let has_invalid_content = bare.is_empty()
+            || bare.len() > MAX_TOPIC_NAME_BYTES
             || is_reserved
             || bare.contains('*')
             || bare.chars().any(char::is_whitespace)
@@ -272,6 +284,46 @@ impl TopicSpec {
         self.definition = def.to_string();
         self
     }
+
+    /// The same subscription, reading every stream of the topic whatever its schema.
+    #[must_use]
+    pub fn reading_every_schema(mut self) -> Self {
+        self.schemas = SchemaScope::Every;
+        self
+    }
+
+    /// The same subscription, reading the one stream of `schema_hash`, with no MD5 named: a
+    /// reader that follows the streams a listing shows, whether or not their schema is known.
+    #[must_use]
+    pub fn reading_stream(mut self, schema_hash: u64) -> Self {
+        self.schemas = SchemaScope::Stream(schema_hash);
+        self
+    }
+
+    /// The schema hash of this endpoint's own stream: its MD5's, or 0 when it names no
+    /// MD5. `None` for an MD5 that is not one.
+    #[must_use]
+    pub fn stream_schema_hash(&self) -> Option<u64> {
+        if self.md5.is_empty() {
+            return Some(0);
+        }
+        hypha_wire::schema_hash_from_md5(&self.md5)
+    }
+}
+
+/// The streams of a topic that a subscription reads. A topic carries one stream for each
+/// schema that its endpoints name (topic name overloading): the stream of an endpoint is
+/// the one of its MD5, or the stream of no schema when it names none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SchemaScope {
+    /// The stream of the subscription's own schema.
+    #[default]
+    Own,
+    /// Every stream of the topic that exists when the subscription is created, whatever
+    /// its schema. Such a subscription never creates a stream.
+    Every,
+    /// The one stream with this schema hash, if it exists when the subscription is created.
+    Stream(u64),
 }
 
 /// Which schema record a lookup accepts.
@@ -331,6 +383,19 @@ pub fn is_valid_topic_pattern(pattern: &str) -> bool {
         !segment.contains('*') || segment == "*" || (segment == "**" && is_last)
     });
     has_segment && stars_are_well_placed
+}
+
+/// The topic namespaces under `/hypha/` that hypha's own tools publish in. Every other
+/// name under `/hypha/` is the framework's: the transport keeps its services there
+/// (`hypha/srv/...`, `hypha/hk/...`), and a topic's bus name drops only the leading `/`.
+pub const FRAMEWORK_TOPIC_NAMESPACES: [&str; 1] = ["/hypha/intercept/"];
+
+/// True when `name` is reserved for the framework: `/hypha` itself, and every name under
+/// `/hypha/` outside [`FRAMEWORK_TOPIC_NAMESPACES`].
+#[must_use]
+pub fn is_reserved_topic_name(name: &str) -> bool {
+    let under_product = name == "/hypha" || name.starts_with("/hypha/");
+    under_product && !FRAMEWORK_TOPIC_NAMESPACES.iter().any(|space| name.starts_with(space))
 }
 
 /// True when `name` is a valid public topic name, or a valid `~/` name that

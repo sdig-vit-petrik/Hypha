@@ -3,6 +3,7 @@
 
 use clap::Parser;
 use hypha_tools::echo_args::EchoArgs;
+use hypha_tools::stream::StreamFlags;
 
 /// The words after `echo`, as `hypha topic` flattens them into its subcommand.
 #[derive(Debug, Parser)]
@@ -20,7 +21,15 @@ fn parse(words: &[&str]) -> Result<EchoArgs, String> {
 #[test]
 fn topic_alone_uses_defaults() {
     let args = parse(&["/state"]).unwrap();
-    assert_eq!(args, EchoArgs { topic: "/state".into(), max_count: 0, plot: false });
+    assert_eq!(
+        args,
+        EchoArgs {
+            topic: "/state".into(),
+            max_count: 0,
+            plot: false,
+            streams: StreamFlags::default()
+        }
+    );
 }
 
 #[test]
@@ -54,4 +63,12 @@ fn missing_topic_is_refused() {
 #[test]
 fn second_topic_is_refused() {
     assert!(parse(&["/a", "/b"]).is_err());
+}
+
+#[test]
+fn a_type_and_an_md5_prefix_select_streams() {
+    let args = parse(&["/state", "--type", "std_msgs/Bool", "--md5", "8b94"]).unwrap();
+    assert_eq!(args.streams.data_type.as_deref(), Some("std_msgs/Bool"));
+    assert_eq!(args.streams.md5.as_deref(), Some("8b94"));
+    assert!(parse(&["/state", "--type"]).is_err());
 }

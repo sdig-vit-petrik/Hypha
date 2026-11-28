@@ -3,8 +3,9 @@
 use crate::boundary::{handle_mut, handle_ref, require_non_null, write_out};
 use crate::status::try_guard;
 use hypha_node::safe::{
-    EmissionView, ImageView, emission_commit, emission_reserve, image_alive, image_binding,
-    image_held, image_reject_sample, image_sample, image_set_ignored,
+    EmissionView, ImageView, emission_commit, emission_lend, emission_reserve, emission_return,
+    emission_send, image_alive, image_binding, image_clear, image_held, image_reject_sample,
+    image_sample, image_set_ignored,
 };
 use hypha_node::status::HyphaStatus;
 use hypha_node::{
@@ -75,6 +76,76 @@ pub unsafe extern "C" fn hypha_cycle_emission_commit(
     })
 }
 
+/// Lend `capacity` payload bytes of output `output_index` for one message the step writes
+/// in place, as `hypha_publisher_reserve_frame` does for a publisher. On `Ok`, `*out` points
+/// to `capacity` writable bytes, zeros, never an earlier frame's, and `*token` names the loan
+/// for `hypha_cycle_emission_send` or `hypha_cycle_emission_return`; the bytes are valid
+/// until one of them or the end of the step, which returns the loan unsent. A step may hold
+/// several loans, of any outputs, beside a reserve. The message counts against the output's
+/// per-step count from here. Nothing latches: `PoolExhausted` and `LoanLimit` when no loan is
+/// free (a refusal is no lost message and counts nothing), `ResourceLimit` past the count,
+/// `TooLarge` past the payload limit, `InvalidArgument` for an unknown output or a null
+/// pointer; `*out` is null and `*token` zero on any of them. The latched error of the step
+/// is returned as such.
+/// # Safety
+/// `emission` must be valid for the current callback. `out` and `token` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hypha_cycle_emission_lend(
+    emission: *mut HyphaCycleEmission,
+    output_index: u32,
+    capacity: usize,
+    out: *mut *mut u8,
+    token: *mut u64,
+) -> HyphaStatus {
+    try_guard(|| {
+        let view = unsafe { handle_mut(emission.cast::<EmissionView<'_, '_>>()) }?;
+        unsafe {
+            write_out(out, std::ptr::null_mut())?;
+            write_out(token, 0)?;
+        }
+        let (lent, buffer) = emission_lend(view, output_index, capacity)?;
+        unsafe {
+            write_out(out, buffer.as_mut_ptr())?;
+            write_out(token, lent)
+        }
+    })
+}
+
+/// Stage the loan `token` for dispatch after the step with its first `len` bytes: the
+/// message is sent shrunk to them, in the order of the step's sends and commits, after a
+/// successful step. The loan is consumed either way. `InvalidArgument`, nothing staged, for
+/// a token the step does not hold (sent, returned, or of another step) or a `len` past the
+/// loan; the latched error of the step as such.
+/// # Safety
+/// `emission` must be valid for the current callback.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hypha_cycle_emission_send(
+    emission: *mut HyphaCycleEmission,
+    token: u64,
+    len: usize,
+) -> HyphaStatus {
+    try_guard(|| {
+        let view = unsafe { handle_mut(emission.cast::<EmissionView<'_, '_>>()) }?;
+        Ok(emission_send(view, token, len)?)
+    })
+}
+
+/// Return the loan `token` unsent: its slot goes back to the pool and it no longer counts
+/// against the output's per-step count. `InvalidArgument` for a token the step does not
+/// hold.
+/// # Safety
+/// `emission` must be valid for the current callback.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hypha_cycle_emission_return(
+    emission: *mut HyphaCycleEmission,
+    token: u64,
+) -> HyphaStatus {
+    try_guard(|| {
+        let view = unsafe { handle_mut(emission.cast::<EmissionView<'_, '_>>()) }?;
+        Ok(emission_return(view, token)?)
+    })
+}
+
 /// Read the held sample of one image binding: the newest usable sample it captured. The
 /// payload is valid only during the callback. `NotAvailable` while `has_held` is zero;
 /// `InvalidArgument` for a null pointer or an unknown binding.
@@ -128,6 +199,28 @@ pub unsafe extern "C" fn hypha_cycle_image_set_ignored(
     try_guard(|| {
         let view = unsafe { handle_ref(image.cast::<ImageView<'_>>()) }?;
         Ok(image_set_ignored(view, binding_index, ignore != 0)?)
+    })
+}
+
+/// Clear, when the step returns, the input binding `index` (`kind` is
+/// `HYPHA_CYCLE_CLEAR_INPUT`) or the TF input `index` (`HYPHA_CYCLE_CLEAR_TRANSFORMS`).
+/// An input forgets its held sample and the pending samples its capture admitted, counted
+/// in `cleared_total`; a TF input forgets its dynamic transforms and keeps the static ones.
+/// The rest of the step still reads what it captured; a repeat in one step clears once.
+/// Valid only during the step callback. `InvalidArgument` for a null `image`, an unknown
+/// `kind` or index, or a trigger port, whose pending samples are the cycle's steps.
+///
+/// # Safety
+/// `image` must be a callback-live pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hypha_cycle_image_clear(
+    image: *const HyphaCycleImage,
+    kind: u32,
+    index: u32,
+) -> HyphaStatus {
+    try_guard(|| {
+        let view = unsafe { handle_ref(image.cast::<ImageView<'_>>()) }?;
+        Ok(image_clear(view, kind, index)?)
     })
 }
 

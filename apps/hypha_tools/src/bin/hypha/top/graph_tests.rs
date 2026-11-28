@@ -27,7 +27,7 @@ fn rate_cycle(name: &str) -> IntrospectedCycle {
 fn triggered_cycle(name: &str, trigger: &str) -> IntrospectedCycle {
     IntrospectedCycle {
         name: name.to_string(),
-        trigger: trigger.to_string(),
+        triggers: vec![trigger.to_string()],
         ..IntrospectedCycle::default()
     }
 }
@@ -104,6 +104,20 @@ fn a_loop_of_triggered_cycles_is_triggered() {
     assert_eq!(logger.level, LoopLevel::None, "a reader outside the loop is not in it");
     let ping_topic = graph.vertices.iter().find(|vertex| vertex.name == "/ping").unwrap();
     assert_eq!(ping_topic.level, LoopLevel::Triggered);
+}
+
+#[test]
+fn a_loop_through_any_trigger_of_a_cycle_is_triggered() {
+    // `mux` steps on /joy and on /pong; its /pong subscriber reaches the cycle through the
+    // trigger list alone.
+    let mut mux = one_cycle("mux", "/joy", "/cmd", triggered_cycle("step", "/joy"));
+    mux.cycles[0].triggers.push("/pong".to_string());
+    mux.subscribers.push(endpoint(3, "/pong", ""));
+    let manifests = [mux, one_cycle("pong", "/cmd", "/pong", triggered_cycle("on_cmd", "/cmd"))];
+    let graph = build(&facts(&manifests), std::iter::empty(), &options(View::Nodes));
+    assert_eq!(graph.loops.len(), 1, "{:?}", graph.loops);
+    assert_eq!(graph.loops[0].nodes, ["mux", "pong"]);
+    assert_eq!(graph.loops[0].level, LoopLevel::Triggered);
 }
 
 #[test]

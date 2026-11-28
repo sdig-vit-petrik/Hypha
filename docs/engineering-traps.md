@@ -73,7 +73,9 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   `InternalFailure`, which names no cause. The first use of the domain therefore
   raises the soft limit to the hard limit, at most 10240 (macOS `OPEN_MAX`), in
   `crates/hypha_iceoryx2/src/preflight.rs`. It warns when that fails. A hard limit
-  that is itself too low (`ulimit -n 256` in bash sets both) still fails. A tmux
+  that is itself too low (`ulimit -n 256` in bash sets both) still fails; a service's
+  server or client then reports `OutOfDescriptors` with the open count and the limit
+  (`service/mod.rs::explain_descriptors`), a topic still `InternalFailure`. A tmux
   server passes its own limits to every window.
 - **A domain prefix must not begin another.** iceoryx2 lists a domain's services by
   file-name prefix. With `iox2_<domain>_`, a default-domain tool (`iox2_`) listed every
@@ -91,6 +93,10 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   `transport.rs::reclaim_dead_nodes`). A dead application node of another name
   stays listed, so the tools show the crash, and keeps its ports: a topic whose
   slots it holds stays full until the node restarts or the domain is wiped.
+  A service is the exception: a dead node that holds a service's server or one of its
+  clients is reclaimed by the next server or client of that service
+  (`service/open.rs::reclaim_dead`), since the name's one server slot, or a client slot,
+  would otherwise stay taken for good.
   This does not remove the need for `hypha clean`: a segment whose owning
   process is still alive but wedged is not `Dead`, a node iceoryx2 reports as
   `Inaccessible` is left untouched, and a dead node whose name never returns is
@@ -110,7 +116,10 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   together and then retry together, so the wait between attempts is offset per
   endpoint. `crates/hypha_iceoryx2/src/service_open.rs` holds the one retry: no new
   attempt starts 500 ms after the first, and the node lock is held for one attempt
-  only. Every `open_or_create` site goes through it. Do not add an `open_or_create` that
+  only. A retry is logged at DEBUG (`hypha/transport`, "is in use by another endpoint,
+  attempt N"); a WARN for the normal start of a publisher and a subscriber reads as a
+  fault. An open that outlasts the window is logged once at ERROR by its caller, with the
+  cause. Every `open_or_create` site goes through it. Do not add an `open_or_create` that
   bypasses it, and do not widen the retry to a state that cannot change — an
   incompatible type or capacity must still fail at once.
 - **`ServiceInCorruptedState` on an event service is usually contention, not
@@ -205,6 +214,38 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   Budget for the whole pool: with subscribers that drain at different rates every slot was
   written, so a large-message topic needs the whole pool resident. Give a variable-size
   topic of known size a byte limit on its endpoints. Growable publishers are not checked.
+  A bounded publisher whose full pool takes more than half of the whole `/dev/shm` logs a
+  warning too, though it fits what is free: the topics of a domain share it. A bounded
+  publisher whose pool is a megabyte or more logs it at start (`publisher pool: <n> samples
+  of <b> bytes, <t> bytes`), and `hypha topic pool` gives the number before a node exists.
+  The rule and worked numbers for an image or a cloud are in `docs/cpp-api.md` §7.1.
+- **A sample's slice is not its message.** Since `IOX7` the message is the first
+  `payload_len` bytes of the iceoryx2 slice; the slice keeps the size the publisher loaned,
+  so a shrunk loan (`hypha_loan_shrink`) leaves bytes past the message (zeros, never an
+  earlier frame's). A new reader, raw or zero-copy (recorder, bridge, probe), takes
+  `Iox2Sample::payload()` after `receive_validated*`, never `sample.payload()` of iceoryx2
+  or the slice's length. `payload()` before verify gives no bytes for a header whose
+  `payload_len` exceeds the slice, but its bytes are not covered by any CRC yet.
+- **A subscriber has two borrowed samples, and a held one takes one of them.** iceoryx2
+  lets a subscriber borrow `MAX_BORROWED_SAMPLES` (2) samples at once, and a receive needs
+  one free. A `WaitSet` subscriber's callbacks therefore keep at most one delivery
+  (`hypha_delivery_retain`), and a cycle input reads at most one sample in place at a
+  receive: it gives back the slot of a sample every queued binding took
+  (`SamplePayload::mark_taken`, the capture's cursor) and no `Latest` binding holds as the
+  newest, and copies the oldest out when that is not enough. A new reader that keeps a
+  received sample past its call must count it the same way, or the next receive fails.
+  The bytes of a sample read in place move (`PinnedPayload::copy_out`, `release`) only in a
+  drain, between steps: a C pointer from `hypha_cycle_image_sample` is valid in its step
+  only, and the C++ `ViewPtr` of a step copies its bytes at the step's end when it is held.
+- **A number inside a received or loaned array is not aligned.** The ROS 1 encoding has no
+  padding: `PointCloud2::data` starts after the header's strings and the `fields` array,
+  at any byte offset, and a field may sit at an odd offset of a point. A cast pointer
+  (`reinterpret_cast<const float*>(view->data.data())`) is undefined behaviour there, which
+  UBSan reports and a compiler may exploit when it vectorises. `PointCloud2Iterator` and
+  `PointCloud2ConstIterator` copy with `std::memcpy` (`hypha::UnalignedRef`, #291), so a
+  port that uses them is safe; any other reader of `data` does the same, or calls
+  `Loan::put`. `test_point_cloud2_unaligned.cpp` runs under UBSan
+  (`-DHYPHA_TYPED_LOAN_SANITIZE=ON`, `test_typed_loan_sanitized`).
 - **The transport uses `iceoryx2::service::ipc_threadsafe::Service`, not `ipc`.**
   `ipc` ports are `!Send`, and an executor worker serving an endpoint the
   application created on another thread would then be undefined behaviour.
@@ -228,7 +269,8 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
 - **Logging is one configuration for each process, and the first `[log]` table
   wins.** Node creation gives the `[log]` table of its parameter file to
   `hypha_log`. A later node with an equal table is accepted. A later node with a
-  different table fails with `InvalidState`. The configuration stays after the
+  different table fails with `InvalidState`, except in `slow_callback_ms`, which the
+  node reads for itself (execution-model.md §5). The configuration stays after the
   node is destroyed. A relative sink path resolves against the directory of the
   file that wrote it. Another process that holds the lock on a sink file also gives
   `InvalidState`. A second `Node` with another parameter file also throws
@@ -371,7 +413,31 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   publishers interleave. Timestamp binary search is valid only while no descending
   adjacent pair remains in the history. Evicting those pairs restores the fast
   path; unordered histories keep the per-sample replay admission rules. A sample
-  stamped exactly at a replay cut belongs to the next step.
+  stamped exactly at a replay cut belongs to the next step of a rate cycle, while a step
+  of a triggered cycle admits it on every input ("replay through T", #231).
+- **One turn runs all the due deadlines of a cycle before the next cycle.** Two cycles of
+  one `WaitSet` that feed each other within a turn are therefore not ordered by time: with
+  several deadlines per turn, the one registered first runs them all before the other runs
+  its first, and what it reads depends on `--chunk`. The node-wide upstream hold cannot
+  help, since both report as one node. The hold is local (`hypha_node::waitset::local_edges`),
+  one for both kinds of edge: a cycle that reads a topic another cycle of its `WaitSet`
+  sends, and a client and its server, wait for the other's earlier steps (a triggered
+  reader for the step at its own time), and the turn repeats their timers while a held step
+  can run (#307). A triggered reader also reports no clock past the cycle that sends its
+  topic, which may still send it a trigger. Two `WaitSet`s of one node are still not
+  ordered.
+- **A service edge must not lift a triggered cycle's progress.** Requests and responses
+  are cut strictly, so a triggered step at T needs its service peers at T − 1 ns; but they
+  step no cycle, so they stay out of the clock the cycle reports. Counting them would make
+  a triggered client and server raise each other's report one nanosecond per turn, and
+  requiring T of them deadlocks the pair (`service_lockstep`).
+- **A wall clock that steps back inside one host turn makes a fresh trigger late.** The
+  trigger schedule maps each pending stamp onto the monotonic clock by the turn's one
+  wall reading, and a stamp from the future counts as sent now. When a port holds a
+  sample stamped before a backward wall step and one stamped after it, the earlier one
+  maps to now and the later-sent one before it, so the later-sent one is consumed as
+  `Late` and counted although it is fresh. It happens only across a
+  backward step of the wall clock.
 - **One subscriber does not read several publishers in send order.** iceoryx2 gives each
   publisher its own queue, and a receive takes the first queue with data in the order of the
   subscriber's connection slots; a slot freed by a publisher that left is reused by the next
@@ -452,11 +518,36 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   in node creation, and the player sends its `/clock` only once `/clock_progress`
   has no publisher left (`replay-flow-control.md` §4.4).
 - **A replay step with a lost input fails.** A step with a sequence gap or an
-  evicted sample on a queued input, or a lost sample on a `Latest` input under replay
-  that was stamped at or after the oldest deadline still to run, fails its `WaitSet`
-  run with `SequenceGap`. Its signs are the `replay not faithful: N samples lost on <topic>`
-  log line and `overrun_total`. In host time, a latest input neither fails nor counts a loss,
-  because a value it did not read was superseded.
+  evicted sample on a queued input fails its `WaitSet` run with `SequenceGap`. So does a
+  `Latest` input under replay with a sequence gap, or with an evicted sample at a step
+  that finds no retained sample before the deadline that no reader rejected. Until then
+  a newer sample that no reader rejected, retained or held, supersedes the evicted one in
+  data time; a rejection of it, by the step or by another reader of the history, ends
+  that. Its signs are the `replay not faithful: N samples lost on <topic>` log line and
+  `overrun_total`. In host time, a latest input neither fails nor counts a loss, because
+  a value it did not read was superseded.
+- **A replay report follows a drain of every replay input.** Under simulated time a
+  `WaitSet` turn drains the inputs of each of its replay cycles after its steps and
+  before it offers progress, on a turn that ran no step too, and a drain takes the
+  queues of all publishers. Drain only at a due step, or only one queue's depth, and
+  the player's next chunk pushes unread samples out of a queue: a transport gap that a
+  selection supersedes fails the step (#222), and a loss before a publisher's first
+  accepted frame is not counted when the publisher existed before the subscriber
+  (#247). Host time keeps its drain at the step.
+- **A publisher that came after a subscriber is told by the creation order, and two
+  fences.** A subscriber lists the publisher ports of each stream right after its own
+  port exists; at a publisher's first frame, a port that is not on that list and is still
+  registered owes it every frame, and the frames before the first are counted lost
+  (`communication-integrity.md` §3). A port that is not listed and no longer registered
+  may have left before the listing, and is not judged. iceoryx2 orders its registry with
+  acquire and release only, so hypha adds a SeqCst fence after creating a subscriber and
+  after creating a publisher: without them, a publisher and a subscriber created at once
+  could each miss the other, and the subscriber would count the frames sent before it as
+  lost. A publisher from a build without the fence, or a native iceoryx2 application on
+  the topic, can in principle hit that race; in practice the hosts order it anyway (ARMv8
+  load-acquire after a store-release, x86 `lock xadd`), which is also why no test can show
+  the fences are needed. The same-instant race is exercised by
+  `a_subscriber_and_a_publisher_created_at_once_count_no_loss`.
 - **Benchmarks: a green test run misses a slowdown.** A hot-path change (dispatch,
   publish, receive, cycle tick, wire codec) reports its benchmark numbers before and
   after, in the commit message. `cargo bench -p hypha_wire --bench codec` measures the

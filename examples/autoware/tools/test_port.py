@@ -109,6 +109,31 @@ class PortTest(unittest.TestCase):
             ["demo/LICENSE: listed, missing", "demo/pkg/src/extra.cpp: not listed in vendor.toml"],
         )
 
+    def test_a_root_places_the_files_among_others_and_checks_only_those_it_lists(self) -> None:
+        origin, commit = self.make_upstream()
+        placed = self.scratch / "placed"
+        (placed / "defs").mkdir(parents=True)
+        (placed / "defs" / "other.msg").write_text("not vendored\n")
+        directory = placed / "upstream" / "demo"
+        directory.mkdir(parents=True)
+        manifest = port.Manifest(
+            url=str(origin),
+            commit=commit,
+            root="../../defs",
+            renamed={"Filter.cpp": "pkg/src/filter.cpp"},
+            files={"Filter.cpp": "0" * 64},
+        )
+        (directory / "vendor.toml").write_text(port.render_manifest(manifest))
+        port.vendor(directory, [], None)
+        self.assertEqual((placed / "defs" / "Filter.cpp").read_text(), FILTER)
+        self.assertEqual(port.load_manifest(directory / "vendor.toml").root, "../../defs")
+        self.assertEqual(port.verify_repository(directory), [])
+        (placed / "defs" / "Filter.cpp").write_text(FILTER_EDITED)
+        self.assertEqual(
+            port.verify_repository(directory),
+            ["demo/Filter.cpp: differs from its SHA-256 in vendor.toml"],
+        )
+
     def test_verify_refuses_a_repository_without_a_manifest(self) -> None:
         (self.root / "upstream" / "other").mkdir()
         self.assertEqual(port.verify(self.root), ["other: no vendor.toml"])
@@ -208,6 +233,17 @@ class PortTest(unittest.TestCase):
         self.write_manifest(commit=commit, url=str(origin))
         with self.assertRaisesRegex(port.PortError, "no file at"):
             port.vendor(self.repository, ["pkg/missing"], None)
+
+    def test_verify_sdk_checks_the_sdk_upstream_directory(self) -> None:
+        sdk = self.scratch / "sdk-upstream"
+        self.assertEqual(port.verify_sdk(sdk), [])
+        shutil.copytree(self.repository, sdk / "demo")
+        self.assertEqual(port.verify_sdk(sdk), [])
+        (sdk / "demo" / "pkg" / "src" / "filter.cpp").write_text(FILTER_EDITED)
+        self.assertEqual(
+            port.verify_sdk(sdk),
+            ["demo/pkg/src/filter.cpp: differs from its SHA-256 in vendor.toml"],
+        )
 
 
 if __name__ == "__main__":

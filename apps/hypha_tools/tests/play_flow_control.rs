@@ -23,7 +23,7 @@ const DATA_TOPIC: &str = "/flow_data";
 const RUN_LIMIT: Duration = Duration::from_secs(30);
 
 /// Messages as (offset from the start in milliseconds, value). With the default 100 ms
-/// chunk they fall in the chunks [0, 100), [100, 200), [200, 300) and [400, 500).
+/// chunk they fall in the chunks [0, 100], (100, 200], (200, 300] and (400, 500].
 const MESSAGES: [(u64, u8); 4] = [(10, 1), (150, 2), (250, 3), (420, 4)];
 
 /// How the participant answers `/clock`.
@@ -77,8 +77,15 @@ fn at(start: u64, offset_millis: u64) -> u64 {
     start.checked_add(nanos).expect("a time in the window")
 }
 
-/// Writes [`MESSAGES`] on [`DATA_TOPIC`] at their offsets from `start`.
+/// Writes `messages` on [`DATA_TOPIC`] at their offsets from `start`.
 fn write_recording(path: &Path, start: u64, messages: &[(u64, u8)]) {
+    let on_topic: Vec<(u64, u8, &str)> =
+        messages.iter().map(|(offset, value)| (*offset, *value, DATA_TOPIC)).collect();
+    write_on_topics(path, start, &on_topic);
+}
+
+/// Writes `messages`, as (offset from `start` in milliseconds, value, topic), in order.
+fn write_on_topics(path: &Path, start: u64, messages: &[(u64, u8, &str)]) {
     let mut writer = Writer::with_options(
         File::create(path).expect("the recording file"),
         WriteOptions::new().profile("ros1"),
@@ -88,8 +95,11 @@ fn write_recording(path: &Path, start: u64, messages: &[(u64, u8)]) {
     let md5 =
         hypha_node::sdk::md5::md5_from_definition("std_msgs/UInt8", "uint8 data\n").expect("MD5");
     let metadata = BTreeMap::from([("md5sum".to_string(), md5)]);
-    let channel = writer.add_channel(schema, DATA_TOPIC, "ros1", &metadata).expect("channel");
-    for (sequence, (offset, value)) in messages.iter().enumerate() {
+    let mut channels: BTreeMap<&str, u16> = BTreeMap::new();
+    for (sequence, (offset, value, topic)) in messages.iter().enumerate() {
+        let channel = *channels.entry(topic).or_insert_with(|| {
+            writer.add_channel(schema, topic, "ros1", &metadata).expect("channel")
+        });
         let time = at(start, *offset);
         writer
             .write_to_known_channel(
@@ -129,11 +139,13 @@ fn spawn_player_with_stdout(path: &Path, extra: &[&str], stdout: Stdio) -> Child
         .expect("hypha_play")
 }
 
-fn drain_data(data: &mut RawSubscriber, trace: &mut Trace) {
-    while let Some(sample) = data.try_receive().expect("a data receive") {
-        let value = *sample.bytes().expect("a payload").first().expect("one byte");
-        let sent = sample.identity().expect("an identity").transport_sent_nanos;
-        trace.data.push((value, sent));
+fn drain_data(data: &mut [RawSubscriber], trace: &mut Trace) {
+    for subscriber in data {
+        while let Some(sample) = subscriber.try_receive().expect("a data receive") {
+            let value = *sample.bytes().expect("a payload").first().expect("one byte");
+            let sent = sample.identity().expect("an identity").transport_sent_nanos;
+            trace.data.push((value, sent));
+        }
     }
 }
 
@@ -148,6 +160,17 @@ fn serve(
     child: &mut Child,
     responder: &mut Responder<'_>,
     data: &mut RawSubscriber,
+    policy: Policy,
+    done: impl Fn(&Trace) -> bool,
+) -> Run {
+    serve_topics(child, responder, std::slice::from_mut(data), policy, done)
+}
+
+/// [`serve`] for a participant that reads several topics.
+fn serve_topics(
+    child: &mut Child,
+    responder: &mut Responder<'_>,
+    data: &mut [RawSubscriber],
     policy: Policy,
     done: impl Fn(&Trace) -> bool,
 ) -> Run {
@@ -211,20 +234,30 @@ fn first_sent(trace: &Trace, nanos: u64) -> Option<u64> {
     trace.clocks.iter().filter(|clock| clock.nanos == nanos).map(|clock| clock.sent).min()
 }
 
-/// Each message went out after the newest clock value at or before its time was sent, and
-/// before the first clock value past it was sent.
+/// Every message went out, in order, each in its chunk ([`assert_in_its_chunk`]).
 fn assert_message_order(trace: &Trace, messages: &[(u64, u8)]) {
     assert_eq!(trace.data.len(), messages.len(), "every message went out");
-    for ((value, sent), (time, expected)) in trace.data.iter().zip(messages) {
+    for ((value, _), (_, expected)) in trace.data.iter().zip(messages) {
         assert_eq!(value, expected, "messages go out in order");
-        let covering = clock_values(trace).into_iter().filter(|nanos| nanos <= time).max();
-        let covering = covering.expect("a clock covers the message");
-        let covering_sent = first_sent(trace, covering).expect("the covering clock was sent");
-        assert!(covering_sent < *sent, "clock {covering} was sent after message {value}");
-        let next = clock_values(trace).into_iter().find(|nanos| nanos > time);
-        if let Some(next) = next {
-            let next_sent = first_sent(trace, next).expect("the next clock was sent");
-            assert!(*sent < next_sent, "message {value} went out after clock {next}");
+    }
+    assert_in_its_chunk(trace, messages);
+}
+
+/// Each message, found by its value, went out after the clock that opened its chunk and
+/// before the clock that closes it: a chunk closed at `T` holds every message stamped at
+/// or before `T`. The start barrier's clock opens the first chunk, so the messages stamped
+/// at the start follow it.
+fn assert_in_its_chunk(trace: &Trace, messages: &[(u64, u8)]) {
+    let values = clock_values(trace);
+    let (start, closes) = values.split_first().expect("the start barrier's clock");
+    for (value, sent) in &trace.data {
+        let (time, _) = messages.iter().find(|(_, v)| v == value).expect("a known message");
+        let opened = closes.iter().filter(|nanos| *nanos < time).max().unwrap_or(start);
+        let opened_sent = first_sent(trace, *opened).expect("the opening clock was sent");
+        assert!(opened_sent < *sent, "clock {opened} was sent after message {value}");
+        if let Some(closing) = closes.iter().find(|nanos| *nanos >= time) {
+            let closing_sent = first_sent(trace, *closing).expect("the closing clock was sent");
+            assert!(*sent < closing_sent, "message {value} went out after clock {closing}");
         }
     }
 }
@@ -459,9 +492,10 @@ fn assert_message_order_values(trace: &Trace, messages: &[(u64, u8)]) {
 }
 
 #[test]
-fn a_message_on_a_chunk_boundary_goes_out_after_the_clock_that_closes_before_it() {
+fn a_message_on_a_chunk_boundary_goes_out_before_the_clock_that_closes_it() {
     let start = start_nanos();
-    let messages = [(100, 1), (200, 2), (250, 3)];
+    // At the start, twice at one boundary, and last on the grid.
+    let messages = [(0, 1), (100, 2), (100, 3), (200, 4), (300, 5)];
     let path = recording_path("boundary");
     write_recording(&path, start, &messages);
 
@@ -487,8 +521,10 @@ fn a_message_on_a_chunk_boundary_goes_out_after_the_clock_that_closes_before_it(
     std::fs::remove_file(&path).expect("remove the recording");
     assert!(status.success(), "the replay succeeds");
 
-    // The message at 100 ms closes the boundary at 100 ms: that clock goes out first.
-    let boundaries: Vec<u64> = [0, 100, 200, 300].iter().map(|ms| at(start, *ms)).collect();
+    // The messages at 100 ms go out before /clock 100 ms, the message at the start after
+    // the start barrier's clock, and the pass ends at the first boundary after its last
+    // message.
+    let boundaries: Vec<u64> = [0, 100, 200, 300, 400].iter().map(|ms| at(start, *ms)).collect();
     assert_eq!(clock_values(&run.trace), boundaries);
     let timed: Vec<(u64, u8)> =
         messages.iter().map(|(offset, value)| (at(start, *offset), *value)).collect();
@@ -533,6 +569,92 @@ fn a_window_that_ends_off_the_chunk_grid_ends_the_clock_at_its_end() {
     assert_message_order(&run.trace, &messages_at(start));
 }
 
+#[test]
+fn a_tie_on_two_topics_at_a_boundary_goes_out_before_its_clock() {
+    const OTHER_TOPIC: &str = "/flow_data_other";
+    let start = start_nanos();
+    let messages =
+        [(0, 1, DATA_TOPIC), (100, 2, DATA_TOPIC), (100, 3, OTHER_TOPIC), (150, 4, OTHER_TOPIC)];
+    let path = recording_path("tie");
+    write_on_topics(&path, start, &messages);
+
+    let bus = BusNode::new(PARTICIPANT).expect("the participant's bus");
+    let (_opener, data) = open_data(&bus);
+    let (_other_opener, other) = open_topic(&bus, OTHER_TOPIC);
+    let mut data = [data, other];
+    let mut responder = Responder::new(&bus, PARTICIPANT);
+    let mut child = spawn_player(&path, &["--nodes", PARTICIPANT, "--rate", "max"]);
+    let run = serve_topics(&mut child, &mut responder, &mut data, Policy::Always, |_| false);
+    let status = run.status.expect("the child exits");
+    std::fs::remove_file(&path).expect("remove the recording");
+    assert!(status.success(), "the replay succeeds");
+
+    // Both messages at 100 ms, one on each topic, are out before /clock 100 ms.
+    let boundaries: Vec<u64> = [0, 100, 200].iter().map(|ms| at(start, *ms)).collect();
+    assert_eq!(clock_values(&run.trace), boundaries);
+    assert_eq!(run.trace.data.len(), messages.len(), "every message went out");
+    let timed: Vec<(u64, u8)> =
+        messages.iter().map(|(offset, value, _)| (at(start, *offset), *value)).collect();
+    assert_in_its_chunk(&run.trace, &timed);
+}
+
+#[test]
+fn a_window_that_ends_after_a_last_message_on_the_grid_closes_that_boundary_first() {
+    let start = start_nanos();
+    let messages = [(0, 1), (150, 2), (300, 3)];
+    let path = recording_path("grid_end_window");
+    write_recording(&path, start, &messages);
+
+    let bus = BusNode::new(PARTICIPANT).expect("the participant's bus");
+    let (_opener, mut data) = open_data(&bus);
+    let mut responder = Responder::new(&bus, PARTICIPANT);
+    let mut child = spawn_player(
+        &path,
+        &["--nodes", PARTICIPANT, "--rate", "max", "--end-utc", "2026-10-08T12:00:00.350Z"],
+    );
+    let run = serve(&mut child, &mut responder, &mut data, Policy::Always, |_| false);
+    let status = run.status.expect("the child exits");
+    std::fs::remove_file(&path).expect("remove the recording");
+    assert!(status.success(), "the replay succeeds");
+
+    // The message at 300 ms is closed by /clock 300 ms; the window's end, 350 ms, ends the pass.
+    let boundaries: Vec<u64> = [0, 100, 200, 300, 350].iter().map(|ms| at(start, *ms)).collect();
+    assert_eq!(clock_values(&run.trace), boundaries);
+    let timed: Vec<(u64, u8)> =
+        messages.iter().map(|(offset, value)| (at(start, *offset), *value)).collect();
+    assert_message_order(&run.trace, &timed);
+}
+
+#[test]
+fn a_loop_ends_each_pass_after_a_last_message_on_the_grid() {
+    let start = start_nanos();
+    let messages = [(0, 1), (150, 2), (300, 3)];
+    let path = recording_path("grid_end_loop");
+    write_recording(&path, start, &messages);
+
+    let bus = BusNode::new(PARTICIPANT).expect("the participant's bus");
+    let (_opener, mut data) = open_data(&bus);
+    let mut responder = Responder::new(&bus, PARTICIPANT);
+    let mut child = spawn_player(&path, &["--nodes", PARTICIPANT, "--rate", "max", "--loop"]);
+    let wanted = 2 * messages.len();
+    let run = serve(&mut child, &mut responder, &mut data, Policy::Always, |trace| {
+        trace.data.len() >= wanted
+    });
+    assert!(run.status.is_none(), "the loop keeps playing until stopped");
+    let _ = child.kill();
+    let _ = child.wait();
+    std::fs::remove_file(&path).expect("remove the recording");
+
+    // The first pass closes 300 ms with its last message, ends at 400 ms, and only then
+    // goes back to the start.
+    let values = clock_values(&run.trace);
+    let pass: Vec<u64> = [0, 100, 200, 300, 400, 0].iter().map(|ms| at(start, *ms)).collect();
+    assert_eq!(values.get(..pass.len()), Some(&pass[..]), "{values:?}");
+    let (_, last_sent) = run.trace.data.get(2).copied().expect("the last message of pass one");
+    let closing = first_sent(&run.trace, at(start, 300)).expect("the clock at the last message");
+    assert!(last_sent < closing, "the last message went out after the clock that closes it");
+}
+
 /// Starts an open-loop player (`HYPHA_REPLAY_LOCKSTEP=0`) with `--clock`.
 fn spawn_open_loop_player(path: &Path, extra: &[&str]) -> Child {
     Command::new(env!("CARGO_BIN_EXE_hypha"))
@@ -551,14 +673,19 @@ fn spawn_open_loop_player(path: &Path, extra: &[&str]) -> Child {
 /// The participant's data subscriber, on a topic this test opens first: a subscriber
 /// that declares no policy never creates it.
 fn open_data(bus: &BusNode) -> (hypha_node::sdk::RawPublisher, RawSubscriber) {
+    open_topic(bus, DATA_TOPIC)
+}
+
+/// [`open_data`] for `topic`.
+fn open_topic(bus: &BusNode, topic: &str) -> (hypha_node::sdk::RawPublisher, RawSubscriber) {
     let data_md5 =
         hypha_node::sdk::md5::md5_from_definition("std_msgs/UInt8", "uint8 data\n").expect("MD5");
     let opener = bus
-        .publish_raw(DATA_TOPIC, "std_msgs/UInt8", &data_md5, "uint8 data\n")
+        .publish_raw(topic, "std_msgs/UInt8", &data_md5, "uint8 data\n")
         .expect("the data topic's opener");
     let data = bus
         .subscribe_raw_with_schema(
-            DATA_TOPIC,
+            topic,
             "std_msgs/UInt8",
             "",
             hypha_node::sdk::SubscriberOptions::default().keeping(8),

@@ -9,6 +9,9 @@ pub enum PortError {
     PoolExhausted,
     /// The subscriber has reached its configured owning-sample budget.
     BorrowLimit,
+    /// The publisher's callers hold all the loans it may lend at once; the pool may have
+    /// free buffers.
+    LoanLimit,
     /// The requested buffer is larger than the transport can carry.
     TooLarge {
         /// Bytes the caller asked for.
@@ -46,6 +49,7 @@ impl fmt::Display for PortError {
         match self {
             Self::PoolExhausted => write!(out, "no free buffer; the message is dropped"),
             Self::BorrowLimit => write!(out, "the subscriber holds its maximum loan budget"),
+            Self::LoanLimit => write!(out, "the publisher's callers hold all its loans"),
             Self::TooLarge { requested, limit } => {
                 write!(out, "a buffer of {requested} bytes is over the {limit} byte limit")
             }

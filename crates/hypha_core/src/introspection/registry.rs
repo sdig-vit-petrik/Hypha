@@ -1,6 +1,6 @@
 //! Safe registry for one node's introspection rows.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::{
     ConfigRow, CycleOutputRow, CycleRow, EndpointRow, Identity, InputBindingRow, InputMode,
@@ -47,7 +47,7 @@ impl IntrospectionRegistry {
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        crate::locked(&self.state)
     }
 
     fn add(&self, row: Row) -> u64 {
@@ -163,11 +163,12 @@ impl IntrospectionRow {
         });
     }
 
-    /// Record the trigger topic of a cycle row. Other rows are left unchanged.
-    pub fn set_cycle_trigger(&self, topic: &str) {
+    /// Record the trigger topics of a cycle row, in port order. Other rows are left
+    /// unchanged.
+    pub fn set_cycle_triggers(&self, topics: Vec<String>) {
         self.registry.update(self.id, |row| {
             if let Row::Cycle(cycle) = row {
-                cycle.trigger = Some(topic.to_owned());
+                cycle.triggers = topics;
             }
         });
     }

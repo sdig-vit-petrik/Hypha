@@ -9,6 +9,7 @@
 #include <iostream>
 #include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -27,7 +28,8 @@ inline constexpr int kExitUsage = 2;
 inline constexpr int kExitRuntime = 70;
 /// Simulated time went back (a backward seek): hypha launch restarts the unit at once.
 inline constexpr int kExitRewind = 75;
-/// The configuration was refused before the run: a restart cannot fix it.
+/// The configuration was refused, before the run or by failRun(ConfigError): a restart cannot fix
+/// it.
 inline constexpr int kExitConfiguration = 78;
 
 namespace detail {
@@ -43,8 +45,10 @@ enum class Failure {
     ConfigError,
     /// Any other exception escaped a phase.
     OtherException,
-    /// failRun() was called, from any thread and in any phase.
+    /// failRun() was called with a reason, from any thread and in any phase.
     FailRun,
+    /// failRun() was called with a hypha::ConfigError, from any thread and in any phase.
+    FailRunConfiguration,
     /// run() returned a result that is not OK.
     RunResult,
 };
@@ -54,6 +58,9 @@ inline int exitCodeFor(std::string_view phase, Failure failure)
 {
     if (failure == Failure::FailRun) {
         return kExitRuntime;
+    }
+    if (failure == Failure::FailRunConfiguration) {
+        return kExitConfiguration;
     }
     if (failure == Failure::RunResult) {
         return kExitRuntime;
@@ -76,15 +83,23 @@ inline int exitCodeFor(std::string_view phase, Failure failure)
 class RunFailure
 {
   public:
-    /// @return True only for the first reason. Later reasons are dropped.
-    bool record(const std::string& reason)
+    /// @return True only for the first reason. Later reasons, and their kind, are dropped.
+    bool record(const std::string& reason, Failure kind)
     {
         const std::lock_guard<std::mutex> lock(this->mutex_);
         if (this->reason_.has_value()) {
             return false;
         }
         this->reason_ = reason;
+        this->kind_ = kind;
         return true;
+    }
+
+    /// @return Failure::FailRun or Failure::FailRunConfiguration, as the first report gave.
+    Failure kind() const
+    {
+        const std::lock_guard<std::mutex> lock(this->mutex_);
+        return this->kind_;
     }
 
     bool failed() const
@@ -96,6 +111,7 @@ class RunFailure
   private:
     mutable std::mutex         mutex_;
     std::optional<std::string> reason_;
+    Failure                    kind_ = Failure::FailRun;
 };
 
 /// @return The fields of a run outcome, as numbers, for one log line.
@@ -106,6 +122,27 @@ inline std::string describeRun(const RunResult& result)
          + std::string(result.status().name()) + ", failed attachment "
          + std::to_string(result.failedAttachment());
 }
+
+/// @brief Requests a stop when it goes out of scope: runNode() declares it after the
+///        application, so it runs before the application's destructor joins its threads.
+class StopOnExit
+{
+  public:
+    explicit StopOnExit(std::stop_source& source) : source_(source)
+    {
+    }
+
+    StopOnExit(const StopOnExit&) = delete;
+    StopOnExit& operator=(const StopOnExit&) = delete;
+
+    ~StopOnExit()
+    {
+        this->source_.request_stop();
+    }
+
+  private:
+    std::stop_source& source_;
+};
 
 /// @brief Publishes the node manifest (latched, `~/introspection`) and the node state
 ///        (`~/state`, every second) of an application.
@@ -182,6 +219,18 @@ class ApplicationNode
     }
 
   protected:
+    /// @brief The node's stop, for the application's worker threads. Thread-safe.
+    ///
+    /// Stopped when the run ends, whatever ended it: hypha::requestStop(), a signal,
+    /// failRun(), or a refused start-up. It is stopped before the destructor of the
+    /// application runs, so a worker that waits on it, with hypha::sleepFor(),
+    /// hypha::Rate (`hypha/worker.h`) or a `std::condition_variable_any`, is ready to be
+    /// joined there. Valid from the constructor on; a worker may take it by copy.
+    std::stop_token stopToken() const
+    {
+        return this->stopSource_.get_token();
+    }
+
     /// @brief Report a fatal application failure and end the run as failed. Thread-safe.
     ///
     /// The first reason makes runNode return kExitRuntime; later calls do nothing. A cycle
@@ -189,17 +238,32 @@ class ApplicationNode
     /// later, including during destruction; join the application's threads in its destructor.
     void failRun(const std::string& reason)
     {
-        const bool firstFailure = this->failure_ == nullptr || this->failure_->record(reason);
+        this->fail(reason, detail::Failure::FailRun);
+    }
+
+    /// @brief Report that the run failed because the configuration is wrong. Thread-safe.
+    ///
+    /// For a fault of the parameter file that only the running application can establish, such
+    /// as a first frame larger than the configured limit. As failRun(const std::string&), but
+    /// runNode returns kExitConfiguration, which a supervisor does not restart.
+    void failRun(const ConfigError& error)
+    {
+        this->fail(error.what(), detail::Failure::FailRunConfiguration);
+    }
+
+  private:
+    template <typename App, typename... Args>
+    friend int runNode(int argc, char** argv, std::string nodeName, Args&&... args);
+
+    void fail(const std::string& reason, detail::Failure kind)
+    {
+        const bool firstFailure = this->failure_ == nullptr || this->failure_->record(reason, kind);
         if (!firstFailure) {
             return;
         }
         detail::error("application failed: " + reason);
         backend::runFail();
     }
-
-  private:
-    template <typename App, typename... Args>
-    friend int runNode(int argc, char** argv, std::string nodeName, Args&&... args);
 
     virtual std::expected<void, std::string> commit(Node&)
     {
@@ -215,7 +279,7 @@ class ApplicationNode
         phase = "setup";
         lifecycle.setup(node);
         if (failure.failed()) {
-            return detail::exitCodeFor(phase, detail::Failure::FailRun);
+            return detail::exitCodeFor(phase, failure.kind());
         }
         phase = "cycle start";
         const std::expected<void, std::string> committed = lifecycle.commit(node);
@@ -236,7 +300,7 @@ class ApplicationNode
         phase = "started";
         lifecycle.started(node);
         if (failure.failed()) {
-            return detail::exitCodeFor(phase, detail::Failure::FailRun);
+            return detail::exitCodeFor(phase, failure.kind());
         }
         // A stop requested during start-up is kept: the run then returns at once.
         phase = detail::kPhaseRun;
@@ -256,6 +320,7 @@ class ApplicationNode
     }
 
     detail::RunFailure* failure_ = nullptr;
+    std::stop_source    stopSource_;
 };
 
 /// @brief Run an application node: load the parameter file, construct the application
@@ -292,6 +357,8 @@ int runNode(int argc, char** argv, std::string nodeName, Args&&... args)
         App              application(std::forward<Args>(args)...);
         ApplicationNode& lifecycle = application;
         lifecycle.failure_ = &failure;
+        // After the application: it stops the workers before their owner is destroyed.
+        const detail::StopOnExit stopOnExit(lifecycle.stopSource_);
         phase = "node creation";
         node.emplace(nodeName, parameterFile);
         exitCode = ApplicationNode::runLifecycle(*node, lifecycle, failure, phase);
@@ -307,7 +374,7 @@ int runNode(int argc, char** argv, std::string nodeName, Args&&... args)
     }
     // Read after the application is destroyed, to catch a failRun() from its destructor.
     if (failure.failed()) {
-        exitCode = detail::exitCodeFor(phase, detail::Failure::FailRun);
+        exitCode = detail::exitCodeFor(phase, failure.kind());
     }
     return exitCode;
 }

@@ -29,8 +29,8 @@ Every call that can fail returns `HyphaStatus`:
 |---|---|---|
 | 0 | `Ok` | The call succeeded. |
 | 1 | `InvalidArgument` | A pointer was null, or a length made no sense. |
-| 2 | `InvalidTopic` | The topic name was empty or refused. |
-| 3 | `PoolExhausted` | No buffer was free, or the publisher's loan budget (the loans its caller holds) is full. The caller drops this message. |
+| 2 | `InvalidTopic` | The topic name was empty or refused, a name under the reserved `/hypha/` included (below). |
+| 3 | `PoolExhausted` | No buffer was free. A send or `hypha_publisher_loan_frame` drops this message, and subscribers count it lost; `hypha_publisher_reserve_frame` takes no sequence, and its caller may ask again. |
 | 4 | `TooLarge` | The requested buffer is larger than the transport carries. |
 | 5 | `Disconnected` | The endpoint is closed. |
 | 6 | `Backend` | The transport failed for a reason of its own: a send that fails inside the transport, or an internal loan failure. Each cause has its own backend code in `crates/hypha_iceoryx2/src/lib.rs`. |
@@ -51,6 +51,7 @@ Every call that can fail returns `HyphaStatus`:
 | 21 | — | Retired (`Stale`; the verdict `HYPHA_CYCLE_VERDICT_STALE` names a stale input). No function returns it. |
 | 22 | `ClockRewound` | Simulated time went back under a timer or cycle of a `WaitSet`, or a node on simulated time read a `/clock` lower than its last one: a backward seek. Nothing rewinds in place; `runNode` exits 75 and `hypha launch` restarts the process. |
 | 23 | `ApplicationFailed` | The application asked for its run to fail (`hypha_waitset_request_failure`, C++ `failRun()`). The run report carries it with `HYPHA_RUN_REASON_RUNTIME_FAILED`. |
+| 24 | `LoanLimit` | The publisher's callers already hold all its loans (its loan count, two by default); the pool may have room. Lost frame or not as for `PoolExhausted`. Send or drop a held loan, then ask again. |
 
 `Panic` reports a foreign callback that threw; the C++ SDK catches the exception
 at the boundary and the call is reported as having had no effect. A fault inside
@@ -89,7 +90,33 @@ The cycle calls (`hypha_cycle_*`, `hypha_input_source_*`) give these causes:
 - **A loan must be released.** `hypha_publisher_loan_frame` hands
   out a buffer that is returned by either `hypha_loan_send` or
   `hypha_loan_drop`. Losing the pointer holds a transport buffer until the
-  publisher is destroyed.
+  publisher is destroyed. `hypha_loan_shrink` shortens an unsent loan to its first bytes
+  (never longer): the slot keeps its size, the frame's `payload_len` says the shorter
+  length, and subscribers see only those bytes.
+  `hypha_publisher_reserve_frame` lends as `hypha_publisher_loan_frame` does, but a refusal
+  takes no sequence number: it is for a caller that holds the loan to fill it and may ask
+  again, and subscribers count no lost frame.
+- **A kept delivery must be released.** In a subscription callback,
+  `hypha_delivery_retain(delivery, &sample)` keeps the delivered sample past the call,
+  without a copy: `delivery->payload` stays valid until `hypha_received_sample_release`,
+  which any thread may call. A subscriber's callbacks keep at most its loan budget of
+  samples (`loan_budget`, 1 for a `WaitSet` subscriber: one slot stays free for the next
+  delivery); past it `BorrowLimit`, counted in `loan_refused`, and the sample is released
+  at the return as usual. `HyphaDelivery::holder` is null for a delivery that cannot be
+  kept; a second keep of one sample is `InvalidState`.
+- **A cycle loan lives one step.** `hypha_cycle_emission_lend` lends a slot of an output
+  for a message the step fills in place, named by a token; `hypha_cycle_emission_send`
+  stages it with its first `len` bytes, in the order of the step's sends and commits, and
+  `hypha_cycle_emission_return` gives it back unsent. A step may hold several beside a
+  reserve; the end of the step returns those it still holds. It counts against the
+  output's per-step count from the lend, and a refused lend (`PoolExhausted`, `LoanLimit`)
+  counts nothing and latches nothing.
+- **A cycle input reads a large message in place.** On host time, outside a replay, a
+  source keeps a message of 64 KiB or more in the subscriber's slot: the step's
+  `HyphaCycleSampleView::payload` points there. A slot goes back once every queued binding
+  took its sample and no `Latest` binding holds it as the newest; to receive while all of
+  the subscriber's borrowed slots are held, the oldest is copied out (logged, counted).
+  Under simulated time, in a replay, and for a smaller message, the source copies.
 - **A callback context moves only on success.** A successful attach or cycle
   creation takes the `context` and its `release`, and calls `release` exactly once,
   after no callback can run again. A refused call leaves the context to the caller.
@@ -146,6 +173,13 @@ process, not to one node:
   domain. `hypha clean --domain <prefix>` removes the domains named `<prefix>*` that
   no live node uses, `hypha clean` the domain of `HYPHA_DOMAIN`; `./clean-shm.sh` in
   the repository wipes every domain of the host.
+- **Topic names.** A public topic name begins with `/`. `/hypha` and every name under
+  `/hypha/` belong to the framework and are refused with `InvalidTopic`
+  (`hypha_topic_validate_public_name` too), except `/hypha/intercept/`, where `hypha
+  intercept` publishes its state. The transport keeps its own services under that
+  prefix (`hypha/srv/` for request-response services, `hypha/hk/` for housekeeping), and
+  a topic's bus name only drops the leading `/`: a topic `/hypha/srv/x` would otherwise
+  be the server lock of service `/x`.
 - **Restart when time goes back.** A timer or cycle of a `WaitSet` that sees simulated
   time go back, and a `WaitSet` of a node on simulated time (lockstep or follow, not a CLI
   tool) that reads a `/clock` lower than the node's last one, end the run with `ClockRewound`; the process exits 75 (C++ `runNode`)
@@ -179,6 +213,14 @@ semantics and its `HYPHA_TF_*` results are those of a cycle's TF input
   `hypha_cycle_image_lookup_transform` after the handle. Any thread may call it at any
   time, concurrently with the run and with other lookups: one lock guards the buffer
   for one message's ingestion or one lookup, and no lookup waits on the transport.
+- **A buffer with no node (#248).** `hypha_transform_buffer_create_fed(cache_nanos,
+  out)` makes a buffer that subscribes nothing; `hypha_transform_buffer_feed(buffer,
+  payload, payload_len, is_static)` ingests one encoded `tf2_msgs/TFMessage` into it as a
+  cycle's TF input ingests a captured sample: a refused transform is counted and logged,
+  a payload that does not decode is `InvalidFrame` and inserts nothing. A subscribed
+  buffer refuses a feed with `InvalidState`. Lookup and destroy are those of any buffer;
+  the destroy only frees the handle. `testing::StepHarness` feeds a `Transforms` port
+  through it.
 - **Destroy.** `hypha_transform_buffer_destroy` detaches both registrations, which
   releases both subscribers; null does nothing. Create and destroy follow the attach
   rules: on the configuring thread, not during a run from another thread
@@ -193,6 +235,122 @@ semantics and its `HYPHA_TF_*` results are those of a cycle's TF input
   child_len, transform, is_static)` applies the same check to one `HyphaSentTransform`
   before a send, needs no node, and records the reason for `hypha_last_error` on a
   refusal (`InvalidArgument`); the C++ broadcasters call it.
+
+## Services
+
+A service is a request and its answer between nodes, typed by a `.srv`
+([design/native-services.md](design/native-services.md)). The C ABI is coarse on
+purpose: sixteen functions, ten for plain nodes and six for the ports of a cycle, and
+every rule of a call decided below them, once.
+
+| Function | What it does |
+|---|---|
+| `hypha_service_server_create(node, desc, serve, context, release, out)` | Creates the server of `desc` and attaches it to the node's default `WaitSet`; the run calls `serve` for each request |
+| `hypha_service_server_destroy(server)` | Ends every request the server holds (their clients read `ServerLost`) and detaches it |
+| `hypha_request_answer(request, kind, bytes, len)` | Replies (`HYPHA_ANSWER_REPLY`, the encoded response) or refuses (`HYPHA_ANSWER_REFUSE`, the reason) |
+| `hypha_request_defer(request, out)` | Takes the handler's request over, to answer later from any thread |
+| `hypha_request_destroy(request)` | Releases a deferred request; one still unanswered is refused |
+| `hypha_service_client_create(node, desc, out)` | Creates a client: attached to the default `WaitSet`, or blocking (`desc.blocking`) |
+| `hypha_service_client_destroy(client)` | Detaches it; the outcomes of its calls in flight are dropped uncalled |
+| `hypha_client_call(client, request, len, done, context, release, status)` | Calls; `done` gets the one outcome, later on the run's thread or, for a blocking client, before the call returns |
+| `hypha_client_status(client, out)` | Whether a live server exists now, and the calls pending |
+| `hypha_client_wait_for_server(client, timeout_nanos, ready)` | Waits for a server; a blocking client only |
+| `hypha_cycle_bind_server(cycle, desc, out_index)` | Gives an uncommitted cycle a server, a `Requests` port; the cycle owns it |
+| `hypha_cycle_bind_client(cycle, desc, out_index)` | Gives an uncommitted cycle a client, a `Calls` port; the cycle owns it |
+| `hypha_cycle_requests(emission, server, each, context)` | In a step: calls `each` with each request the step reads |
+| `hypha_cycle_next_result(emission, client, done, context, found)` | In a step: calls `done` with the next outcome the step holds |
+| `hypha_cycle_call(emission, client, request, len, status)` | In a step: stages a call, sent after the step |
+| `hypha_cycle_unread_results(emission, client, out)` | In a step: the outcomes successful steps did not read and dropped |
+| `hypha_step_services_create(config, cycle_name, len, out)` | Makes the services of a cycle under a step test: no node, no bus; `config` (null for none) holds the ports' tables |
+| `hypha_step_services_destroy(services)` | Ends every request they hold; null does nothing |
+| `hypha_step_services_bind(services, desc, client, out_index)` | Binds a server (`client` 0) or a client (1), as `hypha_cycle_bind_server`/`_client` do |
+| `hypha_step_services_deliver(services, server, request, len, client_node, len, sent_nanos, stamped, out_id)` | Delivers a test's request, sent at `sent_nanos` or (`stamped` 0) just before the next step |
+| `hypha_step_services_feed(services, client, outcome, bytes, len, sent_nanos, stamped)` | Ends the oldest call in flight with an outcome (`bytes`: the response, else the reason) |
+| `hypha_step_services_step(services, now_nanos, step, context)` | Runs one step at `now_nanos`: `step` gets the emission the four step functions above take, and returns 1 when it succeeded |
+| `hypha_step_services_request(services, server, id, done, context)` | What became of a delivered request: `HYPHA_STEP_REQUEST_QUEUED`, `_DEFERRED`, `_REPLIED`, `_REFUSED`, `_FAILED`, with its bytes and stamp |
+| `hypha_step_services_calls(services, client, each, context)` | The calls the client sent after the last step, in call order |
+
+- **Declaration.** `HyphaServiceDesc` names a port (`literal` 0: the `service` key of
+  `[ports.servers.<port>]` or `[ports.clients.<port>]`) or the service (`literal` 1:
+  absolute, relative or `~/`), the `.srv` type and MD5, a `HyphaServicePolicy`
+  (`name_len` 0 and every field 0 for `defaultService`), a client's timeout
+  (`timeout_nanos`, 0 for the policy's; the table's `timeout_ms` wins), for a client,
+  `blocking`, and, for a server, the definitions of the `.srv`'s two halves
+  (`request_definition`, `response_definition` with their lengths; null with length 0
+  for none; a half of no fields is an empty text, and two empty texts register only under the MD5 of the empty service, `d41d8cd98f00b204e9800998ecf8427e`). A server registers those definitions in the schema store while it stands,
+  so a tool encodes a request of a type it was not built with; a server without them
+  serves. A client's definitions are unused. Its texts are borrowed for the call. A port without a table is
+  `InvalidArgument`, and `hypha_last_error` gives the stanza to add; an invalid name is
+  `InvalidTopic`; a name a live node serves is `ResourceLimit` and the reason names the
+  holder and its type; another policy on the stream is `QosMismatch`; a create during a
+  run is `InvalidState`. A create writes null to `out` first.
+- **Contexts.** `context` and `release` pass to the library at the call, and `release`
+  runs exactly once: when the server is destroyed, after `done` ran, or at once when the
+  call is refused or no outcome follows (`Busy`, `TooLarge`, a destroyed client).
+- **Requests.** `serve` receives a `HyphaRequestView`, borrowed for the call: the
+  request handle, the payload and the client's node name. The handler answers the
+  request, defers it, or leaves it: a request left open when `serve` returns is refused
+  (`the server's handler did not answer the request`), counted and logged once per
+  server. A failing `HyphaCallbackResult` answers an open request as failed (the client
+  reads `ServerLost`) and fails the run as any callback's failure does. A request is
+  answered once; a second answer, or a defer of an answered one, is `InvalidState`. A
+  deferred request may be answered and destroyed on any thread; once its server or its
+  client is gone, its answer is `Disconnected`. A response above the bound is `TooLarge`,
+  and the client reads `Refused` with the sizes.
+- **Calls.** `hypha_client_call` writes `HYPHA_CALL_SENT`, `HYPHA_CALL_BUSY` (the
+  client's limit of calls in flight, calls the server still holds after they timed out
+  included) or `HYPHA_CALL_TOO_LARGE` to `status`. After `SENT`, `done` runs exactly once
+  with a `HyphaCallResult`, borrowed for the call: the outcome (`HYPHA_CALL_ANSWERED`,
+  `_REFUSED`, `_NO_SERVER`, `_NOT_SENT`, `_SERVER_LOST`, `_TIMEOUT`), `may_have_run`,
+  `safe_to_retry`, the response of an answered call, a description of one line, and the
+  framework times of the call and of its outcome. A call made while the stream has no
+  server is held in one of the client's slots and sent when a server appears (the graph
+  event wakes the run); it ends `NO_SERVER` at its deadline. A call still connected at its
+  deadline probes the server's node, at most once a second per service: a dead node ends
+  it `SERVER_LOST`, a live one `TIMEOUT`. Deadlines are on the scheduling clock: simulated
+  time when the process is on it, else the host monotonic clock.
+- **Blocking clients (FSR-43).** A blocking client's `hypha_client_call` waits on the
+  calling thread, on the client's own response event, and calls `done` before it
+  returns; `hypha_client_wait_for_server` polls the stream for a live server. Both are
+  `InvalidState` on a thread that runs a `WaitSet` dispatch, with a reason that names
+  what to use instead, and `hypha_client_wait_for_server` is `InvalidState` for a client
+  of a `WaitSet`. A blocking client makes one call at a time; concurrent calls queue.
+- **Ports of a cycle.** A cycle's server and clients are created at bind, with the
+  declaration rules above (`desc.blocking` 0), and attached to nothing: the cycle's steps
+  drive them. A server's table may set `per_step` (default 8, at most its slots); a
+  client's `outstanding` defaults to 1. In a step, `hypha_cycle_requests` gives the step
+  its requests on its first call (on simulated time those stamped before the step's time,
+  ordered by stamp, client node name, client port name and sequence; at most `per_step`)
+  and the same ones on a later call; a step that never calls it reads none, and they stay
+  queued. Each `view->request` is valid for the step and answered or deferred as a
+  handler's; the answer leaves after the step, stamped with its time, and so does the
+  answer to a deferred request given during a cycle step on the run's thread. After the
+  step a request it read and left open is refused (`the server's step read the request
+  and did not answer it`). A step that sends nothing (it failed, stopped, or continued
+  with a status) answers every request it read, and every deferred request it answered,
+  as failed (`server step failed`: the client reads `ServerLost`). `hypha_cycle_call`
+  writes `SENT`, `BUSY` (the calls in flight with those staged in this step at the limit)
+  or `TOO_LARGE`; a staged call leaves after the step, stamped with its time, and a step
+  that sends nothing ends it `NOT_SENT`, held for the next step. `hypha_cycle_next_result`
+  gives the outcomes a step holds, in call order, writing `found` 0 after the last: those
+  that came before the step (on simulated time, stamped before its time) and the calls
+  whose deadline is at or before the step's time; an outcome a successful step does not
+  take is dropped after it and counted (`hypha_cycle_unread_results`), and one a step that
+  sends nothing did not take goes to the next step. The cut binds the requests and answers
+  of peers that report progress only; those of a tool or a plain node are read at the first
+  step after they came. Deadlines are counted from the step that staged the call, on its
+  scheduling clock. The three take the step's emission handle; a null one is
+  `InvalidArgument`.
+- **A step test's services.** `hypha_step_services_*` hold the servers and clients of a
+  cycle that was not started, with the test as their peer (`testing::StepHarness`). The
+  step's emission comes from `hypha_step_services_step`, and the step reads, answers and
+  calls through the functions above, by the same rules, as a step on simulated time: the
+  test is a peer that reports progress, so a step at T reads the requests and outcomes
+  stamped before T. The tables are read by the start's reader and refused alike; a port
+  without one keeps the defaults. A fed outcome ends the oldest call in flight
+  (`InvalidState` when none is); a call left open past its deadline ends `TIMEOUT` and
+  frees its slot. Texts and bytes are borrowed for the call; the views a callback gets
+  are borrowed for the callback.
 
 ## Clocks and send times
 
@@ -240,9 +398,9 @@ its own.
 in the fixed order of the table below; `hypha_node_metrics` emits them through one
 `HyphaMetricCallback`. The header states the callback, null and partial-output rules.
 
-`hypha_subscriber_counters` writes the eight subscriber counters as one
-`HyphaSubscriberCounters` struct (one `uint64_t` per metric, owned by the caller); the
-metrics are emitted from that struct, so the C, C++ and Rust numbers cannot differ. Any
+`hypha_subscriber_counters` writes the nine subscriber counters as one
+`HyphaSubscriberCounters` struct (one `uint64_t` each, owned by the caller); the eight
+subscriber metrics are emitted from that struct, so the C, C++ and Rust numbers cannot differ. Any
 thread may read it, also during a run that dispatches the subscriber.
 `integrity.sequence_gap` counts refused duplicate or reordered frames; a lost frame is
 counted by `hypha_subscriber_missing_sequences`.
@@ -267,13 +425,17 @@ counted by `hypha_subscriber_missing_sequences`.
 | Log (process-wide) | `log.lines_written`, `log.write_failures`, `log.rejected_lines` | `hypha_node_metrics`, with or without a node |
 | Subscriber | `integrity.invalid_frame`, `integrity.corrupt_payload`, `integrity.schema_mismatch`, `integrity.sequence_gap`, `integrity.invalid_timestamp`, `loan.budget`, `loan.held`, `loan.refused` | `RawSubscriber::metrics` (Rust SDK); `hypha_subscriber_counters` (C ABI, as a struct) |
 
-`loan.budget` is the effective per-subscriber budget of owning samples; `loan.held`
-is the number of samples the subscriber holds; `loan.refused` counts receives refused
-because the budget was full.
+`loan.budget` is the effective per-subscriber budget of owning samples, or for a
+subscriber a `WaitSet` dispatches, of deliveries its callbacks keep (1); `loan.held`
+is the number of samples the subscriber holds; `loan.refused` counts receives, or keeps
+of a delivery, refused because the budget was full. The struct's ninth field, `other_schemas`, has no metric: it
+is the number of other schemas (MD5s) of the subscriber's topic that a live publisher
+sends, as the node's housekeeping last found them, or `HYPHA_NOT_CHECKED` before a check
+(see [Streams](#streams)): a fact about the topic, not a fault count.
 
 ## Service limits and wildcards
 
-A topic's service limits are its policy (`crates/hypha_iceoryx2/src/qos.rs`): the
+A stream's service limits are its policy (`crates/hypha_iceoryx2/src/qos.rs`): the
 publishers and subscribers it admits and its `max_depth`. The creator declares the
 policy (`HyphaQos`) or takes hypha's `default` policy, stamps it on the service, and an
 opener that declares a different one is refused with `QosMismatch`. No endpoint option
@@ -304,19 +466,22 @@ reserve nothing.
 |---|---|---|
 | `subscriber_max_buffer_size` | 32 | The `default` policy's `max_depth`: the largest subscriber queue, and the queue of a subscriber that sets none. Every hypha service sets its own |
 | `subscriber_max_borrowed_samples` | 2 | hypha copies a sample and releases it at once |
-| `max_subscribers` / `max_publishers` / `max_nodes` | 16 / 8 / 24 | The `default` policy's limits, which apply to a service that hypha does not set. Every hypha service sets its policy's `max_subscribers` and `max_publishers`, and `max_nodes` as their sum (`crates/hypha_iceoryx2/src/qos.rs`) |
+| `max_subscribers` / `max_publishers` / `max_nodes` | 16 / 8 / 26 | The `default` policy's limits, which apply to a service that hypha does not set. Every hypha service sets its policy's `max_subscribers` and `max_publishers`, and `max_nodes` as their sum plus 2 node slots for a probe and a release check (`crates/hypha_iceoryx2/src/qos.rs`) |
 | `publisher_history_size` | 1 | The ROS 1 latch: the last sample of each publisher |
 | `enable_safe_overflow`, `backpressure_strategy` | true, `DiscardData` | A full queue drops its oldest sample; a publisher never blocks |
 | `subscriber_expired_connection_buffer` | 8 | Connections of departed publishers that still hold undelivered samples; one per publisher of the `default` policy. A declared policy may admit more publishers than this, and this is a domain value that the builder does not set |
 | `publisher_allocation_strategy` | `Static` | A default only: a bounded publisher sets `Static` with its payload limit, a growable one `PowerOfTwo` |
-| event `max_notifiers` / `max_listeners` / `max_nodes` | 128 | The graph event, which every node of the domain joins. A topic's event service takes its data service's `max_publishers` / `max_subscribers` / `max_nodes` (the policy's own limits, `default` 8 / 16 / 24), and a `WaitSet` control service 1 / 1 / 1: a notifier keeps about 1.3 KB of heap for every listener its service allows |
+| request-response `client_backpressure_strategy`, `server_backpressure_strategy` | `DiscardData` | A service's send never waits for its peer. Every service stream also sets them itself, with `max_servers` 1, one response per request, one loan each way, no fire-and-forget and no safe overflow (`crates/hypha_iceoryx2/src/service/open.rs`; `docs/design/native-services.md` §6) |
+| event `max_notifiers` / `max_listeners` / `max_nodes` | 128 | The graph event, which every node of the domain joins. A topic's event service takes its data service's `max_publishers` / `max_subscribers` / `max_nodes` (the policy's own limits, `default` 8 / 16 / 26), and a `WaitSet` control service 1 / 1 / 1: a notifier keeps about 1.3 KB of heap for every listener its service allows |
 
 A framework topic (`/clock`, `/clock_progress`) holds at most 32 publishers,
 32 subscribers and 64 nodes; every node that subscribes `/clock` or reports on
 `/clock_progress` counts. Any other topic holds the limits of its policy. After a change of
 these values run `hypha clean` with the domain stopped: a stale segment keeps its old limits.
 
-A wildcard subscriber attaches only to a publish-subscribe service that already exists.
+A wildcard subscriber, and a subscriber that names no MD5, attaches only to streams that
+already exist: of each topic its pattern matches, the stream of its MD5, or every stream
+of the topic when it names none.
 It never creates one, it never follows a request-response service of the same name,
 and it resolves the pattern **once**, when the subscription is created. Matching a pattern
 enumerates every service on the machine, and the backend builds each service's
@@ -329,6 +494,104 @@ A node that must follow a topic created later lists topics itself and
 subscribes to them by name. The matching rule is `hypha_core::port::topic_matches_pattern`,
 which the Rust SDK re-exports as `hypha_node::sdk::topic_matches_pattern`, so both routes select
 the same set without a node repeating the rules; the C ABI carries no copy of it.
+
+## Streams
+
+A topic name carries one **stream** for each schema hash (topic name overloading, #209):
+the first eight bytes of the MD5, the `schema_hash` of the frame header. A stream is an
+iceoryx2 publish-subscribe service of its own, named `<topic without its leading
+/>@<schema hash in 16 lower-case hex digits>` (`crates/hypha_iceoryx2/src/stream.rs`),
+with a wake-up event service of the same name. So each stream has its own policy, its
+own subscriber queues and publisher slots, and wakes only its own subscribers.
+
+| Endpoint | Stream |
+|---|---|
+| Publisher | the stream of its MD5 |
+| Subscriber that names an MD5 (every typed C++ endpoint, `subscribeRawOfType`, `subscribe_raw_with_schema`) | the stream of its MD5: a frame of another schema of the topic never reaches it. Like any subscriber it creates the stream only when it declares a policy or reads a framework topic |
+| Subscriber that names no MD5 (`subscribeRaw`, `subscribe_raw`, the tools) | every stream of the topic that exists when it is created, woken by a listener on each; it creates none, follows no stream created later, and is `NotAvailable` when the topic has none. A reader that must follow a name through a migration, as the tools do (`docs/tools.md`, "Following streams"), watches the graph event (`BusNode::graph_watch`) and subscribes to each stream by its schema hash (`BusNode::subscribe_raw_stream`), which needs no MD5 and lists nothing; `hypha_node::sdk::StreamFollower` does both |
+| Wildcard subscriber | of each matching topic, the stream of its MD5, or every stream when it names none; read every 1 ms |
+
+A topic name is at most 238 bytes after its `/` (`hypha_core::port::MAX_TOPIC_NAME_BYTES`):
+a stream's service name adds 17 bytes to iceoryx2's 255. An endpoint that names an MD5
+writes its stream's record in a directory named by the whole topic name in hex, so its
+name is at most 126 bytes (`MAX_RECORDED_TOPIC_NAME_BYTES`); the transport refuses a
+longer one with a line that says so.
+
+`hypha_list_service_ports` reports each stream with its `schema_hash` and its publisher
+ports, a dead node's included until a node start reclaims it, so a topic of two schemas is
+two entries. The clock driver, which refuses to start while another process publishes
+`/clock`, asks each listed `/clock` stream for its publishers whose node is alive. Every endpoint that names an
+MD5 writes the record of its stream, `<hex(topic)>/<schema hash>`, after its port exists: its
+type, MD5 and definition, or an empty file when it has no definition. The records of a topic
+are the list of its streams. A record lives while its stream has a port: the endpoint whose
+drop leaves the stream with no publisher and no subscriber removes it, and the topic's
+directory once it is empty. A record whose endpoints died stays until a node start in the
+domain reclaims a dead node: it then removes every record whose stream is gone. Two message types whose definitions give one MD5 (ROS 1
+computes the MD5 from the definition, not the type name) share a stream and its policy, as
+their bytes are the same. A node of a hypha build before the streams opens another service
+name and does not see a stream: two release lines do not share a domain
+(release-policy.md §2). A listing of the services (`hypha_list_service_ports`, a wildcard
+or a subscription without an MD5) that meets data services of such a build warns once per
+process: `hypha: <n> topics of another hypha build are in this domain: they are not
+visible to this build`.
+
+**Other streams of a topic.** Each typed subscriber of one stream watches its topic in its
+node (`crates/hypha_node/src/topic_streams.rs`). The node's housekeeping refreshes the
+watched topics in rounds, after a turn of its default `WaitSet`'s run, never inside a step
+or a cycle's capture: after a graph event, at most once per 100 ms, and at least once a
+second. The graph event fires when a subscriber is created and when a publisher is created
+or dropped, and every node of the domain listens to it, so the start of a system of `p`
+publishers and `s` subscribers in `n` nodes wakes each node about `p + s` times, `n (p + s)`
+wakes in all; each node starts at most one round per 100 ms whatever their number. A refresh
+of a topic reads its records and, per stream, makes one open attempt with no retry and no
+wait, reads the nodes of its publisher ports and the states of the nodes registered at that
+one service (iceoryx2's `Service::details`), and drops the handle; nothing stays open
+between refreshes, and the cost does not grow with the nodes of the domain. A stream being
+created or removed counts as having no publisher until the next round. A read that fails
+(a full stream, a corrupted service, a missing session) leaves the topic's last result, or
+"not checked", and is logged. One pass does at most four reads (a topic's records, one
+stream's publishers) and the run comes back after 1 ms while the round is unfinished; a
+round ends when its topics are read, so an idle node wakes every 1 ms only during a round
+and once a second between rounds. Measured on macOS under load: a topic's records 40 µs to
+0.5 ms (0 to 32 other streams), one stream's publishers about 1 ms in a debug build (0.31 ms
+in release, the review's figure); an idle node with 1, 4, 10 and 30 watched topics knew
+every other version after 11, 15, 42 and 114 ms, and spent 0.72 s of CPU in 10 s with 30
+topics of two versions each (none with no watched topic). A 1 kHz callback's longest gap was
+the same with and without another version published, 6 to 21 ms on that loaded machine. A
+subscriber reads its topic's streams with one lock and one `Arc` clone, and opens nothing.
+
+Each open of a stream by a refresh takes one node slot of the stream while it lasts, as an
+endpoint does, and so does the check of the record release when an endpoint drops. A
+stream keeps two node slots for them beyond its endpoints (`max_nodes` is the policy's
+`max_publishers` plus the subscribers it admits plus 2, `PROBE_NODE_SLOTS`, about 64 bytes
+each): a refresh succeeds on a stream whose endpoints fill their slots, and no endpoint is
+refused because one holds a slot (a tight loop of 3,000 creations beside two probing nodes
+refuses none). The slots admit no endpoint: `max_publishers` and the subscriber limits are
+enforced as before. A refresh that cannot read a stream for another reason keeps the
+topic's last result.
+
+The fact has three states: not checked (before the first refresh, for a subscriber of no
+single stream, and for a node whose default `WaitSet` does not run), none, or these. The
+subscriber counter `topic.other_schemas` (no metric carries it) is `HYPHA_NOT_CHECKED`
+(`UINT64_MAX`) or the count of other schemas with a live publisher, the Rust SDK's
+`RawSubscriber::other_schemas` an `Option`; `RequiredInput` has `other_schemas_checked` and
+`other_schemas`, one entry per live other version (schema hash, type and MD5, the last two
+empty for a stream without a definition).
+
+A subscriber of one stream checks its stream once a second, from the run that drives it:
+it warns after its no-publisher delay while its stream has no publisher, again when the
+published schemas change while it still has none, at most once in 10 s, naming them by type
+and the first eight hex digits of the MD5 (`-` and the hash for a stream without a
+definition):
+
+```text
+hypha: topic '/odom' has publishers, none of type nav_msgs/Odometry (cd5e73d1): published are nav_msgs/Odometry (9e1f0d3a)
+```
+
+With no other schema published the line is `no publisher connected to topic '<t>' in
+domain '<d>' after <n> ms; ...`. The check reads the stream's publisher ports and the
+topic's streams as the last refresh found them; a port of the stream counts as a publisher
+until a refresh finds no live one on it.
 
 ## Wire frame
 
@@ -349,11 +612,22 @@ alone, as ROS 1 serialized bytes, so a payload has no header in front of it.
 | `sequence` | 64 bits | Per-publisher send sequence. It wraps to zero after the maximum value |
 | `transport_sent_nanos` | 64 bits | Host monotonic send time |
 | `framework_sent_nanos` | 64 bits | Framework send time: simulated on a sim-time node, wall otherwise, or the value set on the loan |
-| `crc` | 32 bits | CRC-32C (Castagnoli) that starts from the topic code and runs over `magic`, `flags`, the five 64-bit fields above in order, then the payload |
-| payload | variable | ROS 1 serialized message bytes, the sample's user payload |
+| `crc` | 32 bits | CRC-32C (Castagnoli) that starts from the topic code and runs over `magic`, `flags`, the five 64-bit fields above in order, `payload_len`, then the payload |
+| `payload_len` | 32 bits | The message's bytes: the first `payload_len` bytes of the sample's slice |
+| payload | variable | ROS 1 serialized message bytes, the first `payload_len` bytes of the sample's user payload |
 
-The magic is `0x3658_4F49` (`IOX6`). It changes when the header layout changes,
-and a receiver refuses any other value. Release 0.2.0 introduced the topic-bound CRC.
+The header is 56 bytes with 8-byte alignment, `payload_len` in the four bytes after `crc`
+that were the field `reserved` (always 0) before; a compile-time assertion pins the layout. The transport's slice keeps the size the publisher loaned; a
+loan shrunk before its send (`hypha_loan_shrink`) sets a shorter `payload_len`, and every
+reader takes the first `payload_len` bytes. A frame whose `payload_len` exceeds its slice is
+refused as `CorruptPayload`. A payload is at most 4 GiB − 1 bytes; a longer loan is
+`TooLarge`.
+
+The magic is `0x3758_4F49` (`IOX7`, 0.4.0, which added `payload_len`). It changes when
+the header layout changes, and a receiver refuses any other value: a 0.3.0 frame
+(`IOX6`) is `InvalidFrame`. A 0.3.0 and a 0.4.0 process in one domain still attach to
+each other's services (the header's type name and size are unchanged), so the refusal
+comes per frame, counted as `invalid_frame`, not at connect. Release 0.2.0 introduced the topic-bound CRC.
 It kept the 0.1.0 layout and its magic, so a frame from 0.1.0 fails its CRC and is
 refused as `corrupt_payload`: the two release lines do not share a domain.
 
@@ -381,6 +655,7 @@ frame for these conditions:
 |---|---|
 | Unsupported magic | `InvalidFrame` |
 | CRC-32C mismatch: a header field or a payload byte changed, or the frame was sealed for another topic | `CorruptPayload` |
+| `payload_len` longer than the sample's slice | `CorruptPayload` |
 | Send time later than the host clock | `InvalidFrame` |
 | Sequence that is not newer than the last one from its publisher | `SequenceGap` |
 
@@ -400,7 +675,7 @@ what the code does. It is not a residual-risk argument.
 | Threat | Defense | Limit |
 |---|---|---|
 | Corruption | CRC-32C over the header fields, the latch flag and the payload. | Residual error probability is not assessed. |
-| Loss | Sequence counter. | The receiver checks order modulo 2^64, not continuity. A forward gap is accepted. Its count is read through `hypha_subscriber_missing_sequences`, which misses a loss before the publisher's first accepted frame. |
+| Loss | Sequence counter. | The receiver checks order modulo 2^64, not continuity. A forward gap is accepted. Its count is read through `hypha_subscriber_missing_sequences`, which misses a loss before the first accepted frame of a publisher that existed when the subscriber was created. |
 | Duplication | Per-publisher sequence. | A repeated or older sequence from a known publisher is refused. A subscription tracks the 4096 publishers that sent most recently, so its memory stays bounded while publishers restart for years. A publisher that stayed silent while 4096 others sent is forgotten, and its next frame is accepted as its first. |
 | Insertion, wrong address | Publisher id and sequence are inside the CRC, and the CRC starts from the topic code: a frame of another topic is refused. | No publisher allow-list and no authentication. Two topics share a code with a probability of 2^-32. |
 | Delay | Host monotonic send time and each input binding's maximum age at capture. | Transport age only. Both ends must share one host. |
@@ -414,7 +689,8 @@ no user-space buffer; each line is written on the thread that logs.
 - **`[log]` table.** Node creation applies it before the transport starts. It refuses
   with `InvalidArgument`, and one line on standard error naming the file, table and
   key, an unknown table or key, a wrong type, an unknown level, a sink with no or an
-  empty `path`, `rotation_mb` (1 to 1024) or `rotation_count` (1 to 100) out of range,
+  empty `path`, `rotation_mb` (1 to 1024), `rotation_count` (1 to 100) or
+  `slow_callback_ms` (0 to 3600000) out of range,
   two enabled sinks on one absolute path, an invalid module name, or a sink file that
   cannot be created or opened. It gives `InvalidState` when another process holds a
   sink's lock or the process already has another configuration. A refused table
@@ -422,6 +698,9 @@ no user-space buffer; each line is written on the thread that logs.
   node applies its table use the default (console on at `trace`, level `debug`, no
   file) and are not routed again. A `[log.module.<name>]` entry for a name that never
   registers is not detected.
+- **`slow_callback_ms`.** A key of `[log]` that the node reads, not the engine: it is the
+  budget of every callback of that node (0: no warning line), and two nodes of one process
+  may differ in it though the rest of the table must be equal. execution-model.md §5.
 - **Modules.** `default` is registered at start as identifier 0. The engine keeps at
   most 256 modules; past that a new name (from the C ABI, the Rust `log` facade or a
   framework report) writes under `default`, with no warning. A module's level is
@@ -469,8 +748,9 @@ The library does not serialise calls for the caller. A single endpoint handle
 is used from one thread at a time. The node observation calls (`hypha_node_ok`,
 `hypha_node_shutdown`, `hypha_node_metrics`) are safe to use while another
 thread runs a `WaitSet`, and so are the cycle snapshots `hypha_cycle_health` and
-`hypha_cycle_binding`. Call `hypha_node_state` on the thread that runs the node, or
-while no thread does. No mutex stays held across user processing.
+`hypha_cycle_binding`. `hypha_node_set_checks` may be called from any thread, as the
+application's checks are read under a lock held for the copy only. Call `hypha_node_state`
+on the thread that runs the node, or while no thread does. No mutex stays held across user processing.
 
 One thread runs one `WaitSet`. `hypha_waitset_request_stop` and
 `hypha_waitset_request_failure` are the calls another thread may make on a

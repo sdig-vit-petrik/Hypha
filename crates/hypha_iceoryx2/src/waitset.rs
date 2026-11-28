@@ -4,6 +4,7 @@
 //! Only a listener is attachable, and a guard borrows its listener for the whole
 //! run, so listeners live apart from the endpoints the dispatcher mutates.
 
+mod deadline;
 mod run;
 
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -29,7 +30,7 @@ pub enum Trigger {
     /// Run on a fixed period, whatever the publisher does.
     Periodic(Duration),
     /// Run when the dispatcher's own deadline is due, with no native guard (see
-    /// [`Dispatcher::next_timed_wait`]).
+    /// [`Dispatcher::next_deadline`]).
     Timed,
 }
 
@@ -77,9 +78,9 @@ pub trait Dispatcher {
         Progression::Continue
     }
 
-    /// The longest the next native wait may last for the earliest [`Trigger::Timed`]
-    /// deadline, or `None`; `Some(Duration::ZERO)` when one is already due.
-    fn next_timed_wait(&mut self) -> Option<Duration> {
+    /// The earliest [`Trigger::Timed`] deadline on the host's monotonic clock
+    /// ([`hypha_time::steady_now`]), or `None`. A deadline that has passed is due now.
+    fn next_deadline(&mut self) -> Option<hypha_time::Time> {
         None
     }
 }
@@ -125,9 +126,11 @@ struct Control {
 pub struct Iox2WaitSet {
     /// Index-aligned with `registrations`. A guard borrows an entry here for
     /// the whole run, so nothing in this collection may be mutated during one.
-    listeners: Vec<Option<Listener<Ipc>>>,
+    listeners: Vec<Vec<Listener<Ipc>>>,
     registrations: Vec<Registration>,
     control: Control,
+    /// Ends a run's wait at the dispatcher's timed deadline.
+    timer: deadline::DeadlineTimer,
     stop: Arc<AtomicBool>,
     /// The identifier handed out last.
     last_id: AttachmentId,
@@ -138,7 +141,8 @@ impl Iox2WaitSet {
     /// control service is opened.
     ///
     /// # Errors
-    /// Returns [`PortError`] when the control event service cannot be opened.
+    /// Returns [`PortError`] when the control event service cannot be opened, or
+    /// [`PortError::Backend`] when the deadline timer cannot be created.
     pub(crate) fn new(
         node: &crate::transport::SharedNode,
         control_service: &str,
@@ -150,6 +154,7 @@ impl Iox2WaitSet {
             listeners: Vec::with_capacity(MAX_REGISTRATIONS),
             registrations: Vec::with_capacity(MAX_REGISTRATIONS),
             control: Control { listener, notifier: Arc::new(notifier) },
+            timer: deadline::DeadlineTimer::new()?,
             stop: Arc::new(AtomicBool::new(false)),
             last_id: 0,
         })
@@ -173,8 +178,8 @@ impl Iox2WaitSet {
         Ok(id)
     }
 
-    /// Attach a listener under `trigger`.
-    /// A trigger that needs a listener refuses a missing one rather than poll.
+    /// Attach `listeners` under `trigger`: an event on any of them makes the registration
+    /// ready. A trigger that needs a listener refuses none rather than poll.
     ///
     /// # Errors
     /// Returns [`PortError::ResourceLimit`] when the registration limit is
@@ -182,17 +187,17 @@ impl Iox2WaitSet {
     /// listener that was not supplied.
     pub fn attach(
         &mut self,
-        listener: Option<Listener<Ipc>>,
+        listeners: Vec<Listener<Ipc>>,
         trigger: Trigger,
     ) -> Result<AttachmentId, PortError> {
         if self.registrations.len() >= MAX_REGISTRATIONS {
             return Err(PortError::ResourceLimit);
         }
-        if trigger == Trigger::Event && listener.is_none() {
+        if trigger == Trigger::Event && listeners.is_empty() {
             return Err(PortError::InvalidTopic);
         }
         let id = self.claim_id()?;
-        self.listeners.push(listener);
+        self.listeners.push(listeners);
         self.registrations.push(Registration { id, trigger });
         Ok(id)
     }

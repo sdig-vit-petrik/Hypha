@@ -1,0 +1,109 @@
+# The overload workload of examples/load/overload.toml with one more limit: the
+# latency of the two control topics, p99 below 500 us from the send call to callback
+# entry, while the flood runs. Everything else is the same; load_workload.rs checks it.
+#
+#   scripts/overload.sh isolation-latency [report.json]
+#
+# A latency is a property of the host: a result counts only on the reference platform,
+# which is not defined yet. It is the measurement
+# `overload_latency` of the qualification.
+#
+# Memory flat after warm-up: the limits are the largest value of the window minus the
+# value at its start. Every load publisher is bounded to its message size, and
+# `bounded_memory = true` runs the workers as a bounded deployment, the condition
+# under which NFR-05 bounds memory (a growable topic is no bound).
+# - Resident memory: max_rss_growth_bytes = 1 MiB per process. The flood sends of the
+#   order of 10^5 messages a second, so a leak of one byte per message would grow far
+#   past it within the window.
+# - Written shared memory (Linux only): max_shm_growth_bytes = 1 MiB for the domain.
+#   A publisher of the `default` policy has a pool of 19 x (32 + 2) + 1 + 2 = 649
+#   samples (engineering-traps.md). Even if every send took a slot never written
+#   before, the slowest topic here, 100 messages a second, has written each of its 649
+#   slots after 6.5 s, inside the 10 s warm-up; the flood and the bursts take under a
+#   second. Freed slots are reused last-in first-out, so fewer are ever written. After
+#   warm-up no slot is written for the first time, and the written memory must stay
+#   flat. This limit is unverified on Linux: no Linux run has confirmed it yet.
+# On macOS the written shared memory is not measured, and a limit that is not
+# measured fails: there this file exits 1 by design, and its counted limits are read
+# from the report (docs/tools.md, "The overload run").
+#
+# Isolation: the flood and its slow readers run in flooder, slow_reader and
+# burst_reader; the control topics run between control_talker and control_listener,
+# which share no process with them. A control reader keeps pace with zero loss: at
+# 100 Hz with a queue of 32 it loses a sample only when it is not scheduled for 320 ms.
+#
+# Never refused: a slow reader makes the publisher discard that reader's oldest sample
+# (safe overflow) and never empties its pool, which holds a full queue for every
+# subscriber slot; so no publish of the run may be refused. A publish call cannot
+# block, and how long it takes is a speed, which this file does not limit.
+#
+# Every loss counted: every subscriber checks that the framework's missing-sequence
+# count equals the harness's own count of skipped probe sequences.
+
+[run]
+duration_s = 60.0
+warmup_s = 10.0
+cooldown_s = 1.0
+sample_interval_s = 1.0
+bounded_memory = true
+
+[[process]]
+name = "flooder"
+
+[[process]]
+name = "slow_reader"
+
+[[process]]
+name = "burst_reader"
+
+[[process]]
+name = "control_talker"
+
+[[process]]
+name = "control_listener"
+
+# Back to back to a reader that works 1 ms per sample.
+[[topic]]
+name = "/overload/flood"
+bytes = 65536
+rate_hz = "max"
+publisher = "flooder"
+subscribers = [{ process = "slow_reader", depth = 4, work_us = 1000 }]
+
+# 100 MB/s to a reader that works 20 ms per sample.
+[[topic]]
+name = "/overload/wide"
+bytes = 1048576
+rate_hz = 100
+publisher = "flooder"
+subscribers = [{ process = "slow_reader", depth = 2, work_us = 20000 }]
+
+# Bursts of 1,000 a second into a queue of 8.
+[[topic]]
+name = "/overload/burst"
+bytes = 1024
+rate_hz = 10
+burst = { count = 1000, every_s = 1.0 }
+publisher = "flooder"
+subscribers = [{ process = "burst_reader", depth = 8 }]
+
+# The control topics, between two processes of their own.
+[[topic]]
+name = "/overload/control"
+bytes = 100
+rate_hz = 100
+publisher = "control_talker"
+subscribers = [{ process = "control_listener", depth = 32, limits = { max_loss = 0, loss_accounted = true, latency_p99_us = 500 } }]
+
+[[topic]]
+name = "/overload/state"
+bytes = 1500
+rate_hz = 100
+publisher = "control_listener"
+subscribers = [{ process = "control_talker", depth = 32, limits = { max_loss = 0, loss_accounted = true, latency_p99_us = 500 } }]
+
+[limits]
+loss_accounted = true
+max_refused_publishes = 0
+max_rss_growth_bytes = 1048576
+max_shm_growth_bytes = 1048576

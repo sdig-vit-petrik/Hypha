@@ -18,7 +18,7 @@ fn create_node(label: &str) -> BusNode {
 #[test]
 fn raw_endpoints_publish_empty_and_nonempty_payloads() {
     let node = create_node("raw_endpoint");
-    let topic = format!("/hypha/raw/{}", unique_name("payload"));
+    let topic = format!("/test/raw/{}", unique_name("payload"));
     let publisher = node.publish_raw(&topic, TYPE_NAME, MD5, "uint8[] data");
     assert!(publisher.is_ok());
     let Ok(mut publisher) = publisher else { return };
@@ -53,7 +53,7 @@ fn raw_endpoints_publish_empty_and_nonempty_payloads() {
 #[test]
 fn publisher_refuses_a_hash_that_exceeds_the_wire_header_limit() {
     let node = create_node("oversized_hash");
-    let topic = format!("/hypha/raw/{}", unique_name("oversized_hash"));
+    let topic = format!("/test/raw/{}", unique_name("oversized_hash"));
     let md5 = "h".repeat(usize::from(u16::MAX) + 1);
     let publisher = node.publish_raw(&topic, TYPE_NAME, &md5, "");
     assert!(publisher.is_err());
@@ -62,7 +62,7 @@ fn publisher_refuses_a_hash_that_exceeds_the_wire_header_limit() {
 #[test]
 fn notified_endpoints_wake_a_waiting_node() {
     let node = create_node("notified_endpoint");
-    let topic = format!("/hypha/raw/{}", unique_name("notified"));
+    let topic = format!("/test/raw/{}", unique_name("notified"));
     let publisher =
         node.publish_raw_configured(&topic, TYPE_NAME, MD5, "", PublisherOptions::default());
     assert!(publisher.is_ok());
@@ -78,7 +78,7 @@ fn notified_endpoints_wake_a_waiting_node() {
 #[test]
 fn latched_publisher_replays_to_a_late_subscriber() {
     let node = create_node("latched_endpoint");
-    let topic = format!("/hypha/raw/{}", unique_name("latched"));
+    let topic = format!("/test/raw/{}", unique_name("latched"));
     let publisher = node.publish_raw_configured(
         &topic,
         TYPE_NAME,
@@ -145,8 +145,8 @@ fn the_topic_list_names_another_node_s_ports_and_their_direction() {
     let publishing = create_node("listed_publisher");
     let subscribing = create_node("listed_subscriber");
     let observer = create_node("topic_observer");
-    let published_topic = format!("/hypha/raw/{}", unique_name("listed_out"));
-    let subscribed_topic = format!("/hypha/raw/{}", unique_name("listed_in"));
+    let published_topic = format!("/test/raw/{}", unique_name("listed_out"));
+    let subscribed_topic = format!("/test/raw/{}", unique_name("listed_in"));
     let publisher = publishing.publish_raw(&published_topic, TYPE_NAME, MD5, "uint8[] data");
     assert!(publisher.is_ok(), "a publisher on {published_topic}");
     // An opener creates the service the subscriber joins, then leaves.
@@ -197,7 +197,7 @@ fn a_subscriber_reports_the_topic_it_resolved() {
 #[test]
 fn a_bounded_publisher_refuses_a_zero_limit_and_a_larger_message() {
     let node = create_node("bounded_payload");
-    let topic = format!("/hypha/raw/{}", unique_name("bounded"));
+    let topic = format!("/test/raw/{}", unique_name("bounded"));
     let zero = node.publish_raw_configured(
         &topic,
         TYPE_NAME,
@@ -223,7 +223,7 @@ fn a_bounded_publisher_refuses_a_zero_limit_and_a_larger_message() {
 #[test]
 fn a_growable_publisher_sends_a_message_larger_than_its_first_segment() {
     let node = create_node("growable_payload");
-    let topic = format!("/hypha/raw/{}", unique_name("growable"));
+    let topic = format!("/test/raw/{}", unique_name("growable"));
     let publisher = node.publish_raw_configured(
         &topic,
         TYPE_NAME,

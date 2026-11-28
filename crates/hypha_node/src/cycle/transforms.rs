@@ -1,6 +1,7 @@
 //! The TF input of a cycle: two queued bindings on `/tf` and `/tf_static`, ingested
 //! into a cycle-owned [`TfState`] before each step, and the step's lookup. A replay step
-//! sees the transforms sent strictly before its deadline.
+//! sees the transforms sent strictly before its deadline, or at or before the time of a
+//! triggered step.
 
 use std::time::Duration;
 
@@ -23,6 +24,8 @@ pub(crate) struct TfInput {
     state: TfState,
     /// When the last warning of dropped samples outside the lockstep was written.
     drops_warned: Option<std::time::Instant>,
+    /// The step asked to forget the dynamic transforms when it returns.
+    clear_requested: std::cell::Cell<bool>,
 }
 
 /// The shortest interval between two warnings of dropped TF samples.
@@ -58,11 +61,28 @@ impl TfInput {
                 _ => {}
             }
             for sample in &capture.samples {
-                self.state.ingest(owner, &sample.payload, is_static, &mut pass)?;
+                sample
+                    .payload
+                    .with_bytes(|bytes| self.state.ingest(owner, bytes, is_static, &mut pass))?;
             }
         }
         self.state.finish(owner, pass);
         Ok(())
+    }
+
+    /// Forget the dynamic transforms when the step returns ([`Self::apply_clear`]).
+    pub(super) fn request_clear(&self) {
+        self.clear_requested.set(true);
+    }
+
+    /// Forget the dynamic transforms if the finished step of cycle `cycle` asked to, and
+    /// log it once; the static transforms stay.
+    pub(super) fn apply_clear(&mut self, cycle: &str) {
+        if !self.clear_requested.replace(false) {
+            return;
+        }
+        let frames = self.state.clear_dynamic();
+        log::info!(target: "hypha", "hypha: cycle '{cycle}' TF input cleared: {frames} dynamic frame(s) forgotten, static transforms kept");
     }
 
     /// True when no warning of dropped samples went out in the last interval; starts one.
@@ -138,6 +158,7 @@ pub fn cycle_bind_transforms(
             std::sync::Arc::clone(&set.node().health),
         ),
         drops_warned: None,
+        clear_requested: std::cell::Cell::new(false),
     });
     Ok(index)
 }

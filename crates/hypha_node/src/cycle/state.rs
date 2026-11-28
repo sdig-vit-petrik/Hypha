@@ -41,9 +41,22 @@ pub struct CycleSnapshots {
     pub(crate) period_nanos: i64,
     pub(crate) committed: AtomicBool,
     pub(crate) health: Mutex<HyphaCycleHealth>,
+    /// The distribution of the step durations, which `~/state` reports.
+    pub(crate) step_times: Mutex<hypha_cycle::StepTimes>,
     pub(crate) bindings: Mutex<Vec<HyphaCycleBindingView>>,
     /// The source counters of each input, in binding order, at the last step.
     pub(crate) input_counts: Mutex<Vec<InputCounts>>,
+    /// What each input reads about the other streams of its topic, in binding order; `None`
+    /// for an input without a subscriber of one stream.
+    pub(crate) watches: Mutex<Vec<Option<crate::topic_streams::Watch>>>,
+}
+
+impl CycleSnapshots {
+    /// Count a step of `duration_nanos` whose capture began at host monotonic `steady_nanos`.
+    pub(crate) fn record_step_time(&self, duration_nanos: u64, steady_nanos: i64) {
+        let steady = u64::try_from(steady_nanos).unwrap_or(0);
+        crate::locked(&self.step_times).record(duration_nanos, steady);
+    }
 }
 
 // Another thread reads it during a run (`hypha_cycle_health`, `hypha_cycle_binding`).
@@ -79,9 +92,9 @@ pub(crate) struct InputCounts {
 #[derive(Default)]
 pub(crate) struct CycleStep {
     pub(crate) attachment: HyphaAttachmentId,
-    /// The listener registration that wakes a triggered cycle. Zero for a rate cycle, and
-    /// for a wildcard trigger.
-    pub(crate) trigger_attachment: HyphaAttachmentId,
+    /// The listener registrations that wake a triggered cycle, one per trigger topic that
+    /// has a listener (a wildcard has none). Empty for a rate cycle.
+    pub(crate) trigger_attachments: Vec<HyphaAttachmentId>,
     /// The step callback with its context. `None` only while the cycle drops.
     pub(crate) callback: Option<Box<dyn CycleStepHandler>>,
     pub(crate) runtime: hypha_cycle::CycleRuntime,
@@ -96,6 +109,8 @@ pub(crate) struct CycleStep {
     pub(crate) transforms: Vec<super::transforms::TfInput>,
     /// Per-tick emission staging, retained between timer firings. `None` is a dropped message.
     pub(crate) emissions: Vec<StagedMessage<Option<HyphaLoan>>>,
+    /// The loans of the step's outputs, by token, retained between steps and empty there.
+    pub(crate) lent: Vec<Option<super::image::LentMessage>>,
     /// Callback supervision scratch, allocated once at commit.
     pub(super) supervision: Vec<RefCell<super::image::SupervisionCopy>>,
     pub(crate) class_based: bool,
@@ -103,11 +118,13 @@ pub(crate) struct CycleStep {
     /// The data-time cut of the replay step that runs next, set by the dispatcher. `None`
     /// for a step in host time, which drains its own inputs.
     pub(crate) input_cut: Option<i64>,
-    /// The trigger samples the next step of a triggered cycle takes: one for a trigger
-    /// step, zero for a fallback step.
-    pub(crate) trigger_take: Option<usize>,
+    /// What the trigger ports hold in the next step of a triggered cycle, set by the
+    /// dispatcher.
+    pub(crate) trigger_step: Option<hypha_cycle::TriggerStep>,
     /// The `/clock` driver settings of a simulator cycle. `None` for any other cycle.
     pub(crate) driver: Option<super::DriverSetup>,
+    /// The cycle's servers (`Requests` ports) and clients (`Calls` ports).
+    pub(crate) services: crate::service::CycleServices,
 }
 
 impl Cycle {
@@ -146,6 +163,20 @@ impl Cycle {
     /// The step state, shared. `InvalidState` inside a step.
     pub(crate) fn step_ref(&self) -> Result<Ref<'_, CycleStep>, Error> {
         self.step.try_borrow().map_err(|_| Error::InvalidState)
+    }
+}
+
+impl CycleStep {
+    /// True when an input of this cycle reads a stream that an output of `other` sends on:
+    /// `other` is then an upstream of this cycle in its `WaitSet`. Bindings fixed at
+    /// commit: no lock, no allocation.
+    pub(crate) fn reads_topic_of(&self, other: &Self) -> bool {
+        self.inputs.iter().filter_map(|source| source.subscriber.as_deref()).any(|subscriber| {
+            other
+                .outputs
+                .iter()
+                .any(|output| subscriber.port.reads_stream_of(&output.publisher.port))
+        })
     }
 }
 

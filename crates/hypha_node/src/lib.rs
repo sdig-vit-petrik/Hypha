@@ -1,8 +1,18 @@
-//! The C ABI for hypha.
+//! Safe Rust node runtime and Rust SDK for hypha (`hypha_node::safe`, `hypha_node::sdk`).
 //!
-//! A Rust panic ends the process: no entry point catches it. No Rust type crosses:
-//! handles are opaque pointers. One create, one destroy. Callback samples live only
-//! for the callback; owning receive keeps a transport sample until its explicit release.
+//! Only this crate depends on `hypha_iceoryx2` and `hypha_sys`. `hypha_ffi` wraps
+//! `hypha_node::safe` as the C ABI; Rust tools under `apps/` use `hypha_node::sdk` only.
+//!
+//! # Module map
+//! - `safe`: safe Rust entrypoints wrapped by `hypha_ffi`
+//! - `sdk`: public safe Rust SDK for `apps/` (`BusNode`, `WaitSet`, `StreamFollower`, `clean`, `msgs`)
+//! - `node` / `domain` / `process_stop` / `clean`: session lifecycle, `HYPHA_DOMAIN`, `SIGINT`/`SIGTERM`, SHM cleanup
+//! - `publisher` / `subscriber` / `loan` / `sample` / `qos` / `topic_streams`: endpoints, loans, multi-MD5 stream tracking
+//! - `waitset`: single-threaded event loop, timers, subscriptions, lockstep progress
+//! - `cycle`: cycle registration, sources, tick execution, clock driver
+//! - `config` / `param_topic` / `parameter_parse` / `parameter_constraints` / `port_limits`: TOML parameter & port wiring
+//! - `clock` / `replay_restart` / `node_progress`: framework clock and rewind restarts
+//! - `transforms` / `schema` / `introspection` / `node_state` / `node_health` / `node_discovery` / `metrics` / `log`: TF, schemas, reporting, logging
 
 pub mod clean;
 pub mod clock;
@@ -16,6 +26,7 @@ pub mod loan;
 pub mod log;
 pub mod metrics;
 pub mod node;
+pub mod node_checks;
 pub mod node_discovery;
 pub mod node_health;
 pub mod node_progress;
@@ -32,8 +43,10 @@ pub mod safe;
 pub mod sample;
 pub mod schema;
 pub mod sdk;
+pub mod service;
 pub mod status;
 pub mod subscriber;
+mod topic_streams;
 pub mod transforms;
 pub mod waitset;
 pub use waitset::{
@@ -81,8 +94,8 @@ pub use qos::HyphaQos;
 pub use sample::HyphaReceivedSample;
 pub use status::HyphaStatus;
 pub use subscriber::{
-    HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS, HyphaSampleIdentity, HyphaSubscriber,
-    HyphaSubscriberCounters, HyphaSubscriberOptions,
+    HYPHA_DEFAULT_NO_PUBLISHER_WARNING_NANOS, HYPHA_NOT_CHECKED, HyphaSampleIdentity,
+    HyphaSubscriber, HyphaSubscriberCounters, HyphaSubscriberOptions,
 };
 pub use transforms::{
     HYPHA_DEFAULT_TF_CACHE_NANOS, HYPHA_TF_AFTER_BUFFER, HYPHA_TF_BEFORE_BUFFER, HYPHA_TF_FOUND,

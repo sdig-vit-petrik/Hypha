@@ -1,6 +1,6 @@
 //! Transforms below the C ABI: the result codes and the `HyphaTransform` of a lookup, and
 //! [`TfState`], the one ingestion and lookup code that a cycle's TF input
-//! (`cycle::transforms`) and a plain node's transform buffer ([`buffer`]) both call.
+//! (`cycle::transforms`) and a transform buffer ([`buffer`]) both call.
 
 pub mod buffer;
 
@@ -67,6 +67,8 @@ pub(crate) enum TfOwner<'a> {
     Cycle(&'a str),
     /// A plain node's transform buffer over these `/tf` and `/tf_static` topics.
     Buffer { tf: &'a str, tf_static: &'a str },
+    /// A transform buffer with no node, fed by its caller.
+    Fed,
 }
 
 impl fmt::Display for TfOwner<'_> {
@@ -76,6 +78,7 @@ impl fmt::Display for TfOwner<'_> {
             Self::Buffer { tf, tf_static } => {
                 write!(f, "transform buffer of '{tf}' and '{tf_static}'")
             }
+            Self::Fed => f.write_str("fed transform buffer"),
         }
     }
 }
@@ -256,6 +259,12 @@ impl TfState {
             }
         }
         Ok(())
+    }
+
+    /// Forget every dynamic transform and return how many frames held one. Static
+    /// transforms, and the refusal kept for a frame, stay.
+    pub(crate) fn clear_dynamic(&mut self) -> usize {
+        self.buffer.clear_dynamic()
     }
 
     /// Count a message that did not decode, for an owner that goes on without it.

@@ -612,3 +612,104 @@ fn a_hand_built_constant_out_of_range_does_not_compile() {
     let header = emit(&message, "00000000000000000000000000000000");
     assert!(header.contains("  static_assert(false, \"constant X has no valid byte value\");\n"));
 }
+
+/// The loaned field is the message's single top-level array of numbers, with only fixed-size
+/// numbers after it: the `data` of `PointCloud2`, with `bool is_dense` after it. A string or an
+/// array of messages before it does not matter.
+#[test]
+fn the_single_numeric_array_before_a_fixed_tail_is_loaned() {
+    let fields = vec![
+        field(FieldType::Text, Multiplicity::Unit, "frame_id"),
+        field(FieldType::Text, Multiplicity::Variable, "labels"),
+        field(FieldType::UInt8, Multiplicity::Variable, "data"),
+        field(FieldType::Bool, Multiplicity::Unit, "is_dense"),
+        field(FieldType::UInt16, Multiplicity::Fixed(2), "pad"),
+    ];
+    let result = emit(&spec(TypeName::new("demo_msgs", "Cloud"), Vec::new(), fields), "c0");
+    assert!(result.contains(
+        "struct LoanedField<::demo_msgs::Cloud> {\n  static constexpr auto member = &::demo_msgs::Cloud::data;\n};"
+    ));
+}
+
+/// Two arrays of numbers (as `LaserScan`, `JointState`, `Joy`), a string, a nested message
+/// or an array after the array, or an array of strings, booleans or times: no loaned field.
+#[test]
+fn no_field_is_loaned_beside_a_second_numeric_array_or_before_a_variable_tail() {
+    let tails = [
+        field(FieldType::Text, Multiplicity::Unit, "label"),
+        field(FieldType::Float64, Multiplicity::Variable, "more"),
+        field(FieldType::Text, Multiplicity::Variable, "names"),
+        field(FieldType::Message(TypeName::new("geometry_msgs", "Point")), Multiplicity::Unit, "p"),
+    ];
+    for tail in tails {
+        let fields = vec![field(FieldType::UInt8, Multiplicity::Variable, "data"), tail.clone()];
+        let result = emit_with(
+            &spec(TypeName::new("demo_msgs", "Tail"), Vec::new(), fields),
+            vec![stub("geometry_msgs", "Point")],
+            "c1",
+        );
+        assert!(!result.contains("LoanedField"), "tail {}", tail.name);
+    }
+    let two_before = vec![
+        field(FieldType::Float32, Multiplicity::Variable, "ranges"),
+        field(FieldType::Float32, Multiplicity::Variable, "intensities"),
+    ];
+    let result = emit(&spec(TypeName::new("demo_msgs", "Scan"), Vec::new(), two_before), "c3");
+    assert!(!result.contains("LoanedField"));
+    for element in [FieldType::Text, FieldType::Bool, FieldType::Time] {
+        let fields = vec![field(element, Multiplicity::Variable, "items")];
+        let result = emit(&spec(TypeName::new("demo_msgs", "List"), Vec::new(), fields), "c2");
+        assert!(!result.contains("LoanedField"));
+    }
+}
+
+/// The standard messages the SDK ships that have a loaned field: exactly these 15.
+#[test]
+#[allow(clippy::expect_used)]
+fn the_standard_messages_with_a_loaned_field_are_the_fifteen_intended() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../hypha_msgs/msg");
+    let mut specs = SpecSet::new();
+    let mut all = Vec::new();
+    for package in std::fs::read_dir(&root).expect("msg root") {
+        let package = package.expect("package").path();
+        let package_name = package.file_name().expect("name").to_string_lossy().into_owned();
+        for file in std::fs::read_dir(&package).expect("package dir") {
+            let file = file.expect("file").path();
+            if file.extension().is_some_and(|extension| extension == "msg") {
+                let name = file.file_stem().expect("stem").to_string_lossy().into_owned();
+                let text = std::fs::read_to_string(&file).expect("read");
+                let parsed =
+                    hypha_msgdef::parse::parse_message(TypeName::new(&package_name, &name), &text)
+                        .expect("parse");
+                specs.insert(parsed.clone());
+                all.push(parsed);
+            }
+        }
+    }
+    let mut loaned: Vec<String> = all
+        .iter()
+        .filter(|message| {
+            emit_message(&specs, message, "0").expect("emit").contains("struct LoanedField<")
+        })
+        .map(|message| message.type_name.full())
+        .collect();
+    loaned.sort();
+    let expected = [
+        "nav_msgs/OccupancyGrid",
+        "sensor_msgs/CompressedImage",
+        "sensor_msgs/Image",
+        "sensor_msgs/PointCloud2",
+        "std_msgs/ByteMultiArray",
+        "std_msgs/Float32MultiArray",
+        "std_msgs/Float64MultiArray",
+        "std_msgs/Int16MultiArray",
+        "std_msgs/Int32MultiArray",
+        "std_msgs/Int64MultiArray",
+        "std_msgs/Int8MultiArray",
+        "std_msgs/UInt16MultiArray",
+        "std_msgs/UInt32MultiArray",
+        "std_msgs/UInt64MultiArray",
+        "std_msgs/UInt8MultiArray",
+    ];
+    assert_eq!(loaned, expected);
+}

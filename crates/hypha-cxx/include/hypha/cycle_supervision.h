@@ -5,6 +5,7 @@
 
 #include "hypha/backend/cycle.h"
 #include "hypha/backend/session.h"
+#include "hypha/config.h"
 #include "hypha/cycle.h"
 #include "hypha/cycle_port.h"
 #include "hypha/options.h"
@@ -17,6 +18,50 @@
 namespace hypha {
 
 namespace detail {
+
+/// @brief The `silence_ms` of the table `ports.inputs.<table>` in nanoseconds, as start()
+///        reads it: zero for `silence_ms = 0`, an input with no time limit. For a
+///        testing::StepHarness, which starts nothing; a start decides it below the C ABI.
+/// @throws std::logic_error without a loaded configuration.
+/// @throws ParameterError when the key is missing, or outside 0 and [1 ms, @p limitMax].
+inline int64_t tableSilenceNanos(const std::string& table, Duration limitMax)
+{
+    if (backend::configHandle() == nullptr) {
+        throw std::logic_error(
+            "hypha: input '" + table
+            + "' reads its silence_ms and needs a loaded configuration: a Node or a ConfigContext"
+        );
+    }
+    const ConfigView             ports("ports.inputs." + table);
+    const std::optional<int64_t> millis = ports.optional<int64_t>("silence_ms");
+    if (!millis.has_value()) {
+        throw ParameterError(
+            "hypha: parameter '" + ports.name("silence_ms")
+            + "' is missing: an input needs a limit, 0 for none, or the tag hypha::unsupervised"
+        );
+    }
+    constexpr int64_t nanosPerMilli = 1'000'000;
+    const int64_t     millisMax = limitMax.nanos() / nanosPerMilli;
+    const bool        outOfRange = *millis < 0 || *millis > millisMax;
+    if (outOfRange) {
+        throw ParameterError(
+            "hypha: parameter '" + ports.name("silence_ms")
+            + "' is outside its range: 0 (no "
+              "limit) or [1, "
+            + std::to_string(millisMax) + "] ms"
+        );
+    }
+    return *millis * nanosPerMilli;
+}
+
+/// @brief What a testing::StepHarness step's clear() leaves of an input's @p facts: no
+///        sample, NeverArrived, and not ok unless the input does not count for health.
+inline void forgetJudgement(HyphaCycleBindingView& facts, bool countsForHealth)
+{
+    facts.health.capture.verdict = HYPHA_CYCLE_VERDICT_NEVER_ARRIVED;
+    facts.supervision.faults &= ~HYPHA_FAULT_STALE;
+    facts.ok = countsForHealth ? 0 : 1;
+}
 
 /// @brief The supervision of one input port. Latest and Arrivals hold one by composition.
 class InputSupervision
@@ -55,6 +100,18 @@ class InputSupervision
     bool bound() const
     {
         return this->bound_;
+    }
+
+    /// @brief True once start() bound the port: untimed() is then the library's answer.
+    bool decided() const
+    {
+        return this->decided_;
+    }
+
+    /// @brief The port runs without a silence limit, as start() decided it.
+    bool untimed() const
+    {
+        return this->untimed_;
     }
 
     /// @brief The view of this binding: of this step in step(), else of the last finished
@@ -99,6 +156,8 @@ class InputSupervision
         }
         this->bound_ = result.attached;
         this->silenceNanos_ = result.silenceNanos;
+        this->untimed_ = result.silenceNanos == 0;
+        this->decided_ = true;
         this->index_ = index;
         return HYPHA_STATUS_OK;
     }
@@ -142,6 +201,27 @@ class InputSupervision
         }
     }
 
+    /// @brief Clear input @p index when the step returns. @throws std::logic_error outside
+    ///        step() or for a trigger port, std::runtime_error when the library refuses.
+    void clear(uint32_t index) const
+    {
+        if (this->image_ == nullptr) {
+            throw std::logic_error("hypha: clear() outside step()");
+        }
+        const ::HyphaStatus status =
+            backend::cycleImageClear(this->image_, HYPHA_CYCLE_CLEAR_INPUT, index);
+        if (status == HYPHA_STATUS_INVALID_ARGUMENT) {
+            throw std::logic_error(
+                "hypha: clear() on a trigger port: its pending samples are the cycle's steps"
+            );
+        }
+        if (status != HYPHA_STATUS_OK) {
+            throw std::runtime_error(
+                "hypha: clear() failed with status " + std::to_string(static_cast<int>(status))
+            );
+        }
+    }
+
     /// @brief The port text of a start() error, with the failure detail when there is one.
     std::string describe(const TopicSource& topic) const
     {
@@ -163,6 +243,8 @@ class InputSupervision
     const HyphaCycleImage* image_{nullptr};
     std::string            detail_;
     int64_t                silenceNanos_{0};
+    bool                   decided_{false};
+    bool                   untimed_{false};
 };
 
 }  // namespace detail

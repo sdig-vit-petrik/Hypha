@@ -1,21 +1,52 @@
 //! The schedule of a data-triggered cycle, as pure rules.
 //!
-//! A triggered cycle runs one step per trigger sample, oldest first, and one fallback
-//! step for each silence limit without a trigger. The node passes the clocks and the
-//! pending trigger stamps here as plain values.
+//! A triggered cycle runs one step per sample of its trigger ports, in merge order: by
+//! send stamp, then by port, each port in its own order. Each time no event ran for the
+//! shortest silence limit of the ports, it runs one fallback step. A port with no limit
+//! (zero) counts for no fallback and is never late; a schedule whose ports have none runs
+//! only on its triggers. A newest-only port steps on the newest of its due samples and
+//! passes the older ones ([`TriggerSchedule::newest_only`]). The node passes the clocks and
+//! the pending stamps of each port here as plain values. A port is named by its position in
+//! the cycle's trigger list, which is in binding order.
+
+use hypha_cycle::TriggerPorts;
 
 use crate::upstream_hold::{HoldError, Limit};
 
 /// One step of a triggered cycle, at a framework time in nanoseconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerEvent {
-    /// A step for the trigger sample sent at this time.
-    Trigger(i64),
-    /// A step without a trigger sample, after a silence limit without one.
-    Fallback(i64),
-    /// Host time: the oldest pending trigger, sent at this time, runs no step: it was
-    /// stamped before a step that already ran, or is older than the silence limit.
-    Late(i64),
+    /// A step on the oldest pending sample of `port`.
+    Trigger {
+        /// Under simulated time the sample's send stamp; on host time its monotonic time,
+        /// raised to the time of the event before it, so step times never go back.
+        time: i64,
+        /// The port of the sample.
+        port: usize,
+    },
+    /// A step without a trigger sample, after the shortest silence limit without an event.
+    Fallback {
+        /// The time of the step.
+        time: i64,
+        /// The ports whose own silence limit has passed at `time`.
+        due: TriggerPorts,
+    },
+    /// The oldest pending sample of newest-only `port` runs no step: a newer sample of the
+    /// port is due with it ([`TriggerSchedule::newest_only`]).
+    Superseded {
+        /// The sample's send stamp: on the wall clock on host time, else framework time.
+        stamp: i64,
+        /// The port of the sample.
+        port: usize,
+    },
+    /// Host time: the oldest pending sample of `port` runs no step. It is older than the
+    /// port's silence limit, or stamped before the port's last step.
+    Late {
+        /// The sample's send stamp, on the wall clock.
+        stamp: i64,
+        /// The port of the sample.
+        port: usize,
+    },
 }
 
 /// The clock a triggered cycle runs on.
@@ -31,13 +62,33 @@ pub enum TriggerClock<'a> {
         /// The monotonic reading now, in nanoseconds. Times the fallbacks.
         steady: i64,
     },
-    /// Simulated time: an event at `t` needs `t <= now` and `t <= limit.at`.
+    /// Simulated time: an event at `t` needs `t <= now`, and every upstream reported at
+    /// least `t`: `t < limit.at`.
     Sim {
         /// The node's simulated clock, in nanoseconds.
         now: i64,
         /// What the upstream nodes allow.
         limit: &'a Limit,
     },
+}
+
+impl TriggerClock<'_> {
+    /// The reading the schedule runs on.
+    const fn now(self) -> i64 {
+        match self {
+            Self::Host { steady, .. } => steady,
+            Self::Sim { now, .. } => now,
+        }
+    }
+
+    /// Whether an event at `time` may run: always on host time; under simulated time
+    /// once the clock reached it and no upstream can still send a trigger stamped at it.
+    fn admits(self, time: i64) -> bool {
+        match self {
+            Self::Host { .. } => true,
+            Self::Sim { now, limit } => time <= now && limit.at.is_none_or(|at| time < at),
+        }
+    }
 }
 
 /// What a turn of a triggered cycle does.
@@ -55,12 +106,44 @@ pub enum TriggerAdmit {
     },
 }
 
-/// The fallback anchor and stall state of one triggered cycle.
+/// One trigger port of a schedule.
+#[derive(Debug)]
+struct Port {
+    /// The silence limit in nanoseconds; positive, or zero for no limit.
+    silence: i64,
+    /// The time of the port's last trigger step, before it was raised to keep step
+    /// times ascending.
+    last_step: Option<i64>,
+    /// Whether the port steps on the newest of its due samples only.
+    newest: bool,
+}
+
+impl Port {
+    /// The time at which the port has been silent for its limit: its last step, or `first`
+    /// before one, plus the limit. `None` without a limit, or when no clock reaches it.
+    fn silent_at(&self, first: i64) -> Option<i64> {
+        let timed = self.silence > 0;
+        timed.then(|| self.last_step.unwrap_or(first).checked_add(self.silence)).flatten()
+    }
+
+    /// Host time: whether its sample of wall age `age`, at schedule time `time`, runs no
+    /// step: it is older than the limit, or sent before the sample of the port's last step.
+    fn is_late(&self, age: i64, time: i64) -> bool {
+        let too_old = self.silence > 0 && age > self.silence;
+        let before_its_step = self.last_step.is_some_and(|step| time < step);
+        too_old || before_its_step
+    }
+}
+
+/// The ports, fallback anchor and stall state of one triggered cycle.
 #[derive(Debug)]
 pub struct TriggerSchedule {
-    silence: i64,
-    /// What the next fallback counts from: the time of the last event run.
-    last: Option<i64>,
+    ports: Vec<Port>,
+    /// The shortest silence limit of the ports: the fallback interval. `None` when no port
+    /// has a limit: no fallback runs.
+    shortest: Option<i64>,
+    /// The clock of the first evaluation.
+    first: Option<i64>,
     /// The time of the last event run, which no later event precedes.
     ran: Option<i64>,
     /// Whether the last admission stopped at [`MAX_EVENTS_PER_ADMIT`] with events left.
@@ -72,104 +155,228 @@ pub struct TriggerSchedule {
 pub const MAX_EVENTS_PER_ADMIT: usize = 1024;
 
 impl TriggerSchedule {
-    /// A schedule with a silence limit of `silence_nanos`, or `None` unless it is positive.
+    /// A schedule for one port per silence limit of `silences`, in nanoseconds; zero is a
+    /// port with no limit. `None` unless there are between one and
+    /// [`TriggerPorts::CAPACITY`] limits, none negative.
     #[must_use]
-    pub fn new(silence_nanos: i64) -> Option<Self> {
-        (silence_nanos > 0).then_some(Self {
-            silence: silence_nanos,
-            last: None,
+    pub fn new(silences: &[i64]) -> Option<Self> {
+        let counted = (1..=TriggerPorts::CAPACITY).contains(&silences.len());
+        let negative = silences.iter().any(|silence| *silence < 0);
+        if !counted || negative {
+            return None;
+        }
+        let shortest = silences.iter().copied().filter(|silence| *silence > 0).min();
+        Some(Self {
+            ports: silences
+                .iter()
+                .map(|&silence| Port { silence, last_step: None, newest: false })
+                .collect(),
+            shortest,
+            first: None,
             ran: None,
             capped: false,
         })
     }
 
-    /// Write to `out` the events that run now, in order: a prefix of `pending` with the
-    /// fallbacks due before each, which a trigger at the fallback time preempts.
+    /// This schedule with `ports` newest-only: a sample of such a port that a newer sample
+    /// of the port is due with runs no step, and is [`TriggerEvent::Superseded`]; the
+    /// newest steps. This is ROS's subscriber queue of one, decided by the reader alone.
     ///
-    /// Host time coalesces the fallbacks due before the next trigger into one; a trigger
-    /// stamped before the last event, or older than the limit, is [`TriggerEvent::Late`].
-    /// Simulated time runs each fallback once no upstream can still send a trigger at its
-    /// time; a trigger stamped before the last event is `OutOfOrder`.
+    /// Due means: on host time, pending in this admission, so a backlog that a slow step
+    /// left behind steps once, on its newest sample. Under simulated time a step at `T`
+    /// sees the samples stamped up to `T`, and a later stamp is its own step, so only a
+    /// sample of the same stamp passes the older one; the upstream hold has then brought
+    /// every sample stamped `T`, so which sample steps depends on the recording alone, not
+    /// on when the node got its turn. A port past [`TriggerPorts::CAPACITY`] is not one.
+    #[must_use]
+    pub fn newest_only(mut self, ports: TriggerPorts) -> Self {
+        for (index, port) in self.ports.iter_mut().enumerate() {
+            port.newest = ports.contains(index);
+        }
+        self
+    }
+
+    /// The shortest silence limit of the ports, in nanoseconds: the fallback interval.
+    /// `None` when no port has a limit.
+    #[must_use]
+    pub fn shortest(&self) -> Option<i64> {
+        self.shortest
+    }
+
+    /// Write to `out` the events that run now, in order: the pending samples of every
+    /// port in merge order, `pending` holding one list per port, with the fallbacks due
+    /// before each, which a trigger at the fallback time preempts.
+    ///
+    /// Host time coalesces the fallbacks due before the next trigger into one, and a late
+    /// sample is [`TriggerEvent::Late`]. Simulated time runs each fallback once no
+    /// upstream can still send a trigger at its time; a trigger stamped before the event
+    /// that runs before it is `OutOfOrder`.
     ///
     /// # Errors
-    /// [`HoldError::Overflow`] for an unrepresentable time, `NoBlocker` for a bare timeout.
+    /// [`HoldError::Ports`] when `pending` does not hold one list per port,
+    /// [`HoldError::Overflow`] for an unrepresentable time.
     pub fn admit(
         &mut self,
-        pending: &[i64],
+        pending: &[Vec<i64>],
         clock: TriggerClock<'_>,
         out: &mut Vec<TriggerEvent>,
     ) -> Result<TriggerAdmit, HoldError> {
         out.clear();
         self.capped = false;
-        let (now, limit) = match clock {
-            TriggerClock::Host { steady, .. } => (steady, None),
-            TriggerClock::Sim { now, limit } => (now, limit.at),
-        };
-        let host = matches!(clock, TriggerClock::Host { .. });
-        if !host {
-            let mut before = self.ran;
-            for &stamp in pending {
-                if let Some(before) = before.filter(|before| stamp < *before) {
-                    return Ok(TriggerAdmit::OutOfOrder { stamp, before });
-                }
-                before = Some(stamp);
-            }
+        if pending.len() != self.ports.len() {
+            return Err(HoldError::Ports);
         }
-        let mut last = *self.last.get_or_insert(now);
-        let mut next: PendingStamps<'_> = pending.iter().copied().peekable();
+        let first = *self.first.get_or_insert(clock.now());
+        if let TriggerClock::Sim { .. } = clock
+            && let Some(order) = self.out_of_order(pending)
+        {
+            return Ok(order);
+        }
+        let mut merge = Merge::new(pending);
         loop {
-            let full = !host && out.len() >= MAX_EVENTS_PER_ADMIT;
-            if full {
+            if let TriggerClock::Sim { .. } = clock
+                && out.len() >= MAX_EVENTS_PER_ADMIT
+            {
                 self.capped = true;
                 break;
             }
-            if host {
-                while let Some(&stamp) = next.peek() {
-                    let time = trigger_time(stamp, clock)?;
-                    let before_ran = self.ran.is_some_and(|ran| time < ran);
-                    let too_old = self.too_old(stamp, clock);
-                    let is_late = before_ran || too_old;
-                    if !is_late {
+            if let TriggerClock::Host { wall, steady } = clock {
+                self.take_late(&mut merge, wall, steady, out)?;
+            }
+            let anchor = self.anchor(first);
+            let fallback = self
+                .shortest
+                .map(|shortest| anchor.checked_add(shortest).ok_or(HoldError::Overflow))
+                .transpose()?;
+            let head = merge
+                .peek()
+                .map(|(stamp, port)| trigger_time(stamp, clock).map(|time| (time, stamp, port)))
+                .transpose()?;
+            match (head, fallback) {
+                (Some((time, stamp, port)), _)
+                    if fallback.is_none_or(|fallback| time <= fallback) =>
+                {
+                    if !clock.admits(time) {
                         break;
                     }
-                    next.next();
-                    out.push(TriggerEvent::Late(stamp));
+                    merge.advance(port);
+                    let event = if self.superseded(&merge, stamp, port, clock)? {
+                        TriggerEvent::Superseded { stamp, port }
+                    } else {
+                        self.run_trigger(time, port)?
+                    };
+                    out.push(event);
                 }
-            }
-            let fallback = last.checked_add(self.silence).ok_or(HoldError::Overflow)?;
-            let head = next_trigger_time(&mut next, clock)?;
-            let trigger = head.filter(|trigger| *trigger <= fallback);
-            if let Some(time) = trigger {
-                let clock_allows = host || time <= now;
-                if !clock_allows {
-                    break;
+                (_, Some(fallback)) => {
+                    let head = head.map(|(time, _, _)| time);
+                    let Some(time) = self.fallback_time(fallback, anchor, head, clock)? else {
+                        break;
+                    };
+                    out.push(self.run_fallback(time, first)?);
                 }
-                if limit.is_some_and(|at| time > at) {
-                    break;
-                }
-                next.next();
-                out.push(TriggerEvent::Trigger(time));
-                self.ran = Some(time);
-                last = time;
-                continue;
+                (_, None) => break,
             }
-            if fallback > now {
-                break;
-            }
-            // An upstream at `at - 1` may still send a trigger stamped `at - 1`.
-            let Some(latest) = fallback_bound(now, head, limit) else {
-                return Err(HoldError::Overflow);
-            };
-            if fallback > latest {
-                break;
-            }
-            let time = if host { latest_multiple(last, self.silence, latest)? } else { fallback };
-            out.push(TriggerEvent::Fallback(time));
-            self.ran = Some(time);
-            last = time;
         }
-        self.last = Some(last);
         Ok(TriggerAdmit::Run)
+    }
+
+    /// Simulated time: the first pending stamp, in merge order, below the event that
+    /// runs before it.
+    fn out_of_order(&self, pending: &[Vec<i64>]) -> Option<TriggerAdmit> {
+        let mut before = self.ran;
+        for (stamp, _) in Merge::new(pending) {
+            if let Some(before) = before.filter(|before| stamp < *before) {
+                return Some(TriggerAdmit::OutOfOrder { stamp, before });
+            }
+            before = Some(stamp);
+        }
+        None
+    }
+
+    /// Whether the sample stamped `stamp` of `port`, just passed in `merge`, is superseded:
+    /// the port is newest-only and its next pending sample is due with it, on host time
+    /// any, under simulated time one of the same stamp.
+    fn superseded(
+        &self,
+        merge: &Merge<'_>,
+        stamp: i64,
+        port: usize,
+        clock: TriggerClock<'_>,
+    ) -> Result<bool, HoldError> {
+        if !self.ports.get(port).ok_or(HoldError::Ports)?.newest {
+            return Ok(false);
+        }
+        Ok(merge.next_of(port).is_some_and(|next| match clock {
+            TriggerClock::Host { .. } => true,
+            TriggerClock::Sim { .. } => next == stamp,
+        }))
+    }
+
+    /// Host time: consume the late samples at the head of the merge.
+    fn take_late(
+        &self,
+        merge: &mut Merge<'_>,
+        wall: i64,
+        steady: i64,
+        out: &mut Vec<TriggerEvent>,
+    ) -> Result<(), HoldError> {
+        while let Some((stamp, port)) = merge.peek() {
+            let age = wall.checked_sub(stamp).ok_or(HoldError::Overflow)?;
+            let time = host_time(age, steady)?;
+            if !self.ports.get(port).ok_or(HoldError::Ports)?.is_late(age, time) {
+                break;
+            }
+            merge.advance(port);
+            out.push(TriggerEvent::Late { stamp, port });
+        }
+        Ok(())
+    }
+
+    /// Record the step on the sample of `port` at schedule time `time`.
+    fn run_trigger(&mut self, time: i64, port: usize) -> Result<TriggerEvent, HoldError> {
+        self.ports.get_mut(port).ok_or(HoldError::Ports)?.last_step = Some(time);
+        let time = self.ran.map_or(time, |ran| ran.max(time));
+        self.ran = Some(time);
+        Ok(TriggerEvent::Trigger { time, port })
+    }
+
+    /// Record the fallback step at `time`; its due ports are those silent for their limit.
+    fn run_fallback(&mut self, time: i64, first: i64) -> Result<TriggerEvent, HoldError> {
+        let silent = |port: &Port| port.silent_at(first).is_some_and(|silent| silent <= time);
+        let due = self.ports.iter().enumerate().filter(|(_, port)| silent(port));
+        let due = TriggerPorts::of(due.map(|(port, _)| port)).ok_or(HoldError::Ports)?;
+        self.ran = Some(time);
+        Ok(TriggerEvent::Fallback { time, due })
+    }
+
+    /// The time the fallback due at `fallback` runs at, or `None` while it may not run.
+    /// Every trigger at or before `fallback` ran first, so `head`, the time of the next
+    /// one, is after it.
+    ///
+    /// Host time runs the fallbacks a late turn missed as one, at the latest due time
+    /// before the next trigger. Simulated time runs each at its own time.
+    fn fallback_time(
+        &self,
+        fallback: i64,
+        anchor: i64,
+        head: Option<i64>,
+        clock: TriggerClock<'_>,
+    ) -> Result<Option<i64>, HoldError> {
+        let TriggerClock::Host { steady, .. } = clock else {
+            return Ok(clock.admits(fallback).then_some(fallback));
+        };
+        let before_head = head.map_or(Some(steady), |head| head.checked_sub(1));
+        let bound = steady.min(before_head.ok_or(HoldError::Overflow)?);
+        let Some(shortest) = self.shortest.filter(|_| fallback <= bound) else {
+            return Ok(None);
+        };
+        latest_multiple(anchor, shortest, bound).map(Some)
+    }
+
+    /// What the next fallback counts from: the last event run, or the first evaluation
+    /// when that is later. It never moves back.
+    fn anchor(&self, first: i64) -> i64 {
+        self.ran.map_or(first, |ran| ran.max(first))
     }
 
     /// Whether the last admission stopped at [`MAX_EVENTS_PER_ADMIT`] with events due.
@@ -178,61 +385,83 @@ impl TriggerSchedule {
         self.capped
     }
 
-    /// The next fallback deadline on the schedule's clock, `None` before the first evaluation.
+    /// The next fallback deadline on the schedule's clock, `None` before the first
+    /// evaluation and for a schedule with no limit.
     #[must_use]
     pub fn next_fallback(&self) -> Option<i64> {
-        self.last.and_then(|last| last.checked_add(self.silence))
-    }
-
-    /// Whether a host trigger stamped at `stamp` is older than the silence limit.
-    fn too_old(&self, stamp: i64, clock: TriggerClock<'_>) -> bool {
-        match clock {
-            TriggerClock::Host { wall, .. } => {
-                wall.checked_sub(stamp).is_some_and(|age| age > self.silence)
-            }
-            TriggerClock::Sim { .. } => false,
-        }
+        let first = self.first?;
+        self.anchor(first).checked_add(self.shortest?)
     }
 
     /// The clock up to which this cycle may report, exclusive: the lowest of its first
     /// pending trigger, its next fallback and the upstream limit.
     #[must_use]
-    pub fn frontier(&self, pending: &[i64], limit: &Limit) -> Option<i64> {
-        let fallback = self.next_fallback();
-        [pending.first().copied(), fallback, limit.at].into_iter().flatten().min()
+    pub fn frontier(&self, pending: &[Vec<i64>], limit: &Limit) -> Option<i64> {
+        let head = pending.iter().filter_map(|stamps| stamps.first().copied()).min();
+        [head, self.next_fallback(), limit.at].into_iter().flatten().min()
     }
 }
 
-type PendingStamps<'a> = std::iter::Peekable<std::iter::Copied<std::slice::Iter<'a, i64>>>;
+/// The k-way merge of the ports' pending stamps: the head with the lowest stamp comes
+/// first, a tie goes to the lower port, and each port keeps its own order. It merges at
+/// most [`TriggerPorts::CAPACITY`] ports, as many as a schedule has.
+struct Merge<'a> {
+    pending: &'a [Vec<i64>],
+    /// The position of each port's next stamp in its list.
+    next: [usize; TriggerPorts::CAPACITY],
+}
+
+impl<'a> Merge<'a> {
+    fn new(pending: &'a [Vec<i64>]) -> Self {
+        Self { pending, next: [0; TriggerPorts::CAPACITY] }
+    }
+
+    /// The next stamp with its port.
+    fn peek(&self) -> Option<(i64, usize)> {
+        self.pending
+            .iter()
+            .zip(self.next.iter())
+            .enumerate()
+            .filter_map(|(port, (stamps, &next))| stamps.get(next).map(|&stamp| (stamp, port)))
+            .min()
+    }
+
+    /// The next stamp of `port`.
+    fn next_of(&self, port: usize) -> Option<i64> {
+        let next = *self.next.get(port)?;
+        self.pending.get(port)?.get(next).copied()
+    }
+
+    /// Pass the next stamp of `port`.
+    fn advance(&mut self, port: usize) {
+        if let Some(next) = self.next.get_mut(port) {
+            *next = next.saturating_add(1);
+        }
+    }
+}
+
+impl Iterator for Merge<'_> {
+    type Item = (i64, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let head = self.peek()?;
+        self.advance(head.1);
+        Some(head)
+    }
+}
 
 /// The schedule time of a pending trigger stamp on `clock`.
-///
-/// Under host time the stamp's wall age is taken back from the monotonic reading; a
-/// stamp from the future counts as sent now.
 fn trigger_time(stamp: i64, clock: TriggerClock<'_>) -> Result<i64, HoldError> {
     let TriggerClock::Host { wall, steady } = clock else {
         return Ok(stamp);
     };
-    let age = wall.checked_sub(stamp).ok_or(HoldError::Overflow)?.max(0);
-    steady.checked_sub(age).ok_or(HoldError::Overflow)
+    host_time(wall.checked_sub(stamp).ok_or(HoldError::Overflow)?, steady)
 }
 
-fn next_trigger_time(
-    next: &mut PendingStamps<'_>,
-    clock: TriggerClock<'_>,
-) -> Result<Option<i64>, HoldError> {
-    let Some(&stamp) = next.peek() else {
-        return Ok(None);
-    };
-    trigger_time(stamp, clock).map(Some)
-}
-
-/// The latest time a fallback may run at: `now`, before the next trigger, and below
-/// the upstream limit.
-fn fallback_bound(now: i64, trigger: Option<i64>, limit: Option<i64>) -> Option<i64> {
-    let before_trigger = trigger.map_or(Some(now), |trigger| trigger.checked_sub(1))?;
-    let below_limit = limit.map_or(Some(now), |at| at.checked_sub(1))?;
-    Some(now.min(before_trigger).min(below_limit))
+/// The monotonic time of a host sample of wall age `age`: the age taken back from the
+/// monotonic reading `steady`; a stamp from the future counts as sent now.
+fn host_time(age: i64, steady: i64) -> Result<i64, HoldError> {
+    steady.checked_sub(age.max(0)).ok_or(HoldError::Overflow)
 }
 
 /// The latest `last + k * silence`, `k >= 1`, at or before `bound`.
@@ -245,272 +474,10 @@ fn latest_multiple(last: i64, silence: i64, bound: i64) -> Result<i64, HoldError
 }
 
 #[cfg(test)]
-#[allow(clippy::arithmetic_side_effects, clippy::expect_used, clippy::unwrap_used)]
-mod tests {
-    use super::*;
-
-    const S: i64 = 100;
-
-    /// A host clock whose wall and monotonic readings are both `now`.
-    fn host(now: i64) -> TriggerClock<'static> {
-        TriggerClock::Host { wall: now, steady: now }
-    }
-
-    /// A host clock whose wall and monotonic readings differ, as after a wall-clock step.
-    fn host_at(wall: i64, steady: i64) -> TriggerClock<'static> {
-        TriggerClock::Host { wall, steady }
-    }
-
-    fn run(s: &mut TriggerSchedule, pending: &[i64], clock: TriggerClock<'_>) -> Vec<TriggerEvent> {
-        let mut out = Vec::new();
-        assert_eq!(s.admit(pending, clock, &mut out), Ok(TriggerAdmit::Run));
-        out
-    }
-
-    #[test]
-    fn new_refuses_a_silence_that_is_not_positive() {
-        assert!(TriggerSchedule::new(0).is_none());
-        assert!(TriggerSchedule::new(-1).is_none());
-    }
-
-    #[test]
-    fn the_first_call_anchors_the_fallback() {
-        let mut s = TriggerSchedule::new(S).unwrap();
-        assert_eq!(run(&mut s, &[], host(1_000)), vec![]);
-        assert_eq!(run(&mut s, &[], host(1_099)), vec![]);
-        assert_eq!(run(&mut s, &[], host(1_100)), vec![TriggerEvent::Fallback(1_100)]);
-    }
-
-    #[test]
-    fn a_trigger_runs_and_moves_the_fallback() {
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let _ = run(&mut s, &[], host(0));
-        assert_eq!(run(&mut s, &[30], host(30)), vec![TriggerEvent::Trigger(30)]);
-        assert_eq!(run(&mut s, &[], host(129)), vec![]);
-        assert_eq!(run(&mut s, &[], host(130)), vec![TriggerEvent::Fallback(130)]);
-    }
-
-    #[test]
-    fn missed_host_fallbacks_run_as_one_at_the_latest_due_time() {
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let _ = run(&mut s, &[], host(0));
-        assert_eq!(run(&mut s, &[], host(350)), vec![TriggerEvent::Fallback(300)]);
-        assert_eq!(run(&mut s, &[], host(399)), vec![]);
-        assert_eq!(run(&mut s, &[], host(400)), vec![TriggerEvent::Fallback(400)]);
-    }
-
-    #[test]
-    fn a_host_clock_jump_runs_one_fallback() {
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let _ = run(&mut s, &[], host(0));
-        let year = 365 * 24 * 3_600 * 1_000_000_000_i64;
-        assert_eq!(run(&mut s, &[], host(year)), vec![TriggerEvent::Fallback(year)]);
-    }
-
-    #[test]
-    fn a_host_trigger_older_than_the_limit_is_late() {
-        let mut s = TriggerSchedule::new(S).unwrap();
-        assert_eq!(run(&mut s, &[10], host(1_000_000)), vec![TriggerEvent::Late(10)]);
-        assert_eq!(run(&mut s, &[], host(1_000_099)), vec![], "no burst of fallbacks");
-    }
-
-    #[test]
-    fn host_silence_counts_from_the_send_stamp_of_a_trigger() {
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let _ = run(&mut s, &[], host(0));
-        // Sent at 50, drained at 90: the next fallback is due at 150, not at 190.
-        assert_eq!(run(&mut s, &[50], host(90)), vec![TriggerEvent::Trigger(50)]);
-        assert_eq!(run(&mut s, &[], host(149)), vec![]);
-        assert_eq!(run(&mut s, &[], host(150)), vec![TriggerEvent::Fallback(150)]);
-    }
-
-    #[test]
-    fn a_host_trigger_stamped_before_a_step_that_ran_is_late() {
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let _ = run(&mut s, &[], host(0));
-        assert_eq!(run(&mut s, &[], host(150)), vec![TriggerEvent::Fallback(100)]);
-        // Sent at 90, younger than the limit, but drained after the fallback at 100.
-        assert_eq!(run(&mut s, &[90], host(160)), vec![TriggerEvent::Late(90)]);
-        // A trigger at the last step's time still runs: the step time does not go back.
-        assert_eq!(run(&mut s, &[100], host(170)), vec![TriggerEvent::Trigger(100)]);
-    }
-
-    #[test]
-    fn a_sim_trigger_stamped_before_the_last_event_is_refused() {
-        let free = Limit { at: None, blocking: None };
-        let sim = |now| TriggerClock::Sim { now, limit: &free };
-        let mut s = TriggerSchedule::new(1_000).unwrap();
-        let mut out = Vec::new();
-        assert_eq!(
-            s.admit(&[200, 150], sim(300), &mut out),
-            Ok(TriggerAdmit::OutOfOrder { stamp: 150, before: 200 })
-        );
-        assert!(out.is_empty(), "nothing runs");
-        assert_eq!(run(&mut s, &[200], sim(300)), vec![TriggerEvent::Trigger(200)]);
-        assert_eq!(
-            s.admit(&[199], sim(300), &mut out),
-            Ok(TriggerAdmit::OutOfOrder { stamp: 199, before: 200 })
-        );
-        assert_eq!(run(&mut s, &[200], sim(300)), vec![TriggerEvent::Trigger(200)], "a tie runs");
-    }
-
-    #[test]
-    fn a_sim_trigger_before_the_first_evaluation_still_runs() {
-        let free = Limit { at: None, blocking: None };
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let clock = TriggerClock::Sim { now: 1_000, limit: &free };
-        assert_eq!(run(&mut s, &[990], clock), vec![TriggerEvent::Trigger(990)]);
-    }
-
-    #[test]
-    fn host_fallbacks_before_a_late_trigger_run_as_one() {
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let _ = run(&mut s, &[], host(0));
-        assert_eq!(
-            run(&mut s, &[350], host(400)),
-            vec![TriggerEvent::Fallback(300), TriggerEvent::Trigger(350)]
-        );
-    }
-
-    #[test]
-    fn a_long_sim_jump_is_admitted_over_capped_calls_in_order() {
-        let free = Limit { at: None, blocking: None };
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let _ = run(&mut s, &[], TriggerClock::Sim { now: 0, limit: &free });
-        let now = S * 3000;
-        let mut all = Vec::new();
-        let mut calls = 0;
-        loop {
-            let events = run(&mut s, &[], TriggerClock::Sim { now, limit: &free });
-            assert!(events.len() <= MAX_EVENTS_PER_ADMIT);
-            calls += 1;
-            all.extend(events);
-            if !s.capped() {
-                break;
-            }
-        }
-        assert_eq!(calls, 3, "1024 + 1024 + 952 events");
-        let expected: Vec<TriggerEvent> =
-            (1..=3000).map(|n| TriggerEvent::Fallback(S * n)).collect();
-        assert_eq!(all, expected);
-    }
-
-    #[test]
-    fn a_sim_jump_runs_each_fallback_it_skips() {
-        let free = Limit { at: None, blocking: None };
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let _ = run(&mut s, &[], TriggerClock::Sim { now: 0, limit: &free });
-        assert_eq!(
-            run(&mut s, &[], TriggerClock::Sim { now: 350, limit: &free }),
-            vec![
-                TriggerEvent::Fallback(100),
-                TriggerEvent::Fallback(200),
-                TriggerEvent::Fallback(300),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_sim_fallback_waits_until_no_upstream_can_send_a_trigger_at_its_time() {
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let free = Limit { at: None, blocking: None };
-        let _ = run(&mut s, &[], TriggerClock::Sim { now: 100, limit: &free });
-        // The upstream reported 199: it may still send a trigger stamped 200.
-        let at_fallback = Limit { at: Some(200), blocking: Some(("up".into(), Some(199))) };
-        let held = TriggerClock::Sim { now: 300, limit: &at_fallback };
-        assert_eq!(run(&mut s, &[], held), vec![]);
-        assert_eq!(s.frontier(&[], &at_fallback), Some(200));
-        // It reported 200 and sent the trigger at 200, which replaces the fallback.
-        let past = Limit { at: Some(201), blocking: Some(("up".into(), Some(200))) };
-        let clock = TriggerClock::Sim { now: 300, limit: &past };
-        assert_eq!(run(&mut s, &[200], clock), vec![TriggerEvent::Trigger(200)]);
-    }
-
-    #[test]
-    fn a_trigger_at_the_fallback_time_preempts_it() {
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let _ = run(&mut s, &[], host(0));
-        assert_eq!(run(&mut s, &[100], host(100)), vec![TriggerEvent::Trigger(100)]);
-    }
-
-    #[test]
-    fn a_late_trigger_runs_after_the_fallbacks_before_it() {
-        let free = Limit { at: None, blocking: None };
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let _ = run(&mut s, &[], TriggerClock::Sim { now: 0, limit: &free });
-        assert_eq!(
-            run(&mut s, &[250], TriggerClock::Sim { now: 250, limit: &free }),
-            vec![
-                TriggerEvent::Fallback(100),
-                TriggerEvent::Fallback(200),
-                TriggerEvent::Trigger(250)
-            ]
-        );
-    }
-
-    #[test]
-    fn sim_triggers_wait_for_the_clock() {
-        let free = Limit { at: None, blocking: None };
-        let mut s = TriggerSchedule::new(1_000).unwrap();
-        let _ = run(&mut s, &[], TriggerClock::Sim { now: 0, limit: &free });
-        assert_eq!(run(&mut s, &[100], TriggerClock::Sim { now: 50, limit: &free }), vec![]);
-        assert_eq!(s.frontier(&[100], &free), Some(100));
-    }
-
-    #[test]
-    fn sim_triggers_wait_for_the_upstream_limit() {
-        let limit = Limit { at: Some(150), blocking: Some(("up".into(), Some(149))) };
-        let mut s = TriggerSchedule::new(1_000).unwrap();
-        let _ = run(&mut s, &[], TriggerClock::Sim { now: 0, limit: &limit });
-        assert_eq!(
-            run(&mut s, &[100, 200], TriggerClock::Sim { now: 300, limit: &limit }),
-            vec![TriggerEvent::Trigger(100)]
-        );
-        // 200 is still pending; the limit caps the report below 150.
-        assert_eq!(s.frontier(&[200], &limit), Some(150));
-    }
-
-    #[test]
-    fn a_held_trigger_waits_with_no_time_limit() {
-        let limit = Limit { at: Some(50), blocking: Some(("upstream_a".into(), Some(49))) };
-        let mut s = TriggerSchedule::new(1_000).unwrap();
-        let mut out = Vec::new();
-        let _ = s.admit(&[], TriggerClock::Sim { now: 0, limit: &limit }, &mut out);
-        for _ in 0..3 {
-            assert_eq!(
-                s.admit(&[100], TriggerClock::Sim { now: 200, limit: &limit }, &mut out),
-                Ok(TriggerAdmit::Run)
-            );
-            assert!(out.is_empty(), "the trigger stays held");
-        }
-    }
-
-    #[test]
-    fn a_wall_clock_step_back_does_not_move_a_host_fallback() {
-        let mut s = TriggerSchedule::new(S).unwrap();
-        assert_eq!(run(&mut s, &[], host_at(1_000, 0)), vec![]);
-        // The wall clock steps back by 960 ns; the fallback stays at its steady time.
-        assert_eq!(run(&mut s, &[], host_at(40, 99)), vec![]);
-        assert_eq!(run(&mut s, &[], host_at(40, 100)), vec![TriggerEvent::Fallback(100)]);
-    }
-
-    #[test]
-    fn a_trigger_received_across_a_wall_step_keeps_its_steady_silence() {
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let _ = run(&mut s, &[], host(0));
-        // Stamped at wall 1_000 after the wall clock stepped back to 40: sent at once.
-        assert_eq!(run(&mut s, &[1_000], host_at(40, 100)), vec![TriggerEvent::Trigger(100)]);
-        // Its silence counts from its steady time, whatever the wall clock does next.
-        assert_eq!(run(&mut s, &[], host_at(-5_000, 199)), vec![]);
-        assert_eq!(run(&mut s, &[], host_at(-5_000, 200)), vec![TriggerEvent::Fallback(200)]);
-    }
-
-    #[test]
-    fn a_trigger_with_an_old_wall_stamp_is_late_after_a_steady_fallback() {
-        let mut s = TriggerSchedule::new(S).unwrap();
-        let _ = run(&mut s, &[], host_at(1_000, 0));
-        assert_eq!(run(&mut s, &[], host_at(1_000, 100)), vec![TriggerEvent::Fallback(100)]);
-        // Sent at steady 50, before the fallback at 100: late.
-        assert_eq!(run(&mut s, &[950], host_at(1_010, 110)), vec![TriggerEvent::Late(950)]);
-    }
-}
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    reason = "a test computes and indexes known values and fails loudly"
+)]
+mod tests;

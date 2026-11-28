@@ -37,7 +37,7 @@ impl HyphaConfig {
     }
 
     pub(crate) fn introspection_rows(&self) -> Vec<ConfigRow> {
-        self.introspection_rows.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        crate::locked(&self.introspection_rows).clone()
     }
 }
 
@@ -45,23 +45,44 @@ impl HyphaConfig {
 /// joining the bus.
 ///
 /// # Errors
-/// `InvalidArgument` when the file cannot be read or parsed.
+/// `InvalidArgument` when the file cannot be read or parsed, or its `node.name` or `[log]`
+/// table is refused.
 pub fn config_create(parameter_file: Option<&str>) -> Result<HyphaConfig, Error> {
     // A configuration is loaded before any node exists, so the log line needs the facade.
     hypha_log::install();
     load_config(parameter_file)
 }
 
+/// Refuse the values of `parameters` that the framework reads itself: `node.name` and the
+/// `[log]` table.
+fn check_framework_values(parameters: &Parameters, file: &Path) -> Result<(), Error> {
+    if let Some(name) = crate::node::configured_node_name(parameters)? {
+        crate::node::check_node_name(name)?;
+    }
+    if let Some(table) = parameters.log_table() {
+        hypha_log::validate(table, file).map_err(|cause| {
+            log::error!(target: "hypha", "hypha: {cause}");
+            Error::InvalidArgument
+        })?;
+    }
+    Ok(())
+}
+
 /// A new configuration holding the parameters of `parameter_file`, or none when it is
-/// absent. A refused file is logged and gives `InvalidArgument`.
+/// absent. A refused file, or a refused `node.name` or `[log]` table in it, is logged and
+/// gives `InvalidArgument`.
 pub(crate) fn load_config(parameter_file: Option<&str>) -> Result<HyphaConfig, Error> {
     let parameter_file = parameter_file.map(std::path::PathBuf::from);
     let parameters = match &parameter_file {
         None => Parameters::new(),
-        Some(path) => Parameters::from_toml_file(Path::new(path)).map_err(|cause| {
-            log::error!(target: "hypha", "hypha: {cause}");
-            Error::InvalidArgument
-        })?,
+        Some(path) => {
+            let parameters = Parameters::from_toml_file(Path::new(path)).map_err(|cause| {
+                log::error!(target: "hypha", "hypha: {cause}");
+                Error::InvalidArgument
+            })?;
+            check_framework_values(&parameters, Path::new(path))?;
+            parameters
+        }
     };
     Ok(HyphaConfig {
         parameters: Arc::new(parameters),
@@ -109,6 +130,14 @@ pub(crate) fn ignored_row(key: &str, reason: &str) -> ConfigRow {
 #[must_use]
 pub fn config_unread_keys(config: &HyphaConfig, prefix: &str) -> String {
     config.parameters.unread_keys_under(prefix).join("\n")
+}
+
+/// The names of the tables directly under `prefix` of `config`, sorted and joined by
+/// `'\n'`: `a\nb` for `[ports.inputs.a]` and `[ports.inputs.b]` under `ports.inputs`. An
+/// empty `prefix` is the top level and `sensors[0]` a table element. Reads nothing.
+#[must_use]
+pub fn config_table_names(config: &HyphaConfig, prefix: &str) -> String {
+    config.parameters.table_names(prefix).join("\n")
 }
 
 /// The file name that the text parameter `key` holds, resolved against the directory

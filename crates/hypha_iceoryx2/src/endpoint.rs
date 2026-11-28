@@ -1,6 +1,6 @@
 //! The two endpoints, and the buffers they hand out.
 //!
-//! `new_wildcard` resolves its pattern once: matching costs O(services x nodes)
+//! `new_set` resolves its streams once: matching costs O(services x nodes)
 //! file-lock probes (175 ms with 120 publishers), so it is paid at open.
 
 use std::sync::Arc;
@@ -9,19 +9,17 @@ use iceoryx2::port::{LoanError, SendError};
 use iceoryx2::prelude::CallbackProgression;
 use iceoryx2::service::port_factory::PortFactory;
 
-use hypha_core::port::{PortError, QosRequest, topic_matches_pattern};
-use hypha_wire::frame::{FLAG_LATCHED, FrameHeader, FrameMetadata, TopicCode, seal};
-use iceoryx2::port::ReceiveError;
-use iceoryx2::port::listener::Listener;
+use hypha_core::port::PortError;
+use hypha_wire::frame::{
+    FLAG_LATCHED, FrameHeader, FrameMetadata, MAX_PAYLOAD_LEN, TopicCode, message_bytes, seal,
+};
 use iceoryx2::port::notifier::Notifier;
 use iceoryx2::port::publisher::Publisher;
-use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::port::update_connections::UpdateConnections;
 use iceoryx2::sample::Sample;
 use iceoryx2::sample_mut::SampleMut;
 
 use crate::header::Iox2FrameHeader;
-use crate::latch::is_unlatched_history;
 use crate::transport::{DataPortFactory, Ipc};
 
 /// Backend code of a loan that failed inside iceoryx2 (`LoanError::InternalFailure`),
@@ -36,15 +34,16 @@ pub(crate) const BACKEND_SEND_UNDELIVERED: u32 = 39;
 /// Backend code of a send that failed inside iceoryx2.
 pub(crate) const BACKEND_SEND_INTERNAL: u32 = 40;
 
-/// The status of a refused loan. A full pool and the publisher's loan budget are
-/// [`PortError::PoolExhausted`]; every other refusal names its cause.
+/// The status of a refused loan: a full pool is [`PortError::PoolExhausted`], the
+/// publisher's own loan budget [`PortError::LoanLimit`]; every other refusal names its cause.
 pub(crate) fn loan_port_error(
     cause: LoanError,
     requested: usize,
     max_payload: Option<usize>,
 ) -> PortError {
     match cause {
-        LoanError::OutOfMemory | LoanError::ExceedsMaxLoans => PortError::PoolExhausted,
+        LoanError::OutOfMemory => PortError::PoolExhausted,
+        LoanError::ExceedsMaxLoans => PortError::LoanLimit,
         LoanError::ExceedsMaxLoanSize => match max_payload {
             Some(limit) => PortError::TooLarge { requested, limit },
             None => PortError::Backend(BACKEND_LOAN_INTERNAL),
@@ -69,6 +68,9 @@ pub(crate) fn send_port_error(cause: SendError) -> PortError {
 /// message payload alone; its frame header is written when the loan is sent.
 pub struct Iox2Loan {
     sample: SampleMut<Ipc, [u8], Iox2FrameHeader>,
+    /// The bytes of the message: the slice's length, or less after [`Self::shrink`]. The
+    /// frame header carries it as `payload_len`; the slice keeps the loaned size.
+    used: usize,
     /// The code of the publisher's topic, which the frame is sealed for.
     topic_code: TopicCode,
     notifier: Arc<Notifier<Ipc>>,
@@ -77,27 +79,44 @@ pub struct Iox2Loan {
 }
 
 impl Iox2Loan {
-    /// The bytes currently in the buffer.
+    /// The bytes of the message currently in the buffer.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        self.sample.payload()
+        let payload = self.sample.payload();
+        payload.get(..self.used).unwrap_or(payload)
     }
 
     /// The bytes to write the message into.
     pub fn as_mut_bytes(&mut self) -> &mut [u8] {
-        self.sample.payload_mut()
+        let used = self.used;
+        let payload = self.sample.payload_mut();
+        let whole = payload.len();
+        payload.get_mut(..used.min(whole)).unwrap_or_default()
     }
 
-    /// How many bytes the buffer holds.
+    /// How many bytes the message holds.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.sample.payload().len()
+        self.used
     }
 
     /// True when the buffer holds nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Shorten the message to its first `len` bytes before the send. The slot keeps
+    /// its size; the frame's `payload_len` says `len`, and subscribers see `len` bytes.
+    ///
+    /// # Errors
+    /// [`PortError::TooLarge`] when `len` is longer than the message, which is unchanged.
+    pub fn shrink(&mut self, len: usize) -> Result<(), PortError> {
+        if len > self.used {
+            return Err(PortError::TooLarge { requested: len, limit: self.used });
+        }
+        self.used = len;
+        Ok(())
     }
 
     /// Seal the payload with `metadata` and `flags`, then send it, consuming the
@@ -109,7 +128,7 @@ impl Iox2Loan {
     /// The error of the failed send, see [`send_port_error`].
     pub fn send_frame(mut self, metadata: FrameMetadata, flags: u32) -> Result<(), PortError> {
         let flags = if self.latched { flags | FLAG_LATCHED } else { flags };
-        let header = seal(self.topic_code, metadata, flags, self.sample.payload());
+        let header = seal(self.topic_code, metadata, flags, self.as_bytes());
         *self.sample.user_header_mut() = Iox2FrameHeader::from(header);
         self.sample.send().map_err(send_port_error)?;
         if !crate::notification::notified(&self.notifier.notify()) {
@@ -121,8 +140,10 @@ impl Iox2Loan {
 
 /// One sample, read where the publisher wrote it.
 pub struct Iox2Sample {
-    topic: Arc<str>,
-    sample: Sample<Ipc, [u8], Iox2FrameHeader>,
+    pub(crate) topic: Arc<str>,
+    pub(crate) sample: Sample<Ipc, [u8], Iox2FrameHeader>,
+    /// The index of the stream it arrived on, in its subscriber.
+    pub(crate) stream: usize,
 }
 
 impl Iox2Sample {
@@ -145,10 +166,12 @@ impl Iox2Sample {
         FrameHeader::from(*self.sample.user_header())
     }
 
-    /// The message bytes, read where the publisher wrote them.
+    /// The message bytes, read where the publisher wrote them: the first `payload_len`
+    /// bytes of the slice. A header that claims more gives the whole slice, which
+    /// [`hypha_wire::frame::verify`] refuses.
     #[must_use]
     pub fn payload(&self) -> &[u8] {
-        self.sample.payload()
+        message_bytes(&self.header(), self.sample.payload())
     }
 }
 
@@ -170,8 +193,10 @@ pub struct Iox2Publisher {
     pub(crate) pool_refusals: std::sync::Mutex<crate::refusal_episode::RefusalEpisode>,
     /// True while a refusal run is open, so a granted loan outside one takes no lock.
     pub(crate) pool_refusing: std::sync::atomic::AtomicBool,
-    /// Last, so it drops after the port and the service handle.
+    /// After the port and the service handle, so the record goes when no port is left.
     pub(crate) _schema_release: crate::schema::SchemaRelease,
+    /// Last: the graph event of its drop follows the port's.
+    pub(crate) _graph: crate::transport::GraphAnnouncement,
 }
 
 impl Iox2Publisher {
@@ -184,11 +209,14 @@ impl Iox2Publisher {
     /// Borrow a buffer of `size` bytes to write a message into.
     ///
     /// # Errors
-    /// [`PortError::TooLarge`] when `size` exceeds the payload capacity,
-    /// [`PortError::PoolExhausted`] when no buffer is free; any other refusal names
-    /// its cause. A publisher never waits for a slow subscriber.
+    /// [`PortError::TooLarge`] when `size` exceeds the payload capacity or what a frame's
+    /// `payload_len` can say ([`MAX_PAYLOAD_LEN`], 4 GiB − 1 bytes),
+    /// [`PortError::PoolExhausted`] when no buffer is free, [`PortError::LoanLimit`] when
+    /// this publisher's callers hold all its loans; any other refusal names its cause. A
+    /// publisher never waits for a slow subscriber.
     pub fn loan(&self, size: usize) -> Result<Iox2Loan, PortError> {
-        if let Some(limit) = self.max_payload.filter(|limit| size > *limit) {
+        let limit = self.max_payload.map_or(MAX_PAYLOAD_LEN, |limit| limit.min(MAX_PAYLOAD_LEN));
+        if size > limit {
             return Err(PortError::TooLarge { requested: size, limit });
         }
         let loaned = self.publisher.loan_slice(size);
@@ -197,10 +225,7 @@ impl Iox2Publisher {
             || (loaned.is_ok() && self.pool_refusing.load(std::sync::atomic::Ordering::Relaxed));
         let persists = tracked && {
             self.pool_refusing.store(pool_refused, std::sync::atomic::Ordering::Relaxed);
-            self.pool_refusals
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .observe(pool_refused, std::time::Instant::now)
+            crate::locked(&self.pool_refusals).observe(pool_refused, std::time::Instant::now)
         };
         if persists {
             log::warn!(target: "hypha/transport",
@@ -211,6 +236,7 @@ impl Iox2Publisher {
         loaned
             .map(|sample| Iox2Loan {
                 sample,
+                used: size,
                 topic_code: self.topic_code,
                 notifier: self.notifier.clone(),
                 latched: self.latched,
@@ -251,335 +277,6 @@ impl Iox2Publisher {
     }
 }
 
-/// One opened subscriber, paired with the topic it reads.
-type NamedSubscriber = (Subscriber<Ipc, [u8], Iox2FrameHeader>, Arc<str>, DataPortFactory);
-
-/// Reads samples from one topic.
-pub struct Iox2Subscriber {
-    inner: SubscriberKind,
-}
-
-struct SingleSubscriber {
-    subscriber: Subscriber<Ipc, [u8], Iox2FrameHeader>,
-    /// Steady-clock time before the subscriber was created; a sample sent earlier is history.
-    created_nanos: u64,
-    service: DataPortFactory,
-    topic: Arc<str>,
-    event_source: EventSource,
-    /// Last, so it drops after the port and the service handle.
-    _schema_release: crate::schema::SchemaRelease,
-}
-
-struct EventSource {
-    node: crate::transport::SharedNode,
-    service_name: String,
-}
-
-enum SubscriberKind {
-    Single(Box<SingleSubscriber>),
-    Wildcard {
-        topic_pattern: String,
-        subscribers: Vec<NamedSubscriber>,
-        current_idx: std::sync::atomic::AtomicUsize,
-        created_nanos: u64,
-        /// Last, so they drop after the subscribers.
-        _schema_releases: Vec<crate::schema::SchemaRelease>,
-    },
-}
-
-/// The next sample of `subscriber` that is not history of an unlatched publisher.
-fn receive_current(
-    subscriber: &Subscriber<Ipc, [u8], Iox2FrameHeader>,
-    topic: &str,
-    created_nanos: u64,
-) -> Result<Option<Sample<Ipc, [u8], Iox2FrameHeader>>, ReceiveError> {
-    loop {
-        match subscriber.receive()? {
-            Some(sample)
-                if is_unlatched_history(
-                    topic,
-                    sample.user_header(),
-                    sample.payload(),
-                    created_nanos,
-                ) => {}
-            other => return Ok(other),
-        }
-    }
-}
-
-fn receive_port_error(cause: ReceiveError) -> PortError {
-    match cause {
-        ReceiveError::ExceedsMaxBorrows => PortError::BorrowLimit,
-        ReceiveError::ConnectionFailure(_) => PortError::Disconnected,
-    }
-}
-
-impl Iox2Subscriber {
-    /// Take the next sample, or `None` when none is pending. Never blocks.
-    ///
-    /// # Errors
-    /// [`PortError::Disconnected`] when the endpoint is closed, or
-    /// [`PortError::BorrowLimit`] when outstanding samples reach the budget.
-    pub fn try_receive(&self) -> Result<Option<Iox2Sample>, PortError> {
-        use std::sync::atomic::Ordering::Relaxed;
-        match &self.inner {
-            SubscriberKind::Single(single) => {
-                let received =
-                    receive_current(&single.subscriber, &single.topic, single.created_nanos)
-                        .map_err(receive_port_error)?;
-                Ok(received.map(|sample| Iox2Sample { sample, topic: Arc::clone(&single.topic) }))
-            }
-            SubscriberKind::Wildcard { subscribers, current_idx, created_nanos, .. } => {
-                if subscribers.is_empty() {
-                    return Ok(None);
-                }
-
-                let start_idx = current_idx.load(Relaxed);
-                let mut index = start_idx;
-                let num_subs = subscribers.len();
-                let mut first_error: Option<PortError> = None;
-                // num_subs > 0 here, so the modulo neither divides by zero nor overflows.
-                #[allow(clippy::arithmetic_side_effects)]
-                let advance = |idx: usize| -> usize { idx.wrapping_add(1) % num_subs };
-                loop {
-                    let mut found = None;
-                    {
-                        let Some((sub, topic, _)) = subscribers.get(index) else {
-                            break;
-                        };
-                        match receive_current(sub, topic, *created_nanos) {
-                            Ok(Some(sample)) => found = Some((sample, Arc::clone(topic))),
-                            Ok(None) => {}
-                            Err(cause) => {
-                                if first_error.is_none() {
-                                    first_error = Some(receive_port_error(cause));
-                                }
-                            }
-                        }
-                    }
-                    index = advance(index);
-                    current_idx.store(index, Relaxed);
-                    if let Some((sample, topic)) = found {
-                        return Ok(Some(Iox2Sample { topic, sample }));
-                    }
-                    if index == start_idx {
-                        break;
-                    }
-                }
-
-                first_error.map_or(Ok(None), Err)
-            }
-        }
-    }
-
-    /// Number of live publishers connected to this input, over every topic it follows.
-    /// A publisher whose node iceoryx2 reports dead is not counted: iceoryx2 keeps its port
-    /// until a node reclaims it.
-    ///
-    /// # Errors
-    /// [`PortError::Backend`] when the node registry cannot be read.
-    pub fn publisher_count(&self) -> Result<usize, PortError> {
-        match &self.inner {
-            SubscriberKind::Single(single) => live_publisher_count(&single.service),
-            SubscriberKind::Wildcard { subscribers, .. } => {
-                let mut total = 0_usize;
-                for (_, _, service) in subscribers {
-                    let live = live_publisher_count(service)?;
-                    total = total.saturating_add(live);
-                }
-                Ok(total)
-            }
-        }
-    }
-
-    /// The service of every topic this subscriber reads.
-    pub(crate) fn port_factories(&self) -> impl Iterator<Item = &DataPortFactory> {
-        let (single, wildcard) = match &self.inner {
-            SubscriberKind::Single(single) => (Some(&single.service), None),
-            SubscriberKind::Wildcard { subscribers, .. } => (None, Some(subscribers)),
-        };
-        single.into_iter().chain(wildcard.into_iter().flatten().map(|(_, _, service)| service))
-    }
-
-    /// The topic this subscriber reads. A wildcard subscriber reports its pattern.
-    #[must_use]
-    pub fn topic(&self) -> &str {
-        match &self.inner {
-            SubscriberKind::Single(single) => &single.topic,
-            SubscriberKind::Wildcard { topic_pattern, .. } => topic_pattern,
-        }
-    }
-
-    /// Returns the buffer size of this subscriber.
-    #[must_use]
-    pub fn buffer_size(&self) -> usize {
-        match &self.inner {
-            SubscriberKind::Single(single) => single.subscriber.buffer_size(),
-            SubscriberKind::Wildcard { subscribers, .. } => subscribers
-                .first()
-                .map_or(crate::qos::DEFAULT_MAX_DEPTH, |(s, _, _)| s.buffer_size()),
-        }
-    }
-
-    pub(crate) fn new(
-        subscriber: Subscriber<Ipc, [u8], Iox2FrameHeader>,
-        created_nanos: u64,
-        service: DataPortFactory,
-        topic: &str,
-        node: crate::transport::SharedNode,
-        schema_release: crate::schema::SchemaRelease,
-    ) -> Self {
-        let event_source =
-            EventSource { node, service_name: crate::transport::service_name_for(topic) };
-        Self {
-            inner: SubscriberKind::Single(Box::new(SingleSubscriber {
-                subscriber,
-                created_nanos,
-                service,
-                topic: Arc::from(topic),
-                event_source,
-                _schema_release: schema_release,
-            })),
-        }
-    }
-
-    /// Open a listener on this subscriber's event service; `Ok(None)` for a wildcard
-    /// subscriber, which is polled.
-    /// # Errors
-    /// Returns [`PortError`] when the node is gone or the event service has no
-    /// room for another listener.
-    pub fn open_listener(&self) -> Result<Option<Listener<Ipc>>, PortError> {
-        let SubscriberKind::Single(single) = &self.inner else {
-            return Ok(None);
-        };
-        let source = &single.event_source;
-        let limits = crate::notification::EventLimits::of_topic(&single.service);
-        crate::notification::create_listener(&source.node, &source.service_name, Some(limits))
-            .map(Some)
-    }
-
-    /// Resolves `topic_pattern` once and follows every topic it matched.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when enumeration fails or a matching data service
-    /// refuses the subscriber. A partial subscription is never returned.
-    pub(crate) fn new_wildcard(
-        node: &crate::transport::SharedNode,
-        spec: &hypha_core::port::TopicSpec,
-    ) -> Result<Self, PortError> {
-        let created_nanos = steady_nanos()?;
-        let subscribers = open_matching_topics(node, spec)?;
-        let schema_releases = subscribers
-            .iter()
-            .map(|(_, topic, _)| crate::schema::SchemaRelease::new(topic))
-            .collect();
-        Ok(Self {
-            inner: SubscriberKind::Wildcard {
-                topic_pattern: spec.name.clone(),
-                subscribers,
-                current_idx: std::sync::atomic::AtomicUsize::new(0),
-                created_nanos,
-                _schema_releases: schema_releases,
-            },
-        })
-    }
-}
-
-/// The publishers of `service` whose node iceoryx2 does not report dead.
-fn live_publisher_count(service: &DataPortFactory) -> Result<usize, PortError> {
-    let dynamic = service.dynamic_config();
-    if dynamic.number_of_publishers() == 0 {
-        return Ok(0);
-    }
-    let mut owners: Vec<iceoryx2::identifiers::UniqueNodeId> = Vec::new();
-    dynamic.list_publishers(|details| {
-        owners.push(details.node_id);
-        CallbackProgression::Continue
-    });
-    if owners.is_empty() {
-        return Ok(0);
-    }
-    let dead = dead_node_ids()?;
-    let live = owners.iter().filter(|owner| !dead.contains(owner)).count();
-    Ok(live)
-}
-
-/// The ids of the nodes of the domain that iceoryx2 reports dead.
-fn dead_node_ids() -> Result<Vec<iceoryx2::identifiers::UniqueNodeId>, PortError> {
-    use iceoryx2::node::{NodeState, NodeView as _};
-
-    let config = crate::domain::config()?;
-    let mut dead = Vec::new();
-    iceoryx2::node::Node::<Ipc>::list(config, |state| {
-        if let NodeState::Dead(view) = state {
-            dead.push(*view.id());
-        }
-        CallbackProgression::Continue
-    })
-    .map_err(crate::transport::node_list_failed)?;
-    Ok(dead)
-}
-
-pub(crate) fn steady_nanos() -> Result<u64, PortError> {
-    u64::try_from(hypha_time::steady_now().nanos()).map_err(|_| PortError::Backend(3))
-}
-
-fn open_matching_topics(
-    node: &crate::transport::SharedNode,
-    spec: &hypha_core::port::TopicSpec,
-) -> Result<Vec<NamedSubscriber>, PortError> {
-    let mut subscribers = Vec::new();
-    let port_name = crate::transport::node_port_name(node)?;
-    for name in crate::discovery::topic_bus_names()? {
-        let full_topic = crate::discovery::public_topic_name(&name);
-        if !topic_matches_pattern(&spec.name, &full_topic) {
-            continue;
-        }
-        let service_name = iceoryx2::prelude::ServiceName::new(&name)
-            .map_err(|_| PortError::Backend(crate::service_open::BACKEND_SERVICE_CORRUPTED))?;
-        let opened = crate::service_open::open_within_window(
-            "the wildcard data service",
-            node,
-            PortError::Backend(0),
-            |node_ref| crate::transport::data_service_builder(node_ref, &service_name).open(),
-            crate::service_open::publish_subscribe_open_is_transient,
-        )?;
-        let service = match opened {
-            Ok(service) => service,
-            Err(
-                iceoryx2::service::builder::publish_subscribe::PublishSubscribeOpenError::DoesNotExist
-                | iceoryx2::service::builder::publish_subscribe::PublishSubscribeOpenError::IncompatibleMessagingPattern,
-            ) => continue,
-            Err(cause) => {
-                let hangs = cause
-                    == iceoryx2::service::builder::publish_subscribe::PublishSubscribeOpenError::HangsInCreation;
-                log::error!(target: "hypha/transport", "hypha_iceoryx2: cannot open data service '{name}': {cause:?}{}",
-                        crate::service_open::half_created_advice(hangs));
-                return Err(crate::service_open::publish_subscribe_open_port_error(cause));
-            }
-        };
-        // A wildcard that declares a policy accepts only services that carry it.
-        crate::qos::check_declared_service(&full_topic, &spec.qos, service.attributes())?;
-        let slots = match &spec.qos {
-            QosRequest::Declared(_) => {
-                let stamped = crate::qos::policy_of_service(service.attributes())?;
-                crate::qos::declared_slots(&full_topic, &stamped)
-            }
-            QosRequest::Undeclared => crate::qos::observer_slots(&full_topic),
-        };
-        let subscriber = crate::subscriber_port::create_subscriber(
-            &service,
-            &full_topic,
-            spec.buffer_size,
-            &port_name,
-            slots,
-        )?;
-        subscribers.push((subscriber, Arc::from(full_topic), service));
-    }
-    Ok(subscribers)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{BACKEND_LOAN_INTERNAL, BACKEND_SEND_INTERNAL, loan_port_error, send_port_error};
@@ -589,7 +286,7 @@ mod tests {
     #[test]
     fn a_full_pool_and_the_loan_budget_are_pool_exhaustion() {
         assert_eq!(loan_port_error(LoanError::OutOfMemory, 8, None), PortError::PoolExhausted);
-        assert_eq!(loan_port_error(LoanError::ExceedsMaxLoans, 8, None), PortError::PoolExhausted);
+        assert_eq!(loan_port_error(LoanError::ExceedsMaxLoans, 8, None), PortError::LoanLimit);
     }
 
     #[test]

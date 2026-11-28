@@ -70,8 +70,12 @@ struct Peer
 
     Peer()
     {
-        auto subscribed = hypha::subscribeRawOfType(
-            "/clock", "rosgraph_msgs/Clock", [this](const hypha::RawSample& sample) {
+        const hypha::RawType clockType{
+            .dataType = hypha::codec::dataType<rosgraph_msgs::Clock>(),
+            .md5 = hypha::codec::md5Sum<rosgraph_msgs::Clock>()
+        };
+        auto subscribed =
+            hypha::subscribeRawOfType("/clock", clockType, [this](const hypha::RawSample& sample) {
                 uint32_t secs = 0;
                 uint32_t nsecs = 0;
                 if (sample.bytes.size() != 8) {
@@ -84,8 +88,7 @@ struct Peer
                 report.clock_nanos = static_cast<uint64_t>(secs) * 1'000'000'000U + nsecs;
                 report.clock_sent_nanos = static_cast<uint64_t>(sample.transportSent.nanos());
                 static_cast<void>(this->progress.publish(report));
-            }
-        );
+            });
         if (subscribed.has_value()) {
             this->clock.emplace(std::move(*subscribed));
         }
@@ -112,7 +115,7 @@ class ClockDriverFixture : public ::testing::Test
 
 }  // namespace
 
-TEST_F(ClockDriverFixture, StepsAtStartPlusMultiplesOfThePeriod)
+TEST_F(ClockDriverFixture, StepsAtMultiplesOfThePeriodAfterTheStart)
 {
     Peer peer;
     ASSERT_TRUE(peer.clock.has_value());
@@ -125,12 +128,13 @@ TEST_F(ClockDriverFixture, StepsAtStartPlusMultiplesOfThePeriod)
         ASSERT_TRUE(this->node->runFor(50_ms).ok());
     }
     ASSERT_GE(simulator.deadlines.size(), 3U);
+    // The start value is the start barrier, with no step: the first step is one period later.
     for (size_t index = 0; index < simulator.deadlines.size(); ++index) {
-        EXPECT_EQ(simulator.deadlines[index], kStart + static_cast<int64_t>(index) * kPeriod);
+        EXPECT_EQ(simulator.deadlines[index], kStart + static_cast<int64_t>(index + 1) * kPeriod);
     }
 }
 
-TEST_F(ClockDriverFixture, PublishesClockAfterEachStep)
+TEST_F(ClockDriverFixture, PublishesTheStartThenClockAfterEachStep)
 {
     Peer peer;
     ASSERT_TRUE(peer.clock.has_value());
@@ -142,8 +146,12 @@ TEST_F(ClockDriverFixture, PublishesClockAfterEachStep)
     ASSERT_TRUE(started.has_value()) << started.error();
     ASSERT_TRUE(this->node->runFor(50_ms).ok());
     ASSERT_FALSE(seen.empty());
-    const std::vector<int64_t> expected(
-        simulator.deadlines.begin(), simulator.deadlines.begin() + static_cast<long>(seen.size())
+    ASSERT_LE(seen.size(), simulator.deadlines.size() + 1U);
+    std::vector<int64_t> expected{kStart};
+    expected.insert(
+        expected.end(),
+        simulator.deadlines.begin(),
+        simulator.deadlines.begin() + static_cast<long>(seen.size() - 1U)
     );
     EXPECT_EQ(seen, expected);
 }
@@ -156,8 +164,10 @@ TEST_F(ClockDriverFixture, PacesToTheRealTimeFactor)
     const auto started = simulator.start(*this->node);
     ASSERT_TRUE(started.has_value()) << started.error();
     ASSERT_TRUE(this->node->runFor(200_ms).ok());
-    EXPECT_GE(simulator.deadlines.size(), 18U);
-    EXPECT_LE(simulator.deadlines.size(), 23U);
+    // The start value runs no step: at 100 Hz the steps due within 200 ms are those at
+    // 10 ms .. 200 ms after the acknowledged start, at most 20.
+    EXPECT_GE(simulator.deadlines.size(), 17U);
+    EXPECT_LE(simulator.deadlines.size(), 22U);
 }
 
 class Alone final : public hypha::CycleNode
@@ -226,4 +236,32 @@ TEST_F(ClockDriverFixture, WithATriggerIsRefused)
     ASSERT_FALSE(started.has_value());
     EXPECT_NE(started.error().find("cycle 'clock_driver_test'"), std::string::npos)
         << started.error();
+}
+
+/// A driver whose start value `/clock` cannot carry.
+class LateStart final : public hypha::CycleNode
+{
+  public:
+    LateStart()
+    {
+        this->setRate(hypha::Hz(100.0));
+        this->setClockDriver(
+            hypha::ClockDriverOptions{
+                .start = hypha::Time::fromNanos((int64_t{1} << 32) * 1'000'000'000),
+                .participants = {kPeer},
+            }
+        );
+    }
+
+    void step(const hypha::CycleTime&) override
+    {
+    }
+};
+
+TEST_F(ClockDriverFixture, AStartBeyondTheClockMessageIsRefusedNamingTheRange)
+{
+    LateStart  simulator;
+    const auto started = simulator.start(*this->node);
+    ASSERT_FALSE(started.has_value());
+    EXPECT_NE(started.error().find("4294967296 s"), std::string::npos) << started.error();
 }

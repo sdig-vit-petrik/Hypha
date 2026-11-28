@@ -114,3 +114,39 @@ fn a_frame_of_0_1_0_is_refused_by_its_crc() {
 fn topic() -> hypha_wire::frame::TopicCode {
     hypha_wire::frame::TopicCode::of("/test")
 }
+
+/// The `wire_frame` fuzz seeds are `IOX7` frames sealed for `/test`: they reach the accepting
+/// path of the target, and a layout change that forgets them fails here.
+#[test]
+#[allow(clippy::expect_used)]
+fn the_fuzz_seed_frames_verify() {
+    let seeds =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/wire_frame");
+    for (name, payload_len) in [("seed-sealed", 5_usize), ("seed-latched-empty", 0)] {
+        let bytes = std::fs::read(seeds.join(name)).expect("seed");
+        let (head, slice) = bytes.split_at(56);
+        let word = |at: usize| {
+            u32::from_le_bytes(head.get(at..at + 4).expect("u32").try_into().expect("4 bytes"))
+        };
+        let long = |at: usize| {
+            u64::from_le_bytes(head.get(at..at + 8).expect("u64").try_into().expect("8 bytes"))
+        };
+        let header = hypha_wire::frame::FrameHeader {
+            magic: word(0),
+            flags: word(4),
+            metadata: FrameMetadata {
+                schema_hash: long(8),
+                publisher_id: long(16),
+                sequence: long(24),
+                transport_sent_nanos: long(32),
+                framework_sent_nanos: long(40),
+            },
+            crc: word(48),
+            payload_len: word(52),
+        };
+        assert_eq!(header.magic, FRAME_MAGIC, "{name}");
+        let parsed = verify(hypha_wire::frame::TopicCode::of("/test"), &header, slice)
+            .expect("the seed verifies");
+        assert_eq!(parsed.payload().len(), payload_len, "{name}");
+    }
+}

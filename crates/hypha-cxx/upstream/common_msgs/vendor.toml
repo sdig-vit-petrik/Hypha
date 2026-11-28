@@ -1,0 +1,13 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/ros/common_msgs"
+ref = "1.13.2"
+commit = "1230f39a7068d1d73d1039eb0eb970c922b6bcf7"
+
+# Path here = SHA-256 of the file.
+[files]
+"sensor_msgs/include/sensor_msgs/distortion_models.h" = "e664aac4d9397508a6ead9a22f942f1880e4a57b859b7705fbccb39bbb0f2896"
+"sensor_msgs/include/sensor_msgs/image_encodings.h" = "0e22e0fc006372265035d4a237915d8e764a261c0527952a193a109c79d1e9cb"
+"sensor_msgs/include/sensor_msgs/impl/point_cloud2_iterator.h" = "e0776d5f22cc1258e6995edaefb8f57137d53c66ebb4dd36367096e531ece0f2"
+"sensor_msgs/include/sensor_msgs/point_cloud2_iterator.h" = "f99854e4d63148e3b22b425c6929ea2ab1734f848e87a75bde438e215dd84f85"
+"sensor_msgs/include/sensor_msgs/point_field_conversion.h" = "275b431df0d2e85a7895d6bdbad0b2fa62ae77600a4545b505b2484f4d19f017"

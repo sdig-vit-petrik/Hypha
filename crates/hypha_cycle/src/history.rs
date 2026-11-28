@@ -1,24 +1,175 @@
 //! Bounded owned sample history shared by independent cycle bindings.
 
 use std::collections::VecDeque;
-use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
-/// Reusable serialized message buffer that exposes only its immutable slice.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SamplePayload(Vec<u8>);
+mod pins;
+pub use pins::{PinLedger, PinReaders};
 
-impl AsRef<[u8]> for SamplePayload {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
+/// The bytes of one sample a transport holds where they arrived, read there.
+pub trait PinnedBytes: Send {
+    /// The message bytes.
+    fn bytes(&self) -> &[u8];
+}
+
+/// Where the bytes of a pinned sample are: in place, copied out, or given back unread.
+enum PinState {
+    InPlace(Box<dyn PinnedBytes>),
+    Copied(Vec<u8>),
+    Released,
+}
+
+/// The bytes of one sample read in place, in the transport's slot, until the transport
+/// needs the slot back: then they are copied ([`PinnedPayload::copy_out`]), or, for a sample
+/// no reader takes again, given back ([`PinnedPayload::release`]). Readers that hold a
+/// pointer to the bytes are done before either: both run between steps.
+pub struct PinnedPayload {
+    state: Mutex<PinState>,
+    /// The queued bindings that took the sample (examined it), each once.
+    taken: AtomicU32,
+}
+
+impl PinnedPayload {
+    /// The bytes of `bytes`, in place.
+    #[must_use]
+    pub fn new(bytes: Box<dyn PinnedBytes>) -> Arc<Self> {
+        Arc::new(Self { state: Mutex::new(PinState::InPlace(bytes)), taken: AtomicU32::new(0) })
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, PinState> {
+        crate::locked(&self.state)
+    }
+
+    /// True while the bytes are in the transport's slot.
+    #[must_use]
+    pub fn in_place(&self) -> bool {
+        matches!(*self.state(), PinState::InPlace(_))
+    }
+
+    /// The queued bindings that took the sample.
+    #[must_use]
+    pub fn taken(&self) -> u32 {
+        self.taken.load(Ordering::Acquire)
+    }
+
+    /// Copy the bytes out of the slot and give it back. True when they were in place.
+    pub fn copy_out(&self) -> bool {
+        let mut state = self.state();
+        let PinState::InPlace(held) = &*state else {
+            return false;
+        };
+        let copy = held.bytes().to_vec();
+        *state = PinState::Copied(copy);
+        true
+    }
+
+    /// Give the slot back without a copy: the sample reads as no bytes from here. True when
+    /// they were in place.
+    pub fn release(&self) -> bool {
+        let mut state = self.state();
+        if !matches!(*state, PinState::InPlace(_)) {
+            return false;
+        }
+        *state = PinState::Released;
+        true
+    }
+
+    fn with<T>(&self, read: impl FnOnce(&[u8]) -> T) -> T {
+        let state = self.state();
+        match &*state {
+            PinState::InPlace(held) => read(held.bytes()),
+            PinState::Copied(copy) => read(copy),
+            PinState::Released => read(&[]),
+        }
     }
 }
 
-impl Deref for SamplePayload {
-    type Target = [u8];
+#[derive(Clone)]
+enum Storage {
+    Owned(Vec<u8>),
+    Pinned(Arc<PinnedPayload>),
+}
 
-    fn deref(&self) -> &[u8] {
-        &self.0
+/// The serialized message of a history sample: a reusable buffer, or bytes read in place.
+#[derive(Clone)]
+pub struct SamplePayload(Storage);
+
+impl Default for SamplePayload {
+    fn default() -> Self {
+        Self(Storage::Owned(Vec::new()))
+    }
+}
+
+impl SamplePayload {
+    /// Bytes held in place.
+    #[must_use]
+    pub fn pinned(payload: Arc<PinnedPayload>) -> Self {
+        Self(Storage::Pinned(payload))
+    }
+
+    /// Run `read` on the bytes.
+    pub fn with_bytes<T>(&self, read: impl FnOnce(&[u8]) -> T) -> T {
+        match &self.0 {
+            Storage::Owned(bytes) => read(bytes),
+            Storage::Pinned(payload) => payload.with(read),
+        }
+    }
+
+    /// The address and length of the bytes, for a C reader of the step: valid until the
+    /// bytes move, which [`PinnedPayload::copy_out`] and [`PinnedPayload::release`] do
+    /// between steps, and the history's reuse of an evicted buffer does at a push.
+    #[must_use]
+    pub fn raw_parts(&self) -> (*const u8, usize) {
+        self.with_bytes(|bytes| (bytes.as_ptr(), bytes.len()))
+    }
+
+    /// The bytes, copied.
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.with_bytes(<[u8]>::to_vec)
+    }
+
+    /// The pinned bytes, for a payload read in place.
+    #[must_use]
+    pub fn as_pinned(&self) -> Option<&Arc<PinnedPayload>> {
+        match &self.0 {
+            Storage::Owned(_) => None,
+            Storage::Pinned(payload) => Some(payload),
+        }
+    }
+
+    /// Count one queued binding that took the sample; nothing for an owned buffer.
+    pub fn mark_taken(&self) {
+        if let Storage::Pinned(payload) = &self.0 {
+            payload.taken.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        match &self.0 {
+            Storage::Owned(bytes) => bytes.capacity(),
+            Storage::Pinned(_) => 0,
+        }
+    }
+}
+
+impl PartialEq for SamplePayload {
+    fn eq(&self, other: &Self) -> bool {
+        if let (Storage::Pinned(left), Storage::Pinned(right)) = (&self.0, &other.0)
+            && Arc::ptr_eq(left, right)
+        {
+            return true;
+        }
+        self.with_bytes(|left| other.with_bytes(|right| left == right))
+    }
+}
+
+impl Eq for SamplePayload {}
+
+impl std::fmt::Debug for SamplePayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.with_bytes(|bytes| f.debug_tuple("SamplePayload").field(&bytes.len()).finish())
     }
 }
 
@@ -70,6 +221,9 @@ pub struct CycleHistory {
     rejected: Vec<u64>,
     /// The newest framework send stamp of an evicted sample.
     newest_evicted_sent_nanos: Option<u64>,
+    /// The sequence of the newest evicted sample a reader had rejected: eviction prunes
+    /// `rejected`, and a binding still has to know whether a sample it relied on was one.
+    newest_evicted_rejected: Option<u64>,
 }
 
 impl CycleHistory {
@@ -97,6 +251,7 @@ impl CycleHistory {
             timestamp_inversions: 0,
             rejected: Vec::new(),
             newest_evicted_sent_nanos: None,
+            newest_evicted_rejected: None,
         })
     }
 
@@ -126,6 +281,44 @@ impl CycleHistory {
         framework_sent_nanos: u64,
         origin: SampleOrigin,
     ) -> u64 {
+        self.push_with(framework_sent_nanos, |reused, sequence| {
+            write_sample(
+                reused,
+                sequence,
+                payload,
+                transport_sent_nanos,
+                framework_sent_nanos,
+                origin,
+            )
+        })
+    }
+
+    /// [`CycleHistory::push_from`] for bytes read in place, where they arrived.
+    pub fn push_pinned(
+        &mut self,
+        payload: Arc<PinnedPayload>,
+        transport_sent_nanos: u64,
+        framework_sent_nanos: u64,
+        origin: SampleOrigin,
+    ) -> u64 {
+        self.push_with(framework_sent_nanos, |_, sequence| {
+            Arc::new(HistorySample {
+                sequence,
+                payload: SamplePayload::pinned(payload),
+                transport_sent_nanos,
+                framework_sent_nanos,
+                origin,
+            })
+        })
+    }
+
+    /// Evict the oldest sample of a full history, then append the one `make` writes, in
+    /// the evicted sample's buffer when no reader holds it.
+    fn push_with(
+        &mut self,
+        framework_sent_nanos: u64,
+        make: impl FnOnce(Option<Arc<HistorySample>>, u64) -> Arc<HistorySample>,
+    ) -> u64 {
         let sequence = self.next_sequence;
 
         let mut reused: Option<Arc<HistorySample>> = None;
@@ -137,6 +330,9 @@ impl CycleHistory {
                 break;
             };
             let evicted = oldest.sequence;
+            if self.rejected.contains(&evicted) {
+                self.newest_evicted_rejected = Some(evicted);
+            }
             self.rejected.retain(|sequence| *sequence != evicted);
             let evicted_sent = oldest.framework_sent_nanos;
             let newest = self
@@ -151,23 +347,16 @@ impl CycleHistory {
                 self.timestamp_inversions = self.timestamp_inversions.saturating_sub(1);
             }
             if Arc::get_mut(&mut oldest).is_some() {
-                let keep = reused.as_ref().is_none_or(|current| {
-                    oldest.payload.0.capacity() > current.payload.0.capacity()
-                });
+                let keep = reused
+                    .as_ref()
+                    .is_none_or(|current| oldest.payload.capacity() > current.payload.capacity());
                 if keep {
                     reused = Some(oldest);
                 }
             }
         }
 
-        let sample = write_sample(
-            reused,
-            sequence,
-            payload,
-            transport_sent_nanos,
-            framework_sent_nanos,
-            origin,
-        );
+        let sample = make(reused, sequence);
 
         if self.samples.back().is_some_and(|last| last.framework_sent_nanos > framework_sent_nanos)
         {
@@ -207,6 +396,11 @@ impl CycleHistory {
         newly_rejected
     }
 
+    /// The sequence of the newest evicted sample that was reported as undecodable.
+    pub(crate) const fn newest_evicted_rejected(&self) -> Option<u64> {
+        self.newest_evicted_rejected
+    }
+
     /// Whether the retained sample `sequence` was reported as undecodable.
     #[must_use]
     pub fn is_rejected(&self, sequence: u64) -> bool {
@@ -243,11 +437,11 @@ impl CycleHistory {
         usize::try_from(offset).unwrap_or(usize::MAX).min(self.samples.len())
     }
 
-    /// The exclusive end of the admitted prefix, when timestamps are ordered.
-    /// Equal timestamps belong to the next replay step.
-    pub(crate) fn replay_end(&self, cut_nanos: u64) -> Option<usize> {
+    /// The exclusive end of the prefix of samples whose framework send time `admits`, when
+    /// timestamps are ordered.
+    pub(crate) fn replay_end(&self, admits: impl Fn(u64) -> bool) -> Option<usize> {
         (self.timestamp_inversions == 0)
-            .then(|| self.samples.partition_point(|sample| sample.framework_sent_nanos < cut_nanos))
+            .then(|| self.samples.partition_point(|sample| admits(sample.framework_sent_nanos)))
     }
 
     /// The retained samples stamped more than `bound_nanos` after `cut_nanos`; a high
@@ -275,8 +469,13 @@ fn write_sample(
         && let Some(sample) = Arc::get_mut(&mut arc)
     {
         sample.sequence = sequence;
-        sample.payload.0.clear();
-        sample.payload.0.extend_from_slice(payload);
+        match &mut sample.payload.0 {
+            Storage::Owned(bytes) => {
+                bytes.clear();
+                bytes.extend_from_slice(payload);
+            }
+            Storage::Pinned(_) => sample.payload = SamplePayload(Storage::Owned(payload.to_vec())),
+        }
         sample.transport_sent_nanos = transport_sent_nanos;
         sample.framework_sent_nanos = framework_sent_nanos;
         sample.origin = origin;
@@ -284,7 +483,7 @@ fn write_sample(
     }
     Arc::new(HistorySample {
         sequence,
-        payload: SamplePayload(payload.to_vec()),
+        payload: SamplePayload(Storage::Owned(payload.to_vec())),
         transport_sent_nanos,
         framework_sent_nanos,
         origin,

@@ -10,8 +10,10 @@
 #include "hypha/cycle_latest.h"
 #include "hypha/cycle_output.h"
 #include "hypha/cycle_runtime.h"
+#include "hypha/cycle_service.h"
 #include "hypha/node.h"
 #include "hypha/options.h"
+#include "hypha/sequence.h"
 
 #include <expected>
 #include <optional>
@@ -23,7 +25,7 @@ namespace hypha {
 /// @brief A node whose work is one step: its ports are members, step() is a method.
 ///
 /// The cycle takes the node's name. Its rate is `rate_hz` of the `[cycle]` table, or
-/// setRate() in setup(), or setTrigger().
+/// setRate() in setup(); or it steps on each sample of its setTrigger() ports.
 ///
 ///     class Fusion : public hypha::CycleNode {
 ///         Latest<Imu>     imu{*this, "imu"};  // [ports.inputs.imu] silence_ms = 50
@@ -44,6 +46,10 @@ class CycleNode
     using Arrivals = hypha::Arrivals<M>;
     template <typename M>
     using Output = hypha::Output<M>;
+    template <typename Srv>
+    using Requests = hypha::Requests<Srv>;
+    template <typename Srv>
+    using Calls = hypha::Calls<Srv>;
 
     static constexpr OptionalTopic optionalTopic{};
     static constexpr Advisory      advisory{};

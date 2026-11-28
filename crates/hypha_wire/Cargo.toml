@@ -9,14 +9,22 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-crc32c = "0.6.8"
+# CRC-32C: PMULL (aarch64) or PCLMULQDQ (x86_64) folding fused with the CRC instructions,
+# chosen at run time (`std` for that detection), a table where neither exists.
+crc-fast = { version = "1.10.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
+# The implementation before crc-fast: a test pins the two to the same value.
+crc32c = "0.6.8"
 criterion = { workspace = true }
 proptest = { workspace = true }
 
 [[bench]]
 name = "codec"
+harness = false
+
+[[bench]]
+name = "integrity"
 harness = false
 
 [lints]

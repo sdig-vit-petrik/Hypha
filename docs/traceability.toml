@@ -11,8 +11,6 @@
 #                                 fuzz, asan, tsan
 #   evidence Evidence no test result can show: analysis, inspection, a run by hand.
 #   gap      What the stated verification method still lacks. Empty: nothing known.
-# The letters and numbers in brackets (R1, P4, ...) are the items of the former
-# backlog document.
 
 # Functional requirements
 
@@ -27,8 +25,8 @@ evidence = "`framework_stamp_cross_language` runs a C++ and a Rust process"
 
 [[requirement]]
 id = "FSR-02"
-evidence = "Analysis: iceoryx2 writes a sample once and appends an offset per connection"
-gap = "No test measures publish time against subscriber count (R7)."
+tests = ["hypha_iceoryx2/publish_cost_per_subscriber"]
+evidence = "`publish_cost_per_subscriber`: for 1, 2, 4 and 8 subscribers each publish takes a slot of its own and reaches each subscriber once, and each subscriber reads it at a constant shift from the publisher's addresses; on Linux only, at the publisher's file and offset (`/proc/self/maps`), which shows one shared sample and no copy; analysis: iceoryx2 appends one offset per connection, so the publish is O(s). No test measures time: a test does not depend on the speed of its host"
 
 [[requirement]]
 id = "FSR-03"
@@ -49,9 +47,13 @@ id = "FSR-05"
 tests = [
   "hypha_core/frame_validation",
   "cxx:test_typed_schema_identity",
+  "cxx:test_topic_overloading",
   "hypha_node/client_facade_round_trip",
+  "hypha_node/topic_overloading",
+  "hypha_ffi/subscriber_no_publisher_warning",
+  "hypha_ffi/other_schemas",
 ]
-evidence = "R4 harness, by hand (wrong schema hash: all rejected and counted)"
+evidence = "a harness, by hand (wrong schema hash: all rejected and counted)"
 
 [[requirement]]
 id = "FSR-06"
@@ -85,9 +87,10 @@ tests = [
   "hypha_wire/sequence_validator",
   "hypha_node/subscriber_integrity_stats",
   "hypha_ffi/delivery_transport_age",
+  "hypha_cycle/trigger_capture",
 ]
-evidence = "R4 harness, by hand (corrupt, future, reordered frames from a peer process)"
-gap = "The zero-copy window after the check is accepted (architecture §3.4)."
+evidence = "a harness, by hand (corrupt, future, reordered frames from a peer process). A trigger sample of a triggered cycle is judged by age once, by the trigger schedule when its turn drains it (`hypha_runtime::trigger_schedule`, Late: excluded and counted in `age_rejections_total`); the capture delivers it without a second check, so a step that runs later in the turn holds it although the capture judges the port Stale (execution-model §6.6 item 2; `the_firing_sample_is_delivered_even_past_its_limit_at_capture`)."
+gap = "The zero-copy window after the check is accepted (architecture §3.4). The trigger schedule's age check is a unit test of `hypha_runtime`, which a test reference cannot name."
 
 [[requirement]]
 id = "FSR-11"
@@ -156,8 +159,7 @@ evidence = "the installed SDK flow (`scripts/test-installed-sdk.sh`)"
 
 [[requirement]]
 id = "FSR-22"
-tests = ["hypha_tools/echo_plot_cli", "hypha_tools/topic_follower", "hypha_ffi/introspection_rows"]
-gap = "The O(1) clause has no measurement (R7)."
+tests = ["hypha_tools/echo_plot_cli", "hypha_node/stream_follower", "hypha_ffi/introspection_rows"]
 
 [[requirement]]
 id = "FSR-23"
@@ -186,8 +188,7 @@ gap = "No test checks that a clean shutdown leaves no segment."
 [[requirement]]
 id = "FSR-27"
 tests = ["hypha_iceoryx2/stale_resource_reclaim", "hypha_node/peer_kill_isolation"]
-evidence = "`peer_kill_isolation`: SIGKILL of a publisher, of a reader and of a reader that holds samples, and a restarted publisher: no loss, no rejection, no refused publish for the survivors; R3 harness, by hand"
-gap = "No test kills a publisher that holds an unsent loan, or a process between two sends of one cycle step."
+evidence = "`peer_kill_isolation`: SIGKILL of a publisher, of a reader, of a reader that holds samples, of a publisher that holds an unsent loan and of a peer that reproduces a cycle between the two sends of one step, and a restarted publisher: no loss, no rejection, no refused publish for the survivors; a harness, by hand"
 
 [[requirement]]
 id = "FSR-40"
@@ -245,6 +246,27 @@ tests = ["hypha_cycle/input_supervision", "cxx:test_input_supervision"]
 id = "FSR-41"
 tests = ["hypha_ffi/introspection_snapshot", "cxx:test_node_introspection"]
 
+[[requirement]]
+id = "FSR-42"
+tests = [
+  "hypha_iceoryx2/service_transport",
+  "hypha_node/service_calls",
+  "hypha_tools/service_cli",
+  "cxx:test_services",
+  "cxx:test_cycle_services",
+]
+
+[[requirement]]
+id = "FSR-43"
+tests = ["hypha_node/service_calls", "hypha_tools/service_cli", "cxx:test_services"]
+
+[[requirement]]
+id = "FSR-44"
+tests = [
+  "hypha_tools/service_lockstep",
+  "cxx:test_cycle_services",
+]
+
 # Non-functional requirements
 
 [[requirement]]
@@ -254,16 +276,16 @@ evidence = "Inspection: `libhypha_ffi` is the one deliverable; the C++ SDK uses 
 [[requirement]]
 id = "NFR-02"
 tests = ["run:miri", "run:asan", "run:tsan"]
-evidence = "Rust core; `unsafe` forbidden by lint level outside `hypha_ffi` (the C boundary), `hypha_sys` (OS calls), the test-only `hypha_testkit/src/env.rs` and the C boundary module `hypha_testing_mcap/src/ffi.rs` of the test-only MCAP reader; `hypha_node` and the tools forbid it; sanitizer and Miri runs, 2026-11-11 (R1); `scripts/miri.sh` (Miri over the crates without transport and the node-free `hypha_node` tests); `scripts/sanitize.sh` (C++ tests)"
-gap = "Miri and the sanitizers are not in CI; Miri cannot run a node, `hypha_ffi` or `hypha_sys` (P4)."
+evidence = "Rust core; `unsafe` forbidden by lint level outside `hypha_ffi` (the C boundary), `hypha_sys` (OS calls), the test-only `hypha_testkit/src/env.rs` and the C boundary module `hypha_testing_mcap/src/ffi.rs` of the test-only MCAP reader; `hypha_node` and the tools forbid it; sanitizer and Miri runs, 2026-11-11; `scripts/miri.sh` (Miri over the crates without transport and the node-free `hypha_node` tests); `scripts/sanitize.sh` (C++ tests)"
+gap = "Miri and the sanitizers are not in CI; Miri cannot run a node, `hypha_ffi` or `hypha_sys`."
 
 [[requirement]]
 id = "NFR-03"
-gap = "No automated evidence. macOS 3-hop p99 2–6 ms; no Linux measurement (R7)."
+gap = "The rated-load run (examples/load/rated.toml, scripts/rated-load.sh, measurement `rated_load` of the qualification) checks the 500 µs p99, but on no reference platform, so it verifies nothing yet. No Linux measurement."
 
 [[requirement]]
 id = "NFR-04"
-gap = "No automated evidence (R7)."
+gap = "The rated-load run (examples/load/rated.toml, scripts/rated-load.sh, measurement `rated_load` of the qualification) checks zero loss at the rated load, but on no reference platform, so it verifies nothing yet; its per-topic split is constructed from the three totals."
 
 [[requirement]]
 id = "NFR-05"
@@ -273,11 +295,11 @@ tests = [
   "hypha_iceoryx2/shm_capacity",
   "hypha_cycle/cycle_history",
 ]
-gap = "Growth under sustained overload is not measured (R8)."
+gap = "The overload run exists (examples/load/overload.toml, scripts/overload.sh, measurement `overload` of the qualification); its counted limits passed on a development host. It has not run on Linux, where alone written shared memory is measured; after a Linux run confirms its limits it becomes the reference `run:overload`."
 
 [[requirement]]
 id = "NFR-06"
-gap = "No evidence (R8)."
+gap = "No evidence: the 168 h run has not been made (#7)."
 
 [[requirement]]
 id = "NFR-07"
@@ -293,8 +315,8 @@ tests = [
   "hypha_tools/*_properties",
   "run:fuzz",
 ]
-evidence = "Workspace lints (panic, indexing, arithmetic); the tests are the property tests of every input parser and decoder; fuzzing, 2026-11-11 (R2); `scripts/fuzz.sh` (a `fuzz/` target per parser and decoder)"
-gap = "Fuzzing is not in CI and runs by hand (P4)."
+evidence = "Workspace lints (panic, indexing, arithmetic); the tests are the property tests of every input parser and decoder; fuzzing, 2026-11-11; `scripts/fuzz.sh` (a `fuzz/` target per parser and decoder)"
+gap = "Fuzzing is not in CI and runs by hand."
 
 [[requirement]]
 id = "NFR-09"
@@ -305,12 +327,13 @@ evidence = "`node_health`: a foreign callback status 7; abort: the release libra
 id = "NFR-10"
 tests = ["run:coverage"]
 evidence = "`scripts/coverage.sh` (`--fail-under-lines 80` per crate)"
-gap = "The coverage gate is not in CI; the apps have no coverage gate."
+gap = "The coverage gate runs by hand; the apps, `hypha_node` and the C++ SDK have none (#15)."
 
 [[requirement]]
 id = "NFR-11"
 tests = ["hypha_ffi/startup_latency"]
-evidence = "`startup_latency`: node creation to first publish; exec to first sample measured 2026-11-11 (R9)"
+evidence = "`startup_latency`: node creation, the publisher and the first send succeed on the first call, with no handshake to wait for"
+gap = "The 100 ms is a speed of the host, which no test asserts (#64); a target until a reference platform exists."
 
 [[requirement]]
 id = "NFR-12"

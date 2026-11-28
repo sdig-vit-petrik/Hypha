@@ -49,7 +49,9 @@ struct PendingSample {
 
 #[derive(Default)]
 struct BridgeState {
-    channel_by_topic: HashMap<String, u32>,
+    /// The channel of each topic and the schema hash of the stream it carries: the first
+    /// stream seen on the name, since a Foxglove channel is one topic of one schema.
+    channel_by_topic: HashMap<String, (u32, u64)>,
     /// The one most recent sample seen on a topic whose schema has not yet
     /// resolved.
     pending_by_topic: HashMap<String, PendingSample>,
@@ -211,8 +213,18 @@ impl FoxgloveBridge {
         timestamp_ns: u64,
         payload: &Arc<[u8]>,
     ) -> Option<u32> {
-        if let Some(id) = self.lock_state().channel_by_topic.get(topic).copied() {
-            return Some(id);
+        let known = self.lock_state().channel_by_topic.get(topic).copied();
+        if let Some((id, stream)) = known {
+            if stream == schema_hash {
+                return Some(id);
+            }
+            self.warn_unresolved(
+                topic,
+                &format!(
+                    "its channel carries the first stream seen on the name; the samples of the stream of schema {schema_hash:016x} are not served"
+                ),
+            );
+            return None;
         }
 
         // The state is not locked here: a report takes that lock itself.
@@ -232,7 +244,7 @@ impl FoxgloveBridge {
 
         let new_id = self.server.add_channel(topic, &identity.data_type, &identity.definition);
         let mut state = self.lock_state();
-        state.channel_by_topic.insert(topic.to_owned(), new_id);
+        state.channel_by_topic.insert(topic.to_owned(), (new_id, schema_hash));
         if let Some(pending) = state.pending_by_topic.remove(topic) {
             drop(state);
             self.latch(topic, new_id, pending.timestamp_ns, pending.payload);

@@ -18,9 +18,26 @@ pub const PROGRESS_DEPTH: usize = 8;
 
 /// Bytes of a `rosgraph_msgs/Clock` payload: a ROS time, two `u32`.
 pub const CLOCK_PAYLOAD_BYTES: usize = 8;
+/// The first value, in seconds, that a `/clock` message cannot carry: it holds seconds in 32 bits.
+const CLOCK_SECONDS_LIMIT: i64 = 1 << 32;
 /// The largest `hypha_msgs/ReplayProgress` payload: name length prefix, the longest
 /// node name and two `u64`.
 pub const PROGRESS_MAX_PAYLOAD_BYTES: usize = 4 + hypha_core::port::MAX_NODE_NAME_LENGTH + 16;
+
+/// Whether `/clock` can carry `nanos`: a driver's start value and every step after it.
+///
+/// # Errors
+/// A message naming the range when `nanos` is negative or 2^32 seconds or more.
+pub fn check_clock_value(nanos: i64) -> Result<(), String> {
+    const NANOS_PER_SECOND: i64 = 1_000_000_000;
+    if (0..CLOCK_SECONDS_LIMIT * NANOS_PER_SECOND).contains(&nanos) {
+        return Ok(());
+    }
+    Err(format!(
+        "the start clock value {nanos} ns is outside what /clock carries: 0 s up to, not \
+         including, {CLOCK_SECONDS_LIMIT} s"
+    ))
+}
 
 /// What the player has heard from one node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,7 +231,7 @@ pub struct DriverOptions {
     pub timeout: Duration,
     /// Simulated seconds per host second. `None` steps as fast as the participants allow.
     pub real_time_factor: Option<f64>,
-    /// Node names that must acknowledge the first value before the second step.
+    /// Node names that must acknowledge the start value before the first step.
     pub expected: Vec<String>,
 }
 
@@ -227,8 +244,9 @@ pub enum DriverAction {
         /// The new clock value, in nanoseconds.
         deadline: i64,
     },
-    /// Publish `/clock = value` again; it is still awaited.
-    Resend {
+    /// Announce `/clock = value` with no step, then call [`DriverSchedule::sent`]: the
+    /// start value, or an awaited value again.
+    Announce {
         /// The clock value awaited, in nanoseconds.
         value: i64,
     },
@@ -255,7 +273,14 @@ struct Awaited {
 }
 
 /// The lockstep schedule of a clock driver: `/clock` advances only once every required
-/// participant has acknowledged the previous value.
+/// participant has acknowledged the previous value. The start value is the start
+/// barrier: it goes out with no step, and the first step, at start + period, waits until
+/// every expected participant has acknowledged it. Unlike `hypha play`, the barrier does
+/// not wait for a connected `/clock_progress` publisher that has not reported, so a
+/// participant that is not expected counts only from its first report. The first step's
+/// outputs reach the subscribers that existed when each expected node first reported; a
+/// node reports once one of its `WaitSet`s offers, so a cycle or subscriber it adds later
+/// can miss early steps.
 #[derive(Debug, Clone)]
 pub struct DriverSchedule {
     options: DriverOptions,
@@ -271,12 +296,10 @@ impl DriverSchedule {
     /// A schedule that has sent nothing yet.
     ///
     /// # Errors
-    /// A message naming the setting when the period, timeout or factor is not positive,
-    /// or no non-empty participant name is expected.
+    /// A message naming the setting when the start is outside `/clock`, the period, timeout
+    /// or factor is not positive, or no non-empty participant name is expected.
     pub fn new(options: DriverOptions, now: Instant) -> Result<Self, String> {
-        if options.start_nanos < 0 {
-            return Err("the start clock value must not be negative".to_owned());
-        }
+        check_clock_value(options.start_nanos)?;
         if options.period_nanos <= 0 {
             return Err("the clock period must be positive".to_owned());
         }
@@ -325,7 +348,7 @@ impl DriverSchedule {
     #[must_use]
     pub fn next(&mut self, now: Instant) -> DriverAction {
         let Some(awaited) = self.awaited else {
-            return DriverAction::Step { deadline: self.options.start_nanos };
+            return DriverAction::Announce { value: self.options.start_nanos };
         };
         let mut required = self.participants.names();
         for name in &self.options.expected {
@@ -363,14 +386,17 @@ impl DriverSchedule {
             return DriverAction::Fail { silent: unheard, last_clock_nanos: None };
         }
         if now.saturating_duration_since(awaited.last_send) >= CLOCK_RESEND_INTERVAL {
-            return DriverAction::Resend { value: awaited.value };
+            return DriverAction::Announce { value: awaited.value };
         }
         DriverAction::Wait
     }
 
     /// The step after `value` once it is acknowledged, if the pace allows it at `now`.
     fn step_after(&self, value: i64, now: Instant) -> DriverAction {
-        let Some(deadline) = value.checked_add(self.options.period_nanos) else {
+        let Some(deadline) = value
+            .checked_add(self.options.period_nanos)
+            .filter(|&deadline| check_clock_value(deadline).is_ok())
+        else {
             return DriverAction::Exhausted;
         };
         let (Some(factor), Some(anchor)) = (self.options.real_time_factor, self.pace_anchor) else {
