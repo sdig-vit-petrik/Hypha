@@ -21,11 +21,10 @@ the functions needed by the components of one machine:
 - minimal dependencies and reproducible artifacts; and
 - enough introspection to operate and diagnose a deployed subsystem.
 
-Multi-host routing, complete ROS graph compatibility, and general-purpose
-services, actions, lifecycle nodes, or plugin ecosystems are outside this
-core. ROS 1, ROS 2, Zenoh, Foxglove, and fieldbus connectivity belongs in separate
-bridge processes so that network-facing code cannot expand the local data
-plane or its assurance boundary.
+Multi-host routing, complete ROS graph compatibility, actions, lifecycle nodes,
+and plugin ecosystems are outside this core. ROS 1, ROS 2, Zenoh, Foxglove, and
+fieldbus connectivity belongs in separate bridge processes so that network-facing
+code cannot expand the local data plane or its assurance boundary.
 
 ```cpp
 #include <hypha/hypha.h>
