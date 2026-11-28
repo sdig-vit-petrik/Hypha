@@ -49,7 +49,9 @@ The vendors' payload field names are the likely place to need a fix.
   sets a lint to `allow` or `warn`.
 - **After an edit of a `.rs` file:** run `rustfmt` on the file, then report any
   added line with `#[allow]` without a reason, `unsafe {` without a
-  `// SAFETY:` comment, or `unwrap()`/`expect(` in shipped code.
+  `// SAFETY:` comment, `unwrap()`/`expect(` in shipped code, `thread::spawn` /
+  `thread::Builder` or unapproved `env::var` in `crates/*/src/`, or a new
+  `extern "C" fn` in `crates/hypha_ffi/src/` (owner approval + `docs/features.md`).
 - **When a subagent hands back** (Claude Code and Codex): refuse while
   `cargo clippy` is red on the crates changed in the working tree, three times
   at most.

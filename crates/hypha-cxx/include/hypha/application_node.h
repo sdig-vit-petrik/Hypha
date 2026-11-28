@@ -9,6 +9,7 @@
 #include <iostream>
 #include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -122,6 +123,27 @@ inline std::string describeRun(const RunResult& result)
          + std::to_string(result.failedAttachment());
 }
 
+/// @brief Requests a stop when it goes out of scope: runNode() declares it after the
+///        application, so it runs before the application's destructor joins its threads.
+class StopOnExit
+{
+  public:
+    explicit StopOnExit(std::stop_source& source) : source_(source)
+    {
+    }
+
+    StopOnExit(const StopOnExit&) = delete;
+    StopOnExit& operator=(const StopOnExit&) = delete;
+
+    ~StopOnExit()
+    {
+        this->source_.request_stop();
+    }
+
+  private:
+    std::stop_source& source_;
+};
+
 /// @brief Publishes the node manifest (latched, `~/introspection`) and the node state
 ///        (`~/state`, every second) of an application.
 class NodeReport
@@ -197,6 +219,18 @@ class ApplicationNode
     }
 
   protected:
+    /// @brief The node's stop, for the application's worker threads. Thread-safe.
+    ///
+    /// Stopped when the run ends, whatever ended it: hypha::requestStop(), a signal,
+    /// failRun(), or a refused start-up. It is stopped before the destructor of the
+    /// application runs, so a worker that waits on it, with hypha::sleepFor(),
+    /// hypha::Rate (`hypha/worker.h`) or a `std::condition_variable_any`, is ready to be
+    /// joined there. Valid from the constructor on; a worker may take it by copy.
+    std::stop_token stopToken() const
+    {
+        return this->stopSource_.get_token();
+    }
+
     /// @brief Report a fatal application failure and end the run as failed. Thread-safe.
     ///
     /// The first reason makes runNode return kExitRuntime; later calls do nothing. A cycle
@@ -286,6 +320,7 @@ class ApplicationNode
     }
 
     detail::RunFailure* failure_ = nullptr;
+    std::stop_source    stopSource_;
 };
 
 /// @brief Run an application node: load the parameter file, construct the application
@@ -322,6 +357,8 @@ int runNode(int argc, char** argv, std::string nodeName, Args&&... args)
         App              application(std::forward<Args>(args)...);
         ApplicationNode& lifecycle = application;
         lifecycle.failure_ = &failure;
+        // After the application: it stops the workers before their owner is destroyed.
+        const detail::StopOnExit stopOnExit(lifecycle.stopSource_);
         phase = "node creation";
         node.emplace(nodeName, parameterFile);
         exitCode = ApplicationNode::runLifecycle(*node, lifecycle, failure, phase);

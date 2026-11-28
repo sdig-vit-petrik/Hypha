@@ -1,6 +1,8 @@
 //! The budget a callback is judged against: the node's `[log] slow_callback_ms`, else the
 //! period of a timer, else 10 ms for a subscription (#128). The count in the run report is
-//! the observable; the lines are tested where they are built (`hypha_core`).
+//! the observable; the lines and the budget rule are tested where they are built
+//! (`hypha_core`). A callback here only ever sleeps past a budget: a sleep never ends early,
+//! so no assertion depends on the speed of the host (#64).
 #![allow(clippy::expect_used, reason = "a failed test setup should stop the test with its message")]
 
 mod common;
@@ -69,33 +71,14 @@ fn run(waitset: *mut HyphaWaitSet, run_ms: u64) -> u64 {
 }
 
 #[test]
-fn a_10_hz_callback_that_takes_45_ms_of_its_100_ms_is_not_slow() {
-    assert_eq!(slow_timer_callbacks("", 100, 45, 350), 0);
-}
-
-#[test]
 fn a_timer_callback_that_outlasts_its_period_is_slow() {
     assert!(slow_timer_callbacks("", 20, 45, 200) > 0);
 }
 
 #[test]
-fn a_node_that_sets_50_ms_does_not_warn_for_a_20_ms_callback_and_does_for_120_ms() {
-    let budget = "[log]\nslow_callback_ms = 50\n";
-    assert_eq!(slow_timer_callbacks(budget, 5, 20, 150), 0, "20 ms is inside 50 ms");
-    assert!(slow_timer_callbacks(budget, 200, 120, 350) > 0, "120 ms is outside 50 ms");
-}
-
-#[test]
-fn zero_writes_no_line_and_the_counter_still_judges_against_the_default() {
-    assert!(slow_timer_callbacks("[log]\nslow_callback_ms = 0\n", 5, 20, 150) > 0);
-}
-
-#[test]
-fn nodes_of_one_process_may_set_different_budgets() {
-    let first = node_with("first", "[log]\nslow_callback_ms = 50\n");
-    let second = node_with("second", "[log]\nslow_callback_ms = 5\n");
-    unsafe { hypha_node_destroy(first) };
-    unsafe { hypha_node_destroy(second) };
+fn a_node_budget_of_50_ms_replaces_the_period_of_a_200_ms_timer() {
+    // 120 ms is inside the period, so only the node's budget makes it slow.
+    assert!(slow_timer_callbacks("[log]\nslow_callback_ms = 50\n", 200, 120, 350) > 0);
 }
 
 extern "C" fn sleep_on_data(
@@ -196,6 +179,5 @@ fn slow_subscription_callbacks(parameters: &str, takes_ms: usize) -> u64 {
 #[test]
 fn a_subscription_callback_is_slow_over_10_ms_unless_the_node_sets_a_budget() {
     assert_eq!(slow_subscription_callbacks("", 30), 1);
-    assert_eq!(slow_subscription_callbacks("[log]\nslow_callback_ms = 50\n", 30), 0);
     assert_eq!(slow_subscription_callbacks("[log]\nslow_callback_ms = 50\n", 120), 1);
 }

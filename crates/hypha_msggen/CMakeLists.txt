@@ -12,8 +12,6 @@ if(NOT CARGO_EXECUTABLE)
   return()
 endif()
 
-set(HYPHA_MSGGEN_CRATES "${CMAKE_CURRENT_SOURCE_DIR}/../..")
-
 # Cargo's debug profile only for a Debug build: RelWithDebInfo is still optimised.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(HYPHA_MSGGEN_PROFILE_FLAG "")
@@ -24,7 +22,7 @@ else()
 endif()
 
 set(HYPHA_MSGGEN_BIN
-    "${HYPHA_MSGGEN_CRATES}/target/${HYPHA_MSGGEN_PROFILE_DIR}/hypha_msggen"
+    "${HYPHA_CARGO_TARGET_DIR}/${HYPHA_MSGGEN_PROFILE_DIR}/hypha_msggen"
     CACHE INTERNAL "Path to the built hypha_msggen binary")
 
 # The binary is a byproduct, so a generation rule may depend on the file: headers are
