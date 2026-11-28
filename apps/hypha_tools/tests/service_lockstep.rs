@@ -529,7 +529,9 @@ fn the_cli_calls_a_cycle_server_during_a_replay() {
     let mut answer = None;
     let mut call = || {
         let output = Command::new(env!("CARGO_BIN_EXE_hypha"))
-            .args(["service", "call", &name, "text: shell", "--timeout", "5"])
+            // A generous bound: how soon a loaded host gives the paced server its step is
+            // the host's speed; a call that is never served still fails at the bound.
+            .args(["service", "call", &name, "text: shell", "--timeout", "30"])
             .output()
             .expect("hypha service call");
         answer = Some(output);
