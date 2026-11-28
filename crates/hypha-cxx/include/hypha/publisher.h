@@ -2,6 +2,7 @@
 
 #include "hypha/backend/session.h"
 #include "hypha/backend/typed.h"
+#include "hypha/detail/report.h"
 #include "hypha/hypha_ffi.h"
 #include "hypha/options.h"
 #include "hypha/status.h"
@@ -42,6 +43,23 @@ class Publisher
         }
         this->lastStatus_ = this->handle->publish(message);
         return this->lastStatus_ == HYPHA_STATUS_OK;
+    }
+
+    /// @brief publish(), for a node that has nothing to do with a refusal but say so: a
+    ///        refused message is counted and logged as a warning that names the topic and
+    ///        the status, at most once a second for this publisher.
+    ///
+    /// Use it where ROS 1 code called `publish()` and went on. A disabled publisher (an
+    /// optionalTopic port without a topic) sends nothing and says nothing; it is not a
+    /// refusal. lastPublishStatus() holds the status either way.
+    /// @return True if it was sent, as publish().
+    bool publishOrWarn(const M& message)
+    {
+        const bool sent = this->publish(message);
+        if (!sent && this->refusals_) {
+            this->refusals_->note(this->handle->topic(), this->lastStatus_.name());
+        }
+        return sent;
     }
 
     /// @brief Reserve the slot of one message whose large field is written in place: its
@@ -131,9 +149,11 @@ class Publisher
             topic, backend::typedPublisherOptions<M>(settings, 0)
         );
         require(Status(this->handle->creationStatus()), source.describe());
+        this->refusals_ = std::make_shared<detail::RefusalWarning>();
     }
 
     std::shared_ptr<backend::PublisherHandle<M>> handle;
+    std::shared_ptr<detail::RefusalWarning>      refusals_;
     Status                                       lastStatus_{HYPHA_STATUS_OK};
 };
 

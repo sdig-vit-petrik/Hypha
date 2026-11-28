@@ -6,7 +6,7 @@
 
 pub use crate::clock::{
     clock_advance_sim_time, clock_disable_sim_time, clock_enable_sim_time, clock_is_sim_time,
-    clock_now_nanos, clock_set_sim_time, clock_steady_now_nanos,
+    clock_is_valid, clock_now_nanos, clock_set_sim_time, clock_steady_now_nanos,
 };
 pub use crate::config::{
     HyphaConfig, config_create, config_ignore, config_resolve_key, config_unread_keys, node_config,

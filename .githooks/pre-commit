@@ -32,3 +32,5 @@ fi
 if grep -qE '^crates/hypha_ffi/' <<< "$staged"; then
     ./scripts/gen-ffi-header.sh --verify
 fi
+
+./scripts/check-size-and-boundaries.sh

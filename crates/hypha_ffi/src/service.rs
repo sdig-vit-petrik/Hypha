@@ -14,17 +14,22 @@ use std::time::Duration;
 
 use hypha_core::port::ServicePolicy;
 use hypha_node::HyphaCallbackResult;
-use hypha_node::safe::{
-    Answer, CallDone, CallResult, HyphaClient, HyphaNode, HyphaRequest, HyphaServer, RequestView,
-    ServeHandler, ServiceDecl,
-};
+use hypha_node::safe::{HyphaRequest, ServiceDecl};
 use hypha_node::status::HyphaStatus;
 use hypha_node::waitset::HyphaContextRelease;
 
-use crate::boundary::{
-    borrow_bytes, borrow_str, handle_mut, handle_ref, read_in, take_box, write_out,
+use crate::boundary::borrow_str;
+
+mod client;
+mod server;
+pub use client::{
+    hypha_client_call, hypha_client_status, hypha_client_wait_for_server,
+    hypha_service_client_create, hypha_service_client_destroy,
 };
-use crate::status::try_guard;
+pub use server::{
+    hypha_request_answer, hypha_request_defer, hypha_request_destroy, hypha_service_server_create,
+    hypha_service_server_destroy,
+};
 
 /// Answer a request with a response: `bytes` is the encoded response.
 pub const HYPHA_ANSWER_REPLY: u32 = 0;
@@ -168,48 +173,6 @@ impl Drop for Context {
     }
 }
 
-struct CServe {
-    function: extern "C" fn(*const HyphaRequestView, *mut c_void) -> HyphaCallbackResult,
-    context: Context,
-}
-
-impl ServeHandler for CServe {
-    fn serve(&mut self, request: &mut HyphaRequest, view: &RequestView<'_>) -> HyphaCallbackResult {
-        let view = HyphaRequestView {
-            request: std::ptr::from_mut(request),
-            payload: view.payload.as_ptr(),
-            payload_len: view.payload.len(),
-            client_node: view.client_node.as_ptr().cast(),
-            client_node_len: view.client_node.len(),
-        };
-        (self.function)(&raw const view, self.context.pointer)
-    }
-}
-
-struct CDone {
-    function: extern "C" fn(*const HyphaCallResult, *mut c_void) -> HyphaCallbackResult,
-    context: Context,
-}
-
-impl CallDone for CDone {
-    fn done(self: Box<Self>, result: &CallResult) -> HyphaCallbackResult {
-        let description = result.outcome.to_string();
-        let response = result.outcome.response();
-        let view = HyphaCallResult {
-            outcome: result.outcome.code(),
-            may_have_run: u8::from(result.outcome.may_have_run()),
-            safe_to_retry: u8::from(result.outcome.safe_to_retry()),
-            response: response.map_or(std::ptr::null(), <[u8]>::as_ptr),
-            response_len: response.map_or(0, <[u8]>::len),
-            description: description.as_ptr().cast(),
-            description_len: description.len(),
-            sent_nanos: result.sent_nanos,
-            done_nanos: result.done_nanos,
-        };
-        (self.function)(&raw const view, self.context.pointer)
-    }
-}
-
 /// The declaration `desc` describes, borrowing its texts.
 ///
 /// # Safety
@@ -247,232 +210,5 @@ unsafe fn declaration(desc: &HyphaServiceDesc) -> Result<ServiceDecl<'_>, HyphaS
         md5: text(desc.md5, desc.md5_len)?,
         policy,
         timeout: (desc.timeout_nanos != 0).then(|| Duration::from_nanos(desc.timeout_nanos)),
-    })
-}
-
-/// Create the server `desc` describes and attach it to the node's `WaitSet`, whose run
-/// calls `serve` with `context` for each request. Create it before the run. `release`
-/// runs once with `context`: when the server is destroyed, or at once on a refusal.
-///
-/// `InvalidArgument`: a null argument, text that is not UTF-8, a policy with a name of
-/// length 0 and a field that is not 0, `blocking` not 0, or a port with no table (the
-/// reason names the stanza to add); `InvalidTopic`: an invalid service name;
-/// `ResourceLimit`: a live node serves the name (the reason names it); `QosMismatch`: the
-/// service exists with another policy; `InvalidState`: during a run. `hypha_last_error`
-/// gives the reason of each.
-///
-/// # Safety
-/// `node` is live; `desc` is readable with its texts; `out` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hypha_service_server_create(
-    node: *mut HyphaNode,
-    desc: *const HyphaServiceDesc,
-    serve: HyphaServeCallback,
-    context: *mut c_void,
-    release: HyphaContextRelease,
-    out: *mut *mut HyphaServer,
-) -> HyphaStatus {
-    let context = Context { pointer: context, release };
-    try_guard(|| {
-        unsafe { write_out(out, std::ptr::null_mut()) }?;
-        let function = serve.ok_or(HyphaStatus::InvalidArgument)?;
-        let desc = unsafe { read_in(desc) }?;
-        if node.is_null() || desc.blocking != 0 {
-            return Err(HyphaStatus::InvalidArgument);
-        }
-        let decl = unsafe { declaration(&desc) }?;
-        let shared = unsafe { crate::waitset::configuration::share_node(node) };
-        let handler = Box::new(CServe { function, context });
-        let server = hypha_node::safe::service_serve(&shared, &decl, handler)?;
-        unsafe { write_out(out, Box::into_raw(Box::new(server))) }
-    })
-}
-
-/// Destroy a server: every request it holds ends (their clients read `ServerLost`, and a
-/// deferred request's later answer is `Disconnected`), and its handler's context is
-/// released. Null does nothing.
-///
-/// # Safety
-/// `server` is null or comes from `hypha_service_server_create`, used no more.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hypha_service_server_destroy(server: *mut HyphaServer) {
-    if let Some(server) = unsafe { take_box(server) } {
-        hypha_node::safe::service_server_destroy(*server);
-    }
-}
-
-/// Answer `request`: `kind` `HYPHA_ANSWER_REPLY` with the encoded response in `bytes`, or
-/// `HYPHA_ANSWER_REFUSE` with the reason. A request is answered once, from the handler or,
-/// deferred, from any thread; afterwards it is answered whatever the status.
-///
-/// `InvalidState`: answered or deferred already; `TooLarge`: a response above the bound
-/// (the client is refused with the sizes); `Disconnected`: the client or the server is
-/// gone; `InvalidArgument`: a null argument, another kind, a reason that is not UTF-8.
-///
-/// # Safety
-/// `request` is the handler's request during its call, or a live deferred one; `bytes`
-/// points to `len` readable bytes (it may be null when `len` is 0).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hypha_request_answer(
-    request: *mut HyphaRequest,
-    kind: u32,
-    bytes: *const u8,
-    len: usize,
-) -> HyphaStatus {
-    try_guard(|| {
-        let request = unsafe { handle_mut(request) }?;
-        let bytes = if len == 0 { &[][..] } else { unsafe { borrow_bytes(bytes, len) }? };
-        let answer = match kind {
-            HYPHA_ANSWER_REPLY => Answer::Reply(bytes),
-            HYPHA_ANSWER_REFUSE => Answer::Refuse(
-                std::str::from_utf8(bytes).map_err(|_| HyphaStatus::InvalidArgument)?,
-            ),
-            _ => return Err(HyphaStatus::InvalidArgument),
-        };
-        Ok(hypha_node::safe::request_answer(request, answer)?)
-    })
-}
-
-/// Take the handler's `request` over, to answer later from any thread: `out` receives the
-/// deferred request, which `hypha_request_destroy` releases. The handler's request is then
-/// answered. `InvalidState`: answered, deferred already, or itself a deferred request.
-///
-/// # Safety
-/// `request` is the handler's request during its call; `out` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hypha_request_defer(
-    request: *mut HyphaRequest,
-    out: *mut *mut HyphaRequest,
-) -> HyphaStatus {
-    try_guard(|| {
-        unsafe { write_out(out, std::ptr::null_mut()) }?;
-        let request = unsafe { handle_mut(request) }?;
-        let deferred = hypha_node::safe::request_defer(request)?;
-        unsafe { write_out(out, Box::into_raw(deferred)) }
-    })
-}
-
-/// Release a deferred request. One still unanswered is refused, and counted and logged
-/// once per server. Any thread may call it. Null does nothing.
-///
-/// # Safety
-/// `request` is null or comes from `hypha_request_defer`, used no more.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hypha_request_destroy(request: *mut HyphaRequest) {
-    drop(unsafe { take_box(request) });
-}
-
-/// Create the client `desc` describes. A server need not exist. With `blocking` 0 it is
-/// attached to the node's `WaitSet`, whose run delivers its outcomes; create it before
-/// the run. With `blocking` 1 it is attached to nothing.
-///
-/// `InvalidArgument`, `InvalidTopic`, `QosMismatch`, `InvalidState`: as for
-/// `hypha_service_server_create`; `ResourceLimit`: the stream's clients of this kind are
-/// at their limit (a tool node takes one of three slots of its own).
-///
-/// # Safety
-/// `node` is live; `desc` is readable with its texts; `out` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hypha_service_client_create(
-    node: *mut HyphaNode,
-    desc: *const HyphaServiceDesc,
-    out: *mut *mut HyphaClient,
-) -> HyphaStatus {
-    try_guard(|| {
-        unsafe { write_out(out, std::ptr::null_mut()) }?;
-        let desc = unsafe { read_in(desc) }?;
-        if node.is_null() || desc.blocking > 1 {
-            return Err(HyphaStatus::InvalidArgument);
-        }
-        let decl = unsafe { declaration(&desc) }?;
-        let shared = unsafe { crate::waitset::configuration::share_node(node) };
-        let client = hypha_node::safe::service_client_create(&shared, &decl, desc.blocking == 1)?;
-        unsafe { write_out(out, Box::into_raw(Box::new(client))) }
-    })
-}
-
-/// Destroy a client. The outcomes of its calls in flight are dropped uncalled, and their
-/// contexts released. Null does nothing.
-///
-/// # Safety
-/// `client` is null or comes from `hypha_service_client_create`, used no more.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hypha_service_client_destroy(client: *mut HyphaClient) {
-    if let Some(client) = unsafe { take_box(client) } {
-        hypha_node::safe::service_client_destroy(*client);
-    }
-}
-
-/// Call with the encoded `request`. `status` receives `HYPHA_CALL_SENT`: `done` runs once
-/// with the outcome, on the `WaitSet` thread at a later turn, or, for a blocking client, on
-/// this thread before the call returns. Or `HYPHA_CALL_BUSY` (the client has its limit of
-/// calls in flight) or `HYPHA_CALL_TOO_LARGE` (the request is above the bound): nothing is
-/// sent and `done` is not called. `release` runs once with `context` in every case.
-///
-/// `InvalidState`: a blocking client called on a thread that runs a `WaitSet` dispatch
-/// (that thread would deliver the answer it waits for; `hypha_last_error` says what to use
-/// instead). `InvalidArgument`: a null argument.
-///
-/// # Safety
-/// `client` is live; `request` points to `len` readable bytes (null when `len` is 0);
-/// `status` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hypha_client_call(
-    client: *const HyphaClient,
-    request: *const u8,
-    len: usize,
-    done: HyphaCallDoneCallback,
-    context: *mut c_void,
-    release: HyphaContextRelease,
-    status: *mut u32,
-) -> HyphaStatus {
-    let context = Context { pointer: context, release };
-    try_guard(|| {
-        let client = unsafe { handle_ref(client) }?;
-        let function = done.ok_or(HyphaStatus::InvalidArgument)?;
-        crate::boundary::require_non_null(status)?;
-        let request = if len == 0 { &[][..] } else { unsafe { borrow_bytes(request, len) }? };
-        let called =
-            hypha_node::safe::client_call(client, request, Box::new(CDone { function, context }))?;
-        unsafe { write_out(status, called.code()) }
-    })
-}
-
-/// Read whether a live server of the client's stream exists now, and how many of its calls
-/// are pending. Any thread may call it.
-///
-/// # Safety
-/// `client` is live; `out` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hypha_client_status(
-    client: *const HyphaClient,
-    out: *mut HyphaClientStatus,
-) -> HyphaStatus {
-    try_guard(|| {
-        let client = unsafe { handle_ref(client) }?;
-        let status = hypha_node::safe::client_status(client);
-        let pending = u32::try_from(status.pending).unwrap_or(u32::MAX);
-        unsafe { write_out(out, HyphaClientStatus { ready: u8::from(status.ready), pending }) }
-    })
-}
-
-/// Wait up to `timeout_nanos` of host time for a live server of a blocking client's
-/// stream; `ready` receives 1 when one exists. `InvalidState`: a client of a `WaitSet`, or
-/// a thread that runs a dispatch.
-///
-/// # Safety
-/// `client` is live; `ready` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hypha_client_wait_for_server(
-    client: *const HyphaClient,
-    timeout_nanos: u64,
-    ready: *mut u8,
-) -> HyphaStatus {
-    try_guard(|| {
-        let client = unsafe { handle_ref(client) }?;
-        crate::boundary::require_non_null(ready)?;
-        let found =
-            hypha_node::safe::client_wait_for_server(client, Duration::from_nanos(timeout_nanos))?;
-        unsafe { write_out(ready, u8::from(found)) }
     })
 }
