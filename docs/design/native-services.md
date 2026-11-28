@@ -1063,10 +1063,11 @@ Rust server is not needed.
 - `hypha service list` prints one line per stream: the name, type, MD5, server node,
   client count, and the calls answered, refused and timed out.
 - `hypha service info <s>` adds the definition and the policy.
-- `hypha service call <s> '{data: true}'` reads the request as YAML or JSON and encodes it
-  from the definition in the schema store. It calls with `--timeout` (by default the
-  policy's) and prints the response as YAML, decoded as `hypha topic echo` decodes a
-  message. It exits non-zero and prints the outcome for anything but `Answered`.
+- `hypha service call <s> 'data = true'` reads the request as TOML (nested fields as
+  inline tables or dotted keys) and encodes it from the definition in the schema store.
+  It calls with `--timeout` (by default the policy's) and prints the response as TOML in
+  the same form, so a response is a request again. It exits non-zero and prints the
+  outcome for anything but `Answered`.
 - `hypha service call <s>` with no body prints the request template.
 - When the server is on simulated time and the clock is paused, the tool says so:
   `server '<n>' is on simulated time; /clock paused at <t>`.

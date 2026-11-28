@@ -1,6 +1,6 @@
 //! `hypha service list|info|call` against a `std_srvs/SetBool` server of this test process
-//! (#132, stage 1b): the request is encoded from YAML or JSON with the definitions the server
-//! registered, the response is printed, and each outcome has its exit code.
+//! (#132, stage 1b): the request is encoded from TOML with the definitions the server
+//! registered, the response is printed as TOML, and each outcome has its exit code.
 #![allow(clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::process::{Command, Output};
@@ -95,23 +95,44 @@ fn service_call_prints_the_response_and_exits_with_a_code_per_outcome() {
     let name = format!("/{}", unique_name("set_enabled"));
     let held = format!("/{}", unique_name("never_answers"));
     serving(&node, &name, &held, || {
-        // Answered: YAML as rosservice takes it, and JSON.
-        for request in ["data: true", r#"{"data": true}"#, "{data: True}"] {
+        // Answered: the TOML request, the response printed as TOML.
+        for request in ["data = true", "data = true   # stream"] {
             let answered = hypha(&["call", &name, request]);
             assert_eq!(answered.status.code(), Some(0), "{request}: {}", text(&answered.stderr));
-            assert_eq!(text(&answered.stdout), "success: true\nmessage: \"enabled\"\n");
+            assert_eq!(text(&answered.stdout), "success = true\nmessage = \"enabled\"\n");
         }
 
-        let refused = hypha(&["call", &name, "data: false"]);
+        // The YAML of rosservice is not read: the TOML reason names the line.
+        let yaml = hypha(&["call", &name, "data: true"]);
+        assert_eq!(yaml.status.code(), Some(1));
+        assert!(
+            text(&yaml.stderr).contains("the request is not a std_srvs/SetBoolRequest")
+                && text(&yaml.stderr).contains("line 1"),
+            "{}",
+            text(&yaml.stderr)
+        );
+        // Several arguments are several lines of one document.
+        let twice = hypha(&["call", &name, "data = true", "data = false"]);
+        assert_eq!(twice.status.code(), Some(1));
+        assert!(text(&twice.stderr).contains("line 2"), "{}", text(&twice.stderr));
+        let typed = hypha(&["call", &name, "data = 'true'"]);
+        assert_eq!(typed.status.code(), Some(1));
+        assert!(
+            text(&typed.stderr).contains("data: expected true or false, found the string \"true\""),
+            "{}",
+            text(&typed.stderr)
+        );
+
+        let refused = hypha(&["call", &name, "data = false"]);
         assert_eq!(refused.status.code(), Some(2), "{}", text(&refused.stderr));
         assert!(text(&refused.stderr).contains("refused: not armed"), "{}", text(&refused.stderr));
 
         let missing = format!("/{}", unique_name("nobody_serves"));
-        let no_server = hypha(&["call", &missing, "data: true", "--timeout", "0.2"]);
+        let no_server = hypha(&["call", &missing, "data = true", "--timeout", "0.2"]);
         assert_eq!(no_server.status.code(), Some(3), "{}", text(&no_server.stderr));
         assert!(text(&no_server.stderr).contains("no server"), "{}", text(&no_server.stderr));
 
-        let timeout = hypha(&["call", &held, "data: true", "--timeout", "0.3"]);
+        let timeout = hypha(&["call", &held, "data = true", "--timeout", "0.3"]);
         assert_eq!(timeout.status.code(), Some(6), "{}", text(&timeout.stderr));
         assert!(
             text(&timeout.stderr).contains("timeout after 300 ms"),
@@ -119,7 +140,7 @@ fn service_call_prints_the_response_and_exits_with_a_code_per_outcome() {
             text(&timeout.stderr)
         );
 
-        let unknown_field = hypha(&["call", &name, "{nope: 1}"]);
+        let unknown_field = hypha(&["call", &name, "nope = 1"]);
         assert_eq!(unknown_field.status.code(), Some(1));
         assert!(
             text(&unknown_field.stderr).contains("has no field 'nope'; its fields: data"),
@@ -129,7 +150,7 @@ fn service_call_prints_the_response_and_exits_with_a_code_per_outcome() {
 
         let template = hypha(&["call", &name]);
         assert_eq!(template.status.code(), Some(0), "{}", text(&template.stderr));
-        assert_eq!(text(&template.stdout), "data: false\n");
+        assert_eq!(text(&template.stdout), "data = false\n");
 
         let list = hypha(&["list"]);
         assert_eq!(list.status.code(), Some(0));
@@ -227,10 +248,10 @@ fn a_service_with_an_empty_request_is_called_without_a_body() {
     serving_shape(&trigger, &name, || {
         let called = hypha(&["call", &name]);
         assert_eq!(called.status.code(), Some(0), "{}", text(&called.stderr));
-        assert_eq!(text(&called.stdout), "success: true\nmessage: \"ok\"\n");
-        let braces = hypha(&["call", &name, "{}"]);
-        assert_eq!(braces.status.code(), Some(0), "{}", text(&braces.stderr));
-        let field = hypha(&["call", &name, "{nope: 1}"]);
+        assert_eq!(text(&called.stdout), "success = true\nmessage = \"ok\"\n");
+        let blank = hypha(&["call", &name, ""]);
+        assert_eq!(blank.status.code(), Some(0), "{}", text(&blank.stderr));
+        let field = hypha(&["call", &name, "nope = 1"]);
         assert_eq!(field.status.code(), Some(1));
         assert!(text(&field.stderr).contains("has no field 'nope'"), "{}", text(&field.stderr));
         let info = hypha(&["info", &name]);
@@ -250,11 +271,14 @@ fn a_service_with_an_empty_response_answers_with_no_fields() {
     };
     let name = format!("/{}", unique_name("set_limit"));
     serving_shape(&setter, &name, || {
-        let called = hypha(&["call", &name, "limit: 7"]);
+        let called = hypha(&["call", &name, "limit = 7"]);
         assert_eq!(called.status.code(), Some(0), "{}", text(&called.stderr));
-        assert_eq!(text(&called.stdout), "{}\n");
+        assert_eq!(
+            text(&called.stdout),
+            "# answered: hypha_tests/SetLimitResponse has no fields\n"
+        );
         let template = hypha(&["call", &name]);
-        assert_eq!(text(&template.stdout), "limit: 0\n");
+        assert_eq!(text(&template.stdout), "limit = 0\n");
     });
 }
 
@@ -272,7 +296,7 @@ fn a_service_with_two_empty_halves_is_called_and_answers() {
     serving_shape(&empty, &name, || {
         let called = hypha(&["call", &name]);
         assert_eq!(called.status.code(), Some(0), "{}", text(&called.stderr));
-        assert_eq!(text(&called.stdout), "{}\n");
+        assert_eq!(text(&called.stdout), "# answered: std_srvs/EmptyResponse has no fields\n");
     });
 }
 
@@ -288,7 +312,7 @@ fn a_server_that_gave_no_definitions_is_named_as_such() {
     };
     let name = format!("/{}", unique_name("silent"));
     serving_shape(&silent, &name, || {
-        let called = hypha(&["call", &name, "data: true"]);
+        let called = hypha(&["call", &name, "data = true"]);
         assert_eq!(called.status.code(), Some(1));
         assert!(
             text(&called.stderr).contains("registered no definitions"),

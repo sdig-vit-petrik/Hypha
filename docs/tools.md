@@ -265,33 +265,57 @@ detail, the tool prints that it is unavailable rather than inventing a value.
 ```text
 hypha service list                               one line per service: name, type, MD5, server, clients
 hypha service info <service>                     its type, server, clients, policy, call log and definitions
-hypha service call <service> '<yaml or json>'    call it and print the response
+hypha service call <service> '<toml>' ...        call it and print the response
 hypha service call <service>                     print the request's template
 ```
 
-`call` is `rosservice call`: the request is YAML or JSON, as one line or several, and
-a field it leaves out takes its zero value.
+`call` is `rosservice call` with the request in TOML, the format of every hypha file:
+the keys are the request's fields, and a field the request leaves out takes its zero
+value. Several arguments are several lines of one document (`'a = 1' 'b = 2'`); one
+argument may also hold several lines.
 
 ```text
-$ hypha service call /camera/set_enabled "data: true"
-success: true
-message: "streaming"
-$ hypha service call /camera/set_exposure '{target_exposure: 20000}'
-reached_exposure: 10000
-success: false
-$ hypha service call /camera/set_enabled "data: false"
+$ hypha service call /camera/set_enabled 'data = true'
+success = true
+message = "streaming"
+$ hypha service call /camera/set_exposure 'target_exposure = 20000'
+reached_exposure = 10000.0
+success = false
+$ hypha service call /camera/set_enabled 'data = false'
 hypha service: refused: not armed                      (exit 2)
 $ hypha service call /camera/set_exposure
-target_exposure: 0.0
+target_exposure = 0.0
+$ hypha service call /move_to 'goal = { x = 1.0, y = 2.0 }' 'speed = 0.5'
+$ hypha service call /move_to 'goal.x = 1.0' 'goal.y = 2.0'
 ```
+
+| Field | TOML | Example |
+|---|---|---|
+| `bool` | a boolean | `data = true` |
+| an integer type | an integer, range-checked (`_`, `0x` allowed); a `uint64` above 2^63 - 1 cannot be written | `count = 3` |
+| `float32`, `float64` | a float or an integer; `nan`, `inf` | `gain = 0.5` |
+| `string` | a quoted string, TOML escapes | `name = "left \"cam\""` |
+| `time`, `duration` | `{ secs, nsecs }`, a part left out 0 | `stamp = { secs = 7, nsecs = 500 }` |
+| a nested message | an inline table or dotted keys | `goal = { x = 1.0 }`, `goal.x = 1.0` |
+| an array, `T[N]` | an array; a fixed one of exactly N values | `ids = [1, 2]` |
+| an array of messages | an array of inline tables, or `[[field]]` tables | `path = [{ x = 1.0 }, { x = 2.0 }]` |
+| `uint8[]`, `byte[]`, `char[]` | an array of integers, or a string of its bytes | `blob = [104, 105]`, `blob = "hi"` |
+
+A value of another TOML type than its field's (`data = "true"`, `count = 1.5`) is
+refused, naming the field: `data: expected true or false, found the string "true"`. The
+YAML and JSON of `rosservice` are not read: `"data: true"` is refused with the TOML
+reason and its line.
 
 The tool encodes the request with the definition that the service's server registered
 when it started (a C++ server registers both halves of its `.srv`), so it calls a type
 it was never built with. A request of no fields (`std_srvs/Trigger`, `std_srvs/Empty`)
-is called without a body, and a response of no fields prints `{}`; a half of no fields is
-registered as an empty definition, so it is not a server that registered none. The response is printed as `hypha topic echo` prints a
-message; anything else is printed to standard error with its reason, and the exit code
-says which outcome it was:
+is called without a body, and a response of no fields prints the TOML comment
+`# answered: <type> has no fields`; a half of no fields is registered as an empty
+definition, so it is not a server that registered none. The response and the template
+are printed as TOML in one form: a nested message as dotted keys, an array and an array
+of messages inline, every element of it, so either is a request of its type again.
+Anything else is printed to standard error with its reason, and the exit code says which
+outcome it was:
 
 | Exit | Outcome |
 |---|---|

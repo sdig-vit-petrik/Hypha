@@ -1115,7 +1115,7 @@ thread for the outcome and returns it, and a call it refused before sending read
 answer. The message says what to use instead: `call(request, onResult)`. The library
 starts no thread for it.
 
-From the shell, `hypha service call <service> '<yaml or json>'` is the operator's
+From the shell, `hypha service call <service> '<toml>'` (`'data = true'`) is the operator's
 `rosservice call`: a server registers the definitions of its `.srv` when it is created,
 so the tool encodes the request, prints the response, and exits with a code per outcome
 ([tools.md](tools.md), `hypha service`). Every client, the tool's included, logs each
