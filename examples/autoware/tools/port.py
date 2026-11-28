@@ -9,7 +9,10 @@ usage: examples/autoware/tools/port.py verify
 verify checks, offline, every file of upstream/<repository>/ against the SHA-256 of its
 manifest upstream/<repository>/vendor.toml, refuses a file the manifest does not list,
 and checks that every upstream/patches/<package>.patch applies to its vendored package
-(patch --dry-run, with the flags of the build). ./check.sh runs it.
+(patch --dry-run, with the flags of the build). ./check.sh runs it. It checks the SDK's
+manifests the same way: crates/hypha-cxx/upstream, and crates/hypha_msgs/upstream, whose
+manifests name a `root`: the files sit in crates/hypha_msgs/msg among messages of other
+origins, so only the listed files are checked there.
 
 vendor fetches the repository's commit (git fetch --depth 1, from the manifest's url or
 from --from, a mirror or a local clone), writes every listed file and every file under
@@ -44,12 +47,16 @@ AUTOWARE = Path(__file__).resolve().parents[1]
 # The vendored files of the C++ SDK (crates/hypha-cxx/upstream): verified and vendored
 # the same way, with no patches.
 SDK_UPSTREAM = AUTOWARE.parents[1] / "crates" / "hypha-cxx" / "upstream"
+# The manifests of the definitions placed in crates/hypha_msgs/msg (their `root`); a
+# repository there is named hypha_msgs/<directory> on the command line.
+MSGS_UPSTREAM = AUTOWARE.parents[1] / "crates" / "hypha_msgs" / "upstream"
+MSGS_PREFIX = "hypha_msgs/"
 MANIFEST = "vendor.toml"
 README = "README.md"
 PATCHES = "patches"
 # Names a file system leaves beside the vendored files; never vendored, never checked.
 IGNORED_NAMES = frozenset({".DS_Store", "__pycache__"})
-MANIFEST_KEYS = frozenset({"url", "ref", "commit", "renamed", "files"})
+MANIFEST_KEYS = frozenset({"url", "ref", "commit", "root", "renamed", "files"})
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PATCH_HEADER = re.compile(
@@ -74,6 +81,10 @@ class Manifest:
     commit: str
     # The tag or branch the commit was taken from; empty when none is recorded.
     ref: str = ""
+    # Where the files are, relative to the manifest's directory; empty when they are in it. A
+    # root is for files that sit among others the repository does not own: the manifest lists
+    # the files it owns and says nothing of the rest of the directory.
+    root: str = ""
     # Path here -> path upstream, for the files whose paths differ.
     renamed: dict[str, str] = field(default_factory=dict)
     # Path here -> SHA-256 of the file.
@@ -105,7 +116,10 @@ def load_manifest(path: Path) -> Manifest:
         url=_string(data.get("url"), "url", path),
         commit=commit,
         ref=_string(data["ref"], "ref", path) if "ref" in data else "",
+        root=_string(data["root"], "root", path) if "root" in data else "",
     )
+    if Path(manifest.root).is_absolute():
+        raise PortError(f"{path}: root {manifest.root!r} is not a relative path")
     for table in ("renamed", "files"):
         entries = data.get(table, {})
         if not isinstance(entries, dict):
@@ -145,6 +159,8 @@ def render_manifest(manifest: Manifest) -> str:
     if manifest.ref:
         lines.append(f"ref = {_quote(manifest.ref)}")
     lines.append(f"commit = {_quote(manifest.commit)}")
+    if manifest.root:
+        lines.append(f"root = {_quote(manifest.root)}")
     if manifest.renamed:
         lines += ["", "# Path here = path upstream, for the files whose paths differ.", "[renamed]"]
         lines += [f"{_quote(k)} = {_quote(v)}" for k, v in sorted(manifest.renamed.items())]
@@ -173,17 +189,19 @@ def verify_repository(directory: Path) -> list[str]:
         return [f"{directory.name}: no {MANIFEST}"]
     manifest = load_manifest(manifest_path)
     problems = []
+    base = directory / manifest.root
     for local, digest in sorted(manifest.files.items()):
-        path = directory / local
+        path = base / local
         if not path.is_file():
             problems.append(f"{directory.name}/{local}: listed, missing")
         elif sha256(path) != digest:
             problems.append(f"{directory.name}/{local}: differs from its SHA-256 in {MANIFEST}")
-    problems += [
-        f"{directory.name}/{local}: not listed in {MANIFEST}"
-        for local in _repository_files(directory)
-        if local not in manifest.files
-    ]
+    if not manifest.root:
+        problems += [
+            f"{directory.name}/{local}: not listed in {MANIFEST}"
+            for local in _repository_files(directory)
+            if local not in manifest.files
+        ]
     return problems
 
 
@@ -271,7 +289,7 @@ def verify(root: Path) -> list[str]:
 
 
 def verify_sdk(upstream: Path) -> list[str]:
-    """The problems of the SDK's vendored repositories, if it has any."""
+    """The problems of the vendored repositories of one SDK directory, if it has any."""
     problems = []
     if upstream.is_dir():
         for directory in sorted(p for p in upstream.iterdir() if p.is_dir()):
@@ -317,7 +335,7 @@ def vendor(directory: Path, additions: list[str], origin: str | None) -> Manifes
         files = {}
         for local, path in sorted(wanted.items()):
             data = _git(clone, "cat-file", "blob", f"{fetched}:{path}")
-            target = directory / local
+            target = directory / manifest.root / local
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
             files[local] = hashlib.sha256(data).hexdigest()
@@ -406,7 +424,8 @@ def main(argv: list[str]) -> int:
     vendor_parser = commands.add_parser("vendor", help="fetch a repository's listed files")
     vendor_parser.add_argument(
         "repository",
-        help="the directory name under examples/autoware/upstream/ or crates/hypha-cxx/upstream/",
+        help="the directory name under examples/autoware/upstream/ or crates/hypha-cxx/upstream/,\n"
+        "or hypha_msgs/<directory> for crates/hypha_msgs/upstream/<directory>",
     )
     vendor_parser.add_argument("--add", action="append", default=[], metavar="PATH")
     vendor_parser.add_argument("--from", dest="origin", metavar="URL|DIR")
@@ -425,14 +444,21 @@ def main(argv: list[str]) -> int:
             sdk_problems = verify_sdk(SDK_UPSTREAM)
             for problem in sdk_problems:
                 print(f"crates/hypha-cxx/upstream: {problem}", file=sys.stderr)
-            if problems or sdk_problems:
+            msgs_problems = verify_sdk(MSGS_UPSTREAM)
+            for problem in msgs_problems:
+                print(f"crates/hypha_msgs/upstream: {problem}", file=sys.stderr)
+            if problems or sdk_problems or msgs_problems:
                 return EXIT_FAILED
             print("examples/autoware/upstream: the vendored files and the patches match")
             print("crates/hypha-cxx/upstream: the vendored files match")
+            print("crates/hypha_msgs/upstream: the vendored definitions match")
         elif arguments.command == "vendor":
-            directory = AUTOWARE / "upstream" / arguments.repository
-            if not directory.is_dir():
-                directory = SDK_UPSTREAM / arguments.repository
+            if arguments.repository.startswith(MSGS_PREFIX):
+                directory = MSGS_UPSTREAM / arguments.repository.removeprefix(MSGS_PREFIX)
+            else:
+                directory = AUTOWARE / "upstream" / arguments.repository
+                if not directory.is_dir():
+                    directory = SDK_UPSTREAM / arguments.repository
             if arguments.repository in (PATCHES, "") or not directory.is_dir():
                 raise PortError(f"{arguments.repository}: not a vendored repository")
             manifest = vendor(directory, arguments.add, arguments.origin)

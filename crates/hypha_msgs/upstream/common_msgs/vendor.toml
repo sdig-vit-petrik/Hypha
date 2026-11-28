@@ -1,0 +1,26 @@
+# The vendored files: examples/autoware/tools/port.py vendor writes the hashes,
+# port.py verify checks them. README.md says why these files.
+url = "https://github.com/ros/common_msgs"
+ref = "1.13.2"
+commit = "1230f39a7068d1d73d1039eb0eb970c922b6bcf7"
+root = "../../msg"
+
+# Path here = path upstream, for the files whose paths differ.
+[renamed]
+"diagnostic_msgs/AddDiagnostics.srv" = "diagnostic_msgs/srv/AddDiagnostics.srv"
+"diagnostic_msgs/SelfTest.srv" = "diagnostic_msgs/srv/SelfTest.srv"
+"nav_msgs/GetMap.srv" = "nav_msgs/srv/GetMap.srv"
+"nav_msgs/GetPlan.srv" = "nav_msgs/srv/GetPlan.srv"
+"nav_msgs/LoadMap.srv" = "nav_msgs/srv/LoadMap.srv"
+"nav_msgs/SetMap.srv" = "nav_msgs/srv/SetMap.srv"
+"sensor_msgs/SetCameraInfo.srv" = "sensor_msgs/srv/SetCameraInfo.srv"
+
+# Path here = SHA-256 of the file.
+[files]
+"diagnostic_msgs/AddDiagnostics.srv" = "e88df6a6769a9ee85480aa2b1adac052fa368b4a00016f1a9b8422fdacdf1767"
+"diagnostic_msgs/SelfTest.srv" = "3a95f0dfd99d48a34b58608a80443e9bcd343ebd76d8865f58f8b9b312b6d38f"
+"nav_msgs/GetMap.srv" = "b6a6c6a2159f5adf371227bebf81c42e22b89f0fa52374cb6779dff00f8bbc09"
+"nav_msgs/GetPlan.srv" = "112c2d9f43cb1d6784497d44d14757e539b26144969fdda0561c2b4757f3d009"
+"nav_msgs/LoadMap.srv" = "301ea2a2226e8723ae8a421eefc4dfbc0e3ed7819402583bd13c034f0802d3aa"
+"nav_msgs/SetMap.srv" = "a2621c3dc5565462b62ea8c80ee7a5039a46d55abbff1073eb49a5f88335a208"
+"sensor_msgs/SetCameraInfo.srv" = "9410913f13fe24c4e40fba4c74c320f15277695d669151fac473cc9d7e359251"
