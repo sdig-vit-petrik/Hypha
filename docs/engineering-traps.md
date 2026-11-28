@@ -496,7 +496,22 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   queues of all publishers. Drain only at a due step, or only one queue's depth, and
   the player's next chunk pushes unread samples out of a queue: a transport gap that a
   selection supersedes fails the step (#222), and a loss before a publisher's first
-  accepted frame is not counted at all (#247). Host time keeps its drain at the step.
+  accepted frame is not counted when the publisher existed before the subscriber
+  (#247). Host time keeps its drain at the step.
+- **A publisher that came after a subscriber is told by the creation order, and two
+  fences.** A subscriber lists the publisher ports of each stream right after its own
+  port exists; at a publisher's first frame, a port that is not on that list and is still
+  registered owes it every frame, and the frames before the first are counted lost
+  (`communication-integrity.md` §3). A port that is not listed and no longer registered
+  may have left before the listing, and is not judged. iceoryx2 orders its registry with
+  acquire and release only, so hypha adds a SeqCst fence after creating a subscriber and
+  after creating a publisher: without them, a publisher and a subscriber created at once
+  could each miss the other, and the subscriber would count the frames sent before it as
+  lost. A publisher from a build without the fence, or a native iceoryx2 application on
+  the topic, can in principle hit that race; in practice the hosts order it anyway (ARMv8
+  load-acquire after a store-release, x86 `lock xadd`), which is also why no test can show
+  the fences are needed. The same-instant race is exercised by
+  `a_subscriber_and_a_publisher_created_at_once_count_no_loss`.
 - **Benchmarks: a green test run misses a slowdown.** A hot-path change (dispatch,
   publish, receive, cycle tick, wire codec) reports its benchmark numbers before and
   after, in the commit message. `cargo bench -p hypha_wire --bench codec` measures the

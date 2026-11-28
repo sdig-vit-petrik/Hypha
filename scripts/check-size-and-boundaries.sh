@@ -59,7 +59,7 @@ PROD_RATCHET = {
     "crates/hypha_cycle/src/capture.rs": 857,
     "apps/hypha_ros_bridge/src/automatic_runtime.rs": 844,
     "apps/hypha_tools/src/bin/hypha/top/state.rs": 840,
-    "crates/hypha_node/src/subscriber.rs": 826,
+    "crates/hypha_node/src/subscriber.rs": 740,
     "crates/hypha_cycle/src/runtime.rs": 717,
     "apps/hypha_tools/src/bin/hypha/top/graph_ui.rs": 670,
     "crates/hypha_node/src/cycle/tick.rs": 651,
@@ -171,6 +171,7 @@ SLEEP_ALLOWLIST = frozenset({
     "crates/hypha-cxx/test/test_worker_stop.cpp",
     "crates/hypha-cxx/base/test/test_clock.cpp",
     "crates/hypha_ffi/tests/slow_callback_budget.rs",  # the sleep is the overrun under test
+    "crates/hypha_node/tests/subscriber_missing_sequences.rs",  # a creation race: stagger and pacing are its stimulus
 })
 # 6. #[allow(...)] ratchet in shipped Rust (use #[expect(lint, reason = "...")] per docs/rust-style.md).
 MAX_PROD_ALLOWS = 72

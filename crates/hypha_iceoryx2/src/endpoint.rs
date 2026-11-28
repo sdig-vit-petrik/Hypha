@@ -142,6 +142,8 @@ impl Iox2Loan {
 pub struct Iox2Sample {
     pub(crate) topic: Arc<str>,
     pub(crate) sample: Sample<Ipc, [u8], Iox2FrameHeader>,
+    /// The index of the stream it arrived on, in its subscriber.
+    pub(crate) stream: usize,
 }
 
 impl Iox2Sample {

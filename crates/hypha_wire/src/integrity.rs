@@ -20,21 +20,41 @@ struct Tracked {
     accepted_at: u64,
 }
 
+/// What a subscriber knows of the frames a publisher sent before the first one it accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstFrame {
+    /// The publisher may have sent them before the subscription existed: they count as
+    /// sent before the first ([`SequenceValidator::sent_before_first`]), not as lost.
+    Unknown,
+    /// A latched publisher's replayed sample: the last sample is all that is wanted, and
+    /// nothing before it counts.
+    Latched,
+    /// The publisher came after the subscription, so every frame it sent was owed to it: those
+    /// before the first accepted are lost ([`SequenceValidator::missing_sequences`]).
+    Owed,
+}
+
 /// Tracks the last accepted sequence for each publisher.
 ///
 /// When the table is full, a new publisher makes the validator forget the publisher
 /// that sent least recently; a forgotten publisher's next frame is accepted as its first.
+/// Once one is forgotten, no first frame is [`FirstFrame::Owed`] any more: it may be a
+/// forgotten publisher's.
 #[derive(Debug)]
 pub struct SequenceValidator {
     publishers: BTreeMap<u64, Tracked>,
     capacity: NonZeroUsize,
     /// Counts calls to [`SequenceValidator::accept`], to order publishers by
     calls: u64,
-    /// Missing sequence values between accepted forward frames.
+    /// Missing sequence values between accepted forward frames, and before the first frame of
+    /// a publisher that was owed every frame ([`FirstFrame::Owed`]).
     missing_sequences: u64,
-    /// Frames the publishers sent before the first one accepted from each: a publisher's first
-    /// frame has sequence 1, so the first sequence accepted, less one, is the count before it.
+    /// Frames the publishers sent before the first one accepted from each, where they may
+    /// have been sent before the subscription: a publisher's first frame has sequence 1, so
+    /// the first sequence accepted, less one, is the count before it.
     sent_before_first: u64,
+    /// Set once a full table forgot a publisher.
+    forgot: bool,
 }
 
 impl Default for SequenceValidator {
@@ -60,6 +80,7 @@ impl SequenceValidator {
             calls: 0,
             missing_sequences: 0,
             sent_before_first: 0,
+            forgot: false,
         }
     }
 
@@ -69,24 +90,30 @@ impl SequenceValidator {
     /// Measured modulo the sequence range: a sequence less than half the range ahead of
     /// the last accepted one is newer, gaps included. Anything else is refused.
     pub fn accept(&mut self, publisher_id: u64, sequence: u64) -> bool {
-        self.accept_as(publisher_id, sequence, true)
+        self.accept_as(publisher_id, sequence, FirstFrame::Unknown)
     }
 
-    /// As [`SequenceValidator::accept`], saying whether the first sequence of a publisher
-    /// counts as frames sent before the first one accepted. It does not for a frame that a
-    /// latched publisher hands to a late subscriber: the last sample is all that is wanted.
-    pub fn accept_as(&mut self, publisher_id: u64, sequence: u64, counts_first: bool) -> bool {
+    /// As [`SequenceValidator::accept`], saying with `first` what the frames before the first
+    /// sequence of a publisher are. A publisher's first frame has sequence 1, so the first
+    /// sequence accepted, less one, is their number.
+    pub fn accept_as(&mut self, publisher_id: u64, sequence: u64, first: FirstFrame) -> bool {
         self.calls = self.calls.wrapping_add(1);
         let now = self.calls;
         let Some(tracked) = self.publishers.get_mut(&publisher_id) else {
             if self.publishers.len() >= self.capacity.get() {
                 self.forget_least_recent();
+                self.forgot = true;
             }
             self.publishers.insert(publisher_id, Tracked { sequence, accepted_at: now });
-            if counts_first {
-                // A publisher's first frame has sequence 1.
-                self.sent_before_first =
-                    self.sent_before_first.saturating_add(sequence.saturating_sub(1));
+            let before = sequence.saturating_sub(1);
+            match first {
+                FirstFrame::Owed if !self.forgot => {
+                    self.missing_sequences = self.missing_sequences.wrapping_add(before);
+                }
+                FirstFrame::Owed | FirstFrame::Unknown => {
+                    self.sent_before_first = self.sent_before_first.saturating_add(before);
+                }
+                FirstFrame::Latched => {}
             }
             return true;
         };
@@ -101,15 +128,29 @@ impl SequenceValidator {
         true
     }
 
-    /// Number of missing sequence values between accepted forward frames.
+    /// True when a first frame of `publisher_id` would not be its first: the validator tracks
+    /// it. A caller that must look up what a first frame is ([`FirstFrame`]) asks this first.
+    #[must_use]
+    pub fn tracks(&self, publisher_id: u64) -> bool {
+        self.publishers.contains_key(&publisher_id)
+    }
+
+    /// True once a full table forgot a publisher: no first frame is [`FirstFrame::Owed`] then.
+    #[must_use]
+    pub const fn forgot_a_publisher(&self) -> bool {
+        self.forgot
+    }
+
+    /// Number of missing sequence values between accepted forward frames, and before the first
+    /// accepted frame of a publisher that came after the subscription.
     #[must_use]
     pub const fn missing_sequences(&self) -> u64 {
         self.missing_sequences
     }
 
     /// Frames the publishers sent before the first one accepted from each, a latched replay
-    /// not counted. A publisher that existed before the subscription is among them: whether
-    /// they are a loss is for the reader to say.
+    /// and a publisher that was owed every frame not counted. A publisher that existed before
+    /// the subscription is among them: whether they are a loss is for the reader to say.
     #[must_use]
     pub const fn sent_before_first(&self) -> u64 {
         self.sent_before_first
