@@ -13,6 +13,7 @@
 #include "hypha/cycle_service.h"
 #include "hypha/node.h"
 #include "hypha/options.h"
+#include "hypha/sequence.h"
 
 #include <expected>
 #include <optional>
