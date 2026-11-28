@@ -44,11 +44,8 @@ template <typename T>
 Matrix<T> ConfigView::requiredMatrix(const std::string& key, size_t rows, size_t cols) const
 {
     if (rows == 0 && cols == 0) {
-        throw std::invalid_argument(
-            "hypha: requiredMatrix('" + this->name(key)
-            + "') needs rows or cols; 0 for one takes "
-              "it from the length"
-        );
+        const std::string name = this->name(key);
+        throw std::invalid_argument("hypha: requiredMatrix('" + name + "') needs rows or cols");
     }
     Matrix<T> matrix;
     matrix.values = this->requiredArray<T>(key);

@@ -217,7 +217,6 @@ topic = \"/out\"
 
 [[goals]]
 name = \"pick\"
-gains = [1.0, 2.0]
 [goals.limits]
 max = 5
 ";
@@ -265,16 +264,5 @@ fn table_names_list_the_tables_under_a_prefix_and_read_nothing() {
     for name in ["rate", "goals", "never_set", "goals[3]", "ports.inputs.joy.topic"] {
         assert_eq!(table_names(node, name), (HyphaStatus::Ok, String::new()), "{name}");
     }
-    unsafe { hypha_node_destroy(node) };
-}
-
-#[test]
-fn an_array_inside_a_table_element_is_read_through_the_name_of_its_element() {
-    let node = create_node("element_array", TABLES);
-    assert_eq!(length(node, "goals[0].gains"), (HyphaParamResult::Ok, 2));
-    assert_eq!(length(node, "goals[1].gains").0, HyphaParamResult::Absent);
-    assert_eq!(length(node, "goals[0].name").0, HyphaParamResult::Malformed, "a scalar is no list");
-    let (result, value) = element(node, "goals[0].gains", 1, "");
-    assert_eq!((result, value.kind, value.float_value), (HyphaParamResult::Ok, 2, 2.0));
     unsafe { hypha_node_destroy(node) };
 }

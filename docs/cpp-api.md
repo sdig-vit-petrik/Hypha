@@ -1213,7 +1213,7 @@ for (const auto sensor : settings.list("sensors")) {
   list is no table, and a table with no key is not there. It reads nothing: a key of a
   table that the node does not read stays an unread key. It works inside a list entry
   too (`sensor.tables()`). The C ABI call is `hypha_config_table_names(config, prefix, ...)`,
-  names joined by `'\n'` (`abi.revision` 12).
+  names joined by `'\n'` (`abi.revision` 14).
 - **Porting.** A ROS 1 list parameter, with the fixed-size form:
   [ros1-migration-guide.md](ros1-migration-guide.md#108-a-list-of-scalars-in-the-parameter-file).
 - **Without a bus.** A `hypha::ConfigContext` serves `hypha::config()` in a test

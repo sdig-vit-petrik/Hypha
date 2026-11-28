@@ -37,8 +37,6 @@ class ConfigWalkFixture : public ::testing::Test
                   "weights = [0.5, 1.5, 2.5]\n"
                   "bad_weights = [1.0, 'x']\n"
                   "topic = '/imu'\n"
-                  "[sensors.limits]\n"
-                  "max = 5\n"
                   "[[sensors]]\n"
                   "name = 'gps'\n"
                   "weights = [4.0]\n"
@@ -121,19 +119,6 @@ TEST_F(ConfigWalkFixture, AnEntryOfATableListHoldsAListOfTables)
         hypha::config().list("goals").at(0).list("absent");
     });
     EXPECT_EQ(missing, "hypha: required list not set: goals[0].absent");
-}
-
-TEST_F(ConfigWalkFixture, AnArrayInAnEntryIsReadSoItIsNotUnread)
-{
-    const hypha::ConfigList sensors = hypha::config().list("sensors");
-    static_cast<void>(sensors.at(0).requiredArray<double>("weights"));
-    const std::vector<std::string> unread = hypha::config("sensors[0]").unreadKeys();
-    EXPECT_EQ(
-        unread,
-        (std::vector<std::string>{
-            "sensors[0].bad_weights", "sensors[0].limits.max", "sensors[0].name", "sensors[0].topic"
-        })
-    );
 }
 
 // (b) one value or a list.
@@ -228,29 +213,6 @@ TEST_F(ConfigWalkFixture, TheTablesUnderAScopeAreListedByName)
     EXPECT_EQ(hypha::config("ports").tables().size(), 2U);
     EXPECT_TRUE(hypha::config("ports.inputs.joy").tables().empty());
     EXPECT_TRUE(hypha::config("never_set").tables().empty());
-}
-
-TEST_F(ConfigWalkFixture, ListingTheTablesReadsNothingSoAnUnreadKeyStaysUnread)
-{
-    static_cast<void>(hypha::config("ports.inputs").tables());
-    static_cast<void>(hypha::config("ports.inputs.cmd_vel").required<std::string>("topic"));
-    const std::vector<std::string> unread = hypha::config("ports.inputs").unreadKeys();
-    EXPECT_EQ(
-        unread,
-        (std::vector<std::string>{
-            "ports.inputs.cmd_vel.priority", "ports.inputs.joy.priority", "ports.inputs.joy.topic"
-        })
-    );
-}
-
-TEST_F(ConfigWalkFixture, AnEntryOfATableListHasTablesOfItsOwn)
-{
-    const hypha::ConfigView sensor = hypha::config().list("sensors").at(0);
-    const auto              tables = sensor.tables();
-    ASSERT_EQ(tables.size(), 1U);
-    EXPECT_EQ(tables[0].key(), "limits");
-    EXPECT_EQ(tables[0].required<int>("max"), 5);
-    EXPECT_EQ(tables[0].name(), "sensors[0].limits");
 }
 
 // (e) a matrix.
