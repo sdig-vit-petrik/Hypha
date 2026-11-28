@@ -81,6 +81,14 @@ T hypha_service_client_create
 T hypha_service_client_destroy
 T hypha_service_server_create
 T hypha_service_server_destroy
+T hypha_step_services_bind
+T hypha_step_services_calls
+T hypha_step_services_create
+T hypha_step_services_deliver
+T hypha_step_services_destroy
+T hypha_step_services_feed
+T hypha_step_services_request
+T hypha_step_services_step
 T hypha_subscribe_typed
 T hypha_subscriber_counters
 T hypha_subscriber_destroy

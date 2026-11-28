@@ -11,8 +11,10 @@ mod client;
 mod cycle;
 mod listing;
 mod outcome;
+mod port;
 mod server;
 mod spec;
+mod step_test;
 
 pub use call_log::{CALL_LOG_POLICY, SERVICE_CALL_DEFINITION, call_log_topic};
 pub use client::{
@@ -27,9 +29,11 @@ pub use outcome::{
     HYPHA_CALL_NO_SERVER, HYPHA_CALL_NOT_SENT, HYPHA_CALL_REFUSED, HYPHA_CALL_SENT,
     HYPHA_CALL_SERVER_LOST, HYPHA_CALL_TIMEOUT, HYPHA_CALL_TOO_LARGE,
 };
+pub use port::{FedAnswer, FedCall};
 pub(crate) use server::ServerCore;
 pub use server::{
     Answer, HyphaRequest, HyphaServer, RequestView, ServeHandler, request_answer, request_defer,
     server_unanswered, service_serve, service_server_destroy,
 };
 pub use spec::ServiceDecl;
+pub use step_test::{HyphaStepServices, RequestState, step_services_create};

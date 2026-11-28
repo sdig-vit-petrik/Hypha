@@ -15,19 +15,19 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use hypha_core::port::ReplyError;
-use hypha_iceoryx2::{Iox2Server, RequestHandle};
 
 use crate::node::HyphaNode;
 use crate::status::Error;
 use crate::waitset::{HYPHA_ACTION_FAIL, HyphaCallbackResult};
 
+use super::port::{Received, ServerPort, Slot};
 use super::spec::{Role, ServiceDecl};
 
 /// What a server shares with the deferred handles of its requests.
 pub(crate) struct ServerCore {
     name: String,
     /// `None` once the server was destroyed: every slot ended with it.
-    port: Mutex<Option<Iox2Server>>,
+    port: Mutex<Option<ServerPort>>,
     /// Requests left unanswered and refused for it.
     unanswered: AtomicU64,
     /// Whether the first unanswered request was logged.
@@ -82,7 +82,7 @@ pub enum Answer<'a> {
 /// refuses the request.
 pub struct HyphaRequest {
     server: Weak<ServerCore>,
-    handle: RequestHandle,
+    handle: Slot,
     open: bool,
     kind: Kind,
     /// The answer a step gave it, sent after the step.
@@ -119,7 +119,7 @@ impl OwnedAnswer {
 /// A deferred request answered during a cycle step: it leaves after the step.
 struct StagedAnswer {
     server: Weak<ServerCore>,
-    handle: RequestHandle,
+    handle: Slot,
     answer: OwnedAnswer,
 }
 
@@ -173,7 +173,7 @@ pub(crate) const STEP_FAILED: &str = "server step failed";
 
 fn send_owned(
     server: &Weak<ServerCore>,
-    handle: RequestHandle,
+    handle: Slot,
     answer: &OwnedAnswer,
     stamp: i64,
 ) -> Option<Result<(), ReplyError>> {
@@ -186,7 +186,7 @@ fn send_owned(
 
 fn fail_handle(
     server: &Weak<ServerCore>,
-    handle: RequestHandle,
+    handle: Slot,
     reason: &str,
     stamp: i64,
 ) -> Option<Result<(), ReplyError>> {
@@ -196,7 +196,7 @@ fn fail_handle(
 
 impl HyphaRequest {
     /// A request that a cycle step of `server` read.
-    pub(crate) fn of_step(server: &Arc<ServerCore>, handle: RequestHandle) -> Self {
+    pub(crate) fn of_step(server: &Arc<ServerCore>, handle: Slot) -> Self {
         Self { server: Arc::downgrade(server), handle, open: true, kind: Kind::Step, staged: None }
     }
 
@@ -372,7 +372,7 @@ pub fn service_serve(
         .serve(&resolved.spec)
         .map_err(|cause| super::spec::refuse_spec(&name, &cause))?;
     let listener = port.open_listener().map_err(Error::from)?;
-    let core = ServerCore::new(name, port);
+    let core = ServerCore::new(name, ServerPort::Bus(Box::new(port)));
     let target = crate::waitset::ServiceTarget::Server { core: Arc::clone(&core), handler };
     let attachment = crate::waitset::attach_service(node, listener, target)?;
     Ok(HyphaServer { core, node: Arc::downgrade(node), attachment })
@@ -399,7 +399,7 @@ pub fn server_unanswered(server: &HyphaServer) -> u64 {
 }
 
 /// Run `body` on the server's port, or `None` once the server is gone.
-fn with_port<R>(server: &Weak<ServerCore>, body: impl FnOnce(&mut Iox2Server) -> R) -> Option<R> {
+fn with_port<R>(server: &Weak<ServerCore>, body: impl FnOnce(&mut ServerPort) -> R) -> Option<R> {
     let core = server.upgrade()?;
     let mut port = crate::locked(&core.port);
     port.as_mut().map(body)
@@ -426,7 +426,7 @@ impl ServerCore {
             }
             let mut request = HyphaRequest {
                 server: Arc::downgrade(self),
-                handle: received.handle,
+                handle: received.slot,
                 open: true,
                 kind: Kind::Handler,
                 staged: None,
@@ -447,14 +447,13 @@ impl ServerCore {
     }
 
     /// The next request and a copy of its payload, so no lock is held while it is served.
-    pub(crate) fn receive(&self) -> Option<(hypha_iceoryx2::ReceivedRequest, Vec<u8>)> {
+    pub(crate) fn receive(&self) -> Option<(Received, Vec<u8>)> {
         let mut port = crate::locked(&self.port);
         let port = port.as_mut()?;
         match port.receive() {
             Ok(Some(received)) => {
                 self.receive_failing.store(false, Ordering::Relaxed);
-                let payload = port.payload(received.handle).map_or_else(Vec::new, <[u8]>::to_vec);
-                Some((received, payload))
+                Some(received)
             }
             Ok(None) => None,
             Err(cause) => {
@@ -464,6 +463,11 @@ impl ServerCore {
                 None
             }
         }
+    }
+
+    /// Run `body` on the server's end, or `None` once the server is gone.
+    pub(crate) fn with_port<R>(&self, body: impl FnOnce(&mut ServerPort) -> R) -> Option<R> {
+        crate::locked(&self.port).as_mut().map(body)
     }
 
     /// The resolved service name.
@@ -479,7 +483,7 @@ impl ServerCore {
     }
 
     /// A new server core for `port`, named `name`.
-    pub(crate) fn new(name: String, port: Iox2Server) -> Arc<Self> {
+    pub(crate) fn new(name: String, port: ServerPort) -> Arc<Self> {
         Arc::new(Self {
             name,
             port: Mutex::new(Some(port)),

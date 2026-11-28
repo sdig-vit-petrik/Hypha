@@ -116,6 +116,26 @@ pub struct EmissionView<'a, 'b> {
     pub(super) services: &'a mut crate::service::CycleServices,
 }
 
+/// Run `body` with the emission of a step that has services and no output: a step test's
+/// (`hypha::testing::StepHarness`), whose outputs the SDK keeps itself. The service
+/// functions of the C ABI take it as any step's emission.
+pub fn with_service_emission<R>(
+    services: &mut crate::service::CycleServices,
+    body: impl FnOnce(&mut EmissionView<'_, '_>) -> R,
+) -> R {
+    let mut emissions = Vec::new();
+    let mut budget = EmissionBudget::without_outputs();
+    let mut view = EmissionView {
+        emissions: &mut emissions,
+        outputs: &[],
+        budget: &mut budget,
+        open: false,
+        error: None,
+        services,
+    };
+    body(&mut view)
+}
+
 /// The requests the step reads from its server `server` (`docs/design/native-services.md`
 /// §2): on the first call of the step, those due; the same ones on a later call.
 ///

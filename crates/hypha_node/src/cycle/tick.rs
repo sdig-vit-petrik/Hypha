@@ -161,7 +161,7 @@ pub(crate) fn cycle_timer_tick(
     // deadlines are judged on the scheduling clock.
     let scheduled = replay_cut.unwrap_or_else(|| hypha_time::scheduling_now().nanos());
     let services = &mut state.services;
-    services.begin(step_nanos, scheduled, replay_cut, &set.node().transport);
+    services.begin(step_nanos, scheduled, replay_cut, Some(&set.node().transport));
     let mut step_state = StepState {
         step,
         inputs,

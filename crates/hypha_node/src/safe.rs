@@ -44,11 +44,12 @@ pub use crate::qos::Declaration;
 pub use crate::sample::{HyphaReceivedSample, sample_identity, sample_payload};
 pub use crate::schema::{schema_lookup, schema_resolve_hash, schema_resolve_hash_now};
 pub use crate::service::{
-    Answer, CallDone, CallOutcome, CallResult, CallStatus, ClientStatus, HyphaClient, HyphaRequest,
-    HyphaServer, ListedService, RequestView, ServeHandler, ServiceDecl, ServiceDefinitions,
-    StepRequest, call_log_topic, client_call, client_status, client_wait_for_server, list_services,
-    request_answer, request_defer, service_client_create, service_client_destroy,
-    service_definitions, service_serve, service_server_destroy,
+    Answer, CallDone, CallOutcome, CallResult, CallStatus, ClientStatus, FedAnswer, FedCall,
+    HyphaClient, HyphaRequest, HyphaServer, HyphaStepServices, ListedService, RequestState,
+    RequestView, ServeHandler, ServiceDecl, ServiceDefinitions, StepRequest, call_log_topic,
+    client_call, client_status, client_wait_for_server, list_services, request_answer,
+    request_defer, service_client_create, service_client_destroy, service_definitions,
+    service_serve, service_server_destroy, step_services_create,
 };
 pub use crate::status::Error;
 pub use crate::subscriber::{

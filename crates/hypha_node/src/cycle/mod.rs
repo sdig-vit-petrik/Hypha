@@ -19,6 +19,7 @@ pub use image::{
     EmissionView, HyphaCycleEmission, HyphaCycleImage, ImageView, emission_call, emission_commit,
     emission_next_result, emission_requests, emission_reserve, emission_unread_results,
     image_alive, image_binding, image_held, image_reject_sample, image_sample, image_set_ignored,
+    with_service_emission,
 };
 pub use input_supervision::{
     HyphaInputSupervisionRequest, HyphaInputSupervisionResult, cycle_bind_input_supervision,

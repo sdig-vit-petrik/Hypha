@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use hypha_core::port::CallSendError;
-use hypha_iceoryx2::{CallEvent, CallId, Iox2Client, Iox2Listener, Iox2Transport, Liveness};
+use hypha_iceoryx2::{CallId, Iox2Listener, Iox2Transport, Liveness};
 
 use crate::node::HyphaNode;
 use crate::status::Error;
@@ -23,6 +23,7 @@ use crate::waitset::HyphaCallbackResult;
 
 use super::call_log::{CallLog, Entry};
 use super::outcome::{CallOutcome, CallResult, CallStatus};
+use super::port::{ClientPort, FedClient, Polled};
 use super::spec::{Role, ServiceDecl};
 
 /// What runs once with the outcome of one call. A failing result fails the run of the
@@ -78,7 +79,7 @@ struct Identity {
 pub(crate) struct ClientState {
     identity: Identity,
     /// `None` once the client was destroyed.
-    port: Option<Iox2Client>,
+    port: Option<ClientPort>,
     timeout_nanos: i64,
     /// The timeout and where it came from: `1 s (policy defaultService)`.
     timeout_text: String,
@@ -138,8 +139,8 @@ pub fn service_client_create(
     crate::last_error::clear();
     let state = open_state(node, decl, None, None)?;
     let listener = match state.port.as_ref() {
-        Some(port) => port.open_listener().map_err(Error::from)?,
-        None => return Err(Error::InvalidState),
+        Some(ClientPort::Bus(port)) => port.open_listener().map_err(Error::from)?,
+        _ => return Err(Error::InvalidState),
     };
     let core = Arc::new(ClientCore { state: Mutex::new(state) });
     let mut client =
@@ -172,21 +173,54 @@ pub(crate) fn open_state(
         .map_err(|cause| super::spec::refuse_spec(&spec.name, &cause))?;
     let client_port = if decl.literal { spec.name.as_str() } else { decl.name };
     let log = CallLog::open(node, spec, client_port);
-    Ok(ClientState {
-        identity: Identity {
-            name: spec.name.clone(),
-            type_name: spec.type_name.clone(),
-            md5: spec.md5.clone(),
-        },
-        outstanding: limit.unwrap_or(spec.policy.max_outstanding),
-        port: Some(port),
-        timeout_nanos: i64::try_from(resolved.timeout.as_nanos()).unwrap_or(i64::MAX),
-        timeout_text: format!("{} ({})", seconds(resolved.timeout), resolved.timeout_source),
-        calls: Vec::new(),
-        next_order: 0,
-        ready: Vec::new(),
-        log,
-    })
+    Ok(ClientState::of(&resolved, ClientPort::Bus(Box::new(port)), limit, log))
+}
+
+/// The state of a client of `decl` whose server is a test (`super::port::FedClient`): its
+/// table read from `config` as a start reads it, with no node, no bus and no call log.
+pub(crate) fn open_fed_state(
+    config: Option<&crate::config::HyphaConfig>,
+    decl: &ServiceDecl<'_>,
+    outstanding: Option<usize>,
+) -> Result<ClientState, Error> {
+    let resolved = super::spec::resolve_fed(config, decl, Role::Client)?;
+    let limit = resolved.outstanding.or(outstanding);
+    let port = ClientPort::Fed(FedClient::new(resolved.spec.policy.clone()));
+    Ok(ClientState::of(&resolved, port, limit, None))
+}
+
+impl ClientState {
+    fn of(
+        resolved: &super::spec::Resolved,
+        port: ClientPort,
+        limit: Option<usize>,
+        log: Option<CallLog>,
+    ) -> Self {
+        let spec = &resolved.spec;
+        Self {
+            identity: Identity {
+                name: spec.name.clone(),
+                type_name: spec.type_name.clone(),
+                md5: spec.md5.clone(),
+            },
+            outstanding: limit.unwrap_or(spec.policy.max_outstanding),
+            port: Some(port),
+            timeout_nanos: i64::try_from(resolved.timeout.as_nanos()).unwrap_or(i64::MAX),
+            timeout_text: format!("{} ({})", seconds(resolved.timeout), resolved.timeout_source),
+            calls: Vec::new(),
+            next_order: 0,
+            ready: Vec::new(),
+            log,
+        }
+    }
+
+    /// The fed end of a client whose server is a test; `None` for a client of the bus.
+    pub(crate) fn fed(&mut self) -> Option<&mut FedClient> {
+        match self.port.as_mut() {
+            Some(ClientPort::Fed(port)) => Some(port),
+            _ => None,
+        }
+    }
 }
 
 /// Destroy `client`: it is detached from its `WaitSet`, and the outcomes of its calls in
@@ -290,7 +324,7 @@ pub fn client_wait_for_server(client: &HyphaClient, timeout: Duration) -> Result
 pub fn client_status(client: &HyphaClient) -> ClientStatus {
     let state = crate::locked(&client.core.state);
     ClientStatus {
-        ready: state.port.as_ref().is_some_and(Iox2Client::server_available),
+        ready: state.port.as_ref().is_some_and(ClientPort::server_available),
         pending: state.calls.len().saturating_add(state.ready.len()),
         log_dropped: state.log.as_ref().map_or(0, CallLog::dropped),
     }
@@ -427,13 +461,10 @@ impl ClientState {
         }
         let mut reports = Vec::new();
         port.poll(&mut reports);
-        for report in reports.into_iter().filter(|report| !report.late) {
-            let Some(index) = self.calls.iter().position(|call| call.sent == Some(report.id))
-            else {
+        for Polled { id, outcome, stamp } in reports {
+            let Some(index) = self.calls.iter().position(|call| call.sent == Some(id)) else {
                 continue;
             };
-            let outcome = outcome_of(report.event);
-            let stamp = report.framework_sent_nanos.and_then(|stamp| i64::try_from(stamp).ok());
             match (stamp, self.calls.get_mut(index)) {
                 (Some(stamp), Some(call)) if !before_cut(stamp) => {
                     call.arrived = Some((outcome, stamp));
@@ -533,7 +564,7 @@ fn short(md5: &str) -> &str {
 }
 
 /// Send a held `call` now, stamped `stamp`; one that finds no server stays held.
-fn send(port: &mut Iox2Client, call: &mut Call, stamp: i64) -> Result<(), CallSendError> {
+fn send(port: &mut ClientPort, call: &mut Call, stamp: i64) -> Result<(), CallSendError> {
     if call.sent.is_some() {
         return Ok(());
     }
@@ -554,9 +585,9 @@ fn not_sent(cause: &CallSendError) -> CallOutcome {
 
 /// A call whose deadline passed while it was sent: lost when the probe finds its server
 /// dead or gone, else timed out. A timed-out call keeps its slot while the server holds it.
-fn expire(port: &mut Iox2Client, id: CallId, timeout_text: &str) -> CallOutcome {
-    let lost = |port: &mut Iox2Client, why: &str| {
-        let _ = port.abandon(id);
+fn expire(port: &mut ClientPort, id: CallId, timeout_text: &str) -> CallOutcome {
+    let lost = |port: &mut ClientPort, why: &str| {
+        port.abandon(id);
         CallOutcome::ServerLost(why.to_owned())
     };
     if !port.expire(id) {
@@ -568,16 +599,6 @@ fn expire(port: &mut Iox2Client, id: CallId, timeout_text: &str) -> CallOutcome 
         Liveness::Alive | Liveness::Unknown => {
             CallOutcome::Timeout(format!("after {timeout_text}"))
         }
-    }
-}
-
-fn outcome_of(event: CallEvent) -> CallOutcome {
-    match event {
-        CallEvent::Answered(response) => CallOutcome::Answered(response),
-        CallEvent::Refused(reason) => CallOutcome::Refused(reason),
-        CallEvent::Failed(reason) => CallOutcome::ServerLost(reason),
-        CallEvent::Invalid(check) => CallOutcome::ServerLost(format!("invalid response: {check}")),
-        CallEvent::Lost => CallOutcome::ServerLost("the server left".to_owned()),
     }
 }
 

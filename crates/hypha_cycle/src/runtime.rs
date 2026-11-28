@@ -175,6 +175,15 @@ pub struct EmissionBudget<'a> {
     counts: &'a mut [u32],
 }
 
+impl EmissionBudget<'static> {
+    /// The budget of a step with no output: every message is refused as of an unknown
+    /// output. A step test's services run in it (`hypha::testing::StepHarness`).
+    #[must_use]
+    pub fn without_outputs() -> Self {
+        Self { outputs: &[], counts: &mut [] }
+    }
+}
+
 impl<'a> EmissionBudget<'a> {
     fn new(outputs: &'a [OutputBinding], counts: &'a mut Vec<u32>) -> Self {
         counts.resize(outputs.len(), 0);

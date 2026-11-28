@@ -237,7 +237,7 @@ fn deliver_result(
 ///
 /// # Safety
 /// Each text of `desc` points to its length of readable bytes.
-unsafe fn declaration(desc: &HyphaServiceDesc) -> Result<ServiceDecl<'_>, HyphaStatus> {
+pub(crate) unsafe fn declaration(desc: &HyphaServiceDesc) -> Result<ServiceDecl<'_>, HyphaStatus> {
     let text = |pointer: *const c_char, len: usize| unsafe { borrow_str(pointer, len) };
     // A definition is optional: null with length 0 is none.
     let optional = |pointer: *const c_char, len: usize| {
