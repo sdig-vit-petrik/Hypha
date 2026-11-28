@@ -44,7 +44,11 @@ cmake --build "${WORK_DIR}/consumer"
 # Message headers sit at their ROS 1 path, <package>/<Name>.h, with no prefix.
 echo "==> Checking the installed message header layout..."
 for header in include/std_msgs/Header.h include/hypha_msgs/NodeState.h include/hypha_msgs/ros_time.h \
-    include/std_srvs/SetBool.h include/std_srvs/Trigger.h include/std_srvs/Empty.h; do
+    include/std_srvs/SetBool.h include/std_srvs/Trigger.h include/std_srvs/Empty.h \
+    include/nav_msgs/GetMap.h include/nav_msgs/GetMapResponse.h include/nav_msgs/LoadMap.h \
+    include/sensor_msgs/SetCameraInfo.h include/diagnostic_msgs/SelfTest.h \
+    include/tf2_msgs/FrameGraph.h share/hypha/msg/nav_msgs/GetMap.srv \
+    share/hypha/msg/sensor_msgs/SetCameraInfo.srv; do
   if [ ! -f "${PREFIX}/${header}" ]; then
     echo "ERROR: installed ${header} is missing." >&2
     exit 1
@@ -78,8 +82,9 @@ if [ -e "${PREFIX}/include/std_msgs/RemovedMessage.h" ]; then
   exit 1
 fi
 
-# The SDK owns the directory of each standard package: an application that declares
-# std_msgs from a directory of its own is refused at configure time.
+# The SDK owns the definitions of each standard package: a call that names std_msgs with
+# a definition of a name the package has is refused at configure time. A call with names of
+# its own adds to the package (the consumer above does, to sensor_msgs).
 echo "==> Checking that a second declaration of a standard package is refused..."
 readonly REDECLARE_DIR="${WORK_DIR}/redeclare-src"
 mkdir -p "${REDECLARE_DIR}/std_msgs"
@@ -100,7 +105,7 @@ if [ "${redeclare_status}" -eq 0 ]; then
   exit 1
 fi
 # CMake wraps a long message, so the lines are joined before the match.
-if ! tr -s '[:space:]' ' ' <<<"${redeclare_output}" | grep -q "package 'std_msgs' is declared twice"; then
+if ! tr -s '[:space:]' ' ' <<<"${redeclare_output}" | grep -q "std_msgs/Float64 is already defined by the SDK"; then
   echo "ERROR: the second declaration of std_msgs failed for another reason:" >&2
   echo "${redeclare_output}" >&2
   exit 1

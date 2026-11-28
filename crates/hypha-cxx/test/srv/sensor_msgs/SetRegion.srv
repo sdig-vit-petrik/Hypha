@@ -1,0 +1,5 @@
+# What the application adds to the SDK package sensor_msgs: it names the SDK own
+# sensor_msgs/RegionOfInterest without DEPENDS.
+sensor_msgs/RegionOfInterest roi
+---
+bool success
