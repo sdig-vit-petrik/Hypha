@@ -27,6 +27,8 @@ if(HYPHA_MSGGEN_EXECUTABLE AND NOT TARGET hypha::msggen)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/hyphaMessages.cmake")
+# hypha_add_node(): a node executable linked with hypha::sdk and its install RPATH.
+include("${CMAKE_CURRENT_LIST_DIR}/hyphaNode.cmake")
 # hypha_add_test(): a test in a bus domain of its own.
 include("${CMAKE_CURRENT_LIST_DIR}/hyphaTesting.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/hyphaTargets.cmake")
