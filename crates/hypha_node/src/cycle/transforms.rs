@@ -1,6 +1,7 @@
 //! The TF input of a cycle: two queued bindings on `/tf` and `/tf_static`, ingested
 //! into a cycle-owned [`TfState`] before each step, and the step's lookup. A replay step
-//! sees the transforms sent strictly before its deadline.
+//! sees the transforms sent strictly before its deadline, or at or before the time of a
+//! triggered step.
 
 use std::time::Duration;
 

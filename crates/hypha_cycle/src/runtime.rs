@@ -44,10 +44,11 @@ pub struct CycleTime {
     /// True when the message stamp is present and a `RosTime` can hold it. Derived.
     pub message_stamp_valid: bool,
     /// The data-time cut of a replay step, in framework nanoseconds: only samples stamped
-    /// before it are admitted, and ages count from it. `None` judges in host time.
+    /// before it are admitted, or at it in a step of a triggered cycle, and ages count from
+    /// it. `None` judges in host time.
     pub replay_cut_nanos: Option<u64>,
     /// What the trigger ports hold in a step of a triggered cycle; `None` for a rate cycle.
-    /// Under a replay cut the trigger ports admit their samples through the cut.
+    /// Under a replay cut every input of such a step admits its samples through the cut.
     pub trigger_step: Option<TriggerStep>,
 }
 
@@ -428,9 +429,13 @@ impl CycleRuntime {
         let Ok(capture_steady_u64) = u64::try_from(time.capture_steady_nanos) else {
             return self.fail(STATUS_INVALID_ARGUMENT);
         };
-        let clock = match time.replay_cut_nanos {
-            Some(cut_nanos) => CaptureClock::Replay { cut_nanos },
-            None => CaptureClock::Host { steady_nanos: capture_steady_u64 },
+        let clock = match (time.replay_cut_nanos, time.trigger_step) {
+            // A triggered step at T reads every input through T: the samples one upstream
+            // step sent with the trigger sample carry T, and the upstream hold has every
+            // sample stamped T of the reporting upstreams queued (§6.6, #231).
+            (Some(cut_nanos), Some(_)) => CaptureClock::ReplayThrough { cut_nanos },
+            (Some(cut_nanos), None) => CaptureClock::Replay { cut_nanos },
+            (None, _) => CaptureClock::Host { steady_nanos: capture_steady_u64 },
         };
         let sent_through = self.firing_sent_nanos(clock, time);
         if let Err(status) = self.arrival_assignments(clock, sent_through) {
@@ -564,7 +569,7 @@ impl CycleRuntime {
                 if let Some(port) = self.triggers.iter().position(|&trigger| trigger == index) {
                     let step = time.trigger_step.ok_or(STATUS_INVALID_ARGUMENT)?;
                     let options = other.options;
-                    capture.capture_trigger(&guard, options, step.fires(port), clock.for_trigger());
+                    capture.capture_trigger(&guard, options, step.fires(port), clock);
                     // The schedule found the port silent; the capture clock may read a
                     // little earlier than the schedule's.
                     if step.is_due(port) {

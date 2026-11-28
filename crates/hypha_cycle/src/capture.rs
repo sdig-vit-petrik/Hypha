@@ -43,7 +43,7 @@ pub enum CaptureClock {
         /// The deadline of the step, in framework nanoseconds.
         cut_nanos: u64,
     },
-    /// Data time for a trigger port of a replay step: the samples sent at or before
+    /// Data time for a step of a triggered cycle: the samples sent at or before
     /// `cut_nanos` are admitted, each judged by `cut_nanos - framework_sent_nanos`.
     ReplayThrough {
         /// The time of the step, in framework nanoseconds.

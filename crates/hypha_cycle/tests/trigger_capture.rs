@@ -249,18 +249,21 @@ fn the_firing_trigger_reads_age_zero() {
 }
 
 #[test]
-fn other_bindings_are_cut_strictly_before_the_trigger_stamp() {
+fn other_bindings_are_read_through_the_trigger_stamp_and_not_past_it() {
     let mut runtime = CycleRuntime::new();
     let trigger = runtime.add_binding(history(&[10]), queued(1)).expect("binding");
-    let _ = runtime.add_binding(history(&[9, 10]), latest()).expect("binding");
+    let _ = runtime.add_binding(history(&[9, 10, 11]), latest()).expect("binding");
+    let queue = runtime.add_binding(history(&[9, 10, 11]), queued(8)).expect("binding");
     runtime.set_trigger(trigger as usize).expect("trigger");
     let seen = step(&mut runtime, 10, fires(0));
     assert_eq!(stamps(&seen[0]), [10]);
-    assert_eq!(stamps(&seen[1]), [9]);
+    assert_eq!(stamps(&seen[1]), [10], "the newest sample at or before the step");
+    assert_eq!(stamps(&seen[queue as usize]), [9, 10], "11 belongs to a later step");
+    assert_eq!(seen[queue as usize].age_nanos, 0);
 }
 
 #[test]
-fn other_inputs_stay_cut_before_the_step_with_two_triggers() {
+fn other_inputs_are_read_through_the_step_with_two_triggers() {
     let mut runtime = CycleRuntime::new();
     let a = runtime.add_binding(history(&[10]), queued(1)).expect("binding");
     let _ = runtime.add_binding(history(&[9, 10]), latest()).expect("binding");
@@ -269,9 +272,49 @@ fn other_inputs_stay_cut_before_the_step_with_two_triggers() {
     runtime.set_trigger(a as usize).expect("trigger");
     runtime.set_trigger(b as usize).expect("trigger");
     let seen = step(&mut runtime, 10, fires(1));
-    assert_eq!(stamps(&seen[1]), [9]);
-    assert_eq!(stamps(&seen[queue as usize]), [8, 9]);
+    assert_eq!(stamps(&seen[1]), [10]);
+    assert_eq!(stamps(&seen[queue as usize]), [8, 9, 10]);
     assert_eq!(stamps(&seen[b as usize]), [10]);
+}
+
+#[test]
+fn a_fallback_step_reads_the_other_inputs_through_its_time() {
+    let mut runtime = CycleRuntime::new();
+    let trigger = runtime.add_binding(history(&[]), queued(1)).expect("binding");
+    let queue = runtime.add_binding(history(&[90, 100, 110]), queued(8)).expect("binding");
+    runtime.set_trigger(trigger as usize).expect("trigger");
+    let seen = step(&mut runtime, 100, falls_back(&[]));
+    assert_eq!(stamps(&seen[queue as usize]), [90, 100]);
+}
+
+/// The trigger sample and the partner that one upstream step sent, as each step of a
+/// triggered cycle holds them. The step sent both with one stamp, which is its host send
+/// time and its framework time alike; `replay` steps at each trigger stamp, else on host
+/// time once both pairs were drained.
+fn pairs_of_one_upstream_step(replay: bool) -> Vec<(Vec<u64>, Vec<u64>)> {
+    let mut runtime = CycleRuntime::new();
+    let trigger = runtime.add_binding(history(&[100, 200]), queued(8)).expect("binding") as usize;
+    let partner = runtime.add_binding(history(&[100, 200]), queued(8)).expect("binding") as usize;
+    runtime.set_trigger(trigger).expect("trigger");
+    [100, 200]
+        .into_iter()
+        .map(|at| {
+            let seen = if replay {
+                step(&mut runtime, at, fires(0))
+            } else {
+                host_step_at(&mut runtime, 300, fires(0))
+            };
+            (stamps(&seen[trigger]), stamps(&seen[partner]))
+        })
+        .collect()
+}
+
+#[test]
+fn a_partner_sent_by_the_trigger_samples_upstream_step_is_in_its_step_on_both_clocks() {
+    // #231: one rule for both clocks; the partner of the next pair waits on both.
+    let expected = vec![(vec![100], vec![100]), (vec![200], vec![200])];
+    assert_eq!(pairs_of_one_upstream_step(true), expected, "simulated time");
+    assert_eq!(pairs_of_one_upstream_step(false), expected, "host time");
 }
 
 #[test]

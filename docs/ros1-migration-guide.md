@@ -630,7 +630,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | A topic under `/hypha/` | A topic of another namespace: `/hypha` and the names under it are the framework's, and a port on one is refused with `InvalidTopic` |
 | `nh.subscribe` that stores the latest value | `hypha::Latest<T>` port |
 | `nh.subscribe` with work for each message | `hypha::Arrivals<T>` port |
-| `message_filters` synchroniser | `Arrivals` ports; match `header.stamp` in the step. Trigger on the input that is published last: its step holds the partner samples sent before it, or with it by one step of one node ([execution-model.md](execution-model.md) §6.6). A partner sent after the trigger sample is not in that step |
+| `message_filters` synchroniser | `Arrivals` ports; match `header.stamp` in the step. Trigger on the input that is published last: its step holds the partner samples sent before it, or with it by one step of one node, live and in a lockstep replay ([execution-model.md](execution-model.md) §6.6). A partner sent after the trigger sample is not in that step |
 | `nh.advertise` + `publish` | `hypha::Output<T>` port: call `send(message)`. A step sends one message per Output. A step that sends two declares the Output with `hypha::perStep(2)`: `hypha::Output<T> name{*this, "name", hypha::perStep(2)};` |
 | `nh.createTimer` | The cycle rate, `rate_hz` under `[cycle]` |
 | `ros::TimerEvent` | `const hypha::CycleTime&`: `dt` (no value in the first step), `missed` |
