@@ -647,6 +647,7 @@ included, uses the same `HYPHA_DOMAIN`.
 | A topic under `/hypha/` | A topic of another namespace: `/hypha` and the names under it are the framework's, and a port on one is refused with `InvalidTopic` |
 | `nh.subscribe` that stores the latest value | `hypha::Latest<T>` port |
 | `nh.subscribe` with work for each message | `hypha::Arrivals<T>` port |
+| `nh.subscribe(topic, 1, callback)`: only the newest message | An `Arrivals<T>` port with `newestOnly`, a trigger when the callback did the work (cpp-api.md §5.4); the older pending messages are counted, not delivered. A `Latest<T>` port when the callback only stored the value |
 | `message_filters` synchroniser | `Arrivals` ports; match `header.stamp` in the step. Trigger on the input that is published last: its step holds the partner samples sent before it, or with it by one step of one node, live and in a lockstep replay ([execution-model.md](execution-model.md) §6.6). A partner sent after the trigger sample is not in that step |
 | `nh.advertise` + `publish` | `hypha::Output<T>` port: call `send(message)`. A step sends one message per Output. A step that sends two declares the Output with `hypha::perStep(2)`: `hypha::Output<T> name{*this, "name", hypha::perStep(2)};` |
 | `nh.createTimer` | The cycle rate, `rate_hz` under `[cycle]`; a second timer, a `hypha::CycleTimer` polled first in the step (Step 2) |
@@ -697,7 +698,13 @@ The aggregator is another node: its input on `/diagnostics` needs a `silence_ms`
 the longest diagnostic period, and a `perStep` for the burst of all publishers.
 
 **Queue sizing:** `queue_size` has no counterpart: there are no transport depths,
-history samples or history byte limits to tune. A topic's service policy (`hypha::Qos`,
+history samples or history byte limits to tune. A `queue_size` of 1, "only the newest",
+is the reader's choice alone: `newestOnly` on an `Arrivals<T>` port (a trigger or not)
+keeps the queue of its `perStep()`, examines the newest pending sample and counts the
+older ones in `bindingHealth().work_limit_drops_total` and, for a required input, the
+`dropped` of its `~/state` row. The publishers and the topic's policy do not change, and a replay steps
+the same on every run (execution-model.md §6.6). A plain `subscribe` callback has no such
+option: a callback with `queue_size` 1 is ported as a triggered cycle. A topic's service policy (`hypha::Qos`,
 cpp-api.md §7) sets the deepest queue a subscriber may ask for, its `maxDepth`: 32 for
 the `default` policy of a type the stack maps to no other. A plain `Subscriber<T>`
 queues that many samples, and so does a `Latest<T>` cycle input. On an `Arrivals<T>`

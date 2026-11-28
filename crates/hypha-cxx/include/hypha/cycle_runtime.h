@@ -339,7 +339,9 @@ inline ::HyphaStatus Port::bindInputSource(
 ) const
 {
     HyphaCycleBindingOptions raw{};
-    raw.mode = queued ? HYPHA_CYCLE_INPUT_MODE_QUEUED : HYPHA_CYCLE_INPUT_MODE_LATEST;
+    raw.mode = !queued             ? HYPHA_CYCLE_INPUT_MODE_LATEST
+             : settings.newestOnly ? HYPHA_CYCLE_INPUT_MODE_NEWEST
+                                   : HYPHA_CYCLE_INPUT_MODE_QUEUED;
     raw.optional = settings.countsForHealth ? 0 : 1;
     if (queued) {
         raw.max_samples_per_iteration = settings.perStep.value_or(HYPHA_DEFAULT_ARRIVALS_PER_STEP);

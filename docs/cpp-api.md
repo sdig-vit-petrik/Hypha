@@ -697,6 +697,7 @@ and `unsupervised`, `examples/mrs/managers/mission.cpp` `perStep(64)`.
 | `advisory`, `unsupervised`, `limitMax(d)` | ✓         | ✓           |            |               |               |
 | `hostClock`                                   | ✓         |              |            |               |               |
 | `perStep(n)`                                  |            | ✓           | ✓         |               |               |
+| `newestOnly`                                  |            | ✓           |            |               |               |
 | `latched`, `maxPayloadDynamic(b)`           |            |              | ✓         | ✓            |               |
 | a `hypha::Qos` value                          | ✓         | ✓           | ✓         | ✓            | ✓            |
 | `diagnostic`                                  |            |              | ✓         |               |               |
@@ -899,6 +900,23 @@ execution-model.md §6.6. `examples/mrs/managers/estimation_manager.cpp` and
 ("a rate and a trigger exclude each other"), a `Latest` trigger ("the trigger must be
 an Arrivals port"), and two triggers on one topic through `sharing()`.
 
+**Newest only.** ROS's `queue_size` 1: `Arrivals<Twist> cmd{*this, "cmd", newestOnly}`
+steps on the newest pending sample and passes the older ones, which is what twist_mux's
+subscribers do. On host time a trigger with the tag steps once per turn of the node on
+the newest of the samples pending in it, so a step that is slow on a fast topic leaves no
+backlog; another trigger's sample between them still steps. Under simulated time a step at
+T sees the samples stamped up to T and a later stamp is its own step, so only a second
+sample stamped T passes the first; which sample steps follows from the recording, not from
+when the node got its turn (execution-model.md §6.6 item 7). An `Arrivals` port with the
+tag that is no trigger examines one sample per step, the newest, and asks for one from the
+`arrival_budget`. A passed sample is counted, never silent: `work_limit_drops` of the step's
+report, `bindingHealth().work_limit_drops_total`, and, for a required input, the `dropped`
+of its `~/state` row. The queue keeps its `perStep()` depth, so a burst between two turns
+is not a transport loss, and the topic's policy is untouched: the tag needs nothing from
+the publishers. A
+plain `subscribe` callback has no counterpart; port a callback with `queue_size` 1 as a
+triggered cycle. C ABI: `HYPHA_CYCLE_INPUT_MODE_NEWEST`.
+
 In a `StepHarness` test of a triggered step, `deliver()` the sample of the port that
 fires, and `deliver(port, {}, sentAt)` each other trigger with the send time of its
 newest sample, or keep a delivery from an earlier step, so that its `usable()` is
@@ -970,7 +988,7 @@ counts no queue evictions: a transport drop shows only as a gap in `overrun_tota
 | `lost()`                                                                | `Arrivals`  | Samples the history overwrote before this port read them.                                           |
 | `bindingHealth().overrun_total`                                         | every input   | History losses and, for a queued input, transport sequence gaps. A `Latest` input counts neither in host time; under replay it counts transport gaps and the evictions of execution-model.md §11.1. |
 | `bindingHealth().age_rejections_total`                                  | every input   | Samples the age rule refused. They were received, not lost.                                         |
-| `bindingHealth().work_limit_drops_total`, `.capture.work_limit_drops` | queued inputs | Samples over the step's share, dropped on purpose; `capture.` counts the latest step only.        |
+| `bindingHealth().work_limit_drops_total`, `.capture.work_limit_drops` | queued inputs | Samples over the step's share, dropped on purpose, and the samples a `newestOnly` port passed for a newer one; `capture.` counts the latest step only. |
 
 #### Topic states of an input port
 

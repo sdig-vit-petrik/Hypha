@@ -101,7 +101,8 @@ pub struct BindingCapture {
     pub verdict: InputVerdict,
     /// Queued retained samples not examined because the work limit was reached.
     pub backlog_samples: usize,
-    /// Samples intentionally discarded in this capture by the overflow policy.
+    /// Samples intentionally discarded in this capture by the overflow policy, and, for a
+    /// newest-only trigger, the samples passed for a newer one since the last capture.
     pub work_limit_drops: u64,
     /// Internal-history losses since this binding last captured.
     pub lost_since_capture: u64,
@@ -120,6 +121,8 @@ pub struct BindingCapture {
     received_total: u64,
     delivered_total: u64,
     cursor: u64,
+    /// Samples a newest-only trigger passed since the last capture, for its report.
+    superseded_since_capture: u64,
     /// Under replay, the oldest of the samples a latest capture passed over: they run up
     /// to the newest selection, the sample before `cursor`, and stay uncounted while it is
     /// not rejected ([`BindingCapture::account_evictions`]).
@@ -180,6 +183,7 @@ impl BindingCapture {
             received_total: 0,
             delivered_total: 0,
             cursor,
+            superseded_since_capture: 0,
             passed_from: None,
             previous_latest_verdict: None,
             supervision: None,
@@ -356,6 +360,21 @@ impl BindingCapture {
         true
     }
 
+    /// Advance past the oldest pending sample without delivering it: a newer sample of a
+    /// newest-only trigger supersedes it. It counts as a work-limit drop, a sample left on
+    /// purpose, in the cumulative count now and in the report of the next capture. Returns
+    /// whether a pending sample existed.
+    pub fn supersede_pending(&mut self, history: &CycleHistory) -> bool {
+        let start = history.cursor_offset(self.cursor);
+        let Some(sample) = history.samples().get(start) else {
+            return false;
+        };
+        self.cursor = sample.sequence.wrapping_add(1);
+        self.superseded_since_capture = self.superseded_since_capture.wrapping_add(1);
+        self.counters.work_limit_drops_total = self.counters.work_limit_drops_total.wrapping_add(1);
+        true
+    }
+
     /// Usable samples this binding has counted, each one once. Wraps.
     #[must_use]
     pub const fn delivered_total(&self) -> u64 {
@@ -419,7 +438,7 @@ impl BindingCapture {
         self.lost_since_capture = 0;
         self.stale_since_capture = 0;
         self.backlog_samples = 0;
-        self.work_limit_drops = 0;
+        self.work_limit_drops = std::mem::take(&mut self.superseded_since_capture);
         self.samples.clear();
         self.judge(Some(history), options.silence_nanos, clock);
         high_water
@@ -754,9 +773,10 @@ impl BindingCapture {
             }
         }
 
-        self.work_limit_drops = u64::try_from(dropped).unwrap_or(u64::MAX);
+        let dropped = u64::try_from(dropped).unwrap_or(u64::MAX);
+        self.work_limit_drops = self.work_limit_drops.wrapping_add(dropped);
         self.counters.work_limit_drops_total =
-            self.counters.work_limit_drops_total.wrapping_add(self.work_limit_drops);
+            self.counters.work_limit_drops_total.wrapping_add(dropped);
 
         if let Some(newest) = self.samples.last() {
             let usable_count = u64::try_from(self.samples.len()).unwrap_or(u64::MAX);

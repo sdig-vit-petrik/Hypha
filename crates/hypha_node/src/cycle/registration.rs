@@ -67,16 +67,26 @@ pub fn cycle_create(
 fn capture_options(
     selected: &HyphaCycleBindingOptions,
 ) -> Result<hypha_cycle::BindingOptions, Error> {
-    let mode = match HyphaCycleInputMode::try_from(selected.mode) {
-        Ok(HyphaCycleInputMode::Latest) => hypha_cycle::CaptureMode::Latest,
-        Ok(HyphaCycleInputMode::Queued) => hypha_cycle::CaptureMode::Queued,
-        Err(()) => return Err(Error::InvalidArgument),
+    let (mode, share) = match HyphaCycleInputMode::try_from(selected.mode) {
+        Ok(HyphaCycleInputMode::Latest) => {
+            (hypha_cycle::CaptureMode::Latest, selected.max_samples_per_iteration)
+        }
+        Ok(HyphaCycleInputMode::Queued) => {
+            (hypha_cycle::CaptureMode::Queued, selected.max_samples_per_iteration)
+        }
+        // Newest only: a share of one; the older pending samples are work-limit drops. A
+        // trigger takes one sample per step whatever its share; the schedule passes the
+        // older ones.
+        Ok(HyphaCycleInputMode::Newest) if selected.max_samples_per_iteration > 0 => {
+            (hypha_cycle::CaptureMode::Queued, 1)
+        }
+        Ok(HyphaCycleInputMode::Newest) | Err(()) => return Err(Error::InvalidArgument),
     };
     Ok(hypha_cycle::BindingOptions {
         mode,
         // The silence limit comes from the port's supervision, never from here.
         silence_nanos: 0,
-        max_samples_per_iteration: selected.max_samples_per_iteration,
+        max_samples_per_iteration: share,
         overflow_policy: hypha_cycle::QueueOverflowPolicy::DropOldest,
     })
 }
@@ -324,7 +334,11 @@ pub fn cycle_commit(set: &HyphaWaitSet, cycle: CycleId) -> Result<(), Error> {
     // The step must not be borrowed across the attach.
     let attach = match silences {
         None if driver => Attach::Driver(registration.driver.clone().ok_or(Error::InvalidState)?),
-        Some(silences) => Attach::Triggered { silences, listeners: trigger_listeners(step)? },
+        Some(silences) => Attach::Triggered {
+            silences,
+            newest: newest_triggers(step)?,
+            listeners: trigger_listeners(step)?,
+        },
         None => Attach::Timer,
     };
     drop(registration);
@@ -332,8 +346,8 @@ pub fn cycle_commit(set: &HyphaWaitSet, cycle: CycleId) -> Result<(), Error> {
         Attach::Driver(setup) => {
             crate::waitset::attach_driver_cycle(set, cycle, &setup).map(|id| (id, Vec::new()))
         }
-        Attach::Triggered { silences, listeners } => {
-            crate::waitset::attach_triggered_cycle(set, cycle, silences, listeners)
+        Attach::Triggered { silences, newest, listeners } => {
+            crate::waitset::attach_triggered_cycle(set, cycle, silences, newest, listeners)
         }
         Attach::Timer => crate::waitset::attach_cycle_timer(set, cycle).map(|id| (id, Vec::new())),
     };
@@ -352,7 +366,11 @@ pub fn cycle_commit(set: &HyphaWaitSet, cycle: CycleId) -> Result<(), Error> {
 
 enum Attach {
     Timer,
-    Triggered { silences: Vec<i64>, listeners: Vec<Vec<hypha_iceoryx2::Iox2Listener>> },
+    Triggered {
+        silences: Vec<i64>,
+        newest: hypha_cycle::TriggerPorts,
+        listeners: Vec<Vec<hypha_iceoryx2::Iox2Listener>>,
+    },
     Driver(super::DriverSetup),
 }
 
@@ -428,6 +446,19 @@ fn trigger_silences(cycle: &Cycle, registration: &CycleStep) -> Result<Option<Ve
         })
     };
     triggers.iter().map(|&index| silence_of(index)).collect::<Result<_, _>>().map(Some)
+}
+
+/// The trigger ports of `registration` bound newest only, by port.
+fn newest_triggers(registration: &CycleStep) -> Result<hypha_cycle::TriggerPorts, Error> {
+    let newest = |index: &usize| {
+        registration
+            .input_options
+            .get(*index)
+            .is_some_and(|options| options.mode == HyphaCycleInputMode::Newest as u32)
+    };
+    let triggers = registration.runtime.triggers().iter().enumerate();
+    let ports = triggers.filter(|(_, index)| newest(index)).map(|(port, _)| port);
+    hypha_cycle::TriggerPorts::of(ports).ok_or(Error::InvalidState)
 }
 
 /// Input `index` of `registration` in a refusal: `'<port>'`, or `(<topic>)` without a table.
