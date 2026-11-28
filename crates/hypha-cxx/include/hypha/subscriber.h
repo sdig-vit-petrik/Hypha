@@ -92,9 +92,11 @@ class Subscriber
         Time     transportSent;
     };
 
-    /// @brief The newest message and its transport send time, from one delivery.
+    /// @brief The newest message and its transport send time, from one delivery. A
+    ///        subscriber of views keeps none: it would hold a slot of the loan budget.
     /// @return The sample, or NotAvailable before one arrives or when disabled.
     std::expected<LatestSample, Status> latestSample() const
+        requires(!detail::IsView<M>::value)
     {
         const std::lock_guard<std::mutex> lock(this->shared->mutex);
         const bool                        nothingHeld = !this->handle || !this->shared->latest;
@@ -178,7 +180,9 @@ class Subscriber
         {
             {
                 const std::lock_guard<std::mutex> lock(this->mutex);
-                this->latest = message;
+                if constexpr (!detail::IsView<M>::value) {
+                    this->latest = message;
+                }
                 this->latestSent = Time::fromNanos(static_cast<int64_t>(transportSentNanos));
                 this->count += 1U;
             }

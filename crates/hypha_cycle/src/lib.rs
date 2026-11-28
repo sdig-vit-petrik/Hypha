@@ -24,7 +24,10 @@ pub use capture::{
     BindingCapture, BindingCounters, BindingOptions, CaptureClock, CaptureMode, HeldReport,
     InputVerdict, Passed, QueueOverflowPolicy, held_report, judge_value,
 };
-pub use history::{CycleHistory, HistorySample, HistoryStats, SampleOrigin};
+pub use history::{
+    CycleHistory, HistorySample, HistoryStats, PinLedger, PinReaders, PinnedBytes, PinnedPayload,
+    SampleOrigin, SamplePayload,
+};
 pub use judgement::{JudgementEvent, judgement_line};
 pub use replay_fidelity::{
     ReplayFidelity, TIME_BASE_BOUND_PERIODS, counts_losses, is_short_history,

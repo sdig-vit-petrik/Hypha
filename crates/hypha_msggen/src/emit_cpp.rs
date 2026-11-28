@@ -67,6 +67,7 @@ pub fn emit_message_with_definition(spec: &MessageSpec, md5: &str, definition: &
     emit_message_traits(&mut output, spec, md5, definition);
     emit_serializer(&mut output, spec);
     emit_loaned_field(&mut output, spec);
+    emit_view(&mut output, spec);
     output
 }
 
@@ -290,6 +291,41 @@ fn emit_loaned_field(output: &mut String, spec: &MessageSpec) {
             "\nnamespace hypha::message_traits {{\n\ntemplate <>\nstruct LoanedField<{full_cpp_type}> {{\n  static constexpr auto member = &{full_cpp_type}::{};\n}};\n\n}}  // namespace hypha::message_traits\n",
             field_name_safe(&field.name)
         ),
+    );
+}
+
+/// `hypha::View<M>` for a message whose loaned field is an array of bytes: the message's
+/// fields in its order, that one a `std::span` of the bytes it was received in. It is
+/// moved, never copied, so that no copy of it outlives the bytes.
+fn emit_view(output: &mut String, spec: &MessageSpec) {
+    let Some(loaned) = loaned_field(spec) else {
+        return;
+    };
+    let is_byte = matches!(
+        loaned.field_type,
+        FieldType::UInt8 | FieldType::Int8 | FieldType::Char | FieldType::Byte
+    );
+    if !is_byte {
+        return;
+    }
+    let full_cpp_type = format!("::{}::{}", spec.type_name.package, spec.type_name.name);
+    put(
+        output,
+        format_args!(
+            "\n#include <span>\n\nnamespace hypha {{\n\n/// A received {} read in place (hypha/view.h).\ntemplate <>\nstruct View<{full_cpp_type}> {{\n  using Message = {full_cpp_type};\n\n",
+            spec.type_name.full()
+        ),
+    );
+    for field in &spec.fields {
+        let field_type = if std::ptr::eq(field, loaned) {
+            format!("std::span<const {}>", cpp_type_name(&field.field_type))
+        } else {
+            cpp_field_type(&field.field_type, field.multiplicity)
+        };
+        put(output, format_args!("  {field_type} {}{{}};\n", field_name_safe(&field.name)));
+    }
+    output.push_str(
+        "\n  View() = default;\n  View(const View&) = delete;\n  View& operator=(const View&) = delete;\n  View(View&&) = default;\n  View& operator=(View&&) = default;\n  ~View() = default;\n};\n\n}  // namespace hypha\n",
     );
 }
 

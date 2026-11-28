@@ -80,7 +80,8 @@ fn a_history_without_a_byte_limit_keeps_every_sample_within_its_depth() {
     for (stamp, bytes) in [(10, 1), (20, 64 << 10), (30, 1 << 20)] {
         history.push(&vec![1; bytes], 0, stamp);
     }
-    let sizes: Vec<usize> = history.samples().iter().map(|sample| sample.payload.len()).collect();
+    let sizes: Vec<usize> =
+        history.samples().iter().map(|sample| sample.payload.to_vec().len()).collect();
     assert_eq!(sizes, [1, 64 << 10, 1 << 20]);
     let sequence = history.push(&vec![1; 2 << 20], 0, 40);
     assert_eq!(sequence, 3);

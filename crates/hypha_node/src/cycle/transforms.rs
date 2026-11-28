@@ -61,7 +61,9 @@ impl TfInput {
                 _ => {}
             }
             for sample in &capture.samples {
-                self.state.ingest(owner, &sample.payload, is_static, &mut pass)?;
+                sample
+                    .payload
+                    .with_bytes(|bytes| self.state.ingest(owner, bytes, is_static, &mut pass))?;
             }
         }
         self.state.finish(owner, pass);

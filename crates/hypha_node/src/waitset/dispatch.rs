@@ -431,7 +431,10 @@ impl Dispatcher for CallbackDispatcher<'_> {
                             Subject::Topic(&subscriber.topic),
                             budget,
                             warn_interval,
-                            || invoke_data(health, callback, &sample, received_nanos, set),
+                            || {
+                                let loans = subscriber.loan_budget();
+                                invoke_data(health, callback, sample, received_nanos, set, loans)
+                            },
                         );
                         if was_slow {
                             slow = slow.saturating_add(1);

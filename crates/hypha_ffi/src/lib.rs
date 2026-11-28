@@ -55,7 +55,8 @@ pub use cycle::{HyphaCycle, cycle_timer_tick};
 pub use cycle::{
     hypha_cycle_bind_input, hypha_cycle_bind_input_supervision, hypha_cycle_bind_output,
     hypha_cycle_bind_transforms, hypha_cycle_binding, hypha_cycle_commit, hypha_cycle_create,
-    hypha_cycle_destroy, hypha_cycle_emission_commit, hypha_cycle_emission_reserve,
+    hypha_cycle_destroy, hypha_cycle_emission_commit, hypha_cycle_emission_lend,
+    hypha_cycle_emission_reserve, hypha_cycle_emission_return, hypha_cycle_emission_send,
     hypha_cycle_expect_participant, hypha_cycle_health, hypha_cycle_image_alive,
     hypha_cycle_image_binding, hypha_cycle_image_clear, hypha_cycle_image_held,
     hypha_cycle_image_lookup_transform, hypha_cycle_image_reject_sample, hypha_cycle_image_sample,
@@ -123,6 +124,7 @@ pub use hypha_node::parameter_parse::{HyphaConfigValue, HyphaParamResult};
 pub use hypha_node::port_limits::HyphaSupervisionRanges;
 pub use hypha_node::publisher::{HyphaPublisher, HyphaPublisherOptions};
 pub use hypha_node::qos::HyphaQos;
+pub use hypha_node::sample::{HyphaDeliveryHolder, HyphaReceivedSample};
 pub use hypha_node::status::HyphaStatus;
 pub use hypha_node::subscriber::{
     HyphaSampleIdentity, HyphaSubscriber, HyphaSubscriberCounters, HyphaSubscriberOptions,
@@ -154,8 +156,9 @@ pub use step_services::{
     hypha_step_services_request, hypha_step_services_step,
 };
 pub use subscriber::{
-    hypha_subscribe_typed, hypha_subscriber_counters, hypha_subscriber_destroy,
-    hypha_subscriber_missing_sequences, hypha_subscriber_publisher_count, hypha_subscriber_topic,
+    hypha_delivery_retain, hypha_received_sample_release, hypha_subscribe_typed,
+    hypha_subscriber_counters, hypha_subscriber_destroy, hypha_subscriber_missing_sequences,
+    hypha_subscriber_publisher_count, hypha_subscriber_topic,
 };
 pub use transform_buffer::{
     hypha_transform_buffer_create, hypha_transform_buffer_create_fed,

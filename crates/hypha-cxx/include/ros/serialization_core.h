@@ -161,6 +161,15 @@ class IStream
         return static_cast<uint32_t>(end_ - data_);
     }
 
+    /// Pass @p length bytes, as a view does that reads them in place.
+    void skip(uint32_t length)
+    {
+        if (static_cast<uint64_t>(length) > static_cast<uint64_t>(end_ - data_)) {
+            throwStreamOverrun();
+        }
+        data_ += length;
+    }
+
   private:
     uint8_t* data_;
     uint8_t* end_;
@@ -282,6 +291,22 @@ class LStream
 
 template <typename T>
 struct Serializer;
+
+}  // namespace ros::serialization
+
+namespace hypha {
+template <typename M>
+struct View;
+}  // namespace hypha
+
+namespace ros::serialization {
+
+/// A view has its message's fields, in its message's order: it reads and writes with the
+/// same field walk.
+template <typename M>
+struct Serializer<::hypha::View<M>> : Serializer<M>
+{
+};
 
 template <typename Stream, typename T>
 inline void serialize(Stream& stream, const T& t)

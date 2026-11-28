@@ -5,6 +5,7 @@
 /// from, and the application fills it there.
 
 #include "hypha/backend/raw_publisher.h"
+#include "hypha/status.h"
 
 #include <ros/message_traits.h>
 #include <ros/serialization.h>
@@ -13,6 +14,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <expected>
+#include <memory>
 #include <optional>
 #include <span>
 #include <type_traits>
@@ -30,6 +33,13 @@ namespace backend {
 template <typename M>
 class PublisherHandle;
 }  // namespace backend
+
+template <typename M>
+class Output;
+
+namespace testing {
+class StepHarness;
+}  // namespace testing
 
 namespace detail {
 
@@ -142,10 +152,19 @@ class GapStream
     bool            overrun_{false};
 };
 
+/// @brief The step of a cycle Output whose loans are live: a loan of an earlier step, or
+///        one that outlives its Output, finds another generation, or no emission.
+struct LentLink
+{
+    HyphaCycleEmission* emission{nullptr};
+    uint64_t            generation{0};
+};
+
 }  // namespace detail
 
 /// @brief One message of @p M being written in its shared-memory slot. Publisher<M>::loan()
-///        makes it; publish() through the same publisher sends it. Dropped unsent, it
+///        or a cycle's Output<M>::loan() makes it; publish() through the same publisher, or
+///        send() through the same output in the same step, sends it. Dropped unsent, it
 ///        returns the slot. Moved from, it is empty: capacity() 0, data() empty.
 ///
 /// message() holds the small fields. The lengths of its strings and arrays are fixed by
@@ -169,6 +188,12 @@ class Loan
     Loan(Loan&& other) noexcept
         : head_(std::move(other.head_))
         , buffer_(std::move(other.buffer_))
+        , heap_(std::move(other.heap_))
+        , link_(std::move(other.link_))
+        , bytes_(std::exchange(other.bytes_, nullptr))
+        , size_(std::exchange(other.size_, 0))
+        , token_(std::exchange(other.token_, 0))
+        , generation_(std::exchange(other.generation_, 0))
         , owner_(std::exchange(other.owner_, nullptr))
         , offset_(std::exchange(other.offset_, 0))
         , capacity_(std::exchange(other.capacity_, 0))
@@ -179,8 +204,15 @@ class Loan
     Loan& operator=(Loan&& other) noexcept
     {
         if (this != &other) {
+            this->giveBack();
             this->head_ = std::move(other.head_);
             this->buffer_ = std::move(other.buffer_);
+            this->heap_ = std::move(other.heap_);
+            this->link_ = std::move(other.link_);
+            this->bytes_ = std::exchange(other.bytes_, nullptr);
+            this->size_ = std::exchange(other.size_, 0);
+            this->token_ = std::exchange(other.token_, 0);
+            this->generation_ = std::exchange(other.generation_, 0);
             this->owner_ = std::exchange(other.owner_, nullptr);
             this->offset_ = std::exchange(other.offset_, 0);
             this->capacity_ = std::exchange(other.capacity_, 0);
@@ -191,7 +223,11 @@ class Loan
 
     Loan(const Loan&) = delete;
     Loan& operator=(const Loan&) = delete;
-    ~Loan() = default;
+
+    ~Loan()
+    {
+        this->giveBack();
+    }
 
     /// @brief The message's other fields. The loaned field must stay empty.
     M& message()
@@ -207,9 +243,7 @@ class Loan
         if (this->capacity_ == 0) {
             return {};
         }
-        return {
-            reinterpret_cast<std::byte*>(this->buffer_.data()) + this->offset_, this->capacity_
-        };
+        return {reinterpret_cast<std::byte*>(this->bytes_) + this->offset_, this->capacity_};
     }
 
     /// @brief Write @p value as element @p index of an array of @p T in data(), at byte
@@ -231,6 +265,8 @@ class Loan
 
   private:
     friend class backend::PublisherHandle<M>;
+    friend class Output<M>;
+    friend class testing::StepHarness;
 
     Loan(
         M                     head,
@@ -242,6 +278,8 @@ class Loan
     )
         : head_(std::move(head))
         , buffer_(std::move(buffer))
+        , bytes_(this->buffer_.data())
+        , size_(this->buffer_.size())
         , owner_(owner)
         , offset_(offset)
         , capacity_(capacity)
@@ -249,8 +287,100 @@ class Loan
     {
     }
 
+    /// A loan of a cycle output's step (@p bytes, @p size, @p token of its emission), or,
+    /// without a @p link, of a testing::StepHarness step, in memory of its own.
+    Loan(
+        M                                 head,
+        uint8_t*                          bytes,
+        size_t                            size,
+        std::shared_ptr<detail::LentLink> link,
+        uint64_t                          token,
+        const void*                       owner,
+        size_t                            offset,
+        size_t                            capacity,
+        size_t                            headLength
+    )
+        : head_(std::move(head))
+        , heap_(link ? 0U : size)
+        , link_(std::move(link))
+        , bytes_(this->link_ ? bytes : this->heap_.data())
+        , size_(size)
+        , token_(token)
+        , generation_(this->link_ ? this->link_->generation : 0)
+        , owner_(owner)
+        , offset_(offset)
+        , capacity_(capacity)
+        , headLength_(headLength)
+    {
+    }
+
+    /// True while a cycle loan's step still holds it.
+    bool liveInStep() const
+    {
+        return this->link_ && this->link_->emission != nullptr
+            && this->link_->generation == this->generation_;
+    }
+
+    /// Return a cycle loan its step still holds; nothing for any other.
+    void giveBack() noexcept
+    {
+        if (this->liveInStep()) {
+            static_cast<void>(hypha_cycle_emission_return(this->link_->emission, this->token_));
+        }
+        this->link_.reset();
+    }
+
+    /// Encode the head around the first @p used bytes of the loaned field in place, with
+    /// `header.seq` from @p takeSeq, which runs only once nothing can refuse the frame.
+    /// @return The length of the message, or InvalidArgument for a size that is not whole
+    ///         elements or is past capacity(), a filled loaned field, or a head whose
+    ///         strings or arrays changed length.
+    template <typename TakeSeq>
+    std::expected<size_t, Status> seal(size_t used, TakeSeq&& takeSeq)
+    {
+        const auto& field = this->head_.*message_traits::LoanedField<M>::member;
+        const bool  refused = this->bytes_ == nullptr || !field.empty() || used > this->capacity_
+                           || used % sizeof(Element) != 0;
+        if (refused) {
+            return std::unexpected(Status(HYPHA_STATUS_INVALID_ARGUMENT));
+        }
+        const uint32_t* seq = nullptr;
+        if constexpr (requires { this->head_.header.seq; }) {
+            seq = &this->head_.header.seq;
+        }
+        const size_t                                  total = this->headLength_ + used;
+        detail::GapStream<detail::LoanedFieldType<M>> stream(
+            this->bytes_,
+            this->size_,
+            &field,
+            static_cast<uint32_t>(used / sizeof(Element)),
+            used,
+            seq
+        );
+        ros::serialization::serialize(stream, this->head_);
+        // The lengths of the head's strings and arrays must be those the slot was cut for.
+        const bool sameShape =
+            stream.complete() && stream.gapOffset() == this->offset_ && stream.length() == total;
+        if (!sameShape) {
+            return std::unexpected(Status(HYPHA_STATUS_INVALID_ARGUMENT));
+        }
+        if (const std::optional<size_t> at = stream.seqOffset(); at.has_value()) {
+            const uint32_t next = takeSeq();
+            std::memcpy(this->bytes_ + *at, &next, sizeof(next));
+        }
+        return total;
+    }
+
     M                     head_;
     backend::LoanedBuffer buffer_;
+    /// The bytes of a testing::StepHarness loan.
+    std::vector<uint8_t> heap_;
+    /// The step of a cycle loan; null for any other.
+    std::shared_ptr<detail::LentLink> link_;
+    uint8_t*                          bytes_{nullptr};
+    size_t                            size_{0};
+    uint64_t                          token_{0};
+    uint64_t                          generation_{0};
     /// The publisher endpoint that lent it, which alone may send it.
     const void* owner_;
     size_t      offset_;

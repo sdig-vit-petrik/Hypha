@@ -34,6 +34,7 @@
 #include "hypha/status.h"
 #include "hypha/subscriber.h"
 #include "hypha/worker.h"
+#include "hypha/view.h"
 #include "hypha_base/clock.h"
 #include "hypha_base/short_namespace.h"
 #include "hypha_base/time.h"
