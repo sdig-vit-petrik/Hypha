@@ -704,7 +704,8 @@ threads or composes cycles (`examples/sensor_fusion/src/fusion_main.cpp`) from
   then its options; `Output` takes a port name only (`hypha/cycle_latest.h`).
 - `start()` binds the ports in declaration order. A failure names the cycle, the
   port and the status: `hypha: cycle 'controller_node': input 'topic_speed': NotAvailable`.
-- One process has one `CycleNode`; a second step is a composed `hypha::Cycle` (5.5).
+- One process has one `CycleNode`; a second step is a composed `hypha::Cycle` (5.5), and a
+  second rate inside the one step a `CycleTimer` ("A second rate in a step").
 - On host time a rate step starts when the run wakes at its deadline: on Linux within the
   kernel's wake-up latency, on macOS late by up to half the wait and at most about 10 ms
   (execution-model.md §11). `CycleTime::now` is the wall time at the start of the step,
@@ -791,6 +792,53 @@ value goes out with no step, and the first step runs at start + period, once eve
 there, not at the start value as a ROS 1 simulator does with its first `/clock`. The start
 value lies from zero up to, not including, 2^32 seconds, the range of the seconds a `/clock`
 message carries: `start()` refuses any other, and its error names the range.
+
+#### A second rate in a step
+
+A `hypha::CycleTimer` (`hypha/cycle_timer.h`) is the `ros::Timer` of a step: a member that
+the step polls with its own time, for work at a second rate over the step's state (a 10 Hz
+status beside a 100 Hz loop, a gains update, a loop that upstream ran from its own timer).
+It is a value on `CycleTime::now`, so it ticks the same on host time, under simulated time,
+in a replay and in a `StepHarness`, and two replays give the same ticks. It adds nothing to
+the C ABI and allocates nothing.
+
+```cpp
+hypha::CycleTimer status{hypha::Hz(10.0)};                  // running; anchored at its first poll
+hypha::CycleTimer gains{hypha::Hz(10.0)};                   // gains.stop() in the constructor
+hypha::CycleTimer loop{hypha::Duration::fromMillis(10)};    // upstream's 100 Hz timer body
+
+void step(const hypha::CycleTime& time) override {
+    if (const auto tick = this->status.poll(time)) {        // first, before the ports
+        this->publishStatus(tick.missed());                 // once, missed periods counted
+    }
+    for (auto n = this->loop.poll(time).periods; n > 0; --n) {
+        this->onLoop();                                     // or once per period
+    }
+    // ... then read the ports; activate() calls gains.start(time), deactivate() gains.stop()
+}
+```
+
+- `poll(time)` gives a `Tick`: `periods`, the instants of the grid in (previous poll, now];
+  `expected`, the newest of them (ROS `current_expected`); `elapsed`, the time since the step
+  of the previous tick (ROS `current_real - last_real`), empty for the first tick after the
+  grid was anchored. A `Tick` is true when `periods` is not 0.
+- The first poll anchors the grid at the step's time and gives no tick. An early step gets
+  none, a late one more than one period; the grid never drifts. The periods beyond the first
+  are missed: `tick.missed()`, and `missedTotal()` since construction. Running the body once
+  is the rule of a hypha timer (execution-model.md §11); once per period is what a ROS timer
+  did after a slow callback, and what a port that must equal upstream step by step writes.
+  There is no cap on the count: the body chooses.
+- `stop()` ends the ticks, and a stopped timer misses nothing. `start(time)` starts a stopped
+  timer one period after `time`; `start()` anchors it at its next poll. Either on a running
+  timer changes nothing, as ROS `start()`: `stop()` and `start(time)` anchor it again.
+- Poll it in every step, first, as ROS ran a due timer before the next callback; a step that
+  does not poll leaves its periods to the next poll's count. Time that goes back (a step of
+  the host wall clock) anchors the grid at the new time.
+- It wakes nothing: a tick runs in the first step at or after its instant. In a triggered
+  cycle that is a trigger step or the fallback step, so the shortest `silence_ms` bounds how
+  late it runs. A cycle with no fallback (untimed triggers, #238) runs no step while its
+  triggers are silent, and the periods of that stretch arrive as the next step's count.
+  Work that must run on its own deadline is a rate cycle.
 
 #### Loss counters
 

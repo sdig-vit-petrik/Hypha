@@ -350,6 +350,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_cycle_shutdown.cpp
     test/test_cycle_node.cpp
     test/test_triggered_cycle.cpp
+    test/test_cycle_timer.cpp
     test/test_twist_mux_shape.cpp
     test/test_transforms_port.cpp
     test/test_transform_buffer.cpp
