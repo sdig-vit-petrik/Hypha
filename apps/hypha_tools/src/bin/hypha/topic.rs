@@ -17,10 +17,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 mod follow;
+mod pool;
 
 use follow::Followed;
 
-/// Bus introspection: list, echo, hz, and bw.
+/// Bus introspection: list, echo, hz, and bw; and the sizing of a topic's pool.
 #[derive(Debug, Parser)]
 #[command(
     name = "hypha topic",
@@ -62,6 +63,11 @@ enum Verb {
         topic: String,
         #[command(flatten)]
         streams: StreamFlags,
+    },
+    /// What the pool of a topic's publisher reserves: no bus needed, nothing is measured.
+    Pool {
+        #[command(flatten)]
+        pool: pool::PoolArgs,
     },
 }
 
@@ -412,6 +418,9 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         Ok(cli) => cli,
         Err(code) => return code,
     };
+    if let Verb::Pool { pool } = &cli.verb {
+        return pool::run(pool);
+    }
     let bus = match connect("hypha topic: ", "_hyphacli_topic") {
         Ok(bus) => Arc::new(bus),
         Err(code) => return code,
@@ -422,6 +431,7 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         Verb::Echo { echo } => run_echo(&bus, &echo),
         Verb::Hz { topic, window, streams } => run_hz(&bus, &topic, window, &streams),
         Verb::Bw { topic, streams } => run_bw(&bus, &topic, &streams),
+        Verb::Pool { .. } => ExitCode::SUCCESS,
     }
 }
 
