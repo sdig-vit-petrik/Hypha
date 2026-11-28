@@ -537,7 +537,7 @@ what the code does. It is not a residual-risk argument.
 | Threat | Defense | Limit |
 |---|---|---|
 | Corruption | CRC-32C over the header fields, the latch flag and the payload. | Residual error probability is not assessed. |
-| Loss | Sequence counter. | The receiver checks order modulo 2^64, not continuity. A forward gap is accepted. Its count is read through `hypha_subscriber_missing_sequences`, which misses a loss before the publisher's first accepted frame. |
+| Loss | Sequence counter. | The receiver checks order modulo 2^64, not continuity. A forward gap is accepted. Its count is read through `hypha_subscriber_missing_sequences`, which misses a loss before the first accepted frame of a publisher that existed when the subscriber was created. |
 | Duplication | Per-publisher sequence. | A repeated or older sequence from a known publisher is refused. A subscription tracks the 4096 publishers that sent most recently, so its memory stays bounded while publishers restart for years. A publisher that stayed silent while 4096 others sent is forgotten, and its next frame is accepted as its first. |
 | Insertion, wrong address | Publisher id and sequence are inside the CRC, and the CRC starts from the topic code: a frame of another topic is refused. | No publisher allow-list and no authentication. Two topics share a code with a probability of 2^-32. |
 | Delay | Host monotonic send time and each input binding's maximum age at capture. | Transport age only. Both ends must share one host. |

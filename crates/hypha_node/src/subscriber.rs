@@ -705,7 +705,14 @@ fn validate_integrity<'a>(
     let header = sample.header();
     endpoint
         .validator
-        .validate_with_clock(sample.topic_code(), &header, sample.payload(), now_nanos, host_now_nanos)
+        .validate_with_clock(
+            sample.topic_code(),
+            &header,
+            sample.payload(),
+            || endpoint.port.publisher_came_after(sample),
+            now_nanos,
+            host_now_nanos,
+        )
         .inspect_err(|rejection| {
             if let Some(more) = endpoint.rejection_report.due(host_now_nanos()) {
                 log::warn!(target: "hypha/subscriber",

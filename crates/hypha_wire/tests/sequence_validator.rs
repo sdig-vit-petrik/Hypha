@@ -2,7 +2,7 @@
 
 use core::num::NonZeroUsize;
 
-use hypha_wire::integrity::{MAX_TRACKED_PUBLISHERS, SequenceValidator, next_sequence};
+use hypha_wire::integrity::{FirstFrame, MAX_TRACKED_PUBLISHERS, SequenceValidator, next_sequence};
 
 #[test]
 fn accepts_increasing_sequences_per_publisher() {
@@ -149,7 +149,41 @@ fn the_first_sequence_of_a_publisher_less_one_is_what_was_sent_before_it() {
 #[test]
 fn a_latched_replay_is_not_counted_as_sent_before() {
     let mut validator = SequenceValidator::new();
-    assert!(validator.accept_as(1, 5, false), "the replayed sample of a latched publisher");
-    assert!(validator.accept_as(1, 6, false));
+    assert!(
+        validator.accept_as(1, 5, FirstFrame::Latched),
+        "the replayed sample of a latched publisher"
+    );
+    assert!(validator.accept_as(1, 6, FirstFrame::Latched));
     assert_eq!(validator.sent_before_first(), 0);
+}
+
+#[test]
+fn a_publisher_that_came_after_the_subscriber_owes_the_frames_before_its_first() {
+    // #247: a publisher's first frame has sequence 1, so a first accepted 4 lost 1 to 3.
+    let mut validator = SequenceValidator::new();
+    assert!(validator.accept_as(1, 4, FirstFrame::Owed));
+    assert_eq!(validator.missing_sequences(), 3, "the frames before the first are lost");
+    assert_eq!(validator.sent_before_first(), 0, "and not frames the subscriber came after");
+    assert!(validator.accept_as(2, 1, FirstFrame::Owed));
+    assert_eq!(validator.missing_sequences(), 3, "a first frame of 1 lost nothing");
+}
+
+#[test]
+fn a_publisher_that_may_have_sent_before_the_subscriber_loses_nothing_before_its_first() {
+    let mut validator = SequenceValidator::new();
+    assert!(validator.accept_as(1, 4, FirstFrame::Unknown));
+    assert!(validator.accept_as(2, 7, FirstFrame::Latched));
+    assert_eq!(validator.missing_sequences(), 0);
+    assert_eq!(validator.sent_before_first(), 3, "a late joiner's evidence, not a loss");
+}
+
+#[test]
+fn a_forgotten_publisher_is_never_owed_its_frames_again() {
+    // A full table forgets publisher 1; its next frame is a first frame again, and what came
+    // before it was seen, so nothing is owed from then on.
+    let mut validator = SequenceValidator::with_capacity(NonZeroUsize::MIN);
+    assert!(validator.accept_as(1, 1, FirstFrame::Owed));
+    assert!(validator.accept_as(2, 1, FirstFrame::Owed));
+    assert!(validator.accept_as(1, 5, FirstFrame::Owed));
+    assert_eq!(validator.missing_sequences(), 0, "{validator:?}");
 }

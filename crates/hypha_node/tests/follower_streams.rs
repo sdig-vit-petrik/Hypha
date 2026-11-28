@@ -188,9 +188,10 @@ fn a_publisher_that_ran_before_the_follower_is_not_counted() {
     assert_eq!(follower.sent_before_following(), vec![]);
 }
 
-/// A publisher that joins a followed stream is counted from the listing that showed it.
+/// A publisher that joins a followed stream came after the follower's subscription: every
+/// frame it sent reached the follower's queue, so those the queue pushed out are lost (#247).
 #[test]
-fn a_publisher_that_joins_a_followed_stream_is_counted_from_its_listing() {
+fn a_publisher_that_joins_a_followed_stream_and_overruns_the_queue_lost_its_first_frames() {
     let bus = BusNode::new(&unique_name("rv_join")).expect("bus node");
     let peer = BusNode::new(&unique_name("rv_join_peer")).expect("peer");
     let topic = format!("/{}/odom", unique_name("rv_join"));
@@ -209,7 +210,7 @@ fn a_publisher_that_joins_a_followed_stream_is_counted_from_its_listing() {
         std::thread::sleep(Duration::from_millis(10));
     }
     // Twenty frames before a read overrun the small queue: what the follower reads of them
-    // starts late, and the frames before the first it accepted are the count.
+    // starts late, and the frames before the first it accepted are lost, not sent before.
     for count in 0_u32..20 {
         assert!(second.publish(&count.to_le_bytes()));
     }
@@ -219,7 +220,8 @@ fn a_publisher_that_joins_a_followed_stream_is_counted_from_its_listing() {
     }
     assert!(received > 0 && received < 20, "the queue overran: {received} read");
     let key = StreamKey { topic, schema_hash: hash(V1) };
-    assert_eq!(follower.sent_before_following(), vec![(key, 20 - received)]);
+    assert_eq!(follower.lost().expect("lost"), vec![(key, 20 - received)]);
+    assert_eq!(follower.sent_before_following(), vec![]);
 }
 
 /// A latched publisher hands a late reader its last sample, which is all that is wanted of it.

@@ -1174,8 +1174,8 @@ struct hypha::QosOf<my_msgs::Image>
 - A latched sample reaches only the subscriber that joined, so a join adds no
   `integrity.sequence_gap` rejection at a connected subscriber.
 - `sub.missingSequences()` counts the frames a subscriber lost before it read them (a
-  queue overflow adds to it; a loss before a publisher's first accepted frame is not
-  counted). `sub.metrics()` returns a `hypha::SubscriberMetrics`: `sequenceGap` counts
+  queue overflow adds to it; a loss before a publisher's first accepted frame is counted
+  only when the publisher came after the subscriber, `communication-integrity.md` §3). `sub.metrics()` returns a `hypha::SubscriberMetrics`: `sequenceGap` counts
   the frames that arrived and were refused because their sequence was not newer, so a
   lost frame raises `missingSequences()` and not `sequenceGap`; `invalidFrame`,
   `corruptPayload`, `schemaMismatch` and `invalidTimestamp` count the other refusals;

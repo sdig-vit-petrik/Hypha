@@ -477,8 +477,9 @@ wait out.
   A topic with several publishers gives each one its queue, and a drain empties all of them, so the
   player's queue still holds one chunk. What the other publishers send, cycle nodes upstream
   included, is not split into chunks: size the queue and the history for what they send between two
-  turns of the node, or the step fails with `replay not faithful`; a queue that overflows before a
-  publisher's first frame that the node accepted loses it uncounted
+  turns of the node, or the step fails with `replay not faithful`. A queue that overflows before a
+  publisher's first frame that the node accepted fails the step the same way when the publisher's
+  port came after the node's subscriber, and loses it uncounted when the port existed before it
   (`communication-integrity.md` §3). A `WaitSet` that has not reported yet does not hold its node's
   report (4.2), so its queues are guarded only from its first report.
 - **Several publishers on one topic make a replay input depend on turn timing.** The history keeps
@@ -502,11 +503,13 @@ wait out.
   silently ignored.
 - **The first chunk without `--nodes`** may be acknowledged before a node that has not reported is
   heard, so the drain rule of 4.2 does not guard that node's queues for it: a chunk past a queue
-  pushes its first frames out uncounted. Name every node that must take part.
+  pushes its first frames out, counted only when the node subscribed before the player started
+  (`communication-integrity.md` §3). Name every node that must take part.
 - **The upstream hold is tested with two nodes**, including a feedback loop. Chains of three or more
   nodes are not tested.
 - **The recorder misses losses it cannot see.** A loss is counted when the next frame of that
-  publisher arrives. A loss before a publisher's first accepted frame is not counted. Neither is a loss
-  at the end of a publisher's stream, when no later frame follows it.
+  publisher arrives. A loss before a publisher's first accepted frame is counted only when the
+  publisher came after the recorder's subscription. A loss at the end of a publisher's stream, when
+  no later frame follows it, is not counted.
 - **A burst of more than 8 samples of one topic within one chunk** can outrun the recorder's queue at a
   high `--rate`. With `--sync` the recording then stops (6.3). Without it, the samples are dropped.

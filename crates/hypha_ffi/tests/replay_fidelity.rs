@@ -702,10 +702,30 @@ pub(crate) fn a_queued_co_reader_that_rejects_the_sample_loses_the_one_before_fo
 }
 
 #[test]
-pub(crate) fn a_first_chunk_past_the_queue_before_any_turn_is_not_counted() {
-    // #247, its limit: all 11 frames reach a queue of 10 before any turn, so no drain can
-    // run between them. The first frame is pushed out before the publisher's first
-    // accepted frame, which no sequence check sees (communication-integrity.md §5).
+pub(crate) fn a_first_chunk_past_the_queue_before_any_turn_fails_and_is_counted() {
+    // #247: all 11 frames reach a queue of 10 before any turn, so no drain can run between
+    // them, and the first is pushed out before anything reads it. The publisher came after
+    // the subscriber, so its first frame was owed to it: the loss is counted.
+    for (start, due, taken) in [(10, 9, 8), (0, 10, 9)] {
+        let input = Input { bind: queued(10), queue: 10, period_ms: 100, publishers: 2 };
+        let chunk = [(
+            every_10_ms(start, start + 100).into_iter().map(|at| (1, at)).collect(),
+            start + 100,
+        )];
+        let (statuses, health, steps) = replay_publishers(input, start, &chunk);
+        assert_eq!(statuses, [HyphaStatus::SequenceGap as i32], "start {start}: {health:?}");
+        assert_eq!(health.overrun_total, 1, "start {start}: {health:?}");
+        assert_eq!(deadlines_and_counts(&steps), [(100, taken)], "{due} due from {start}");
+    }
+}
+
+#[test]
+pub(crate) fn a_first_chunk_past_the_queue_of_a_publisher_from_before_the_subscriber_is_not_counted()
+ {
+    // #247, its limit: the same chunk from a publisher that existed when the subscriber was
+    // created. Its first frame may have been sent before the subscriber, as for a late
+    // joiner, so a loss before its first accepted frame is not counted
+    // (communication-integrity.md §5).
     for (start, due, taken) in [(10, 9, 8), (0, 10, 9)] {
         let chunk = [(every_10_ms(start, start + 100), start + 100)];
         let (statuses, health, steps) = replay_an_input(queued(10), 10, start, &chunk);
