@@ -130,6 +130,7 @@ fault.**
 | Feature | Question it answers | API | Users |
 |---|---|---|---|
 | Framework time | What time is it for this node? | `hypha::now()`, `hypha_clock_now_nanos`, `hypha_base/time.h` | app 7, mrs 1, ex 4 |
+| Clock valid | Does `hypha::now()` read a time yet, or the placeholder zero of a simulated-time node before its first `/clock` sample? | `hypha::isClockValid()`, `hypha_clock_is_valid` (host time: always true; simulated time: once the clock has a value; the rule is Rust's, `hypha_node::clock_is_valid`), `hypha_base/clock.h` | — |
 | Host time | How much real time passed? | `hypha::steadyNow()`, `hypha_clock_steady_now_nanos`, `hypha_base/clock.h` | app 2, ex 1 |
 | Step time | When is this step? | `CycleTime` (`now`, `stamp`, `dt`, `missed`); `hypha::now()` returns `now` while the step runs | all cycle users |
 | Simulated time | Does this process follow `/clock`? | `HYPHA_USE_SIM_TIME` (`1`/`true`; `follow` is refused), `hypha_clock_*sim_time` | tests, tools, ex autoware |

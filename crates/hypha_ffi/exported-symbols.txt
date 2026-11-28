@@ -4,6 +4,7 @@ T hypha_clock_advance_sim_time
 T hypha_clock_disable_sim_time
 T hypha_clock_enable_sim_time
 T hypha_clock_is_sim_time
+T hypha_clock_is_valid
 T hypha_clock_now_nanos
 T hypha_clock_set_sim_time
 T hypha_clock_steady_now_nanos

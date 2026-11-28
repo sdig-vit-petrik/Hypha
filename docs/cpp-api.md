@@ -100,7 +100,8 @@ process session, for code without the `Node` at hand: `hypha::Node().advertise<T
 It needs a named `Node` created first; without one the call throws
 `... failed: InvalidState: no session exists; create a named hypha::Node first`.
 The object form holds the endpoints as members, and `hypha::bind` registers a member
-function as the callback:
+function as the callback (`hypha::bind<&C::onInput>(*this, index)` binds arguments that
+come first in the call: which of several inputs a sample came from):
 
 ```cpp
 #include <hypha/hypha.h>
@@ -511,7 +512,13 @@ Reference: `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h`,
 ```cpp
 status.header.stamp = time.stamp;                      // in a step
 status.header.stamp = hypha::toRosTime(hypha::now());  // in a callback
+status.header.stamp = hypha::rosTimeFromSeconds(packetSeconds);  // or ...FromNanos(n)
 ```
+
+On simulated time `hypha::now()` is the placeholder zero until the node's clock has a
+value: `hypha::isClockValid()` (true on host time; on simulated time after the first
+`/clock` sample, `setSimTime` or `enableSimTime`) says whether a stamp taken from it is
+a time. The run reads `/clock`, so a constructor or `setup()` sees false.
 
 ## 4. Publishing
 
@@ -521,6 +528,11 @@ Outside a cycle, `node.advertise<M>(port | hypha::Topic{...}, options...)` creat
 exists (section 1); before that `advertise` throws `... InvalidState: no session exists`.
 Reference: `hypha/node.h`, `hypha/publisher.h`, `hypha/topic.h`, `hypha/options.h`.
 
+- `publish()` is `[[nodiscard]]`: a refused send is a result to read, never a silent loss.
+  `publishOrWarn(msg)` is the call for a node with no reaction to a refusal: it returns
+  the same `bool` and logs a warning with the topic and the status, at most once a second
+  for each publisher (copies of a publisher share one count; a disabled publisher is
+  silent). A cycle `Output::send` needs neither.
 - A fixed-size message is bounded to its encoded size. Any other is growable, unless
   `hypha::maxPayloadDynamic(bytes)` or the policy's field (section 7) names its largest
   message; a larger one is `TooLarge`. A growable publisher reserves its pool at its first
@@ -1511,7 +1523,7 @@ same `std::expected<geometry_msgs::TransformStamped, hypha::TransformError>`.
 
 ```cpp
 // or {node, {.tf = "/tf", .tfStatic = "/tf_static"}, hypha::Duration::fromSeconds(10)}
-hypha::TransformBuffer tf{node};
+hypha::TransformBuffer tf{node};   // a member: `TransformBuffer tf_;` then `tf_ = TransformBuffer(node);`
 const std::optional<hypha::Time> stamp = hypha::fromRosTime(scan.header.stamp);
 if (stamp.has_value()) {
     const auto found = tf.lookup("map", "lidar", *stamp);   // in a callback or a worker thread
@@ -1701,7 +1713,7 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h`, `hypha/t
 | `hypha/config.h`                                                       | `config()`, `ConfigView`, `ConfigContext`, `ParameterError`; it includes `config_list.h` (`ConfigList`), `config_matrix.h` (`Matrix`) and `constraints.h` (`constraints`)                                                                                                 |
 | `hypha/camera_info.h`                                                  | `readCameraInfo`, `parseCameraInfo`: the ROS camera calibration YAML as `sensor_msgs::CameraInfo`                                                                                       |
 | `hypha/introspection.h`, `hypha/metrics.h`                           | `introspect`, `nodeState`, `recordConfig`; `metrics`, `metric`                                                                                                                             |
-| `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h` | `Duration`, `Time`, literals; `now`, `steadyNow`, simulated time; `toRosTime`, `fromRosTime`                                                                                             |
+| `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h` | `Duration`, `Time`, literals; `now`, `isClockValid`, `steadyNow`, simulated time; `toRosTime`, `rosTimeFromSeconds`, `rosTimeFromNanos`, `fromRosTime`                                                                                             |
 | `hypha_base/short_namespace.h`                                     | the alias `hy` of `hypha`; `HYPHA_NO_SHORT_NAMESPACE` leaves it out                                                                                                                      |
 | `hypha_log/hypha_log.h`                                                | The `HYPHA_LOG_*` macros                                                                                                                                                                           |
 | `hypha/hypha_ffi.h`                                                    | The C ABI below them all: [interface-specification.md](interface-specification.md)                                                                                                                    |

@@ -752,8 +752,8 @@ of ROS's own; it cannot include both. Make only these edits:
 | `ros::Duration::toSec()`, `ros::Duration::toNSec()`, `ros::Time::toSec()`, and `ros::Time` / `ros::Duration` arithmetic | `hypha::Duration::seconds()` (`double`), `hypha::Duration::nanos()` (`int64_t`), `hypha::Time::seconds()`. The operators keep their meaning: `Time + Duration`, `Time - Duration`, and `Time - Time`, which is a `Duration` | Rename the call. `ros::Duration(s)` is `hypha::Duration::fromSeconds(s)`, which throws `std::invalid_argument` for NaN or infinite `s`. |
 | `ros::Time::now()` in logic | `hypha::now()` for framework time, `hypha::steadyNow()` for an interval. For a stamp, `hypha::toRosTime(hypha::now())` (`hypha/message_stamp.h`) | Keep the meaning of the original call. |
 | `ros::Time::isSystemTime()` | `!hypha::isSimTime()` (`hypha_base/clock.h`, included by `hypha/hypha.h`) | Edit the call only. |
-| `ros::Time::waitForValid()` | No call. A cycle step does not run before the first `/clock` sample (execution-model.md section 11.1), so its `time.now` is valid. | Delete the call. |
-| `hypha::now()` before the first `/clock` sample, on a node with `HYPHA_USE_SIM_TIME=1` (`hypha_base/clock.h`) | The placeholder zero: `Time` 0 ns, not a clock value. `hypha::isSimTime()` is already true, and no C++ call says whether a value has arrived. | Inside a step, use `time.now`. Outside one, the value is trustworthy only after the first `/clock` sample, and no call reports that (execution-model.md section 11.1: "The zero that a node starts with is a placeholder, not a value"). |
+| `ros::Time::isValid()` of `ros::Time::now()`, and `ros::Time::waitForValid()` | `hypha::isClockValid()` (`hypha_base/clock.h`): true on host time, and on simulated time once the first `/clock` sample (or a set) arrived. There is no wait: the run reads `/clock`, so a loop in a constructor or `setup()` would wait for ever | In a cycle step delete the call: a step does not run before the first sample (execution-model.md section 11.1), so `time.now` is valid. In a callback of an `ApplicationNode`, test `isClockValid()` before a stamp is taken from `hypha::now()`; a worker thread polls it. A constructor or `setup()` has no clock yet: take the time at the first callback or step. |
+| `hypha::now()` before the first `/clock` sample, on a node with `HYPHA_USE_SIM_TIME=1` (`hypha_base/clock.h`) | The placeholder zero: `Time` 0 ns, not a clock value. `hypha::isSimTime()` is already true and `hypha::isClockValid()` is false | Inside a step, use `time.now`. Elsewhere, ask `hypha::isClockValid()` (execution-model.md section 11.1: "The zero that a node starts with is a placeholder, not a value"). |
 | `void cb(const Msg::ConstPtr& msg)` whose logic keeps the pointer | `samples()` gives a `const Msg&` for one step, and it is valid only until the step returns (section 6). | Copy the value into a member of the node (`Msg last;`, then `last = sample;`). If the callback only stores the latest value, use a `Latest` port instead (Step 2). |
 | `boost::shared_ptr<Msg>`, `boost::make_shared<Msg>(...)` | `std::shared_ptr<Msg>`, `std::make_shared<Msg>(...)`. The generated `Msg::Ptr` is `std::shared_ptr` (for example `std_msgs/Float64.h`). | Glue only (the paragraph below the table): change the namespace and the include (`<memory>`). Nothing else. |
 | `#include <sensor_msgs/point_cloud2_iterator.h>`, `<sensor_msgs/point_field_conversion.h>` (`PointCloud2Modifier`, `PointCloud2Iterator`, `PointCloud2ConstIterator`, `readPointCloud2BufferValue`) | Works unchanged: the SDK installs ROS's own headers beside the messages (cpp-api.md §1.1) | None. Do not write a field table or byte copies by hand. For ROS 2 code, `<sensor_msgs/point_cloud2_iterator.hpp>`. |
@@ -761,7 +761,8 @@ of ROS's own; it cannot include both. Make only these edits:
 | `camera_info_manager::CameraInfoManager` (`loadCameraInfo(url)`, `getCameraInfo()`), `camera_calibration_parsers::readCalibration(file, name, info)`, the `camera_info_url` parameter | `#include <hypha/camera_info.h>`; `sensor_msgs::CameraInfo info = hypha::readCameraInfo(hypha::config().path("camera_info_url"));` in the constructor or `setup()`. It reads the YAML file that `camera_calibration` wrote, unchanged | Copy the file beside the TOML file and write its path in `camera_info_url`, not a `file://` or `package://` URL. `header` is empty: set `frame_id` and the stamp when sending. A bad file throws `ConfigError` and the node exits 78, with the file, line and field in the message (cpp-api.md section 9). Drop the `set_camera_info` service: hypha writes no calibration back |
 | A header-only library that ROS installs but that is not ROS API, such as `tf2/LinearMath` (`tf2::Quaternion`, `tf2::Matrix3x3`) | The same headers, copied into the node as third-party files with their licence. The SDK ships no math types. | Keep every use in the logic. In the copied headers edit only their ROS lines (`#include <ros/macros.h>` goes, `ROS_DEPRECATED` becomes `[[deprecated]]`), and list the copy and those edits in the change description. |
 | `std::mutex` that only guards callbacks | No mutex. | Delete the mutex and its lock calls. Callbacks of one `WaitSet` never run at the same time (execution-model.md section 10.1), and a cycle step runs on that `WaitSet` (execution-model.md section 6.1). Keep a mutex only where a worker thread shares the data. |
-| `pub.publish(msg);` on a plain `Publisher` (`publish` is `[[nodiscard]]`, `hypha/publisher.h`) | `if (!pub.publish(msg)) { ... }`, with `pub.lastPublishStatus()` for the reason | Check the result and log the reason, as cpp-api.md section 1 does: `HYPHA_LOG_WARN_THROTTLE(1.0, "...: {}", pub.lastPublishStatus().name());`. A cycle `Output::send` returns nothing, so this row does not apply to it. |
+| `pub.publish(msg);` on a plain `Publisher` (`publish` is `[[nodiscard]]`, `hypha/publisher.h`) | `pub.publishOrWarn(msg);` | A refused message is logged as a warning with the topic and the status, at most once a second for each publisher, and the call returns `false`. Use `if (!pub.publish(msg)) { ... }` with `pub.lastPublishStatus()` when the node reacts to a refusal. `publish` stays `[[nodiscard]]`: a dropped result is a silent failure. A cycle `Output::send` returns nothing, so this row does not apply to it. |
+| `nh.subscribe("a", 1, &C::cb, this)` for several inputs of one class, where the callback must know which one (`boost::bind(&C::cb, this, _1, i)`) | `hypha::bind<&C::onInput>(*this, i)`: the arguments after the object are bound and come first in the call, as `std::bind_front` does: `void onInput(size_t i, const hypha::MessagePtr<M>& message)` | No named functor per input. A bound pointer must outlive the subscription. |
 
 The `tf2/LinearMath` row does not cover `tf2/convert.h` (`tf2::convert`): it uses
 `ros::Time`, so do not copy that header. Convert the fields by hand, one assignment for
@@ -986,8 +987,6 @@ Write the node as one class and start it with `runNode`. `main` is one line.
 #include <geometry_msgs/PoseStamped.h>
 #include <sensor_msgs/PointCloud2.h>
 
-#include <optional>
-
 class Locator final : public hypha::ApplicationNode
 {
   public:
@@ -1007,7 +1006,7 @@ class Locator final : public hypha::ApplicationNode
         this->pose_ = node.advertise<geometry_msgs::PoseStamped>("pose");  // [ports.outputs.pose]
         this->timer_ =
             node.timer(hypha::Duration::fromMillis(100), hypha::bind<&Locator::onTick>(*this));
-        this->tf_.emplace(node);  // TransformBuffer has no default constructor
+        this->tf_ = hypha::TransformBuffer(node);  // a member like the others, assigned here
     }
 
   private:
@@ -1016,11 +1015,7 @@ class Locator final : public hypha::ApplicationNode
         geometry_msgs::PoseStamped pose;
         pose.header = scan->header;
         pose.pose.position.x = this->gain_ * static_cast<double>(scan->width);  // the node's logic
-        if (!this->pose_.publish(pose)) {
-            HYPHA_LOG_WARN_THROTTLE(
-                1.0, "pose not sent: {}", this->pose_.lastPublishStatus().name()
-            );
-        }
+        this->pose_.publishOrWarn(pose);  // a refusal is logged: topic, status, once a second
     }
 
     void onTick()
@@ -1032,7 +1027,7 @@ class Locator final : public hypha::ApplicationNode
     hypha::Subscriber<sensor_msgs::PointCloud2>  scan_;
     hypha::Publisher<geometry_msgs::PoseStamped> pose_;
     hypha::Timer                                 timer_;
-    std::optional<hypha::TransformBuffer>        tf_;
+    hypha::TransformBuffer                       tf_;
 };
 
 int main(int argc, char** argv)
@@ -1127,9 +1122,10 @@ if (!this->odom_.enabled()) {
 |---|---|---|
 | `msg.header.stamp.toSec()` | `hypha::fromRosTime(msg.header.stamp)` (`hypha/message_stamp.h`) | Returns `std::optional<hypha::Time>`. Empty when `nsecs` is one second or more. `Time::nanos()` gives integer nanoseconds. |
 | `header.stamp = ros::Time::now()` | `header.stamp = hypha::toRosTime(hypha::now())` | Throws `std::out_of_range` for a time before the epoch or after 2106. |
+| `header.stamp = ros::Time(seconds)`, `ros::Time(sec, nsec)`, `ros::Time().fromNSec(n)` | `hypha::rosTimeFromSeconds(seconds)`, `hypha::rosTimeFromNanos(n)` (`hypha/message_stamp.h`) | The same checks as `toRosTime`. They are named by unit, not overloads of `toRosTime`: an integer is never taken for seconds. |
 | `ros::spin()` | `hypha::runNode<App>(argc, argv, "name")` | Runs `node.run()` and returns the exit code of §10.2. |
 | `ros::shutdown()` from another thread | `hypha::requestStop()` | The one call that another thread may make on a running node. For a failure, `failRun(reason)` in the application. |
-| `pub.publish(msg)` (no result) | `publish(msg)` returns `bool` (`[[nodiscard]]`); `lastPublishStatus()` returns the `Status` of the last attempt | The status names the reason: a disabled publisher, a message that is too large, an exhausted pool, a transport failure. |
+| `pub.publish(msg)` (no result) | `publish(msg)` returns `bool` (`[[nodiscard]]`); `lastPublishStatus()` returns the `Status` of the last attempt; `publishOrWarn(msg)` logs a refusal | The status names the reason: a disabled publisher, a message that is too large, an exhausted pool, a transport failure. |
 | `ROS_WARN_THROTTLE(1, ...)` | `HYPHA_LOG_WARN_THROTTLE(1.0, "{}", x)` | The first call writes, later calls at most once per period. Host monotonic time. |
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(state, false, ...)` | Writes when `state` changes from false to true at that call site. |
 | `pub.getNumSubscribers()` | `pub.subscriberCount()` | `std::optional<size_t>`. Empty: the count is unavailable (the publisher is disabled, or the transport cannot count). `0`: counted, no subscriber now. |
@@ -1321,22 +1317,22 @@ The facts of [cpp-api.md](cpp-api.md) §10 apply:
 #include <hypha/transform_buffer.h>
 
 // members of the application
-std::optional<hypha::TransformBuffer> tf_;
-std::optional<hypha::StaticTransformBroadcaster> statics_;
+hypha::TransformBuffer            tf_;
+hypha::StaticTransformBroadcaster statics_;
 
 // in setup(hypha::Node& node):
-this->tf_.emplace(node);
-this->statics_.emplace(node);
+this->tf_ = hypha::TransformBuffer(node);
+this->statics_ = hypha::StaticTransformBroadcaster(node);
 
 // in started(), after the checks:
-if (!this->statics_->send(baseToLidar)) {
+if (!this->statics_.send(baseToLidar)) {
     throw std::runtime_error("/tf_static not sent");
 }
 
 // in a callback, or in a worker thread while the node runs:
 const std::optional<hypha::Time> stamp = hypha::fromRosTime(scan.header.stamp);
 if (stamp.has_value()) {
-    const auto found = this->tf_->lookup("map", "lidar", *stamp);
+    const auto found = this->tf_.lookup("map", "lidar", *stamp);
     if (!found) {
         // found.error() is a hypha::TransformError: UnknownFrame, NotConnected,
         // BeforeBuffer, AfterBuffer or InvalidFrame
