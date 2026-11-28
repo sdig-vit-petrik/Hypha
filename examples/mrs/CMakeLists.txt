@@ -18,8 +18,6 @@ enable_testing()
 set(MRS_UPSTREAM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/upstream")
 set(MRS_MSG_OUT "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 
-hypha_generate_messages(PACKAGE std_srvs
-  SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/std_srvs/srv" OUT_DIR "${MRS_MSG_OUT}")
 hypha_generate_messages(PACKAGE mrs_bridge
   MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/msg/mrs_bridge/msg" OUT_DIR "${MRS_MSG_OUT}")
 hypha_generate_messages(PACKAGE mrs_msgs
@@ -30,7 +28,7 @@ hypha_generate_messages(PACKAGE mrs_msgs
 # Upstream code includes <mrs_msgs/UavState.h> and <geometry_msgs/Pose.h>, the paths the
 # message targets and hypha::sdk put on the include path.
 add_library(mrs_includes INTERFACE)
-target_link_libraries(mrs_includes INTERFACE mrs_msgs mrs_bridge std_srvs hypha::sdk Eigen3::Eigen)
+target_link_libraries(mrs_includes INTERFACE mrs_msgs mrs_bridge hypha::sdk Eigen3::Eigen)
 target_compile_features(mrs_includes INTERFACE cxx_std_23)
 
 # One header that includes every mrs_msgs header, for the compile check.

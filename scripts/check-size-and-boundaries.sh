@@ -63,7 +63,6 @@ PROD_RATCHET = {
     "crates/hypha_cycle/src/runtime.rs": 717,
     "apps/hypha_tools/src/bin/hypha/top/graph_ui.rs": 670,
     "crates/hypha_node/src/cycle/tick.rs": 651,
-    "crates/hypha_node/src/waitset.rs": 610,
 }
 
 # Grandfathered test and doc monoliths: warn on growth, fail if stale (dropped <= cap).

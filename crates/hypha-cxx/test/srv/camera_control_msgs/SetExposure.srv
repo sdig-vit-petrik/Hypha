@@ -1,0 +1,4 @@
+float32 target_exposure
+---
+float32 reached_exposure
+bool success

@@ -215,6 +215,67 @@ semantics and its `HYPHA_TF_*` results are those of a cycle's TF input
   before a send, needs no node, and records the reason for `hypha_last_error` on a
   refusal (`InvalidArgument`); the C++ broadcasters call it.
 
+## Services
+
+A service is a request and its answer between nodes, typed by a `.srv`
+([design/native-services.md](design/native-services.md)). The C ABI is coarse on
+purpose: ten functions, and every rule of a call decided below them, once.
+
+| Function | What it does |
+|---|---|
+| `hypha_service_server_create(node, desc, serve, context, release, out)` | Creates the server of `desc` and attaches it to the node's default `WaitSet`; the run calls `serve` for each request |
+| `hypha_service_server_destroy(server)` | Ends every request the server holds (their clients read `ServerLost`) and detaches it |
+| `hypha_request_answer(request, kind, bytes, len)` | Replies (`HYPHA_ANSWER_REPLY`, the encoded response) or refuses (`HYPHA_ANSWER_REFUSE`, the reason) |
+| `hypha_request_defer(request, out)` | Takes the handler's request over, to answer later from any thread |
+| `hypha_request_destroy(request)` | Releases a deferred request; one still unanswered is refused |
+| `hypha_service_client_create(node, desc, out)` | Creates a client: attached to the default `WaitSet`, or blocking (`desc.blocking`) |
+| `hypha_service_client_destroy(client)` | Detaches it; the outcomes of its calls in flight are dropped uncalled |
+| `hypha_client_call(client, request, len, done, context, release, status)` | Calls; `done` gets the one outcome, later on the run's thread or, for a blocking client, before the call returns |
+| `hypha_client_status(client, out)` | Whether a live server exists now, and the calls pending |
+| `hypha_client_wait_for_server(client, timeout_nanos, ready)` | Waits for a server; a blocking client only |
+
+- **Declaration.** `HyphaServiceDesc` names a port (`literal` 0: the `service` key of
+  `[ports.servers.<port>]` or `[ports.clients.<port>]`) or the service (`literal` 1:
+  absolute, relative or `~/`), the `.srv` type and MD5, a `HyphaServicePolicy`
+  (`name_len` 0 and every field 0 for `defaultService`), a client's timeout
+  (`timeout_nanos`, 0 for the policy's; the table's `timeout_ms` wins) and, for a client,
+  `blocking`. Its texts are borrowed for the call. A port without a table is
+  `InvalidArgument`, and `hypha_last_error` gives the stanza to add; an invalid name is
+  `InvalidTopic`; a name a live node serves is `ResourceLimit` and the reason names the
+  holder and its type; another policy on the stream is `QosMismatch`; a create during a
+  run is `InvalidState`. A create writes null to `out` first.
+- **Contexts.** `context` and `release` pass to the library at the call, and `release`
+  runs exactly once: when the server is destroyed, after `done` ran, or at once when the
+  call is refused or no outcome follows (`Busy`, `TooLarge`, a destroyed client).
+- **Requests.** `serve` receives a `HyphaRequestView`, borrowed for the call: the
+  request handle, the payload and the client's node name. The handler answers the
+  request, defers it, or leaves it: a request left open when `serve` returns is refused
+  (`the server's handler did not answer the request`), counted and logged once per
+  server. A failing `HyphaCallbackResult` answers an open request as failed (the client
+  reads `ServerLost`) and fails the run as any callback's failure does. A request is
+  answered once; a second answer, or a defer of an answered one, is `InvalidState`. A
+  deferred request may be answered and destroyed on any thread; once its server or its
+  client is gone, its answer is `Disconnected`. A response above the bound is `TooLarge`,
+  and the client reads `Refused` with the sizes.
+- **Calls.** `hypha_client_call` writes `HYPHA_CALL_SENT`, `HYPHA_CALL_BUSY` (the
+  client's limit of calls in flight, calls the server still holds after they timed out
+  included) or `HYPHA_CALL_TOO_LARGE` to `status`. After `SENT`, `done` runs exactly once
+  with a `HyphaCallResult`, borrowed for the call: the outcome (`HYPHA_CALL_ANSWERED`,
+  `_REFUSED`, `_NO_SERVER`, `_NOT_SENT`, `_SERVER_LOST`, `_TIMEOUT`), `may_have_run`,
+  `safe_to_retry`, the response of an answered call, a description of one line, and the
+  framework times of the call and of its outcome. A call made while the stream has no
+  server is held in one of the client's slots and sent when a server appears (the graph
+  event wakes the run); it ends `NO_SERVER` at its deadline. A call still connected at its
+  deadline probes the server's node, at most once a second per service: a dead node ends
+  it `SERVER_LOST`, a live one `TIMEOUT`. Deadlines are on the scheduling clock: simulated
+  time when the process is on it, else the host monotonic clock.
+- **Blocking clients (FSR-43).** A blocking client's `hypha_client_call` waits on the
+  calling thread, on the client's own response event, and calls `done` before it
+  returns; `hypha_client_wait_for_server` polls the stream for a live server. Both are
+  `InvalidState` on a thread that runs a `WaitSet` dispatch, with a reason that names
+  what to use instead, and `hypha_client_wait_for_server` is `InvalidState` for a client
+  of a `WaitSet`. A blocking client makes one call at a time; concurrent calls queue.
+
 ## Clocks and send times
 
 Two clocks drive the framework, and the split is deliberate:

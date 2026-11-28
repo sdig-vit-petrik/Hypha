@@ -41,9 +41,13 @@ hypha_generate_messages(PACKAGE tf2_msgs
 hypha_generate_messages(PACKAGE hypha_msgs
   MSG_DIR "${HYPHA_MSGS_ROOT}/hypha_msgs" OUT_DIR "${HYPHA_MSGS_OUT_DIR}")
 
+# The services every ROS 1 port reaches for: Empty, Trigger, SetBool.
+hypha_generate_messages(PACKAGE std_srvs
+  SRV_DIR "${HYPHA_MSGS_ROOT}/std_srvs" OUT_DIR "${HYPHA_MSGS_OUT_DIR}")
+
 # Every standard package. The name differs from the package hypha_msgs above,
 # which holds hypha's own messages.
 add_library(hypha_standard_messages INTERFACE)
 target_link_libraries(hypha_standard_messages INTERFACE
   std_msgs geometry_msgs diagnostic_msgs rosgraph_msgs nav_msgs sensor_msgs tf2_msgs
-  hypha_msgs)
+  hypha_msgs std_srvs)

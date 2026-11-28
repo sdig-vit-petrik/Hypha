@@ -208,6 +208,13 @@ that waits for a round trip therefore stops the loop that must complete it.
 Blocking schema lookups refuse a call made from a dispatcher callback and
 return `InvalidState`. There is no asynchronous submission in the C ABI.
 
+**A service call.** A blocking client's `callAndWait()` and `waitForServer()` are
+refused the same way, with `InvalidState`, on a thread that runs a dispatch (FSR-43);
+the message names what to use instead. In a callback, a client of the node sends
+with `call(request, onResult)`, and `onResult` runs at a later turn with the outcome,
+never inside `call()` (cpp-api.md §8). A server's handler runs on the run thread too,
+and answers there or defers the request to a thread that may wait.
+
 **Resolve before the run.** Call `hypha_schema_lookup` (or, in the Rust SDK,
 `BusNode::resolve_schema_hash`) outside a callback, before the run. A later
 `hypha_schema_lookup` for the same type returns the definition from inside a
@@ -807,8 +814,9 @@ detach a registration of its own `WaitSet` (a destroyed timer or subscription):
 it is never dispatched again, and it is removed and its context released when the
 run returns. A detach from another thread during a run is refused.
 
-A callback may **not** block on a reply. A request and its reply are two topics
-(cpp-api.md §8); the reply arrives as a later sample.
+A callback may **not** block on a reply. A service call from a callback is
+`call(request, onResult)`, and its outcome arrives at a later turn; a blocking call
+there is refused (section 5.1, cpp-api.md §8).
 
 **Detach a registration before you destroy the object its callback context
 points to.** The registration shares the subscriber, so the endpoint itself
@@ -1070,6 +1078,15 @@ The replay lockstep runs cycles only: rate cycles (section 11.1) and triggered c
   `HYPHA_USE_SIM_TIME=follow` is refused: no node of a launch leaves the lockstep
   alone. A system that needs a deterministic replay is built from cycles; one that
   cannot be, such as a port of ROS nodes, plays in the open loop.
+
+**Services in a replay.** A server or a client of a plain node is a plain callback
+here: a request is served as it arrives and an outcome delivered as it is found, with
+no cut and no hold, so a replay with services between plain nodes is not deterministic.
+A client's timeout counts on the scheduling clock, simulated time in a replay: a call
+times out when the clock reaches its deadline, and while `/clock` is paused it does
+not. A `Deferred` answered from a worker thread is outside any replay. The cycle ports
+that make a call part of the lockstep (`Requests`, `Calls`) are stage 1c of
+[design/native-services.md](design/native-services.md).
 
 ### 11.3 Design note: one execution model for cycles and plain callbacks (#136)
 

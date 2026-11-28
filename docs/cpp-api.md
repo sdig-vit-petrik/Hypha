@@ -1228,15 +1228,152 @@ The pool size and the start-order rules are in [engineering-traps.md](engineerin
 safe overflow and the frame checks in [interface-specification.md](interface-specification.md#service-limits-and-wildcards).
 Reference: `<hypha/qos.h>`, and `<hypha/status.h>` for `Status`, `require()` and `ConfigError`.
 
-## 8. Request and reply
+## 8. Services
 
-hypha has no RPC. A request and its answer are two topics: the client publishes the
-request with an identifier such as a sequence number, and the server publishes the reply
-with the same identifier. Latch both when either side can start first. A reply that does
-not arrive within the client's own deadline is a timeout the client decides on; it may
-send the request again. `examples/mrs/host/include/mrs_host/service.h` carries the MRS
-services this way. A `.srv` file still generates `Request` and `Response` message types,
-each with its own MD5 (engineering-traps.md).
+A service is a request and its answer between nodes, typed by a ROS 1 `.srv`
+(design: [native-services.md](design/native-services.md)). A name has at most one
+server, across every version of its type; a call ends in exactly one outcome. This
+section covers plain nodes and `ApplicationNode`s; the cycle ports (`Requests<Srv>`,
+`Calls<Srv>`) are stage 1c and not built yet, so a `CycleNode` keeps the request and
+reply topics of section 8.4 until then.
+
+The SDK ships `std_srvs` (`Empty`, `Trigger`, `SetBool`); `hypha_generate_messages()`
+with `SRV_DIR` generates an application's own (`<pkg>/<Name>.h`, with `Request`,
+`Response`, `TYPE_NAME` and `MD5`).
+
+### 8.1 A server
+
+```cpp
+#include <std_srvs/SetBool.h>
+
+auto server = node.advertiseService<std_srvs::SetBool>(
+    "set_enabled", [this](hypha::Request<std_srvs::SetBool>& request) {
+        if (!this->ready_) {
+            request.refuse("not initialised");   // the client reads Refused
+            return;
+        }
+        request.reply({.success = true, .message = request->data ? "on" : "off"});
+    });
+```
+
+```toml
+[ports.servers.set_enabled]
+service = "~/set_enabled"          # /<node>/set_enabled
+```
+
+The handler runs on the run's thread, between turns, as a subscription callback does.
+It does one of three things with the request: `reply(response)`, `refuse()` or
+`refuse("why")`, or `defer()`. A request it leaves without any of the three is refused
+when it returns (`the server's handler did not answer the request`), counted and logged
+once. A handler that throws answers its request as failed, which the client reads as
+`ServerLost`, and fails the run as any callback that throws does.
+
+`hypha::Service{"/abs/name"}` instead of a port fixes the name in code. A port without a
+table is refused with `ConfigError` (exit 78), and the message prints the stanza to add.
+A second server of a name that a live node serves is refused (`ResourceLimit`), naming
+the holder and the type it serves. Destroying the `ServiceServer` ends every request it
+holds: their clients read `ServerLost`.
+
+**Deferred answers.** `request.defer()` returns a `hypha::Deferred<Srv>`, a move-only
+handle that any thread answers later with `reply()` or `refuse()`: the camera's handler
+hands the request to the worker thread that owns the device, which answers between two
+grabs.
+
+```cpp
+void setup(hypha::Node& node) override
+{
+    this->setExposure_ = node.advertiseService<camera_control_msgs::SetExposure>(
+        "set_exposure", [this](hypha::Request<camera_control_msgs::SetExposure>& request) {
+            this->commands_.push({request->target_exposure, request.defer()});
+        });
+}
+
+// on the worker, between two grabs
+while (auto command = this->commands_.tryPop()) {
+    float reached = 0.0F;
+    const bool success = this->device_.setExposure(command->target, reached);
+    command->reply.reply({.reached_exposure = reached, .success = success});
+}
+```
+
+A `Deferred` destroyed while it holds a request refuses it (`a deferred request was
+destroyed unanswered`): no request ends in silence. Once its server is destroyed, its
+`reply()` returns `Disconnected`, as it does once the client left. An answer from
+another thread is stamped with the process's framework time and is not part of a
+deterministic replay.
+
+### 8.2 A client in a node
+
+```cpp
+auto trigger = node.serviceClient<std_srvs::SetBool>(hypha::Service{"/localization/ekf/trigger_node"});
+if (trigger.call({.data = true}, [](const hypha::CallResult<std_srvs::SetBool>& r) {
+        if (!r.ok() || !r.response().success) HYPHA_LOG_WARN("trigger_node: {}", hypha::describe(r));
+    }) != hypha::CallStatus::Sent) {
+    HYPHA_LOG_WARN("trigger_node: not sent");
+}
+```
+
+`call()` sends at once and returns `[[nodiscard]] hypha::CallStatus`: `Sent`, or a local
+refusal that sends nothing and calls nothing: `Busy` (the client has its limit of calls
+in flight, calls the server still holds after they timed out included) or `TooLarge`
+(above the bound). After `Sent` the callback runs exactly once with the outcome, on the
+run's thread at a later turn, never inside `call()`:
+
+| `CallOutcome` | When | `mayHaveRun()` | `safeToRetry()` |
+|---|---|---|---|
+| `Answered` | the server replied; `ok()` and `response()` | yes | no |
+| `Refused` | `refuse()`, a request left unanswered, a `Deferred` destroyed unanswered, a response above its bound | no | yes |
+| `NoServer` | no live server of the stream until the timeout | no | yes |
+| `NotSent` | nothing was sent: the transport refused the request, or a blocking call was `Busy` or `TooLarge` | no | yes |
+| `ServerLost` | the server exited, crashed or was destroyed; its handler threw; its answer did not verify | yes | no |
+| `Timeout` | no answer within the timeout | yes | no |
+
+`describe(result)` is the outcome as one line: `refused: not armed`, `timeout after 1 s
+(policy defaultService)`. A client may call before its server exists: the call is held
+in one of its slots and sent when a server appears; it ends `NoServer` at its deadline.
+`ready()` (ROS 1: `exists()`) says whether a live server exists now, `pending()` whether
+an outcome is still to come. Destroying the client drops the outcomes of its calls in
+flight uncalled.
+
+The timeout is the policy's (1 s for `defaultService`); `hypha::timeout(d)` as the last
+argument of `serviceClient()` overrides it in code, and `timeout_ms` in the client's
+table overrides both:
+
+```toml
+[ports.clients.trigger]
+service = "/localization/ekf/trigger_node"
+timeout_ms = 2000
+outstanding = 1                    # calls in flight, at most the policy's
+```
+
+### 8.3 A blocking client: a worker thread, a test, a tool
+
+```cpp
+auto takeoff = node.serviceClient<std_srvs::Trigger>(hypha::Service{"/uav1/uav_manager/takeoff"}, hypha::blocking);
+if (!takeoff.waitForServer(hypha::Duration::fromSeconds(5))) { /* no server */ }
+const hypha::CallResult<std_srvs::Trigger> r = takeoff.callAndWait({});
+```
+
+A blocking client is attached to no `WaitSet`: `callAndWait()` waits on the calling
+thread for the outcome and returns it, and a call it refused before sending reads
+`NotSent`. On the run's thread, inside any callback, `callAndWait()` and
+`waitForServer()` throw (`InvalidState`): that thread is the one that must deliver the
+answer. The message says what to use instead: `call(request, onResult)`. The library
+starts no thread for it.
+
+### 8.4 Limits, and services in a cycle
+
+A service has a policy as a topic does (section 7): `hypha::ServicePolicy`, mapped to the
+type by `hypha::ServicePolicyOf<Srv>` in a header both ends include. The default,
+`defaultService`, admits 8 clients (and 3 more for tools), 2 calls in flight each, 4 KiB
+each way, a timeout of 1 s. A request above its bound is `TooLarge` at `call()`; a
+response above it gives the server `TooLarge` from `reply()` and the client `Refused`
+with the sizes. Data of map size goes on a latched topic, and a service carries a small
+request and its acknowledgement.
+
+Until the cycle ports exist, a `CycleNode` carries a call as two topics: the client
+publishes the request with an identifier, the server publishes the reply with the same
+identifier, and the step keeps its own deadline (`examples/mrs/host/include/mrs_host/service.h`).
 
 ## 9. Parameters
 

@@ -1,7 +1,7 @@
 # Native services
 
 Design for #132: typed request/response between nodes from ROS 1 `.srv` definitions.
-Status: accepted design; **Stage 1a** (transport in `crates/hypha_iceoryx2/src/service/`) is implemented, Stages 1b+ are pending.
+Status: accepted design. **Stage 1a** (transport, `crates/hypha_iceoryx2/src/service/`) and the runtime, C ABI and C++ endpoints of **Stage 1b** (`crates/hypha_node/src/service/`, `crates/hypha_ffi/src/service/`, `crates/hypha-cxx/include/hypha/service*.h`) are implemented; the call log, `hypha service` and the stages above are pending.
 
 ## 1. Identity and discovery
 
@@ -68,6 +68,8 @@ Each `hypha::Request<Srv>&` is resolved by `reply(resp)`, `refuse([reason])`, or
 - `[ports.clients.<port>]`: `service`, `timeout_ms`, `outstanding` (default 1).
 - SDK ships `std_srvs` (`Empty`, `Trigger`, `SetBool`); a deleted `call(Srv&)` overload guides ROS 1 porters.
 
+**As built (Stage 1b):** coarser than the sketch, ten functions (interface-specification.md, Services). A server's create attaches it to the node's `WaitSet`; one `hypha_request_answer` replies or refuses, from the handler or deferred (a deferred request is the same handle, released by `hypha_request_destroy`); a client's `blocking` field decides whether its one `hypha_client_call` delivers the outcome at a later turn or before it returns; the outcome reaches a per-call callback with `may_have_run`/`safe_to_retry` decided; `ready` and `pending` are one `hypha_client_status`; a context's `release` runs exactly once. The cycle functions stay for Stage 1c.
+
 **C ABI sketch** (bumps `abi.revision` by 1; `HyphaStatus` 19 stays retired; `HyphaCallStatus` / `HyphaCallOutcome` are separate enums):
 
 ```c
@@ -102,7 +104,7 @@ void        hypha_deferred_destroy(HyphaDeferred*);
 | Stage | Scope | Status |
 |---|---|---|
 | **1a Transport** | `hypha_iceoryx2::service`: ports, name lock, dead reclaim, role CRC sealing, slot table, liveness probe, listing | Done (`#270`) |
-| **1b Runtime, C ABI, C++, CLI** | `hypha_node` runtime, blocking clients, C ABI, `advertiseService`/`serviceClient`, `std_srvs`, call log, `hypha service` | Next |
+| **1b Runtime, C ABI, C++, CLI** | `hypha_node` runtime, blocking clients, C ABI, `advertiseService`/`serviceClient`, `std_srvs`, call log, `hypha service` | Runtime, C ABI, C++, `std_srvs` done (#286); call log and CLI next |
 | **1c Cycles & lockstep** | `Requests<Srv>`, `Calls<Srv>`, strict-cut lockstep + §6.6 amendment, `StepHarness`, `hypha::Sequence` | Pending |
 | **1d Migration** | Port MRS host & Autoware shim; delete `mrs_bridge/Call` and `ServiceCall` | Pending |
 | **2–6 Follow-ups** | Introspection/`hypha top` (2), `Requests` trigger (3), `hypha play --serve/--call` (4), ROS 1 bridge (5), typed loans (6) | Pending |
