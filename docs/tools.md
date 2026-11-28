@@ -1,11 +1,11 @@
 # Command-line tools
 
-Twelve tools ship with hypha, as one executable: `hypha <tool>` with the tools
-`topic`, `top`, `node`, `record`, `play`, `convert`, `intercept`, `foxglove`, `launch`,
-`param`, `clean` and `load`; `hypha --help` lists them. Two shorter names run the same
+Thirteen tools ship with hypha, as one executable: `hypha <tool>` with the tools
+`topic`, `top`, `node`, `service`, `record`, `play`, `convert`, `intercept`, `foxglove`,
+`launch`, `param`, `clean` and `load`; `hypha --help` lists them. Two shorter names run the same
 executable. `hy` is `hypha`: `hy play --input run.mcap` is `hypha play --input
 run.mcap`. Each tool has a link of its own, `hy<tool>`: `hytopic`, `hytop`,
-`hynode`, `hyrecord`, `hyplay`, `hyconvert`, `hyintercept`, `hyfoxglove`, `hylaunch`,
+`hynode`, `hyservice`, `hyrecord`, `hyplay`, `hyconvert`, `hyintercept`, `hyfoxglove`, `hylaunch`,
 `hyparam`, `hyclean` and `hyload`, so `hyplay --input run.mcap` is the same command again. The
 installation makes `hy` and these links; the old names `hypha_<tool>` are gone.
 Usage and messages name the tool as `hypha play: ...` whatever name started it. In
@@ -17,7 +17,7 @@ bus through the framework, and none of them reaches around it to the transport.
 `hypha convert` and `hypha param` work on files and do not join the bus, and
 `hypha clean` removes a domain's resources without joining it.
 
-`hypha top`, `hypha topic`, `hypha node` and `hypha record` without `--sync` join
+`hypha top`, `hypha topic`, `hypha node`, `hypha service` and `hypha record` without `--sync` join
 as CLI tool nodes, `_hyphacli_<tool>`: any number of each runs at once in one
 domain, `hypha top` does not show them, and the next node that starts reclaims one
 that died. `hypha play`, `hypha record --sync`, `hypha intercept` and
@@ -259,6 +259,74 @@ inputs, so it shows no stream or version: `hypha top` does.
 
 Where the backend cannot supply a
 detail, the tool prints that it is unavailable rather than inventing a value.
+
+### `hypha service` — call a service
+
+```text
+hypha service list                               one line per service: name, type, MD5, server, clients
+hypha service info <service>                     its type, server, clients, policy, call log and definitions
+hypha service call <service> '<yaml or json>'    call it and print the response
+hypha service call <service>                     print the request's template
+```
+
+`call` is `rosservice call`: the request is YAML or JSON, as one line or several, and
+a field it leaves out takes its zero value.
+
+```text
+$ hypha service call /camera/set_enabled "data: true"
+success: true
+message: "streaming"
+$ hypha service call /camera/set_exposure '{target_exposure: 20000}'
+reached_exposure: 10000
+success: false
+$ hypha service call /camera/set_enabled "data: false"
+hypha service: refused: not armed                      (exit 2)
+$ hypha service call /camera/set_exposure
+target_exposure: 0.0
+```
+
+The tool encodes the request with the definition that the service's server registered
+when it started (a C++ server registers both halves of its `.srv`), so it calls a type
+it was never built with. A request of no fields (`std_srvs/Trigger`, `std_srvs/Empty`)
+is called without a body. The response is printed as `hypha topic echo` prints a
+message; anything else is printed to standard error with its reason, and the exit code
+says which outcome it was:
+
+| Exit | Outcome |
+|---|---|
+| 0 | answered |
+| 1 | the tool failed: an argument, a request that does not fit the type (the message names the field), a server that registered no definitions |
+| 2 | refused, with the server's reason |
+| 3 | no server: none appeared within the timeout |
+| 4 | not sent |
+| 5 | server lost: it crashed, left, or failed while it handled the call |
+| 6 | timeout |
+
+`--timeout <s>` sets how long the call waits; by default it is the service policy's
+(1 s under `defaultService`). The tool waits that long for a server to appear, then
+that long for the answer. Its client is a client of a CLI tool node, so it takes one of
+a service's three observer slots, never a declared client's, and the server logs the
+call at INFO with the tool's name. `info` and `list` read the transport's listing of
+the domain: `list` names the server's node and pid (`dead` for one that crashed and was
+not reclaimed yet) and counts the clients other than the tool itself.
+
+Not yet: the calls answered, refused and timed out per service (they come with the
+`~/state` rows of stage 2), and the notice that a server on simulated time waits for a
+paused `/clock`.
+
+**The call log.** Each client publishes `hypha_msgs/ServiceCall` on `<service>/calls`
+as each of its calls ends: the service, type and MD5, the client's node and port, the
+request's sequence, the outcome and its reason, the sent and done stamps, and the request
+and response bytes. A record is encoded only while the topic has a subscriber, which
+costs one read of a subscriber count per call. It never holds a call up: a record that
+finds no free sample is dropped and counted, logged as it happens, and the readers see
+the gap in the frame sequence. A record is bounded by the policy, 2 KiB plus the request
+and response bounds (10 KiB under `defaultService`); a reader keeps at most 4 records
+queued, and each client's log holds 26 of them in shared memory, 260 KiB under
+`defaultService`. Read it with
+`hypha topic echo /camera/set_enabled/calls`. `hypha record` records it as any topic,
+and `hypha play` never publishes it again: a recording never calls a live server, and the
+request-response services themselves are not recorded.
 
 ### Following streams
 

@@ -238,8 +238,12 @@ purpose: ten functions, and every rule of a call decided below them, once.
   `[ports.servers.<port>]` or `[ports.clients.<port>]`) or the service (`literal` 1:
   absolute, relative or `~/`), the `.srv` type and MD5, a `HyphaServicePolicy`
   (`name_len` 0 and every field 0 for `defaultService`), a client's timeout
-  (`timeout_nanos`, 0 for the policy's; the table's `timeout_ms` wins) and, for a client,
-  `blocking`. Its texts are borrowed for the call. A port without a table is
+  (`timeout_nanos`, 0 for the policy's; the table's `timeout_ms` wins), for a client,
+  `blocking`, and, for a server, the definitions of the `.srv`'s two halves
+  (`request_definition`, `response_definition` with their lengths; null with length 0
+  for none). A server registers those definitions in the schema store while it stands,
+  so a tool encodes a request of a type it was not built with; a server without them
+  serves. A client's definitions are unused. Its texts are borrowed for the call. A port without a table is
   `InvalidArgument`, and `hypha_last_error` gives the stanza to add; an invalid name is
   `InvalidTopic`; a name a live node serves is `ResourceLimit` and the reason names the
   holder and its type; another policy on the stream is `QosMismatch`; a create during a
