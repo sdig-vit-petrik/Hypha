@@ -2,7 +2,9 @@
 //!
 //! A triggered cycle runs one step per sample of its trigger ports, in merge order: by
 //! send stamp, then by port, each port in its own order. Each time no event ran for the
-//! shortest silence limit of the ports, it runs one fallback step. The node passes the
+//! shortest silence limit of the ports, it runs one fallback step. A newest-only port
+//! steps on the newest of its due samples and passes the older ones
+//! ([`TriggerSchedule::newest_only`]). The node passes the
 //! clocks and the pending stamps of each port here as plain values. A port is named by
 //! its position in the cycle's trigger list, which is in binding order.
 
@@ -27,6 +29,14 @@ pub enum TriggerEvent {
         time: i64,
         /// The ports whose own silence limit has passed at `time`.
         due: TriggerPorts,
+    },
+    /// The oldest pending sample of newest-only `port` runs no step: a newer sample of the
+    /// port is due with it ([`TriggerSchedule::newest_only`]).
+    Superseded {
+        /// The sample's send stamp: on the wall clock on host time, else framework time.
+        stamp: i64,
+        /// The port of the sample.
+        port: usize,
     },
     /// Host time: the oldest pending sample of `port` runs no step. It is older than the
     /// port's silence limit, or stamped before the port's last step.
@@ -103,6 +113,8 @@ struct Port {
     /// The time of the port's last trigger step, before it was raised to keep step
     /// times ascending.
     last_step: Option<i64>,
+    /// Whether the port steps on the newest of its due samples only.
+    newest: bool,
 }
 
 impl Port {
@@ -148,12 +160,33 @@ impl TriggerSchedule {
         let positive = silences.iter().all(|silence| *silence > 0);
         let shortest = silences.iter().copied().min().filter(|_| counted && positive)?;
         Some(Self {
-            ports: silences.iter().map(|&silence| Port { silence, last_step: None }).collect(),
+            ports: silences
+                .iter()
+                .map(|&silence| Port { silence, last_step: None, newest: false })
+                .collect(),
             shortest,
             first: None,
             ran: None,
             capped: false,
         })
+    }
+
+    /// This schedule with `ports` newest-only: a sample of such a port that a newer sample
+    /// of the port is due with runs no step, and is [`TriggerEvent::Superseded`]; the
+    /// newest steps. This is ROS's subscriber queue of one, decided by the reader alone.
+    ///
+    /// Due means: on host time, pending in this admission, so a backlog that a slow step
+    /// left behind steps once, on its newest sample. Under simulated time a step at `T`
+    /// sees the samples stamped up to `T`, and a later stamp is its own step, so only a
+    /// sample of the same stamp passes the older one; the upstream hold has then brought
+    /// every sample stamped `T`, so which sample steps depends on the recording alone, not
+    /// on when the node got its turn. A port past [`TriggerPorts::CAPACITY`] is not one.
+    #[must_use]
+    pub fn newest_only(mut self, ports: TriggerPorts) -> Self {
+        for (index, port) in self.ports.iter_mut().enumerate() {
+            port.newest = ports.contains(index);
+        }
+        self
     }
 
     /// The shortest silence limit of the ports, in nanoseconds: the fallback interval.
@@ -206,18 +239,23 @@ impl TriggerSchedule {
             let fallback = anchor.checked_add(self.shortest).ok_or(HoldError::Overflow)?;
             let head = merge
                 .peek()
-                .map(|(stamp, port)| trigger_time(stamp, clock).map(|time| (time, port)))
+                .map(|(stamp, port)| trigger_time(stamp, clock).map(|time| (time, stamp, port)))
                 .transpose()?;
             match head {
-                Some((time, port)) if time <= fallback => {
+                Some((time, stamp, port)) if time <= fallback => {
                     if !clock.admits(time) {
                         break;
                     }
                     merge.advance(port);
-                    out.push(self.run_trigger(time, port)?);
+                    let event = if self.superseded(&merge, stamp, port, clock)? {
+                        TriggerEvent::Superseded { stamp, port }
+                    } else {
+                        self.run_trigger(time, port)?
+                    };
+                    out.push(event);
                 }
                 _ => {
-                    let head = head.map(|(time, _)| time);
+                    let head = head.map(|(time, _, _)| time);
                     let Some(time) = self.fallback_time(fallback, anchor, head, clock)? else {
                         break;
                     };
@@ -239,6 +277,25 @@ impl TriggerSchedule {
             before = Some(stamp);
         }
         None
+    }
+
+    /// Whether the sample stamped `stamp` of `port`, just passed in `merge`, is superseded:
+    /// the port is newest-only and its next pending sample is due with it, on host time
+    /// any, under simulated time one of the same stamp.
+    fn superseded(
+        &self,
+        merge: &Merge<'_>,
+        stamp: i64,
+        port: usize,
+        clock: TriggerClock<'_>,
+    ) -> Result<bool, HoldError> {
+        if !self.ports.get(port).ok_or(HoldError::Ports)?.newest {
+            return Ok(false);
+        }
+        Ok(merge.next_of(port).is_some_and(|next| match clock {
+            TriggerClock::Host { .. } => true,
+            TriggerClock::Sim { .. } => next == stamp,
+        }))
     }
 
     /// Host time: consume the late samples at the head of the merge.
@@ -351,6 +408,12 @@ impl<'a> Merge<'a> {
             .enumerate()
             .filter_map(|(port, (stamps, &next))| stamps.get(next).map(|&stamp| (stamp, port)))
             .min()
+    }
+
+    /// The next stamp of `port`.
+    fn next_of(&self, port: usize) -> Option<i64> {
+        let next = *self.next.get(port)?;
+        self.pending.get(port)?.get(next).copied()
     }
 
     /// Pass the next stamp of `port`.

@@ -152,6 +152,12 @@ impl CallbackDispatcher<'_> {
             let (time, trigger) = match event {
                 TriggerEvent::Trigger { time, port } => (time, TriggerStep::Sample { port }),
                 TriggerEvent::Fallback { time, due } => (time, TriggerStep::Fallback { due }),
+                TriggerEvent::Superseded { port, .. } => {
+                    // A newer sample of a newest-only port is due with it: consumed and
+                    // counted as a work-limit drop of that port, with no step.
+                    cycle.step_mut()?.runtime.supersede_trigger(port).map_err(Error::from_code)?;
+                    continue;
+                }
                 TriggerEvent::Late { port, .. } => {
                     // Older than its port's limit, or stamped before its port's last step:
                     // consumed and counted as an age rejection of that port, with no step.

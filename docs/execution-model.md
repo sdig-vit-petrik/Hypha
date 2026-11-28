@@ -470,7 +470,10 @@ input takes none. Without a budget, no cycle-wide limit applies.
 
 A queued input has one overflow behaviour, and no option selects another: the
 pending samples beyond its share are the oldest, so it discards them, examines
-the newest, and counts each discard. In a triggered cycle the triggers keep their
+the newest, and counts each discard. A queued input bound newest only (`newestOnly`, C
+ABI `HYPHA_CYCLE_INPUT_MODE_NEWEST`) has a share of one: it examines its newest pending
+sample and discards the older ones the same way, while its queue keeps the depth of its
+`perStep()`. In a triggered cycle the triggers keep their
 pending samples for later steps, and on host time a queued input that is no trigger
 keeps the samples sent after the step's trigger sample: they are not pending for
 that step and no share discards them (section 6.6).
@@ -479,7 +482,8 @@ Each cause of loss has its own counter:
 
 1. History overwrite: the history dropped a sample before the input read it.
 2. Age rejection: the input read the sample, and the age rule refused it.
-3. Overflow discard: the input discarded an old sample beyond its share on purpose.
+3. Overflow discard: the input discarded an old sample beyond its share on purpose, or a
+   newest-only trigger passed a sample for a newer one (section 6.6 item 7).
 
 The transport's cumulative missing-sequence count is read atomically, so health
 queries do not take the source-history or sequence-validator locks.
@@ -585,6 +589,26 @@ the trigger that has no limit.
    triggered cycles has no delay element: it holds for good, until the player's
    `--timeout` ends it with an error that names the loop's nodes, or a stop does. A loop needs a delay element, a rate cycle or a clock driver, as an
    algebraic loop does in any block-diagram tool.
+7. **Newest only.** A trigger bound newest only (`newestOnly`, C ABI
+   `HYPHA_CYCLE_INPUT_MODE_NEWEST`) steps on the newest of its samples that are due
+   together and passes the older ones; ROS's subscriber with `queue_size` 1. Each passed
+   sample is consumed with no step and counted as an overflow discard of its port
+   (section 6.5): `work_limit_drops` in the report of the port's next step, the cumulative
+   `work_limit_drops_total`, and, for a required input, the `dropped` of its `~/state`
+   row. The rule is the reader's: the transport queue keeps its depth, nothing is lost on
+   the wire, and neither the publishers nor the topic's policy change. What is due together depends on the clock.
+   In host time it is every sample of the port pending when the node gets its turn, so a
+   step slower than its topic steps next on the newest sample of what arrived meanwhile,
+   not on a backlog. The merge of item 1 stays: a sample of another trigger stamped
+   between a passed sample and the newest still steps, before the newest. A sample older
+   than its limit is late (item 3), not passed. Under simulated time a step at T sees the
+   samples stamped at or before T, and the step at an earlier stamp runs first, so a sample
+   is passed only by a later sample of the same stamp T, as one step of an upstream sends
+   them. By item 5 every upstream has reported T before the step runs, so all samples
+   stamped T are there: which sample steps follows from the recording, not from when the
+   node drained its inputs. A publisher that reports no progress is not waited for (item
+   5), and a second sample of its stamp T that arrives after the step at T steps on its
+   own. Two publishers on one topic keep the limit of section 11.1 (#262).
 
 ### 6.7 The TF input
 

@@ -5,6 +5,7 @@
 ///
 ///     Latest<Status>  status{*this, "status", optionalTopic};
 ///     Arrivals<Imu>   imu{*this, "imu", perStep(64), advisory(!imuRequired)};
+///     Arrivals<Twist> cmd{*this, "cmd", newestOnly};
 ///     Output<TF>      tf{*this, "tf_static", latched};
 ///     Output<Scan>    scan{*this, "scan", my::policies::lidar, maxPayloadDynamic(1 << 20)};
 ///
@@ -105,6 +106,22 @@ struct PerStep
     uint32_t count;
 };
 
+/// @brief Arrivals only: ROS's `queue_size` 1. A step examines only the newest pending
+///        sample; the older ones are dropped and counted as work-limit drops. A trigger steps
+///        once on the newest of the samples due together, on host time every sample pending
+///        when the node gets its turn, under simulated time the samples of one stamp, so a
+///        replay steps the same on every run. The queue stays perStep() deep, nothing is lost
+///        in transport, and the topic's policy is not changed (execution-model.md §6.6).
+struct NewestOnly
+{
+    bool on = true;
+
+    constexpr NewestOnly operator()(bool value) const
+    {
+        return {value};
+    }
+};
+
 /// @brief The largest message of an output or publisher, in serialized bytes, for a
 ///        type whose size varies. A larger one is not sent (TooLarge). Zero is growable.
 struct MaxPayloadDynamic
@@ -125,6 +142,7 @@ inline constexpr Unsupervised  unsupervised{};
 inline constexpr HostClock     hostClock{};
 inline constexpr Latched       latched{};
 inline constexpr Diagnostic    diagnostic{};
+inline constexpr NewestOnly    newestOnly{};
 
 constexpr PerStep perStep(uint32_t count)
 {
@@ -177,7 +195,7 @@ concept LatestOption =
 /// @brief The tags an Arrivals input takes.
 template <typename T>
 concept ArrivalsOption =
-    detail::OneOf<T, OptionalTopic, Advisory, Unsupervised, LimitMax, PerStep, Qos>;
+    detail::OneOf<T, OptionalTopic, Advisory, Unsupervised, LimitMax, PerStep, NewestOnly, Qos>;
 
 /// @brief The tags an Output takes.
 template <typename T>
@@ -201,6 +219,7 @@ struct InputSettings
     bool                    countsForHealth{true};
     bool                    unsupervised{false};
     bool                    hostClock{false};
+    bool                    newestOnly{false};
     std::optional<uint32_t> perStep{};
     Duration                limitMax{Duration::fromSeconds(3600)};
     std::optional<Qos>      qos{};
@@ -228,6 +247,11 @@ struct InputSettings
     void apply(HostClock tag)
     {
         this->hostClock = tag.on;
+    }
+
+    void apply(NewestOnly tag)
+    {
+        this->newestOnly = tag.on;
     }
 
     void apply(PerStep tag)

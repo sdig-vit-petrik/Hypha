@@ -95,6 +95,8 @@ pub(crate) enum Request {
     Triggered {
         cycle: CycleId,
         silences_nanos: Vec<i64>,
+        /// The trigger ports that step on their newest due sample only.
+        newest: hypha_cycle::TriggerPorts,
         /// Whether every trigger topic has a listener that wakes the `WaitSet`.
         notified: bool,
     },
@@ -309,9 +311,10 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
             let run_anchored = sim_time && (cycle.is_some() || hypha_time::sim_time_has_value());
             Ok((id, Target::Timer { timer, callback, cycle, run_anchored, control }))
         }
-        Request::Triggered { cycle, silences_nanos, notified } => {
+        Request::Triggered { cycle, silences_nanos, newest, notified } => {
             let schedule = hypha_runtime::trigger_schedule::TriggerSchedule::new(&silences_nanos)
-                .ok_or(Error::InvalidArgument)?;
+                .ok_or(Error::InvalidArgument)?
+                .newest_only(newest);
             let wake = triggered_wake(set, schedule.shortest(), notified);
             let id = set.native_attach(Vec::new(), wake)?;
             let state = super::triggered::TriggeredCycle::new(cycle, schedule);
@@ -364,10 +367,12 @@ pub(crate) fn attach_triggered_cycle(
     set: &HyphaWaitSet,
     cycle: &Cycle,
     silences_nanos: Vec<i64>,
+    newest: hypha_cycle::TriggerPorts,
     listeners: Vec<Vec<hypha_iceoryx2::Iox2Listener>>,
 ) -> Result<(HyphaAttachmentId, Vec<HyphaAttachmentId>), Error> {
     let notified = listeners.iter().all(|trigger| !trigger.is_empty());
-    let wake = attach(set, Request::Triggered { cycle: cycle.id, silences_nanos, notified })?;
+    let request = Request::Triggered { cycle: cycle.id, silences_nanos, newest, notified };
+    let wake = attach(set, request)?;
     let mut attached = Vec::with_capacity(listeners.len());
     for listener in listeners.into_iter().flatten() {
         match attach(set, Request::TriggerWake { listener: Box::new(listener) }) {

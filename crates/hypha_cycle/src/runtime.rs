@@ -634,6 +634,22 @@ impl CycleRuntime {
         if capture.refuse_pending(&history) { Ok(()) } else { Err(STATUS_INVALID_ARGUMENT) }
     }
 
+    /// Consume the oldest pending sample of trigger port `port` without a step: a newer
+    /// sample of the port supersedes it. It counts as a work-limit drop of that port.
+    ///
+    /// # Errors
+    ///
+    /// Returns `STATUS_INVALID_ARGUMENT` without such a port or a pending sample.
+    pub fn supersede_trigger(&mut self, port: usize) -> Result<(), i32> {
+        let index = *self.triggers.get(port).ok_or(STATUS_INVALID_ARGUMENT)?;
+        let history = self.bindings.get(index).and_then(|slot| slot.history.as_ref());
+        let (Some(history), Some(capture)) = (history, self.captures.get_mut(index)) else {
+            return Err(STATUS_INVALID_ARGUMENT);
+        };
+        let history = crate::locked(history);
+        if capture.supersede_pending(&history) { Ok(()) } else { Err(STATUS_INVALID_ARGUMENT) }
+    }
+
     /// Report the alive counter of a binding's newest accepted sample.
     /// Ignored when the index is unknown or the binding is not supervised.
     pub fn apply_alive(&mut self, index: usize, value: u64) {

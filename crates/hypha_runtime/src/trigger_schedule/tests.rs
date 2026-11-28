@@ -40,6 +40,10 @@ fn late(stamp: i64, port: usize) -> TriggerEvent {
     TriggerEvent::Late { stamp, port }
 }
 
+fn superseded(stamp: i64, port: usize) -> TriggerEvent {
+    TriggerEvent::Superseded { stamp, port }
+}
+
 fn fallback(time: i64, due: &[usize]) -> TriggerEvent {
     TriggerEvent::Fallback { time, due: ports(due) }
 }
@@ -467,6 +471,67 @@ fn frontier_stays_below_a_held_tie() {
     assert_eq!(s.frontier(&tie, &held), Some(100));
 }
 
+#[test]
+fn host_a_port_steps_once_per_pending_sample() {
+    let mut s = one(1_000);
+    let expected = vec![trigger(10, 0), trigger(20, 0), trigger(30, 0)];
+    assert_eq!(run(&mut s, &[10, 20, 30], host(100)), expected);
+}
+
+#[test]
+fn host_a_newest_only_port_steps_once_on_its_newest_pending_sample() {
+    let mut s = one(1_000).newest_only(ports(&[0]));
+    let expected = vec![superseded(10, 0), superseded(20, 0), trigger(30, 0)];
+    assert_eq!(run(&mut s, &[10, 20, 30], host(100)), expected);
+    // One pending sample is the newest: it steps.
+    assert_eq!(run(&mut s, &[40], host(100)), vec![trigger(40, 0)]);
+}
+
+#[test]
+fn host_another_port_steps_between_the_samples_a_newest_only_port_passes() {
+    let mut s = TriggerSchedule::new(&[1_000, 1_000]).unwrap().newest_only(ports(&[0]));
+    let expected = vec![superseded(10, 0), trigger(20, 1), trigger(30, 1), trigger(40, 0)];
+    assert_eq!(run_ports(&mut s, &[vec![10, 40], vec![20, 30]], host(100)), expected);
+}
+
+#[test]
+fn host_a_late_sample_of_a_newest_only_port_is_late_not_superseded() {
+    let mut s = one(S).newest_only(ports(&[0]));
+    // 10 is 190 ns old, past the limit of 100; 150 and 160 are within it.
+    let expected = vec![late(10, 0), superseded(150, 0), trigger(160, 0)];
+    assert_eq!(run(&mut s, &[10, 150, 160], host(200)), expected);
+}
+
+#[test]
+fn sim_a_newest_only_port_passes_only_a_sample_of_its_own_stamp() {
+    // Under simulated time a step at T sees the samples stamped up to T: a later stamp is
+    // its own step, so only a second sample stamped T supersedes the first.
+    let mut s = one(1_000).newest_only(ports(&[0]));
+    let expected = vec![superseded(10, 0), trigger(10, 0), trigger(20, 0), trigger(30, 0)];
+    assert_eq!(run(&mut s, &[10, 10, 20, 30], sim(100)), expected);
+}
+
+#[test]
+fn sim_a_newest_only_port_steps_the_same_whether_its_samples_came_in_one_turn_or_two() {
+    let mut one_turn = one(1_000).newest_only(ports(&[0]));
+    let together = run(&mut one_turn, &[10, 20], sim(100));
+    let mut two_turns = one(1_000).newest_only(ports(&[0]));
+    let mut apart = run(&mut two_turns, &[10], sim(15));
+    apart.extend(run(&mut two_turns, &[20], sim(100)));
+    assert_eq!(together, vec![trigger(10, 0), trigger(20, 0)]);
+    assert_eq!(apart, together);
+}
+
+#[test]
+fn sim_a_held_step_waits_for_every_sample_of_its_stamp() {
+    let mut s = one(1_000).newest_only(ports(&[0]));
+    // The upstream reported 9: a second sample stamped 10 may still come.
+    assert_eq!(run(&mut s, &[10], TriggerClock::Sim { now: 100, limit: &reported(9) }), vec![]);
+    let expected = vec![superseded(10, 0), trigger(10, 0)];
+    let limit = reported(10);
+    assert_eq!(run(&mut s, &[10, 10], TriggerClock::Sim { now: 100, limit: &limit }), expected);
+}
+
 /// Simulated time: the events do not depend on how the arrivals, the upstream reports
 /// and the clock are split into turns, as long as each upstream reports a clock only
 /// after it sent every sample stamped at or before it.
@@ -505,10 +570,10 @@ mod causal_interleaving {
 
     impl<'a> Node<'a> {
         /// A node with nothing arrived, whose first turn is at clock 0.
-        fn new(silences: &[i64], samples: &'a [Vec<i64>]) -> Self {
+        fn new(silences: &[i64], newest: TriggerPorts, samples: &'a [Vec<i64>]) -> Self {
             let mut node = Self {
                 samples,
-                schedule: TriggerSchedule::new(silences).unwrap(),
+                schedule: TriggerSchedule::new(silences).unwrap().newest_only(newest),
                 arrived: vec![0; samples.len()],
                 consumed: vec![0; samples.len()],
                 reports: vec![0; samples.len()],
@@ -563,7 +628,9 @@ mod causal_interleaving {
                 let admitted = self.schedule.admit(&pending, clock, &mut out);
                 assert_eq!(admitted, Ok(TriggerAdmit::Run), "a causal replay is in order");
                 for event in &out {
-                    if let TriggerEvent::Trigger { port, .. } = *event {
+                    if let TriggerEvent::Trigger { port, .. }
+                    | TriggerEvent::Superseded { port, .. } = *event
+                    {
                         self.consumed[port] += 1;
                     }
                 }
@@ -601,10 +668,14 @@ mod causal_interleaving {
         #[test]
         fn any_causal_interleaving_of_arrivals_and_reports_gives_the_same_events(
             (silences, samples) in ports(),
+            newest in any::<u8>(),
             actions in prop::collection::vec(action(), 0..48),
         ) {
-            let reference = Node::new(&silences, &samples).finish();
-            let mut node = Node::new(&silences, &samples);
+            // A random subset of the ports steps on its newest pending sample only.
+            let newest = TriggerPorts::of((0..silences.len()).filter(|port| newest & (1 << port) != 0));
+            let newest = newest.unwrap();
+            let reference = Node::new(&silences, newest, &samples).finish();
+            let mut node = Node::new(&silences, newest, &samples);
             for action in actions {
                 node.apply(action);
             }
