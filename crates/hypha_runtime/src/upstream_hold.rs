@@ -28,6 +28,30 @@ pub struct Limit {
     pub blocking: Option<(String, Option<u64>)>,
 }
 
+impl Limit {
+    /// The lower of two limits; `None` (nothing held) is the higher.
+    #[must_use]
+    pub fn min(self, other: Self) -> Self {
+        match (self.at, other.at) {
+            (Some(a), Some(b)) if b < a => other,
+            (None, Some(_)) => other,
+            _ => self,
+        }
+    }
+
+    /// This limit of a strict edge (a request or a response edge, cut strictly before a
+    /// step's time), as a triggered step reads it: a step at `t` runs when `t < at`, and
+    /// such an edge needs its upstream at `t - 1 ns` only, one more nanosecond than a
+    /// topic edge (execution-model.md §6.6 item 5).
+    #[must_use]
+    pub fn through_strict_edge(self) -> Self {
+        Self {
+            at: self.at.map(|at| if at == i64::MIN { at } else { at.saturating_add(1) }),
+            ..self
+        }
+    }
+}
+
 /// What a replay turn does with its deadlines.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Admit {
@@ -55,9 +79,12 @@ pub enum HoldError {
 pub struct UpstreamHold {
     /// The upstream node names, sorted. Empty means nothing is held.
     names: Vec<String>,
-    /// The publisher node ids the names were resolved for: the inputs', then the
-    /// progress input's.
-    resolved_for: Option<(Vec<u128>, Vec<u128>)>,
+    /// The upstream node names across a request or a response edge, sorted: the clients
+    /// of the cycle's servers and the servers of its clients that report progress.
+    service_names: Vec<String>,
+    /// The node ids the names were resolved for: the inputs' publishers, the service
+    /// peers, then the progress input's publishers.
+    resolved_for: Option<(Vec<u128>, Vec<u128>, Vec<u128>)>,
     backlog: Option<Window>,
     /// The last deadline counted by the newest admission, run or held.
     counted_last: Option<i64>,
@@ -66,8 +93,10 @@ pub struct UpstreamHold {
 }
 
 impl UpstreamHold {
-    /// Resolve the upstream names of the cycle from the publisher node ids of its inputs
-    /// and of `/clock_progress`. The names are those in both sets, without `own_name`.
+    /// Resolve the upstream names of the cycle from the publisher node ids of its inputs,
+    /// the node ids of its service peers (`service_ids`) and the publisher node ids of
+    /// `/clock_progress`. The names of each edge are those that also report progress,
+    /// without `own_name`.
     ///
     /// When the hold is stalled, the names are re-resolved at most once per
     /// [`RESOLVE_WHILE_STALLED`], so a dead node drops out.
@@ -77,6 +106,7 @@ impl UpstreamHold {
     pub fn resolve<E>(
         &mut self,
         input_ids: &[u128],
+        service_ids: &[u128],
         progress_ids: &[u128],
         own_name: &str,
         now: Instant,
@@ -91,33 +121,37 @@ impl UpstreamHold {
                 self.last_forced_resolve = Some(now);
             }
         }
-        let resolved = self
-            .resolved_for
-            .as_ref()
-            .is_some_and(|(inputs, progress)| inputs == input_ids && progress == progress_ids);
+        let resolved = self.resolved_for.as_ref().is_some_and(|(inputs, services, progress)| {
+            inputs == input_ids && services == service_ids && progress == progress_ids
+        });
         if resolved {
             return Ok(());
         }
-        let mut ids: Vec<u128> = input_ids.iter().chain(progress_ids).copied().collect();
+        let mut ids: Vec<u128> =
+            input_ids.iter().chain(service_ids).chain(progress_ids).copied().collect();
         ids.sort_unstable();
         ids.dedup();
         let names = names_of(&ids)?;
-        let inputs_named: BTreeSet<String> =
-            input_ids.iter().filter_map(|id| names.get(id).cloned()).collect();
-        let reporters_named: BTreeSet<String> =
-            progress_ids.iter().filter_map(|id| names.get(id).cloned()).collect();
-        self.names = inputs_named
-            .intersection(&reporters_named)
-            .filter(|name| name.as_str() != own_name)
-            .cloned()
-            .collect();
-        self.resolved_for = Some((input_ids.to_vec(), progress_ids.to_vec()));
+        let names_in = |ids: &[u128]| -> BTreeSet<String> {
+            ids.iter().filter_map(|id| names.get(id).cloned()).collect()
+        };
+        let reporters_named = names_in(progress_ids);
+        let upstream = |edge: &BTreeSet<String>| -> Vec<String> {
+            edge.intersection(&reporters_named)
+                .filter(|name| name.as_str() != own_name)
+                .cloned()
+                .collect()
+        };
+        self.names = upstream(&names_in(input_ids));
+        self.service_names = upstream(&names_in(service_ids));
+        self.resolved_for = Some((input_ids.to_vec(), service_ids.to_vec(), progress_ids.to_vec()));
         Ok(())
     }
 
     /// Forget the resolved names, after the progress input is gone.
     pub fn clear_resolution(&mut self) {
         self.names.clear();
+        self.service_names.clear();
         self.resolved_for = None;
         self.last_forced_resolve = None;
     }
@@ -135,10 +169,19 @@ impl UpstreamHold {
         }
     }
 
-    /// The limit that the upstream names give now.
+    /// The limit that the upstream names of the topic edges give now.
     #[must_use]
     pub fn limit(&self, clocks: impl Fn(&str) -> (Option<u64>, Option<u64>)) -> Limit {
         limit_over(&self.names, clocks)
+    }
+
+    /// The limit that the upstream names of the request and response edges give now, as
+    /// [`Self::limit`] gives it: deadlines up to one past the lowest clock. Both edges are
+    /// cut strictly before a step's time, so a triggered step at `t` needs these
+    /// upstreams at `t - 1 ns` only ([`Limit::through_strict_edge`]).
+    #[must_use]
+    pub fn service_limit(&self, clocks: impl Fn(&str) -> (Option<u64>, Option<u64>)) -> Limit {
+        limit_over(&self.service_names, clocks)
     }
 
     /// Merge `new` with the held deadlines, run what `limit` allows, and hold the rest.
@@ -393,7 +436,8 @@ mod tests {
             (3_u128, "reader_only".to_owned()),
         ]);
         let mut hold = UpstreamHold::default();
-        hold.resolve(&[1, 2, 3], &[1, 2], "me", Instant::now(), |_| Ok::<_, ()>(names)).unwrap();
+        hold.resolve(&[1, 2, 3], &[], &[1, 2], "me", Instant::now(), |_| Ok::<_, ()>(names))
+            .unwrap();
         let limit = hold.limit(|name| {
             assert_eq!(name, "up");
             (Some(50), Some(50))
@@ -402,9 +446,40 @@ mod tests {
     }
 
     #[test]
+    fn a_service_peer_is_an_upstream_of_its_own_edge_which_a_triggered_step_needs_at_t_minus_1() {
+        let names = BTreeMap::from([
+            (1_u128, "topic_up".to_owned()),
+            (2_u128, "server".to_owned()),
+            (3_u128, "tool".to_owned()),
+        ]);
+        let mut hold = UpstreamHold::default();
+        // The tool calls too, but reports no progress: it is no upstream.
+        let resolved =
+            hold.resolve(&[1], &[2, 3], &[1, 2], "me", Instant::now(), |_| Ok::<_, ()>(names));
+        resolved.unwrap();
+        assert_eq!(hold.names, vec!["topic_up".to_owned()]);
+        assert_eq!(hold.service_names, vec!["server".to_owned()]);
+        let clocks = |name: &str| match name {
+            "topic_up" => (Some(500), Some(500)),
+            _ => (Some(300), Some(300)),
+        };
+        assert_eq!(hold.limit(clocks).at, Some(501));
+        let service = hold.service_limit(clocks);
+        assert_eq!(service.at, Some(301), "a deadline at 301 needs the server at 300");
+        // A triggered step at t runs when t < at: through a strict edge it may run at 301
+        // with the server at 300, the request and the response being cut before 301.
+        assert_eq!(service.clone().through_strict_edge().at, Some(302));
+        let holds_all = Limit { at: Some(i64::MIN), blocking: None };
+        assert_eq!(holds_all.clone().through_strict_edge().at, Some(i64::MIN));
+        assert_eq!(hold.limit(clocks).min(service.clone()).at, Some(301));
+        assert_eq!(Limit { at: None, blocking: None }.min(service).at, Some(301));
+        assert_eq!(holds_all.min(Limit { at: None, blocking: None }).at, Some(i64::MIN));
+    }
+
+    #[test]
     fn a_failed_resolution_leaves_the_hold_busy_and_unresolved() {
         let mut hold = UpstreamHold::default();
-        let failed = hold.resolve(&[1], &[1], "me", Instant::now(), |_| Err("refused"));
+        let failed = hold.resolve(&[1], &[], &[1], "me", Instant::now(), |_| Err("refused"));
         assert_eq!(failed, Err("refused"));
         let busy = hold.limit_while_busy(|_| (None, None));
         assert_eq!(
@@ -430,7 +505,7 @@ mod tests {
         let mut hold = UpstreamHold::default();
         let calls = std::cell::Cell::new(0);
         let resolve = |hold: &mut UpstreamHold, now: Instant, dead: bool| {
-            hold.resolve(&[1], &[1], "me", now, |_| {
+            hold.resolve(&[1], &[], &[1], "me", now, |_| {
                 calls.set(calls.get() + 1);
                 Ok::<_, ()>(if dead {
                     BTreeMap::new()

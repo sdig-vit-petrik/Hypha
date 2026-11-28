@@ -2,8 +2,8 @@
 //! node's ports tables (`docs/design/native-services.md` §8.6).
 //!
 //! A declaration names a port or a literal service. A port's table is
-//! `[ports.servers.<port>]` or `[ports.clients.<port>]`, with `service` (required) and, for
-//! a client, `timeout_ms` and `outstanding`. A missing table is refused with the stanza to
+//! `[ports.servers.<port>]` or `[ports.clients.<port>]`, with `service` (required), for a
+//! server `per_step`, and for a client `timeout_ms` and `outstanding`. A missing table is refused with the stanza to
 //! paste, so the application exits 78.
 
 use std::time::Duration;
@@ -72,6 +72,8 @@ pub(crate) struct Resolved {
     /// Where the timeout came from, as `describe()` names it: `policy defaultService`.
     pub(crate) timeout_source: String,
     pub(crate) outstanding: Option<usize>,
+    /// A server's `per_step`: the requests one cycle step takes.
+    pub(crate) per_step: Option<usize>,
 }
 
 /// Resolve `decl` for `role` on `node`: the name from the port table or the literal, `~/`
@@ -93,6 +95,7 @@ pub(crate) fn resolve(
         format!("policy {}", policy.name)
     };
     let mut outstanding = None;
+    let mut per_step = None;
     let written = if decl.literal {
         decl.name.to_owned()
     } else {
@@ -105,6 +108,10 @@ pub(crate) fn resolve(
             }
             outstanding = table
                 .positive("outstanding")?
+                .map(|count| usize::try_from(count).unwrap_or(usize::MAX));
+        } else {
+            per_step = table
+                .positive("per_step")?
                 .map(|count| usize::try_from(count).unwrap_or(usize::MAX));
         }
         written
@@ -119,7 +126,7 @@ pub(crate) fn resolve(
         .with_policy(policy)
         .with_definitions(decl.request_definition, decl.response_definition);
     spec.validate().map_err(|cause| refuse_spec(&name, &cause))?;
-    Ok(Resolved { spec, timeout, timeout_source, outstanding })
+    Ok(Resolved { spec, timeout, timeout_source, outstanding, per_step })
 }
 
 /// The error a refused spec or creation stands for, logged with its message.

@@ -145,11 +145,18 @@ impl CallbackDispatcher<'_> {
         super::dispatch::fail_with(&mut self.failure, attachment, status)
     }
 
-    /// Resolve the upstream names of `cycle`, and return the limit they give now.
+    /// Resolve the upstream names of `cycle`, and return the limit they give now: of its
+    /// topic edges, of its request and response edges (a deadline `D` needs those
+    /// upstreams at `D - 1 ns`, as a topic's), and of its service peers in this `WaitSet`.
     fn upstream_limit(&mut self, attachment: AttachmentId, cycle: &Cycle) -> Result<Limit, Error> {
+        let local = self.local_service_limit(attachment, cycle)?;
         let node = self.node;
         let upstream = upstream_of(self.registrations, attachment)?;
-        upstream.settle(&cycle.step_ref()?.inputs, node)
+        let step = cycle.step_ref()?;
+        let limits = upstream.settle(&step.inputs, &step.services, node)?;
+        drop(step);
+        cycle.step_mut()?.services.set_reporters(limits.reporters);
+        Ok(limits.topic.min(limits.service).min(local))
     }
 
     /// Run one replay step at `deadline`, with the inputs cut at that deadline.
@@ -166,6 +173,7 @@ impl CallbackDispatcher<'_> {
             return self.fail(attachment, HyphaStatus::from(status));
         }
         let result = invoke_cycle(self.health, cycle, self.set, 0);
+        self.steps_run = self.steps_run.wrapping_add(1);
         // Clearing it here keeps a step that never ran from leaking its cut.
         if let Ok(mut step) = cycle.step_mut() {
             step.input_cut = None;

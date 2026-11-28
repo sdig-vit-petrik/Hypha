@@ -47,6 +47,11 @@ pub(super) struct CallbackDispatcher<'a> {
     /// Counts every callback answer, over every run of every `WaitSet` on the node.
     pub(super) health: &'a ExecutionHealth,
     pub(super) due: Vec<Due>,
+    /// The index in `due` of the item that runs now.
+    pub(super) due_index: usize,
+    /// The replay and triggered steps this run ran; a repeat of the timers that adds none
+    /// ends the repeats (`service_edges`).
+    pub(super) steps_run: u64,
     /// Registrations a callback detached during this run: never dispatched again.
     pub(super) detached: &'a std::cell::RefCell<Vec<AttachmentId>>,
 }
@@ -136,11 +141,20 @@ impl CallbackDispatcher<'_> {
     /// The due time is measured against the node's clock, so a timer follows
     /// simulation pause and jump. The native interval only supplies wake-ups.
     fn fire_due_timers(&mut self, now: hypha_time::Time) -> Progression {
+        self.fire_due(now, false)
+    }
+
+    /// Fire what is due, as [`Self::fire_due_timers`]; with `services_only`, only the replay
+    /// and triggered cycles that have a server or a client, for a repeat of the turn.
+    pub(super) fn fire_due(&mut self, now: hypha_time::Time, services_only: bool) -> Progression {
         self.due.clear();
         let (cycles, node) = (self.cycles, self.node);
         // A registration a callback detached is not observed: it neither fires nor fails.
         let live = self.registrations.iter_mut().filter(|r| !is_detached_in(self.detached, r.id));
         for registration in live {
+            if services_only && !super::service_edges::has_services(cycles, registration) {
+                continue;
+            }
             let due = match self_scheduled(registration) {
                 Some(item) => Ok(Some(item)),
                 None => timer_due(cycles, node, registration.id, &mut registration.target, now),
@@ -160,6 +174,7 @@ impl CallbackDispatcher<'_> {
             let Some(&item) = self.due.get(index) else {
                 break;
             };
+            self.due_index = index;
             // A callback earlier in this turn may have detached the registration.
             if self.is_detached(item.attachment()) {
                 continue;
@@ -278,11 +293,14 @@ fn invalid(status: Error) -> HyphaCallbackResult {
 
 /// What a slow-callback line calls the registration: a topic, a timer by its period or a
 /// cycle by its name, as the user knows them.
+#[derive(Clone, Copy)]
 pub(super) enum Subject<'a> {
     Topic(&'a str),
     /// A timer, by its period in nanoseconds.
     Timer(i64),
     Cycle(&'a str),
+    /// A server or a client, by its service name.
+    Service(&'a str),
 }
 
 impl std::fmt::Display for Subject<'_> {
@@ -294,6 +312,7 @@ impl std::fmt::Display for Subject<'_> {
                 write!(out, "timer {} ms", hypha_core::dispatch::millis_text(period))
             }
             Self::Cycle(name) => write!(out, "cycle '{name}'"),
+            Self::Service(name) => write!(out, "service '{name}'"),
         }
     }
 }
@@ -465,6 +484,12 @@ impl Dispatcher for CallbackDispatcher<'_> {
         if decision != Progression::Continue {
             return decision;
         }
+        if self.node.on_sim_time() {
+            let decision = self.repeat_for_local_edges(now);
+            if decision != Progression::Continue {
+                return decision;
+            }
+        }
         let decision = self.drive_services();
         if decision != Progression::Continue {
             return decision;
@@ -562,17 +587,5 @@ pub(crate) fn status_from_code(code: i32) -> HyphaStatus {
 }
 
 #[cfg(test)]
-mod slow_callback_subject_tests {
-    use super::Subject;
-
-    #[test]
-    fn a_slow_callback_is_named_by_its_topic_its_timer_period_or_its_cycle() {
-        assert_eq!(
-            Subject::Topic("/sensing/lidar/points").to_string(),
-            "topic '/sensing/lidar/points'"
-        );
-        assert_eq!(Subject::Timer(100_000_000).to_string(), "timer 100 ms");
-        assert_eq!(Subject::Timer(2_500_000).to_string(), "timer 2.5 ms");
-        assert_eq!(Subject::Cycle("ekf").to_string(), "cycle 'ekf'");
-    }
-}
+#[path = "dispatch/subject_tests.rs"]
+mod slow_callback_subject_tests;

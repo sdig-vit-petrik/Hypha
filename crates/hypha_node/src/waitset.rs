@@ -29,6 +29,7 @@ pub mod run;
 pub use run::{waitset_request_stop, waitset_run};
 mod claim;
 pub use claim::WaitSetClaim;
+mod service_edges;
 mod services;
 pub(crate) use services::{ServiceTarget, attach_service, detach_service};
 pub mod timer_control;
@@ -338,6 +339,13 @@ pub struct HyphaCallbackResult {
 }
 
 impl HyphaCallbackResult {
+    /// Whether a step that returned this sends its outputs: it continues with status 0. A
+    /// step that failed, stopped, or continued with a status sends none (FSR-38).
+    #[must_use]
+    pub const fn sends_outputs(&self) -> bool {
+        self.action == HYPHA_ACTION_CONTINUE && self.status == 0
+    }
+
     /// Go on with the run. A function, not an associated constant, so that cbindgen
     /// leaves the header alone.
     #[must_use]

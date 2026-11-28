@@ -17,7 +17,8 @@ pub use crate::cycle::{
     cycle_bind_input, cycle_bind_input_supervision, cycle_bind_output, cycle_bind_transforms,
     cycle_binding, cycle_commit, cycle_create, cycle_destroy, cycle_expect_participant,
     cycle_health, cycle_set_class_based, cycle_set_clock_driver, cycle_set_host_clock,
-    cycle_set_trigger, cycle_tick, emission_commit, emission_reserve, image_alive, image_binding,
+    cycle_set_trigger, cycle_tick, emission_call, emission_commit, emission_next_result,
+    emission_requests, emission_reserve, emission_unread_results, image_alive, image_binding,
     image_held, image_lookup_transform, image_reject_sample, image_sample, image_set_ignored,
     input_source_create, input_source_destroy,
 };
@@ -45,10 +46,10 @@ pub use crate::schema::{schema_lookup, schema_resolve_hash, schema_resolve_hash_
 pub use crate::service::{
     Answer, CallDone, CallOutcome, CallResult, CallStatus, ClientStatus, HyphaClient, HyphaRequest,
     HyphaServer, ListedService, MAX_LOGGED_BYTES, RequestView, ServeHandler, ServiceDecl,
-    ServiceDefinitions, call_log_topic, client_call, client_status, client_wait_for_server,
-    list_services, log_pool_bytes, record_bound, request_answer, request_defer,
-    service_client_create, service_client_destroy, service_definitions, service_serve,
-    service_server_destroy,
+    ServiceDefinitions, StepRequest, call_log_topic, client_call, client_status,
+    client_wait_for_server, cycle_bind_client, cycle_bind_server, list_services, log_pool_bytes,
+    record_bound, request_answer, request_defer, service_client_create, service_client_destroy,
+    service_definitions, service_serve, service_server_destroy,
 };
 pub use crate::status::Error;
 pub use crate::subscriber::{

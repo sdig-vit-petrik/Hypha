@@ -8,12 +8,13 @@
 
 use std::sync::Arc;
 
-use super::dispatch::{CallbackDispatcher, is_detached_in, timed};
+use super::dispatch::{CallbackDispatcher, Subject, is_detached_in, timed};
 use super::registrations::{Request, attach};
 use super::{AttachmentId, EventOutcome, HyphaCallbackResult, Progression, Registration, Target};
 use crate::node::HyphaNode;
 use crate::service::{ClientCore, ServeHandler, ServerCore};
 use crate::status::Error;
+use hypha_core::dispatch::{CallbackBudget, callback_budget};
 
 /// What a service registration drives.
 pub(crate) enum ServiceTarget {
@@ -56,11 +57,11 @@ impl CallbackDispatcher<'_> {
     /// Serve the requests of a server, or collect the outcomes of a client, that `attachment`
     /// woke. `None` when `attachment` is no service registration.
     pub(super) fn on_service_event(&mut self, attachment: AttachmentId) -> Option<EventOutcome> {
-        let (warn_nanos, warn_interval, batch) =
-            (self.warn_nanos, self.warn_interval_nanos, self.batch_size);
+        let budget = callback_budget(self.node.slow_callback_ms, None);
+        let (warn_interval, batch) = (self.warn_interval_nanos, self.batch_size);
         let registration =
             self.registrations.iter_mut().find(|registration| registration.id == attachment)?;
-        let Registration { id, ref mut target, ref mut warnings, .. } = *registration;
+        let Registration { ref mut target, ref mut warnings, .. } = *registration;
         let Target::Service(service) = target else {
             return None;
         };
@@ -68,7 +69,9 @@ impl CallbackDispatcher<'_> {
             ServiceTarget::Server { core, handler } => {
                 core.drop_abandoned();
                 let mut more = false;
-                let (result, was_slow) = timed(warnings, id, warn_nanos, warn_interval, || {
+                let name = core.name().to_owned();
+                let subject = Subject::Service(&name);
+                let (result, was_slow) = timed(warnings, subject, budget, warn_interval, || {
                     let (answer, left) = core.serve_turn(handler.as_mut(), batch);
                     more = left;
                     answer.unwrap_or_else(HyphaCallbackResult::continue_run)
@@ -78,7 +81,9 @@ impl CallbackDispatcher<'_> {
             ServiceTarget::Client(core) => {
                 let finished =
                     core.drive(hypha_time::scheduling_now().nanos(), &self.node.transport);
-                let (answer, slow) = deliver(finished, warnings, id, warn_nanos, warn_interval);
+                let name = core.name();
+                let (answer, slow) =
+                    deliver(finished, warnings, Subject::Service(&name), budget, warn_interval);
                 (answer, false, slow)
             }
         };
@@ -98,7 +103,8 @@ impl CallbackDispatcher<'_> {
     /// ends the calls past their deadline; every server drops the requests of clients that
     /// left.
     pub(super) fn drive_services(&mut self) -> Progression {
-        let (warn_nanos, warn_interval) = (self.warn_nanos, self.warn_interval_nanos);
+        let budget = callback_budget(self.node.slow_callback_ms, None);
+        let warn_interval = self.warn_interval_nanos;
         let now = hypha_time::scheduling_now().nanos();
         let mut answers = Vec::new();
         let mut slow = 0_u64;
@@ -109,8 +115,10 @@ impl CallbackDispatcher<'_> {
             match target {
                 Target::Service(ServiceTarget::Client(core)) => {
                     let finished = core.drive(now, &self.node.transport);
+                    let name = core.name();
+                    let subject = Subject::Service(&name);
                     let (answer, was_slow) =
-                        deliver(finished, warnings, id, warn_nanos, warn_interval);
+                        deliver(finished, warnings, subject, budget, warn_interval);
                     slow = slow.saturating_add(was_slow);
                     answers.extend(answer.map(|answer| (id, answer)));
                 }
@@ -149,15 +157,18 @@ impl CallbackDispatcher<'_> {
 fn deliver(
     finished: Vec<crate::service::Finished>,
     warnings: &mut super::CallbackWarnings,
-    id: AttachmentId,
-    warn_nanos: u64,
+    subject: Subject<'_>,
+    budget: CallbackBudget,
     warn_interval: u64,
 ) -> (Option<HyphaCallbackResult>, u64) {
     let mut answer = None;
     let mut slow = 0_u64;
-    for (done, result) in finished {
+    for (done, result, _) in finished {
+        let Some(done) = done else {
+            continue;
+        };
         let (outcome, was_slow) =
-            timed(warnings, id, warn_nanos, warn_interval, || done.done(&result));
+            timed(warnings, subject, budget, warn_interval, || done.done(&result));
         slow = slow.saturating_add(u64::from(was_slow));
         if stops(outcome) && answer.is_none() {
             answer = Some(outcome);

@@ -22,21 +22,31 @@ struct CDone {
 
 impl CallDone for CDone {
     fn done(self: Box<Self>, result: &CallResult) -> HyphaCallbackResult {
-        let description = result.outcome.to_string();
-        let response = result.outcome.response();
-        let view = HyphaCallResult {
-            outcome: result.outcome.code(),
-            may_have_run: u8::from(result.outcome.may_have_run()),
-            safe_to_retry: u8::from(result.outcome.safe_to_retry()),
-            response: response.map_or(std::ptr::null(), <[u8]>::as_ptr),
-            response_len: response.map_or(0, <[u8]>::len),
-            description: description.as_ptr().cast(),
-            description_len: description.len(),
-            sent_nanos: result.sent_nanos,
-            done_nanos: result.done_nanos,
-        };
-        (self.function)(&raw const view, self.context.pointer)
+        let pointer = self.context.pointer;
+        deliver_result(self.function, result, pointer)
     }
+}
+
+/// Call `function` with the C view of `result` and `context`.
+pub(super) fn deliver_result(
+    function: extern "C" fn(*const HyphaCallResult, *mut c_void) -> HyphaCallbackResult,
+    result: &CallResult,
+    context: *mut c_void,
+) -> HyphaCallbackResult {
+    let description = result.outcome.to_string();
+    let response = result.outcome.response();
+    let view = HyphaCallResult {
+        outcome: result.outcome.code(),
+        may_have_run: u8::from(result.outcome.may_have_run()),
+        safe_to_retry: u8::from(result.outcome.safe_to_retry()),
+        response: response.map_or(std::ptr::null(), <[u8]>::as_ptr),
+        response_len: response.map_or(0, <[u8]>::len),
+        description: description.as_ptr().cast(),
+        description_len: description.len(),
+        sent_nanos: result.sent_nanos,
+        done_nanos: result.done_nanos,
+    };
+    function(&raw const view, context)
 }
 
 /// Create the client `desc` describes. A server need not exist. With `blocking` 0 it is

@@ -16,9 +16,9 @@ pub mod types;
 pub(crate) use driver::DriverSetup;
 pub use driver::{cycle_expect_participant, cycle_set_clock_driver};
 pub use image::{
-    EmissionView, HyphaCycleEmission, HyphaCycleImage, ImageView, emission_commit,
-    emission_reserve, image_alive, image_binding, image_held, image_reject_sample, image_sample,
-    image_set_ignored,
+    EmissionView, HyphaCycleEmission, HyphaCycleImage, ImageView, emission_call, emission_commit,
+    emission_next_result, emission_requests, emission_reserve, emission_unread_results,
+    image_alive, image_binding, image_held, image_reject_sample, image_sample, image_set_ignored,
 };
 pub use input_supervision::{
     HyphaInputSupervisionRequest, HyphaInputSupervisionResult, cycle_bind_input_supervision,
@@ -41,7 +41,8 @@ pub use types::{
 
 pub(crate) use hypha_cycle::TIME_BASE_BOUND_PERIODS;
 pub(crate) use source::CycleInputSource;
+pub(crate) use source::{check_input_publishers, drain_inputs};
 pub(crate) use state::{Cycle, InputCounts};
 pub use state::{CycleId, CycleSnapshots, CycleStepHandler};
 pub use tick::cycle_tick;
-pub(crate) use tick::{check_input_publishers, cycle_timer_tick, drain_inputs, report_time_base};
+pub(crate) use tick::{cycle_timer_tick, report_time_base};

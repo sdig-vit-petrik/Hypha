@@ -298,3 +298,24 @@ pub type HyphaCycleStep = Option<
         context: *mut c_void,
     ) -> crate::waitset::HyphaCallbackResult,
 >;
+
+/// The C view of a cycle's health.
+impl From<hypha_cycle::CycleHealth> for HyphaCycleHealth {
+    fn from(health: hypha_cycle::CycleHealth) -> Self {
+        Self {
+            iterations: health.iterations,
+            missed_periods: health.missed_periods,
+            callback_failures: health.callback_failures,
+            output_attempts: health.output_attempts,
+            output_successes: health.output_successes,
+            output_failures: health.output_failures,
+            output_pool_drops: health.output_pool_drops,
+            observed_framework_nanos: health.observed_framework_nanos,
+            observed_steady_nanos: health.observed_steady_nanos,
+            steps: health.steps,
+            last_step_nanos: health.last_step_nanos,
+            max_step_nanos: health.max_step_nanos,
+            overruns: health.overruns,
+        }
+    }
+}

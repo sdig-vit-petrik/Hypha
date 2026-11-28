@@ -1,7 +1,7 @@
 # Native services
 
 Design for #132: typed request/response between nodes from ROS 1 `.srv` definitions.
-Status: accepted design. **Stage 1a** (transport, `crates/hypha_iceoryx2/src/service/`) and the runtime, C ABI and C++ endpoints of **Stage 1b** (`crates/hypha_node/src/service/`, `crates/hypha_ffi/src/service/`, `crates/hypha-cxx/include/hypha/service*.h`) are implemented, and so are the rest of Stage 1b: the call log (`crates/hypha_node/src/service/call_log.rs`), the servers' definitions in the schema store and `hypha service list|info|call` (`apps/hypha_tools/src/bin/hypha/service.rs`). The stages above are pending.
+Status: accepted design. **Stage 1a** (transport, `crates/hypha_iceoryx2/src/service/`) and the runtime, C ABI and C++ endpoints of **Stage 1b** (`crates/hypha_node/src/service/`, `crates/hypha_ffi/src/service/`, `crates/hypha-cxx/include/hypha/service*.h`) are implemented, and so are the rest of Stage 1b: the call log (`crates/hypha_node/src/service/call_log.rs`), the servers' definitions in the schema store and `hypha service list|info|call` (`apps/hypha_tools/src/bin/hypha/service.rs`). Stage 1c part 1 is implemented too (§3.1); its part 2 (`StepHarness` support, `hypha::Sequence`) and the stages above are pending.
 
 ## 1. Identity and discovery
 
@@ -41,6 +41,17 @@ Each `hypha::Request<Srv>&` is resolved by `reply(resp)`, `refuse([reason])`, or
 
 - **Stamps & lockstep:** requests carry client `framework_sent_nanos`; responses carry server step/callback time. A server step at deadline `D` admits requests strictly `< D`, ordered by `(stamp, client_node, client_port, sequence)`. Participant clients and servers are mutual lockstep upstreams with strict cuts (no deadlock, even within one `WaitSet`). `execution-model.md` §6.6 widens so an upstream that feeds a step only requests or responses reports `T - 1 ns`; one that feeds it a topic still reports `T`, since a triggered step reads its topic inputs through `T` (#231). Timeouts trigger at the first client step with `D >= S + timeout`.
 - **Recording:** `hypha record` does **not** record request-response services (prevents replaying calls into live servers). Instead, clients publish `hypha_msgs/ServiceCall` to a call-log topic when subscribed (one atomic check when idle); `hypha record` records it, `hypha play` never republishes it, and `hypha top` reads it. `--serve` / `--call` replay modes wait for Stage 4.
+
+### 3.1 Stage 1c part 1, as built
+
+`Requests<Srv>` and `Calls<Srv>` (`crates/hypha_node/src/service/cycle.rs`, `hypha-cxx/include/hypha/cycle_service.h`), the strict cut, the two upstream edges, the §6.6 amendment and the lockstep tests (`apps/hypha_tools/tests/service_lockstep.rs`). Until part 2, a `StepHarness` step that touches a service port throws `std::logic_error`. Decisions this document did not make:
+- **A service edge bounds which steps run, not the progress a triggered cycle reports**: a request steps no cycle (stage 3), so counting service edges would make a client and its server lift each other's report one nanosecond per turn.
+- **A client and its server in one `WaitSet` hold each other**, as peers in two nodes do, and the turn repeats their timers while that lets a held step run; otherwise what a step read depended on `--chunk`.
+- **A step that sends no output sends no answer and no call**: its requests end `ServerLost`, its calls `NotSent`. A deferred answer given during any cycle step leaves after that step; a failed step answers it as failed.
+- **`reply()` in a step reports `TooLarge` at once**; outcomes reach a step in call order; an outcome a successful step did not read is dropped, counted (`Calls::unreadResults()`, `hypha_cycle_unread_results`) and logged once per port; one a failed step did not read goes to the next step.
+- **Peers outside the replay**: a request or answer of a peer that reports no progress is read at the first step after it came, so a tool can call a cycle server during a replay. A cycle client names itself `<index>/<cycle>` (at most 64 bytes).
+- **A step that fails on replay fidelity has already sent its answers and calls**, as its outputs. **`per_step`** is at most the server's slots; a `Calls` port's `outstanding` defaults to 1.
+- **ABI**: six functions (`hypha_cycle_bind_server`, `_bind_client`, `_requests`, `_next_result`, `_call`, `_unread_results`), coarse as those of 1b.
 
 ## 4. Wire integrity and failure semantics
 
@@ -106,7 +117,7 @@ void        hypha_deferred_destroy(HyphaDeferred*);
 |---|---|---|
 | **1a Transport** | `hypha_iceoryx2::service`: ports, name lock, dead reclaim, role CRC sealing, slot table, liveness probe, listing | Done (`#270`) |
 | **1b Runtime, C ABI, C++, CLI** | `hypha_node` runtime, blocking clients, C ABI, `advertiseService`/`serviceClient`, `std_srvs`, call log, `hypha service` | Done (#286, #297) |
-| **1c Cycles & lockstep** | `Requests<Srv>`, `Calls<Srv>`, strict-cut lockstep + §6.6 amendment, `StepHarness`, `hypha::Sequence` | Pending |
+| **1c Cycles & lockstep** | `Requests<Srv>`, `Calls<Srv>`, strict-cut lockstep + §6.6 amendment, `StepHarness`, `hypha::Sequence` | Part 1 done (#311); part 2 next |
 | **1d Migration** | Port MRS host & Autoware shim; delete `mrs_bridge/Call` and `ServiceCall` | Pending |
 | **2–6 Follow-ups** | Introspection/`hypha top` (2), `Requests` trigger (3), `hypha play --serve/--call` (4), ROS 1 bridge (5), typed loans (6) | Pending |
 

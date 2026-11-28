@@ -21,10 +21,15 @@ use hypha_node::waitset::HyphaContextRelease;
 use crate::boundary::borrow_str;
 
 mod client;
+mod cycle;
 mod server;
 pub use client::{
     hypha_client_call, hypha_client_status, hypha_client_wait_for_server,
     hypha_service_client_create, hypha_service_client_destroy,
+};
+pub use cycle::{
+    hypha_cycle_bind_client, hypha_cycle_bind_server, hypha_cycle_call, hypha_cycle_next_result,
+    hypha_cycle_requests, hypha_cycle_unread_results,
 };
 pub use server::{
     hypha_request_answer, hypha_request_defer, hypha_request_destroy, hypha_service_server_create,
