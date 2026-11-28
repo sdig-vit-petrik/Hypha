@@ -135,13 +135,20 @@ fn a_batch_reuses_its_clock_and_refreshes_only_for_newer_send_times() {
         0
     };
     let accepted = validator
-        .validate_with_clock(topic(), &header, PAYLOAD, false, &mut now, cached_only)
+        .validate_with_clock(topic(), &header, PAYLOAD, || false, &mut now, cached_only)
         .expect("valid frame");
     assert_eq!(accepted.payload(), PAYLOAD);
     assert_eq!(accepted.framework_sent_nanos(), 900);
     assert!(
         validator
-            .validate_with_clock(topic(), &frame(11, 2, 1_050), PAYLOAD, false, &mut now, || 1_100)
+            .validate_with_clock(
+                topic(),
+                &frame(11, 2, 1_050),
+                PAYLOAD,
+                || false,
+                &mut now,
+                || 1_100
+            )
             .is_ok()
     );
     assert_eq!(now, 1_100);
@@ -150,7 +157,7 @@ fn a_batch_reuses_its_clock_and_refreshes_only_for_newer_send_times() {
             topic(),
             &frame(11, 3, 1_200),
             PAYLOAD,
-            false,
+            || false,
             &mut now,
             || 1_150
         ),
@@ -164,7 +171,7 @@ fn a_batch_reuses_its_clock_and_refreshes_only_for_newer_send_times() {
                 topic(),
                 &frame(11, 3, 1_140),
                 PAYLOAD,
-                false,
+                || false,
                 &mut now,
                 cached_only
             )
@@ -195,9 +202,21 @@ fn the_first_frames_of_a_publisher_that_came_after_the_subscription_are_missing(
     let validator = FrameValidator::new(None);
     let mut now = 0;
     let came_after =
-        validator.validate_with_clock(topic(), &frame(11, 4, 0), PAYLOAD, true, &mut now, || 0);
+        validator.validate_with_clock(topic(), &frame(11, 4, 0), PAYLOAD, || true, &mut now, || 0);
     assert!(came_after.is_ok());
     assert_eq!((validator.missing_sequences(), validator.sent_before_first()), (3, 0));
+    // Asked only of a publisher the validator does not track yet.
+    let asked = core::cell::Cell::new(0);
+    let ask = || {
+        asked.set(asked.get() + 1);
+        true
+    };
+    assert!(
+        validator
+            .validate_with_clock(topic(), &frame(11, 5, 0), PAYLOAD, ask, &mut now, || 0)
+            .is_ok()
+    );
+    assert_eq!((asked.get(), validator.missing_sequences()), (0, 3));
     // The same first frame from a publisher that may have sent before is a late joiner's.
     let late = FrameValidator::new(None);
     assert!(late.validate(topic(), &frame(11, 4, 0), PAYLOAD, 0).is_ok());

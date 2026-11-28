@@ -605,7 +605,7 @@ impl Iox2Transport {
             &port_name,
             slots,
         )?;
-        let publishers_before = crate::endpoint::PublishersBefore::list([&service]);
+        let publishers_before = crate::endpoint::PublishersBefore::list(&service);
         // A typed subscriber lets the domain resolve its schema even for a relayed publisher.
         crate::schema::write_schema_file(spec)?;
 

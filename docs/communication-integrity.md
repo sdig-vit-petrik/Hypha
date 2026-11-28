@@ -101,16 +101,20 @@ Notes:
 - A publisher's first frame has sequence 1. A publisher whose port did not exist yet
   when the subscriber was created owed it every frame it sent: a first frame of `n`
   counts `n - 1` lost frames, on host time and on simulated time. The subscriber lists
-  the publisher ports of its topic once it exists, and a port that is not on that list
-  registered after it (iceoryx2 registers a port after it reads the other side, and a
-  publisher updates its connections before each send), so none of its frames is from
-  before the subscriber. A publisher that was listed may have sent before the
-  subscriber existed: for it, a loss before its first frame is not counted, and the
-  frames before it are what a late joiner missed (`sent_before_first`), not a loss.
-  The two cases look alike in the queue, so a late joiner is told apart only by that
-  list. A subscriber that tracks more publishers than its table holds
-  (`MAX_TRACKED_PUBLISHERS`, 4096) forgets one, and from then on counts no first frame
-  as lost: the publisher of one may be the forgotten one.
+  the publisher ports of each stream right after its port on the stream exists. A port
+  that is not on that list, and is still registered at its first frame, registered
+  after the subscriber, and a publisher updates its connections before each send, so
+  none of its frames is from before the subscriber; a port that is not listed and no
+  longer registered may have left before the listing, and counts as one that may have
+  sent before (engineering-traps.md, the creation order). A publisher that was listed
+  may have sent before the subscriber existed: for it, a loss before its first frame
+  is not counted, and the frames before it are what a late joiner missed
+  (`sent_before_first`), not a loss. The two cases look alike in the queue, so a late
+  joiner is told apart only by that list. A subscriber that tracks more publishers
+  than its table holds (`MAX_TRACKED_PUBLISHERS`, 4096) forgets one, and from then on,
+  for the rest of its life, counts no first frame as lost: the publisher of one may be
+  the forgotten one. A subscription that outlives 4096 publishers, a node restarting
+  4096 times on its topic, loses this count and keeps every other.
 - Under simulated time (development only) a cycle input that loses a sample fails the
   run: a transport gap, or a history eviction of a sample the input still needed; for a
   `Latest` input, an evicted sample that a newer one supersedes is no loss. A

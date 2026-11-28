@@ -709,7 +709,7 @@ fn validate_integrity<'a>(
             sample.topic_code(),
             &header,
             sample.payload(),
-            sample.publisher_came_after(),
+            || endpoint.port.publisher_came_after(sample),
             now_nanos,
             host_now_nanos,
         )

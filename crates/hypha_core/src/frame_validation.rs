@@ -94,7 +94,7 @@ impl FrameValidator {
         now_nanos: u64,
     ) -> Result<u64, FrameRejection> {
         let mut cached_now = now_nanos;
-        self.validate_with_clock(topic, header, payload, false, &mut cached_now, || now_nanos)
+        self.validate_with_clock(topic, header, payload, || false, &mut cached_now, || now_nanos)
             .map(|frame| frame.transport_sent_nanos())
     }
 
@@ -102,9 +102,10 @@ impl FrameValidator {
     /// Refresh the clock only if a valid, schema-matching frame is newer than the cached
     /// time. A real future stamp is still refused and counted.
     ///
-    /// `came_after` says that the frame's publisher came after the subscription, so that
-    /// every frame it sent was owed to it: the frames before its first accepted one are
-    /// counted as missing ([`FirstFrame::Owed`]).
+    /// `came_after` says whether the frame's publisher came after the subscription, so that
+    /// every frame it sent was owed to it: the frames before its first accepted one are then
+    /// counted as missing ([`FirstFrame::Owed`]). It is called only for the first frame of a
+    /// publisher the validator does not track, and never once its table forgot one.
     ///
     /// # Errors
     /// Returns the first rule that refuses the frame, without updating sequence
@@ -114,7 +115,7 @@ impl FrameValidator {
         topic: TopicCode,
         header: &FrameHeader,
         payload: &'a [u8],
-        came_after: bool,
+        came_after: impl FnOnce() -> bool,
         now_nanos: &mut u64,
         refresh: impl FnOnce() -> u64,
     ) -> Result<ParsedFrame<'a>, FrameRejection> {
@@ -146,12 +147,15 @@ impl FrameValidator {
             return Err(FrameRejection::Future);
         }
 
-        let first = match (came_after, frame.latched()) {
-            (true, _) => FirstFrame::Owed,
-            (false, true) => FirstFrame::Latched,
-            (false, false) => FirstFrame::Unknown,
-        };
         let mut sequences = crate::locked(&self.sequences);
+        let is_first = !sequences.tracks(frame.publisher_id());
+        let first = if is_first && !sequences.forgot_a_publisher() && came_after() {
+            FirstFrame::Owed
+        } else if frame.latched() {
+            FirstFrame::Latched
+        } else {
+            FirstFrame::Unknown
+        };
         if sequences.accept_as(frame.publisher_id(), frame.sequence(), first) {
             self.missing_sequences.store(sequences.missing_sequences(), Ordering::Release);
             self.sent_before_first.store(sequences.sent_before_first(), Ordering::Release);

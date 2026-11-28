@@ -128,6 +128,19 @@ impl SequenceValidator {
         true
     }
 
+    /// True when a first frame of `publisher_id` would not be its first: the validator tracks
+    /// it. A caller that must look up what a first frame is ([`FirstFrame`]) asks this first.
+    #[must_use]
+    pub fn tracks(&self, publisher_id: u64) -> bool {
+        self.publishers.contains_key(&publisher_id)
+    }
+
+    /// True once a full table forgot a publisher: no first frame is [`FirstFrame::Owed`] then.
+    #[must_use]
+    pub const fn forgot_a_publisher(&self) -> bool {
+        self.forgot
+    }
+
     /// Number of missing sequence values between accepted forward frames, and before the first
     /// accepted frame of a publisher that came after the subscription.
     #[must_use]
