@@ -226,6 +226,8 @@ fn destroying_a_triggered_cycle_detaches_every_registration() {
 /// One binding of a step as the test reads it back.
 #[derive(Debug, Clone, Copy)]
 struct PortSeen {
+    /// The age the verdict compared with the silence limit, on the capture clock.
+    age_nanos: u64,
     samples: usize,
     faults: u32,
     /// Samples refused by age, and late triggers, so far.
@@ -274,6 +276,7 @@ unsafe fn ports_of(image: *const HyphaCycleImage) -> Vec<PortSeen> {
         }
         let report = binding.health.capture;
         ports.push(PortSeen {
+            age_nanos: binding.age_nanos,
             samples: report.sample_count,
             faults: binding.supervision.faults,
             rejected: report.stale_total,
@@ -596,8 +599,10 @@ fn an_idle_notified_trigger_wakes_its_waitset_for_its_silence_limit_alone() {
 
 #[test]
 fn a_host_triggered_cycle_fallback_runs_at_its_silence_limit_on_steady_time() {
-    // One trigger sent at `sent`, then silence: the fallback runs one silence limit after
-    // the send, measured on the monotonic clock, within a turn of the deadline.
+    // One trigger sent at `sent`, then silence: the fallback runs once the trigger is older
+    // than its silence limit, never before. How soon after the deadline the host runs it
+    // is the host's speed, which a test does not assert (engineering-traps.md); the poll
+    // bound of run_until catches a fallback that never comes.
     let fixture = Fixture::new();
     let recorder = Recorder::default();
     let (cycle, publisher) = triggered(&fixture, &recorder, 100 * MILLIS, 8, 1);
@@ -609,9 +614,13 @@ fn a_host_triggered_cycle_fallback_runs_at_its_silence_limit_on_steady_time() {
     let fallback = steps.iter().find(|step| step.samples == 0).expect("the fallback step");
     let after_send = fallback.at.duration_since(sent);
     assert!(
-        (std::time::Duration::from_millis(100)..=std::time::Duration::from_millis(110))
-            .contains(&after_send),
-        "the fallback ran {after_send:?} after the send; its silence limit is 100 ms"
+        after_send >= std::time::Duration::from_millis(100),
+        "the fallback ran {after_send:?} after the send, before its silence limit of 100 ms"
+    );
+    assert!(
+        fallback.ports[0].age_nanos >= 100 * MILLIS.unsigned_abs(),
+        "the fallback step judged the trigger {} ns old, under its silence limit",
+        fallback.ports[0].age_nanos
     );
     assert!(trigger.at <= fallback.at, "{steps:?}");
     assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
