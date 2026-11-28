@@ -382,6 +382,12 @@ CMake project (FetchContent or `add_subdirectory`, in the `hypha-builder` image)
 or it uses `find_package(hypha)` on a prefix that `cmake --install` filled. As a
 subproject, hypha keeps its strict warnings to its own targets.
 
+Cargo writes to `<source>/target`, or to the absolute `CARGO_TARGET_DIR` of the
+environment (a relative one is refused at configure). The root `CMakeLists.txt`
+resolves it once as `HYPHA_CARGO_TARGET_DIR`; every CMake file that names a cargo output
+uses it, and the cargo call gets it as `--target-dir`, so the two cannot differ
+(`scripts/test-cargo-target-dir.sh`).
+
 Message headers sit at their ROS 1 path, `<package>/<Name>.h`, and each
 package directory has one owner. `hypha-cxx` owns the directory of each standard
 package it ships (`std_msgs/`, `geometry_msgs/`, ..., `hypha_msgs/`). It writes

@@ -44,6 +44,9 @@ if [[ "$suite" == all || "$suite" == rust ]]; then
 fi
 
 if [[ "$suite" == all || "$suite" == cpp ]]; then
+  # CMake follows CARGO_TARGET_DIR (#181); configures only.
+  ./scripts/test-cargo-target-dir.sh
+
   # The gtest shards run in parallel, each in a bus domain of its own (test/test_main.cpp).
   ctest --test-dir build -j "$(getconf _NPROCESSORS_ONLN)" --output-on-failure \
     --output-junit ctest-junit.xml
