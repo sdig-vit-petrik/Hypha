@@ -1202,8 +1202,33 @@ class LidarNode final : public hypha::ApplicationNode
 };
 ```
 
-A bounded hand-over from a callback to a worker is in
-[examples/sensor_pipeline](../examples/sensor_pipeline/README.md) (`CloudHandover`).
+A vendor SDK that calls back on its own threads (a lidar's cloud, IMU and fault callbacks)
+may not publish from them: a publisher belongs to one thread. The callbacks push into a
+`hypha::Handover<Kinds...>` (`<hypha/handover.h>`), and the one worker above pops and
+publishes. It is ROS's callback queue, bounded, with the drops counted:
+
+```cpp
+using Messages = hypha::Handover<sensor_msgs::PointCloud2, sensor_msgs::Imu, hesai::LossPacket>;
+
+// the node's member; the depth is per kind, so a burst of IMU samples never pushes a cloud out
+Messages handover_{hypha::config().required<uint32_t>("handover_depth"), this->stopToken()};
+
+// the vendor's threads (never waits; a full kind drops its oldest message, counts it, warns)
+void onCloud(const Cloud& cloud) { this->handover_.push(toRos(cloud)); }
+void onImu(const Imu& imu)       { this->handover_.push(toRos(imu)); }
+
+// the worker, in the place of its sleep or rate: ends at the node's stop, after the drain
+while (auto message = this->handover_.pop()) {
+    std::visit([this](const auto& content) { this->send(content); }, *message);
+}
+HYPHA_LOG_INFO("hand-over: {} messages dropped", this->handover_.dropped());
+```
+
+`popFor(timeout)` returns empty at the timeout too (`stopped()` tells the two apart), for a
+worker that also checks a state between messages. A subscriber callback that must not
+block (a write to a serial port) pushes the same way, and the device's thread pops. The
+count is in `dropped()` and `dropped<Kind>()`, and in the log; it is not yet in `~/state`.
+[examples/sensor_pipeline](../examples/sensor_pipeline/README.md) uses it for one kind.
 
 A timer counts the periods it did not fire in, because a callback or the run loop
 ran longer than one period:

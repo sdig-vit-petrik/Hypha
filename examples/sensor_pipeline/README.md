@@ -96,11 +96,13 @@ The rules the headers give, and how the code follows them:
 - `node.h`: `requestStop()` "is the one operation another thread may call on a running
   node." The worker calls nothing on the node.
 
-The hand-over is one bounded FIFO (`CloudHandover`, `handover_depth` clouds), one mutex
-and one condition variable. The run() thread never waits on it: when it is full, the
-oldest cloud is dropped and counted. At SIGINT or SIGTERM `run()` returns and the
-application's destructor stops the queue; the worker processes what is queued and returns,
-and the destructor joins it before the endpoints and the Node are destroyed.
+The hand-over is a `hypha::Handover<CloudPtr>` (`handover_depth` clouds), built with the
+node's `stopToken()`. The run() thread never waits on it: when it is full, the oldest cloud
+is dropped and counted (`dropped()`, a warning in the log). At SIGINT or SIGTERM `runNode`
+stops the token before the application's destructor runs; the worker's `pop()` returns
+what is queued, then empty, and the destructor joins it before the endpoints and the Node
+are destroyed. The worker's pauses are `hypha::sleepFor(stop, ...)`, which the same stop
+ends.
 
 ## Diagnostics
 
