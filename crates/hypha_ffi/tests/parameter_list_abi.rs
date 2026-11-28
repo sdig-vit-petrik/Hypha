@@ -205,3 +205,64 @@ fn a_length_name_that_is_not_utf8_is_an_argument_error_not_an_absent_list() {
     assert_eq!(len, 77, "a refused name writes no length");
     unsafe { hypha_node_destroy(node) };
 }
+
+const TABLES: &str = "rate = 1
+[ports.inputs.cmd_vel]
+topic = \"/cmd_vel\"
+priority = 3
+[ports.inputs.joy]
+topic = \"/joy\"
+[ports.outputs.out]
+topic = \"/out\"
+
+[[goals]]
+name = \"pick\"
+[goals.limits]
+max = 5
+";
+
+/// The table names under `prefix`, read in the two calls a C caller makes.
+fn table_names(node: *const HyphaNode, prefix: &str) -> (HyphaStatus, String) {
+    let config = unsafe { hypha_node_config(node) };
+    let prefix = key(prefix);
+    let mut len = 0_usize;
+    let first = unsafe {
+        hypha_config_table_names(
+            config,
+            prefix.as_ptr(),
+            prefix.as_bytes().len(),
+            std::ptr::null_mut(),
+            0,
+            &raw mut len,
+        )
+    };
+    if first != HyphaStatus::TooLarge {
+        return (first, String::new());
+    }
+    let mut buffer = vec![0_u8; len];
+    let second = unsafe {
+        hypha_config_table_names(
+            config,
+            prefix.as_ptr(),
+            prefix.as_bytes().len(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &raw mut len,
+        )
+    };
+    (second, String::from_utf8(buffer).expect("names are UTF-8"))
+}
+
+#[test]
+fn table_names_list_the_tables_under_a_prefix_and_read_nothing() {
+    let node = create_node("table_names", TABLES);
+    assert_eq!(table_names(node, "ports.inputs"), (HyphaStatus::Ok, "cmd_vel\njoy".to_string()));
+    assert_eq!(table_names(node, "ports"), (HyphaStatus::Ok, "inputs\noutputs".to_string()));
+    assert_eq!(table_names(node, ""), (HyphaStatus::Ok, "ports".to_string()));
+    assert_eq!(table_names(node, "goals[0]"), (HyphaStatus::Ok, "limits".to_string()));
+    // A scalar, a list, an absent name and an index past the end are no table: no names.
+    for name in ["rate", "goals", "never_set", "goals[3]", "ports.inputs.joy.topic"] {
+        assert_eq!(table_names(node, name), (HyphaStatus::Ok, String::new()), "{name}");
+    }
+    unsafe { hypha_node_destroy(node) };
+}

@@ -86,6 +86,20 @@ static ROWS: &[Row] = rows! {
             INVALID
         );
     }
+    hypha_config_table_names => |live| {
+        assert_eq!(
+            unsafe { hypha_config_table_names(null(), null(), 0, null_mut(), 0, &mut 0) },
+            INVALID
+        );
+        assert_eq!(
+            unsafe { hypha_config_table_names(live.config, null(), 0, null_mut(), 0, null_mut()) },
+            INVALID
+        );
+        assert_eq!(
+            unsafe { hypha_config_table_names(live.config, null(), 1, null_mut(), 0, &mut 0) },
+            INVALID
+        );
+    }
     hypha_config_ignore => |live| {
         let key = "a".as_ptr().cast();
         let reason = "b".as_ptr().cast();

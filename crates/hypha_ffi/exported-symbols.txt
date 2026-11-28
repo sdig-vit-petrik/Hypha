@@ -15,6 +15,7 @@ T hypha_config_list_len
 T hypha_config_list_value
 T hypha_config_record_config
 T hypha_config_resolve_key
+T hypha_config_table_names
 T hypha_config_unread_keys
 T hypha_config_value
 T hypha_cycle_bind_input
