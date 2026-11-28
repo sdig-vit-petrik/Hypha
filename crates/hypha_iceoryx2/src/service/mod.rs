@@ -290,7 +290,7 @@ fn reclaim_dead_clients(
             }
             CallbackProgression::Continue
         })
-        .map_err(|cause| ServiceError::Port(crate::transport::node_list_failed(cause)))?;
+        .map_err(|cause| ServiceError::Port(crate::data_service::node_list_failed(cause)))?;
     for view in dead {
         open::reclaim_dead(key, "a client slot", view);
     }
@@ -309,7 +309,7 @@ fn live_clients(service: &open::StreamFactory) -> Result<(usize, usize), Service
             }
             CallbackProgression::Continue
         })
-        .map_err(|cause| ServiceError::Port(crate::transport::node_list_failed(cause)))?;
+        .map_err(|cause| ServiceError::Port(crate::data_service::node_list_failed(cause)))?;
     let names = client_nodes
         .iter()
         .filter_map(|id| alive.iter().find(|(node, _)| node == id).map(|(_, name)| name));

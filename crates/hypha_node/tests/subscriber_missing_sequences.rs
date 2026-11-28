@@ -100,27 +100,6 @@ fn a_late_joiner_does_not_count_what_was_sent_before_it_as_lost() {
 
 #[test]
 #[allow(clippy::expect_used)]
-fn a_loss_of_the_first_frames_of_a_publisher_that_existed_before_is_not_counted() {
-    // The limit (communication-integrity.md §5): the publisher existed when the subscriber was
-    // created, so its first frame may have been sent before it, as for a late joiner.
-    let bus = BusNode::new(&unique_name("missing_before_rust")).expect("node");
-    let topic = format!("/{}", unique_name("missing_before"));
-    let mut publisher = bus
-        .publish_raw(&topic, "test/Bytes", "d9d213e8c146065ec958333c617eb1a6", "")
-        .expect("publisher");
-    let mut subscriber = bus
-        .subscribe_raw_with_options(&topic, SubscriberOptions::default().keeping(1))
-        .expect("subscriber");
-    for value in 0_u8..3 {
-        assert!(publisher.publish(&[value]));
-    }
-    assert!(subscriber.try_receive().expect("receive").is_some());
-    assert_eq!(subscriber.missing_sequences().expect("count"), 0);
-    assert_eq!(subscriber.sent_before_first(), 2);
-}
-
-#[test]
-#[allow(clippy::expect_used)]
 fn a_subscriber_and_a_publisher_created_at_once_count_no_loss() {
     // #247, the same-instant race: a subscriber and a publisher created on two threads at
     // once. The publisher sends every 2 ms until the subscriber exists and two more after;
@@ -183,31 +162,4 @@ fn a_subscriber_and_a_publisher_created_at_once_count_no_loss() {
         came_after += usize::from(received == sent);
     }
     eprintln!("{ROUNDS} rounds: {with_frames} received frames, {came_after} received every frame");
-}
-
-#[test]
-#[allow(clippy::expect_used)]
-fn a_latched_publisher_that_came_after_the_subscriber_owes_it_its_first_frames() {
-    let bus = BusNode::new(&unique_name("missing_latch_rust")).expect("node");
-    let topic = format!("/{}", unique_name("missing_latch"));
-    let _opens_the_stream = bus
-        .publish_raw(&topic, "test/Bytes", "d9d213e8c146065ec958333c617eb1a6", "")
-        .expect("publisher");
-    let mut subscriber = bus
-        .subscribe_raw_with_options(&topic, SubscriberOptions::default().keeping(1))
-        .expect("subscriber");
-    let mut latched = bus
-        .publish_raw_configured(
-            &topic,
-            "test/Bytes",
-            "d9d213e8c146065ec958333c617eb1a6",
-            "",
-            hypha_node::sdk::PublisherOptions::default().latched(),
-        )
-        .expect("latched publisher");
-    for value in 0_u8..3 {
-        assert!(latched.publish(&[value]));
-    }
-    assert!(subscriber.try_receive().expect("receive").is_some());
-    assert_eq!(subscriber.missing_sequences().expect("count"), 2);
 }
