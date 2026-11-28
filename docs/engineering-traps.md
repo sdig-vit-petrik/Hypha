@@ -249,7 +249,8 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
 - **Logging is one configuration for each process, and the first `[log]` table
   wins.** Node creation gives the `[log]` table of its parameter file to
   `hypha_log`. A later node with an equal table is accepted. A later node with a
-  different table fails with `InvalidState`. The configuration stays after the
+  different table fails with `InvalidState`, except in `slow_callback_ms`, which the
+  node reads for itself (execution-model.md §5). The configuration stays after the
   node is destroyed. A relative sink path resolves against the directory of the
   file that wrote it. Another process that holds the lock on a sink file also gives
   `InvalidState`. A second `Node` with another parameter file also throws

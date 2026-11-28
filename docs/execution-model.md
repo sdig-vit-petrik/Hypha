@@ -177,11 +177,23 @@ request, or a timer.
 | Registrations per `WaitSet` | 128 | Attach returns `ResourceLimit` |
 | Samples per attachment per turn | 8 | The attachment stays ready and the rotation moves on |
 | Work items before a readiness recheck | 64 | The loop rechecks the native `WaitSet` |
-| Slow callback warning | 10 ms of host time | Counter, plus a warning at most once per second. Simulated time never makes a callback slow |
+| Slow callback budget | The period of a timer or a cycle; 10 ms of host time for a subscription | Counter, plus a warning at most once per second for each callback. Simulated time never makes a callback slow |
 
 These are engineering defaults, not safety-derived limits. Measure them on
 your target. A limit is refused, never clamped: a zero limit, or a batch size
 above the dispatch budget, returns `InvalidArgument`.
+
+The slow-callback budget is the one limit a node sets in its parameter file:
+`slow_callback_ms` in `[log]` (0 to 3600000). A value replaces the default of every
+callback of the node, so a node whose clustering callback takes 40 ms by design sets
+`slow_callback_ms = 50` and is warned of the callback that takes 60. Zero writes no line
+and leaves the counter, which then judges against the default. The line names the
+callback: `hypha: callback of topic '/sensing/lidar/points' took 46 ms, budget 10 ms,
+9 warnings suppressed`, `... of timer 100 ms ...` or `... of cycle 'ekf' ...`. A 10 Hz
+timer or cycle is judged against its 100 ms period, so a step of 45 ms logs nothing. The
+count is `node.slow_callbacks` and, for one run, `slow_callbacks` of its report. Only
+a timer, a cycle on host time and a subscription are timed; a replay cycle on simulated
+time and a triggered cycle are not.
 
 The dispatcher rotates over ready attachments with a cursor. It does not
 restart each scan at the first registration. Rejected frames count against

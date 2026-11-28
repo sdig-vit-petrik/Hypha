@@ -170,6 +170,7 @@ MAX_TEST_SLEEPS = 168
 SLEEP_ALLOWLIST = frozenset({
     "crates/hypha-cxx/test/test_worker_stop.cpp",
     "crates/hypha-cxx/base/test/test_clock.cpp",
+    "crates/hypha_ffi/tests/slow_callback_budget.rs",  # the sleep is the overrun under test
 })
 # 6. #[allow(...)] ratchet in shipped Rust (use #[expect(lint, reason = "...")] per docs/rust-style.md).
 MAX_PROD_ALLOWS = 72

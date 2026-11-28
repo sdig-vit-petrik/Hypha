@@ -9,7 +9,10 @@ use crate::LogError;
 use crate::level::Level;
 
 const MIB: u64 = 1024 * 1024;
-const LOG_KEYS: &[&str] = &["level", "console", "console_level", "sink", "module"];
+const LOG_KEYS: &[&str] =
+    &["level", "console", "console_level", "slow_callback_ms", "sink", "module"];
+/// The largest `slow_callback_ms`: one hour.
+const SLOW_CALLBACK_MAX_MS: u32 = 3_600_000;
 const SINK_KEYS: &[&str] = &["enabled", "path", "level", "rotation_mb", "rotation_count"];
 const MODULE_KEYS: &[&str] = &["level", "enabled"];
 
@@ -190,6 +193,10 @@ pub(crate) fn parse(table: &Table, file: &Path) -> Result<Config, LogError> {
     config.console_level =
         source.level("log", table, "console_level")?.unwrap_or(config.console_level);
 
+    // Checked here, so the file that sets it is refused at load. It is not part of the
+    // configuration: nodes of one process may differ in it (see `slow_callback_ms`).
+    source.ranged("log", table, "slow_callback_ms", 0..=SLOW_CALLBACK_MAX_MS, 0)?;
+
     let base = file.parent().unwrap_or_else(|| Path::new(""));
     let mut owners: HashMap<PathBuf, String> = HashMap::new();
     for (name, entry) in source.subtables(table, "sink")? {
@@ -211,4 +218,15 @@ pub(crate) fn parse(table: &Table, file: &Path) -> Result<Config, LogError> {
         config.modules.insert(name.clone(), if enabled { level } else { Level::Off });
     }
     Ok(config)
+}
+
+/// The `slow_callback_ms` key of a validated `[log]` table: the node's budget for one
+/// callback, `None` when the table does not set it. The node reads it, not the engine, so
+/// it is no part of the process configuration that the first table fixes.
+#[must_use]
+pub fn slow_callback_ms(table: &Table) -> Option<u32> {
+    match table.get("slow_callback_ms") {
+        Some(Value::Integer(millis)) => u32::try_from(*millis).ok(),
+        _ => None,
+    }
 }

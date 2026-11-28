@@ -25,3 +25,11 @@ fn a_node_name_that_is_refused_fails_the_load() {
     assert_eq!(load("[node]\nname = 5\n"), Err(Error::InvalidArgument));
     assert_eq!(load("[node]\nname = \"good_name\"\n"), Ok(()));
 }
+
+#[test]
+fn a_slow_callback_budget_that_is_refused_fails_the_load() {
+    assert_eq!(load("[log]\nslow_callback_ms = \"fast\"\n"), Err(Error::InvalidArgument));
+    assert_eq!(load("[log]\nslow_callback_ms = -5\n"), Err(Error::InvalidArgument));
+    assert_eq!(load("[log]\nslow_callback_ms = 50\n"), Ok(()));
+    assert_eq!(load("[log]\nslow_callback_ms = 0\n"), Ok(()));
+}

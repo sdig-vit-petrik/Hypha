@@ -59,7 +59,7 @@ Details live in [architecture.md](architecture.md), [execution-model.md](executi
 | **Dead nodes & SHM** | Crashed nodes keep their slots until a node with the same name restarts and reclaims them, or `hypha clean` wipes the stopped domain. Clear SHM after capacity changes. |
 | **ABI & wire lock** | `abi.revision` versions `libhypha_ffi`; C++ SDK refuses mismatched revisions at start. Wire frames are magic-versioned with CRC-32C. |
 | **Threading** | The library creates no execution threads and sets no scheduling/affinity. Progress happens only while the application drives a `WaitSet`; attachments freeze during a run. |
-| **Signals & logging** | First node creation installs the process-wide `SIGINT`/`SIGTERM` stop handler (below C ABI) and locks in the single `[log]` config. Logging is synchronous. |
+| **Signals & logging** | First node creation installs the process-wide `SIGINT`/`SIGTERM` stop handler (below C ABI) and locks in the single `[log]` config (each node keeps its own `slow_callback_ms`). Logging is synchronous. |
 | **Data & freshness** | Fail-restrictive: stale/missing/invalid inputs return `NOT_AVAILABLE` (`std::nullopt`), never invented defaults. Every supervised cycle input requires `silence_ms` (or `unsupervised`). |
 | **Queues & loans** | Queued inputs drop oldest beyond their per-step share. Owning subscribers hold at most `min(buffer, 2)` simultaneous loans (`BorrowLimit`). Wildcard subscriptions resolve once at creation. |
 | **Clocks & counters** | Transport age and timeouts use host monotonic time; timers follow `/clock` under sim time. All counters are 64-bit wrapping unsigned integers. |
