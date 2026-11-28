@@ -161,7 +161,37 @@ if errors:
     print("\n".join(errors), file=sys.stderr)
     sys.exit(1)
 
-print(f"OK: file sizes and architectural boundaries pass ({len(PROD_RATCHET)} prod ratcheted, {len(SOFT_RATCHET)} test/doc grandfathered).")
+# 4. Ice-cream-cone test pyramid ratchet: forbid top-layer tests (ffi/cxx/tools)
+#    from growing beyond their current share of total test LOC. Lower this ceiling
+#    as pure-core tests grow and top-layer integration monoliths shrink.
+MAX_TOP_TEST_SHARE_PCT = 66.5
+total_test_lines = 0
+top_test_lines = 0
+for path in files:
+    if category(path) != "tests":
+        continue
+    with open(path, "rb") as f:
+        n = f.read().count(b"\n")
+    total_test_lines += n
+    if path.startswith(("crates/hypha_ffi/", "crates/hypha-cxx/", "apps/hypha_tools/")):
+        top_test_lines += n
+
+if total_test_lines > 0:
+    top_share = 100.0 * top_test_lines / total_test_lines
+    if top_share > MAX_TOP_TEST_SHARE_PCT:
+        print(
+            f"FAIL: test ice-cream cone grew: top-layer tests (hypha_ffi/hypha-cxx/hypha_tools) "
+            f"are {top_share:.1f}% of test LOC (ratchet max {MAX_TOP_TEST_SHARE_PCT:.1f}%). "
+            f"Move logic matrices down to pure core crates (AGENTS.md testing pyramid).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+print(
+    f"OK: file sizes, boundaries, and test pyramid pass "
+    f"({len(PROD_RATCHET)} prod ratcheted, {len(SOFT_RATCHET)} test/doc grandfathered, "
+    f"top-layer test share {top_share:.1f}% <= {MAX_TOP_TEST_SHARE_PCT:.1f}%)."
+)
 PY
 
 if [[ "$failures" -gt 0 ]]; then
