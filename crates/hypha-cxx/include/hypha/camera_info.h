@@ -1,26 +1,48 @@
 #pragma once
 
 /// @file
-/// The calibration file of a camera as sensor_msgs::CameraInfo: what a ROS driver loads with
-/// camera_info_manager or camera_calibration_parsers, the YAML that `camera_calibration`
-/// writes (ROS 1 and ROS 2 alike). A file that does not hold what a camera needs is refused
-/// with the file, the line and the field, as a bad parameter is.
+/// The calibration of a camera as sensor_msgs::CameraInfo, in TOML: a `[camera_info]` table
+/// of the node's own parameter file, or a file of its own that `set_camera_info` rewrites.
+/// The keys are those of the ROS calibration file (`camera_calibration`,
+/// `camera_info_manager`); a matrix is a flat row-major array whose length is checked
+/// against its shape. Hypha's parameter-file loader reads it (no parser here), and a
+/// calibration that does not hold what a camera needs is refused naming the key, as a bad
+/// parameter is:
+///
+/// ```toml
+/// image_width = 640
+/// image_height = 480
+/// camera_name = "narrow_stereo"
+/// distortion_model = "plumb_bob"
+/// distortion_coefficients = [-0.3635, 0.1619, -0.0001, 0.0003, 0.0]
+/// camera_matrix = [430.2, 0.0, 306.7,  0.0, 430.5, 227.2,  0.0, 0.0, 1.0]         # 3 x 3
+/// rectification_matrix = [1.0, 0.0, 0.0,  0.0, 1.0, 0.0,  0.0, 0.0, 1.0]          # 3 x 3
+/// projection_matrix = [432.0, 0.0, 306.0, 0.0,  0.0, 432.0, 227.0, 0.0,  0.0, 0.0, 1.0, 0.0]
+/// binning_x = 0          # optional, 0 when absent
+/// binning_y = 0          # optional, 0 when absent
+/// [roi]                  # optional, every key optional, 0 and false when absent
+/// x_offset = 0
+/// y_offset = 0
+/// height = 0
+/// width = 0
+/// do_rectify = false
+/// ```
 
-#include "hypha/detail/yaml_subset.h"
+#include "hypha/config.h"
 #include "hypha/status.h"
 
 #include <sensor_msgs/CameraInfo.h>
 
-#include <charconv>
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
-#include <initializer_list>
-#include <iterator>
+#include <optional>
+#include <stdexcept>
 #include <string>
-#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -28,248 +50,327 @@ namespace hypha {
 
 namespace detail::camera {
 
-using yaml::fail;
-using yaml::Node;
-
-inline const Node& required(const Node& map, const char* key, const std::string& where)
+/// The reads of one calibration, each refusal prefixed with what is read (the file, or the
+/// table of the parameter file).
+class Reader
 {
-    const Node* node = map.find(key);
-    if (node == nullptr) {
-        fail(where, 0, "missing key '" + std::string(key) + "'");
+  public:
+    Reader(const ConfigView& view, std::string where) : view_(view), where_(std::move(where))
+    {
     }
-    return *node;
-}
 
-/// Refuses a key of @p map that is not in @p known: a typo is not silently dropped.
-inline void onlyKeys(
-    const Node&                        map,
-    std::initializer_list<const char*> known,
-    const std::string&                 prefix,
-    const std::string&                 where
-)
-{
-    for (size_t index = 0; index < map.keys.size(); ++index) {
-        bool isKnown = false;
-        for (const char* key : known) {
-            isKnown = isKnown || map.keys[index] == key;
-        }
-        if (!isKnown) {
-            fail(where, map.values[index].line, "unknown key '" + prefix + map.keys[index] + "'");
-        }
+    [[noreturn]] void fail(const std::string& reason) const
+    {
+        throw ConfigError("hypha: camera calibration " + this->where_ + ": " + reason);
     }
-}
 
-inline const std::string&
-scalar(const Node& node, const std::string& name, const std::string& where)
-{
-    if (node.kind != Node::Kind::Scalar) {
-        fail(where, node.line, name + ": expected a single value");
-    }
-    return node.text;
-}
-
-/// An unsigned integer, at least @p minimum, in @p name.
-inline uint32_t
-integer(const Node& node, const std::string& name, const std::string& where, uint32_t minimum)
-{
-    const std::string& text = scalar(node, name, where);
-    uint32_t           value = 0;
-    const char*        end = text.data() + text.size();
-    const auto         result = std::from_chars(text.data(), end, value);
-    const bool         ok = !text.empty() && result.ec == std::errc{} && result.ptr == end;
-    if (!ok || value < minimum) {
-        const std::string kind = minimum > 0 ? "a positive integer" : "a non-negative integer";
-        fail(where, node.line, name + ": '" + text + "' is not " + kind);
-    }
-    return value;
-}
-
-inline double number(const Node& item, const std::string& name, const std::string& where)
-{
-    std::string text = item.text;
-    const bool  signedText = text.size() > 1 && text.front() == '+';
-    if (signedText) {
-        text.erase(0, 1);
-    }
-    double      value = 0.0;
-    const char* end = text.data() + text.size();
-    const auto  result = std::from_chars(text.data(), end, value);
-    const bool  parsed = !text.empty() && result.ec == std::errc{} && result.ptr == end;
-    const bool  yamlSpecial = text == ".nan" || text == ".inf" || text == "-.inf";
-    if (!parsed && !yamlSpecial) {
-        fail(where, item.line, name + ": '" + item.text + "' is not a number");
-    }
-    if (yamlSpecial || !std::isfinite(value)) {
-        fail(where, item.line, name + ": '" + item.text + "' is not a finite number");
-    }
-    return value;
-}
-
-/// The matrix @p key (`rows`, `cols`, `data`), row-major. @p rows and @p cols fix its shape;
-/// 0 and 0 leave it to the file (the distortion coefficients), which then must agree with
-/// itself.
-inline std::vector<double>
-matrix(const Node& root, const char* key, size_t rows, size_t cols, const std::string& where)
-{
-    const std::string name = key;
-    const Node&       node = required(root, key, where);
-    if (node.kind != Node::Kind::Mapping) {
-        fail(where, node.line, name + ": expected rows, cols and data on their own lines");
-    }
-    onlyKeys(node, {"rows", "cols", "data"}, name + ".", where);
-    for (const char* part : {"rows", "cols", "data"}) {
-        if (node.find(part) == nullptr) {
-            fail(where, node.line, name + ": missing key '" + part + "'");
+    /// Runs @p read and turns its ParameterError into a refusal of this calibration.
+    template <typename Read>
+    auto guarded(Read read) const
+    {
+        try {
+            return read();
+        } catch (const ParameterError& error) {
+            std::string       reason = error.what();
+            const std::string prefix = "hypha: ";
+            if (reason.starts_with(prefix)) {
+                reason.erase(0, prefix.size());
+            }
+            this->fail(reason);
         }
     }
-    const size_t fileRows = integer(*node.find("rows"), name + ".rows", where, 0);
-    const size_t fileCols = integer(*node.find("cols"), name + ".cols", where, 0);
-    const Node&  data = *node.find("data");
-    if (data.kind != Node::Kind::Sequence) {
-        fail(where, data.line, name + ".data: expected a list of numbers");
-    }
-    const bool fixed = rows > 0;
-    if (fixed && (fileRows != rows || fileCols != cols)) {
-        fail(
-            where,
-            node.line,
-            name + ": expected " + std::to_string(rows) + " x " + std::to_string(cols) + ", found "
-                + std::to_string(fileRows) + " x " + std::to_string(fileCols)
-        );
-    }
-    const size_t held = fileRows * fileCols;
-    if (fixed && data.items.size() != held) {
-        fail(
-            where,
-            data.line,
-            name + ".data: expected " + std::to_string(held) + " numbers (" + std::to_string(rows)
-                + " x " + std::to_string(cols) + "), found " + std::to_string(data.items.size())
-        );
-    }
-    if (!fixed && data.items.size() != held) {
-        fail(
-            where,
-            node.line,
-            name + ": rows " + std::to_string(fileRows) + " x cols " + std::to_string(fileCols)
-                + " holds " + std::to_string(held) + " numbers, but data has "
-                + std::to_string(data.items.size())
-        );
-    }
-    std::vector<double> values;
-    for (size_t index = 0; index < data.items.size(); ++index) {
-        const std::string element = name + ".data[" + std::to_string(index) + "]";
-        values.push_back(number(data.items[index], element, where));
-    }
-    return values;
-}
 
-inline void readRoi(const Node& node, sensor_msgs::CameraInfo& info, const std::string& where)
-{
-    if (node.kind != Node::Kind::Mapping) {
-        fail(where, node.line, "roi: expected its keys on their own lines");
-    }
-    onlyKeys(node, {"x_offset", "y_offset", "height", "width", "do_rectify"}, "roi.", where);
-    const auto read = [&node, &where](const char* key, uint32_t& field) {
-        const Node* value = node.find(key);
-        if (value != nullptr) {
-            field = integer(*value, std::string("roi.") + key, where, 0);
+    uint32_t size(const char* key) const
+    {
+        const auto value = this->guarded([this, key] {
+            return this->view_.required<uint32_t>(key);
+        });
+        if (value == 0) {
+            this->fail(this->view_.name(key) + ": must be at least 1, found 0");
         }
-    };
-    read("x_offset", info.roi.x_offset);
-    read("y_offset", info.roi.y_offset);
-    read("height", info.roi.height);
-    read("width", info.roi.width);
-    const Node* rectify = node.find("do_rectify");
-    if (rectify != nullptr) {
-        const std::string& text = scalar(*rectify, "roi.do_rectify", where);
-        const bool isBool = text == "true" || text == "false" || text == "True" || text == "False";
-        if (!isBool) {
-            fail(where, rectify->line, "roi.do_rectify: '" + text + "' is not true or false");
-        }
-        info.roi.do_rectify = text == "true" || text == "True";
+        return value;
     }
-}
 
-}  // namespace detail::camera
+    uint32_t count(const char* key) const
+    {
+        return this->guarded([this, key] {
+            return this->view_.optional<uint32_t>(key, 0U);
+        });
+    }
 
-/// @brief The calibration in @p text, a ROS camera calibration YAML. `header` stays empty:
-///        the driver stamps each message and names the frame.
-/// @param source   what the refusals call the text, usually the file name.
-/// @param cameraName set to the file's `camera_name`, or to "" when it has none.
-/// @throws ConfigError naming @p source, the line and the field, for a key that is missing
-///         or unknown, a value that is not what the field needs, or a matrix of the wrong
-///         shape. `image_width`, `image_height`, `camera_matrix` (3 x 3), `distortion_model`,
-///         `distortion_coefficients`, `rectification_matrix` (3 x 3) and `projection_matrix`
-///         (3 x 4) are required.
+    /// The numbers of @p key; @p cols 0 leaves the length to the file (one row).
+    std::vector<double> matrix(const char* key, size_t rows, size_t cols) const
+    {
+        const std::string                        name = this->view_.name(key);
+        const std::optional<std::vector<double>> found = this->guarded([this, key] {
+            return this->view_.optionalArray<double>(key);
+        });
+        if (!found) {
+            const bool rosLayout = this->guarded([this, key] {
+                return this->view_.optionalArray<double>(std::string(key) + ".data").has_value();
+            });
+            this->fail(
+                rosLayout ? name + ": write the numbers of its 'data' as one flat array, " + key
+                                + " = [...], without rows and cols"
+                          : "missing key '" + name + "'"
+            );
+        }
+        const std::vector<double>& values = *found;
+        const bool                 wrongShape = cols > 0 && values.size() != rows * cols;
+        if (wrongShape) {
+            this->fail(
+                std::format(
+                    "{}: expected {} x {} = {} elements, found {}",
+                    name,
+                    rows,
+                    cols,
+                    rows * cols,
+                    values.size()
+                )
+            );
+        }
+        for (size_t index = 0; index < values.size(); ++index) {
+            if (!std::isfinite(values[index])) {
+                this->fail(
+                    std::format("{}[{}]: {} is not a finite number", name, index, values[index])
+                );
+            }
+        }
+        return values;
+    }
+
+    const ConfigView& view() const
+    {
+        return this->view_;
+    }
+
+  private:
+    const ConfigView& view_;
+    std::string       where_;
+};
+
 inline sensor_msgs::CameraInfo
-parseCameraInfo(std::string_view text, const std::string& source, std::string* cameraName = nullptr)
+read(const ConfigView& view, const std::string& where, std::string* cameraName)
 {
-    using namespace detail::camera;
-    const std::string where = "camera calibration '" + source + "'";
-    const Node        root = detail::yaml::parse(text, where);
-    onlyKeys(
-        root,
-        {"image_width",
-         "image_height",
-         "camera_name",
-         "camera_matrix",
-         "distortion_model",
-         "distortion_coefficients",
-         "rectification_matrix",
-         "projection_matrix",
-         "binning_x",
-         "binning_y",
-         "roi"},
-        "",
-        where
-    );
+    const Reader            reader(view, where);
     sensor_msgs::CameraInfo info;
-    info.width = integer(required(root, "image_width", where), "image_width", where, 1);
-    info.height = integer(required(root, "image_height", where), "image_height", where, 1);
-    const Node& model = required(root, "distortion_model", where);
-    info.distortion_model = scalar(model, "distortion_model", where);
-    if (info.distortion_model.empty()) {
-        fail(where, model.line, "distortion_model: must not be empty");
-    }
+    info.width = reader.size("image_width");
+    info.height = reader.size("image_height");
+    info.distortion_model = reader.guarded([&view] {
+        return view.required<std::string>("distortion_model", constraints::nonempty());
+    });
     const auto copy = [](const std::vector<double>& from, auto& to) {
         std::copy(from.begin(), from.end(), to.begin());
     };
-    copy(matrix(root, "camera_matrix", 3, 3, where), info.K);
-    info.D = matrix(root, "distortion_coefficients", 0, 0, where);
-    copy(matrix(root, "rectification_matrix", 3, 3, where), info.R);
-    copy(matrix(root, "projection_matrix", 3, 4, where), info.P);
-    const Node* binningX = root.find("binning_x");
-    const Node* binningY = root.find("binning_y");
-    if (binningX != nullptr) {
-        info.binning_x = integer(*binningX, "binning_x", where, 0);
-    }
-    if (binningY != nullptr) {
-        info.binning_y = integer(*binningY, "binning_y", where, 0);
-    }
-    const Node* roi = root.find("roi");
-    if (roi != nullptr) {
-        readRoi(*roi, info, where);
+    info.D = reader.matrix("distortion_coefficients", 1, 0);
+    copy(reader.matrix("camera_matrix", 3, 3), info.K);
+    copy(reader.matrix("rectification_matrix", 3, 3), info.R);
+    copy(reader.matrix("projection_matrix", 3, 4), info.P);
+    info.binning_x = reader.count("binning_x");
+    info.binning_y = reader.count("binning_y");
+    info.roi.x_offset = reader.count("roi.x_offset");
+    info.roi.y_offset = reader.count("roi.y_offset");
+    info.roi.height = reader.count("roi.height");
+    info.roi.width = reader.count("roi.width");
+    info.roi.do_rectify = reader.guarded([&view] {
+        return view.optional<bool>("roi.do_rectify", false);
+    });
+    const std::string name = reader.guarded([&view] {
+        return view.optional<std::string>("camera_name", std::string{});
+    });
+    // Every key the calibration knows is read: what is left is a typo or a key of another
+    // format, refused rather than dropped.
+    const std::vector<std::string> unknown = view.unreadKeys();
+    if (!unknown.empty()) {
+        reader.fail("unknown key '" + unknown.front() + "'");
     }
     if (cameraName != nullptr) {
-        const Node* name = root.find("camera_name");
-        *cameraName = name == nullptr ? std::string{} : scalar(*name, "camera_name", where);
+        *cameraName = name;
     }
     return info;
 }
 
-/// @brief parseCameraInfo() of the file @p path:
-/// `readCameraInfo(config().path("camera_info_url"))`.
-/// @throws ConfigError as parseCameraInfo(), and when the file cannot be read.
+/// @p text as a TOML basic string.
+inline std::string quoted(const std::string& text)
+{
+    std::string result = "\"";
+    for (const char c : text) {
+        const auto code = static_cast<unsigned char>(c);
+        if (c == '"' || c == '\\') {
+            result += '\\';
+            result += c;
+        } else if (code < 0x20 || code == 0x7F) {
+            result += std::format("\\u{:04X}", code);
+        } else {
+            result += c;
+        }
+    }
+    return result + "\"";
+}
+
+/// @p value as a TOML float, exact: `1.0`, `0.0015`, `1e-05`.
+inline std::string number(double value)
+{
+    std::string text = std::format("{}", value);
+    if (text.find_first_of(".e") == std::string::npos) {
+        text += ".0";
+    }
+    return text;
+}
+
+/// The array @p key of @p values, one row of @p cols numbers on each line.
+template <typename Values>
+std::string array(const char* key, const Values& values, size_t cols, const char* shape)
+{
+    std::string text = std::string(key) + " = [";
+    if (cols == 0) {
+        for (size_t index = 0; index < values.size(); ++index) {
+            text += (index == 0 ? "" : ", ") + number(values[index]);
+        }
+        return text + "]\n";
+    }
+    text = std::string("# ") + shape + ", row-major\n" + text + "\n";
+    for (size_t index = 0; index < values.size(); ++index) {
+        text += (index % cols == 0 ? "    " : " ") + number(values[index]) + ",";
+        text += index % cols == cols - 1 ? "\n" : "";
+    }
+    return text + "]\n";
+}
+
+/// Refuses what readCameraInfo() would refuse in @p info, naming the field.
+inline void checkWritable(const sensor_msgs::CameraInfo& info, const std::string& path)
+{
+    const auto fail = [&path](const std::string& reason) {
+        throw ConfigError("hypha: camera calibration '" + path + "' not written: " + reason);
+    };
+    if (info.width == 0 || info.height == 0) {
+        fail("width and height must be at least 1");
+    }
+    if (info.distortion_model.empty()) {
+        fail("distortion_model must not be empty");
+    }
+    const auto finite = [&fail](const char* field, const auto& values) {
+        for (size_t index = 0; index < values.size(); ++index) {
+            if (!std::isfinite(values[index])) {
+                fail(std::format("{}[{}] is not a finite number", field, index));
+            }
+        }
+    };
+    finite("D", info.D);
+    finite("K", info.K);
+    finite("R", info.R);
+    finite("P", info.P);
+}
+
+}  // namespace detail::camera
+
+/// @brief The calibration in the table @p table of the node's parameter file:
+///        `readCameraInfo(hypha::config("camera_info"))`. `header` stays empty: the driver
+///        stamps each message and names the frame.
+/// @param cameraName set to `camera_name`, or to "" when the table has none.
+/// @throws ConfigError naming the key, for a key that is missing or unknown, a value that
+///         is not what the field needs (a size of 0, a number that is not finite, empty
+///         text), or a matrix of the wrong length. `image_width`, `image_height`,
+///         `distortion_model`, `distortion_coefficients`, `camera_matrix` (3 x 3),
+///         `rectification_matrix` (3 x 3) and `projection_matrix` (3 x 4) are required.
+inline sensor_msgs::CameraInfo
+readCameraInfo(const ConfigView& table, std::string* cameraName = nullptr)
+{
+    return detail::camera::read(table, "[" + table.name() + "]", cameraName);
+}
+
+/// @brief The calibration file @p path, the same keys at the top level:
+///        `readCameraInfo(hypha::config().path("camera_info_url"))`.
+/// @throws ConfigError as the table form, naming @p path, and when the file is missing or
+///         not TOML.
 inline sensor_msgs::CameraInfo
 readCameraInfo(const std::string& path, std::string* cameraName = nullptr)
 {
-    std::ifstream file(path, std::ios::binary);
-    const bool    readable = std::filesystem::is_regular_file(path) && file.is_open();
-    if (!readable) {
-        detail::yaml::fail("camera calibration '" + path + "'", 0, "cannot read the file");
+    const bool present = std::filesystem::is_regular_file(path);
+    if (!present) {
+        throw ConfigError("hypha: camera calibration '" + path + "': cannot read the file");
     }
-    const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-    return parseCameraInfo(text, path, cameraName);
+    std::optional<ConfigFile> file;
+    try {
+        file.emplace(path);
+    } catch (const ConfigError&) {
+        throw ConfigError(
+            "hypha: camera calibration '" + path
+            + "': not a TOML file the parameter loader accepts (its reason is logged above)"
+        );
+    }
+    return detail::camera::read(file->view(), "'" + path + "'", cameraName);
+}
+
+/// @brief readCameraInfo(@p path), or no value when nothing is at @p path: the camera runs
+///        uncalibrated, as with camera_info_manager (the driver says so in its log). A file
+///        that is there and malformed still throws.
+inline std::optional<sensor_msgs::CameraInfo>
+readCameraInfoIfPresent(const std::string& path, std::string* cameraName = nullptr)
+{
+    std::error_code error;
+    const bool      exists = std::filesystem::exists(path, error);
+    if (!exists && !error) {
+        return std::nullopt;
+    }
+    return readCameraInfo(path, cameraName);
+}
+
+/// @brief Writes @p info and @p cameraName to @p path as the calibration file that
+///        readCameraInfo() reads, as `set_camera_info` does: into `<path>.tmp`, then renamed
+///        over @p path, so a reader never sees half a file. Missing directories are created.
+///        `header` is not written.
+/// @throws ConfigError for a calibration readCameraInfo() would refuse (a size of 0, an
+///         empty distortion model, a number that is not finite), naming the field;
+///         std::runtime_error when the file cannot be written.
+inline void writeCameraInfo(
+    const std::string& path, const sensor_msgs::CameraInfo& info, const std::string& cameraName
+)
+{
+    using namespace detail::camera;
+    checkWritable(info, path);
+    std::string text = "# Camera calibration (hypha::writeCameraInfo)\n";
+    text += std::format("image_width = {}\nimage_height = {}\n", info.width, info.height);
+    text += "camera_name = " + quoted(cameraName) + "\n";
+    text += "distortion_model = " + quoted(info.distortion_model) + "\n";
+    text += array("distortion_coefficients", info.D, 0, "");
+    text += array("camera_matrix", info.K, 3, "3 x 3");
+    text += array("rectification_matrix", info.R, 3, "3 x 3");
+    text += array("projection_matrix", info.P, 4, "3 x 4");
+    text += std::format("binning_x = {}\nbinning_y = {}\n", info.binning_x, info.binning_y);
+    text += std::format(
+        "\n[roi]\nx_offset = {}\ny_offset = {}\nheight = {}\nwidth = {}\ndo_rectify = {}\n",
+        info.roi.x_offset,
+        info.roi.y_offset,
+        info.roi.height,
+        info.roi.width,
+        info.roi.do_rectify ? "true" : "false"
+    );
+    const std::filesystem::path target(path);
+    const std::filesystem::path temporary(path + ".tmp");
+    const auto                  fail = [&path](const std::string& reason) {
+        throw std::runtime_error("hypha: camera calibration '" + path + "': " + reason);
+    };
+    std::error_code error;
+    if (target.has_parent_path()) {
+        std::filesystem::create_directories(target.parent_path(), error);
+        if (error) {
+            fail("cannot create its directory: " + error.message());
+        }
+    }
+    {
+        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+        file << text;
+        file.close();
+        if (!file) {
+            fail("cannot write " + temporary.string());
+        }
+    }
+    std::filesystem::rename(temporary, target, error);
+    if (error) {
+        std::filesystem::remove(temporary, error);
+        fail("cannot replace the file: " + error.message());
+    }
 }
 
 }  // namespace hypha

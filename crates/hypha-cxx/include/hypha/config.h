@@ -21,8 +21,10 @@
 namespace hypha {
 
 class ConfigList;
+class ConfigFile;
 
-/// A scalar configuration scope, or one indexed table entry.
+/// A scalar configuration scope, or one indexed table entry, of the configuration of the
+/// process or of a ConfigFile.
 class ConfigView
 {
   public:
@@ -57,7 +59,7 @@ class ConfigView
             this->refuse(key, value.error());
         }
         this->validate(key, *value, constraint);
-        detail::recordRequiredParameter(this->name(key), *value);
+        this->recordRequired(key, *value);
         return *value;
     }
 
@@ -75,7 +77,7 @@ class ConfigView
             this->refuse(key, value.error());
         }
         this->validate(key, *value, constraint);
-        detail::recordRequiredParameter(this->name(key), *value);
+        this->recordRequired(key, *value);
         return *value;
     }
 
@@ -90,11 +92,15 @@ class ConfigView
                 this->refuse(key, value.error());
             }
             this->validate(key, defaultValue, constraint);
-            detail::recordDefaultParameter(this->name(key), defaultValue);
+            if (this->config_ == nullptr) {
+                detail::recordDefaultParameter(this->name(key), defaultValue);
+            }
             return defaultValue;
         }
         this->validate(key, *value, constraint);
-        detail::recordParameter(this->name(key), *value, defaultValue);
+        if (this->config_ == nullptr) {
+            detail::recordParameter(this->name(key), *value, defaultValue);
+        }
         return *value;
     }
 
@@ -105,13 +111,25 @@ class ConfigView
     {
         const std::string name = this->required<std::string>(key, constraints::nonempty());
         const std::expected<std::string, Status> resolved =
-            backend::resolveConfigKey(this->name(key));
+            backend::resolveConfigKey(this->name(key), this->config_);
         if (!resolved) {
             throw ParameterError(
                 "hypha: parameter '" + this->name(key) + "' is not a usable file name"
             );
         }
         return *resolved;
+    }
+
+    /// @brief path(), or no value when @p key is not set. A key that is set and empty, or
+    ///        not text, throws as path() does.
+    std::optional<std::string> optionalPath(const std::string& key) const
+    {
+        const std::expected<std::string, Status> value = this->read<std::string>(key);
+        const bool notSet = !value && value.error() == Status::NotAvailable;
+        if (notSet) {
+            return std::nullopt;
+        }
+        return this->path(key);
     }
 
     /// @brief The list @p key. @throws ParameterError when not a list, or unset (list() only).
@@ -169,7 +187,7 @@ class ConfigView
     /// @brief The keys under this view that nothing read and nothing ignored, sorted.
     std::vector<std::string> unreadKeys() const
     {
-        return backend::unreadParameterKeys(this->name());
+        return backend::unreadParameterKeys(this->name(), this->config_);
     }
 
     /// @brief Marks the key or table @p keyOrPrefix as read by a branch the code did not
@@ -178,7 +196,7 @@ class ConfigView
     void ignore(const std::string& keyOrPrefix, const std::string& reason) const
     {
         const std::string key = this->name(keyOrPrefix);
-        if (backend::ignoreParameter(key, reason) != HYPHA_STATUS_OK) {
+        if (backend::ignoreParameter(key, reason, this->config_) != HYPHA_STATUS_OK) {
             throw ParameterError(
                 "hypha: parameter '" + key + "' needs a key and a reason to ignore"
             );
@@ -186,6 +204,28 @@ class ConfigView
     }
 
   private:
+    friend class ConfigFile;
+    friend class ConfigList;
+
+    ConfigView(const HyphaConfig* config, std::string prefix)
+        : prefix_(std::move(prefix)), config_(config)
+    {
+    }
+
+    ConfigView(const HyphaConfig* config, std::string list, size_t index)
+        : prefix_(std::move(list)), index_(index), config_(config)
+    {
+    }
+
+    /// A read of a ConfigFile is no parameter of the node: it is not recorded.
+    template <typename T>
+    void recordRequired(const std::string& key, const T& value) const
+    {
+        if (this->config_ == nullptr) {
+            detail::recordRequiredParameter(this->name(key), value);
+        }
+    }
+
     template <typename T>
     std::optional<std::vector<T>>
     readArray(const std::string& key, std::optional<size_t> expected) const
@@ -194,7 +234,8 @@ class ConfigView
             throw ParameterError("hypha: nested lists are not supported: " + this->name(key));
         }
         const std::string                   listName = this->name(key);
-        const std::expected<size_t, Status> length = detail::paramListLength(listName);
+        const std::expected<size_t, Status> length =
+            detail::paramListLength(listName, this->config_);
         if (!length) {
             if (length.error() == Status::NotAvailable) {
                 return std::nullopt;
@@ -211,13 +252,16 @@ class ConfigView
         std::vector<T> values;
         values.reserve(*length);
         for (size_t index = 0; index < *length; ++index) {
-            const std::expected<T, Status> element = detail::paramListAt<T>(listName, index);
+            const std::expected<T, Status> element =
+                detail::paramListAt<T>(listName, index, {}, this->config_);
             if (!element) {
-                throw ParameterError(detail::arrayElementRefusal<T>(listName, index));
+                throw ParameterError(
+                    detail::arrayElementRefusal<T>(listName, index, this->config_)
+                );
             }
             values.push_back(*element);
         }
-        detail::recordRequiredParameter(listName, detail::arrayText(values));
+        this->recordRequired(key, detail::arrayText(values));
         return values;
     }
 
@@ -225,10 +269,11 @@ class ConfigView
     std::expected<T, Status> read(const std::string& key) const
     {
         if (this->index_) {
-            return detail::paramListAt<T>(this->prefix_, *this->index_, key);
+            return detail::paramListAt<T>(this->prefix_, *this->index_, key, this->config_);
         }
         T                      value{};
-        const HyphaParamResult result = detail::readParameterValue<T>(this->name(key), value);
+        const HyphaParamResult result =
+            detail::readParameterValue<T>(this->name(key), value, this->config_);
         if (result != HYPHA_PARAM_RESULT_OK) {
             return std::unexpected(detail::listReadStatus(result));
         }
@@ -255,107 +300,9 @@ class ConfigView
 
     std::string           prefix_;
     std::optional<size_t> index_;
+    /// The ConfigFile read, or null for the configuration of the process.
+    const HyphaConfig* config_{nullptr};
 };
-
-/// Immutable list views retain TOML order and label failures with the entry index.
-class ConfigList
-{
-  public:
-    class Iterator
-    {
-      public:
-        using value_type = ConfigView;
-        using difference_type = std::ptrdiff_t;
-        using iterator_category = std::input_iterator_tag;
-
-        Iterator(std::string list, size_t index) : list_(std::move(list)), index_(index)
-        {
-        }
-
-        ConfigView operator*() const
-        {
-            return ConfigView(this->list_, this->index_);
-        }
-
-        Iterator& operator++()
-        {
-            ++this->index_;
-            return *this;
-        }
-
-        void operator++(int)
-        {
-            ++*this;
-        }
-
-        bool operator==(const Iterator& other) const
-        {
-            return this->index_ == other.index_;
-        }
-
-      private:
-        std::string list_;
-        size_t      index_;
-    };
-
-    explicit ConfigList(std::string name) : name_(std::move(name))
-    {
-        const std::expected<size_t, Status> length = detail::paramListLength(this->name_);
-        if (!length) {
-            if (length.error() == Status::NotAvailable) {
-                throw ParameterError("hypha: required list not set: " + this->name_);
-            }
-            throw ParameterError("hypha: parameter '" + this->name_ + "' is not a list");
-        }
-        this->size_ = *length;
-    }
-
-    size_t size() const
-    {
-        return this->size_;
-    }
-
-    ConfigView at(size_t index) const
-    {
-        if (index >= this->size_) {
-            const std::string entry = this->name_ + "[" + std::to_string(index) + "]";
-            throw ParameterError("hypha: list entry not set: " + entry);
-        }
-        return ConfigView(this->name_, index);
-    }
-
-    Iterator begin() const
-    {
-        return Iterator(this->name_, 0);
-    }
-
-    Iterator end() const
-    {
-        return Iterator(this->name_, this->size_);
-    }
-
-  private:
-    std::string name_;
-    size_t      size_{0};
-};
-
-inline ConfigList ConfigView::list(const std::string& key) const
-{
-    if (this->index_) {
-        throw ParameterError("hypha: nested lists are not supported: " + this->name(key));
-    }
-    return ConfigList(this->name(key));
-}
-
-inline std::optional<ConfigList> ConfigView::optionalList(const std::string& key) const
-{
-    const std::expected<size_t, Status> length = detail::paramListLength(this->name(key));
-    const bool                          notSet = !length && length.error() == Status::NotAvailable;
-    if (notSet) {
-        return std::nullopt;
-    }
-    return this->list(key);
-}
 
 /// A standalone parameter configuration scope that does not join the bus.
 class ConfigContext
@@ -390,9 +337,51 @@ class ConfigContext
     bool ownsConfig_{false};
 };
 
+/// A TOML file read through ConfigView apart from the configuration of the process, such
+/// as a camera calibration: the parameter-file loader reads it (`include`, `${NAME}`), its
+/// reads mark its keys read for unreadKeys(), and they are not recorded as parameters of
+/// the node. path() resolves against the directory of the file. The views borrow the file:
+/// they must not outlive it.
+class ConfigFile
+{
+  public:
+    /// @throws ConfigError naming @p path when the file is missing, unreadable or not a
+    ///         parameter file the loader accepts (it logs the reason, with the line).
+    explicit ConfigFile(const std::string& path)
+    {
+        const Status status = backend::loadConfigFile(path, &this->config_);
+        if (status != Status::Ok) {
+            throw ConfigError(
+                "hypha: '" + path + "' cannot be read as a TOML file (the reason is logged above)"
+            );
+        }
+    }
+
+    ~ConfigFile()
+    {
+        backend::destroyConfigFile(this->config_);
+    }
+
+    ConfigFile(const ConfigFile&) = delete;
+    ConfigFile& operator=(const ConfigFile&) = delete;
+    ConfigFile(ConfigFile&&) = delete;
+    ConfigFile& operator=(ConfigFile&&) = delete;
+
+    /// @brief The table @p prefix of the file, or the whole file.
+    ConfigView view(const std::string& prefix = {}) const
+    {
+        return ConfigView(this->config_, prefix);
+    }
+
+  private:
+    HyphaConfig* config_{nullptr};
+};
+
 inline ConfigView config(const std::string& prefix = {})
 {
     return ConfigView(prefix);
 }
 
 }  // namespace hypha
+
+#include "hypha/config_list.h"
