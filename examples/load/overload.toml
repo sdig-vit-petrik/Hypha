@@ -11,7 +11,7 @@
 # Memory flat after warm-up: the limits are the largest value of the window minus the
 # value at its start. Every load publisher is bounded to its message size, and
 # `bounded_memory = true` runs the workers as a bounded deployment, the condition
-# under which NFR-05 bounds memory (a growable topic is no bound, G-13).
+# under which NFR-05 bounds memory (a growable topic is no bound).
 # - Resident memory: max_rss_growth_bytes = 1 MiB per process. The flood sends of the
 #   order of 10^5 messages a second, so a leak of one byte per message would grow far
 #   past it within the window.

@@ -1,66 +1,62 @@
-# Hypha Documentation
+# hypha documentation
 
-Hypha is a SIL0 single-host shared-memory middleware framework built on `iceoryx2` with ROS 1-compatible message serialization. A Rust core exposes one C ABI (`libhypha_ffi`), consumed by the C++23 SDK (`hypha-cxx`) and CLI tools. Network connectivity (ROS 1 XML-RPC/TCPROS, Foxglove) runs in separate bridge processes ([apps/hypha_ros_bridge/README.md](../apps/hypha_ros_bridge/README.md)).
+hypha is SIL 0 shared-memory middleware for one host, built on `iceoryx2`, with ROS 1 message
+serialization. A Rust core is exposed through one C ABI (`libhypha_ffi`), used by the C++23 SDK
+(`hypha-cxx`) and the CLI tools. Network traffic (ROS 1 XML-RPC and TCPROS, Foxglove) runs in
+separate bridge processes ([apps/hypha_ros_bridge/README.md](../apps/hypha_ros_bridge/README.md)).
 
-Background standards (reference only; no compliance claim): IEC 61508-3:2010, IEC 61784-3.
+IEC 61508-3:2010 and IEC 61784-3 are background references; hypha claims compliance with neither.
 
----
-
-## 1. Developer Guides
+## 1. Developer guides
 
 | Document | Topic |
 |---|---|
 | [getting-started.md](getting-started.md) | Build, install, CMake integration, shared-memory cleanup |
-| [cpp-api.md](cpp-api.md) | C++23 SDK task guide (`CycleNode`, ports, loans, timers, config, TF) |
+| [cpp-api.md](cpp-api.md) | The C++23 SDK by task: `CycleNode`, ports, loans, timers, parameters, TF, services |
 | [execution-model.md](execution-model.md) | `WaitSet`, cycles, callbacks, timers, simulated time |
-| [ros1-migration-guide.md](ros1-migration-guide.md) | Migrating ROS 1 C++ nodes to Hypha |
-| [tools.md](tools.md) | CLI tools (`hypha topic`, `top`, `record`, `play`, `launch`, `intercept`, `clean`, `load`) |
+| [ros1-migration-guide.md](ros1-migration-guide.md) | Porting a ROS 1 C++ node |
+| [tools.md](tools.md) | The CLI tools (`hypha topic`, `top`, `record`, `play`, `launch`, `intercept`, `clean`, `load`, ...) |
 | [replay-flow-control.md](replay-flow-control.md) | Lockstep and open-loop replay on `/clock` |
-| [containerized-deployment.md](containerized-deployment.md) | Docker / Compose setup (`/dev/shm`, `/tmp/iceoryx2`, UIDs, domains, restarts) |
-| [features.md](features.md) | Public capability inventory, surface rules, and triage |
-| [engineering-traps.md](engineering-traps.md) | Known transport, execution, and integration pitfalls |
-| [rust-style.md](rust-style.md) | Rust house rules, lint policy, and SCRC mapping |
-| [design/native-services.md](design/native-services.md) | Design for native `.srv` services (#132; Stage 1a transport implemented) |
-| [autoware-ground-filter-abs.md](autoware-ground-filter-abs.md) | Upstream bug note for `autoware_ground_filter` (`int abs(int)`) |
-| [Doxyfile](Doxyfile) | Optional C++ header API docs (`doxygen docs/Doxyfile` -> `target/cpp-doc/`) |
-| [../AGENTS.md](../AGENTS.md) | Architecture map and rules for coding agents |
+| [containerized-deployment.md](containerized-deployment.md) | Docker and Compose: `/dev/shm`, `/tmp/iceoryx2`, UIDs, domains, restarts |
+| [features.md](features.md) | The public capabilities, the surface rules, triage |
+| [engineering-traps.md](engineering-traps.md) | Known transport, execution and integration pitfalls |
+| [rust-style.md](rust-style.md) | Rust house rules and lint policy |
+| [design/native-services.md](design/native-services.md) | The design of native `.srv` services (#132) |
+| [autoware-ground-filter-abs.md](autoware-ground-filter-abs.md) | An upstream bug in `autoware_ground_filter` (`int abs(int)`) |
+| [Doxyfile](Doxyfile) | Optional C++ header docs (`doxygen docs/Doxyfile`, into `target/cpp-doc/`) |
+| [../AGENTS.md](../AGENTS.md) | The architecture map and rules for coding agents |
 
-Rust crate API docs: `cargo doc --workspace --no-deps --open`.
+Rust crate docs: `cargo doc --workspace --no-deps --open`.
 
----
-
-## 2. Specifications & Safety Artifacts
+## 2. Specifications and evidence
 
 | Document | Topic |
 |---|---|
-| [requirements-specification.md](requirements-specification.md) | Software Requirements Specification (FSR / NFR) |
-| [traceability.md](traceability.md) | Requirement-to-test matrix (generated from `traceability.toml`) |
-| [architecture.md](architecture.md) | Software Architecture Specification (layering, C ABI boundary) |
-| [interface-specification.md](interface-specification.md) | C ABI contract, status codes, ownership, QoS, wire frame format |
-| [communication-integrity.md](communication-integrity.md) | Frame integrity checks, covered faults, and application responsibilities |
-| [failure-analysis.md](failure-analysis.md) | Failure modes and integrator assumptions of use |
-| [safety-manual.md](safety-manual.md) | Integrator conditions of use (draft) |
-| [safety-plan.md](safety-plan.md) | Roles, verification lifecycle, defect handling, tool classes |
-| [sil2-readiness.md](sil2-readiness.md) | Gap assessment against IEC 61508-3 SC 2 (no compliance claim) |
-| [dependency-assessment.md](dependency-assessment.md) | Third-party dependency review |
-| [release-policy.md](release-policy.md) | Versioning, release-line freezes, qualification, upgrade/rollback |
-| [releases/](releases/) | Per-release notes |
+| [requirements-specification.md](requirements-specification.md) | The requirements (FSR, NFR) and their class |
+| [traceability.md](traceability.md) | Each requirement and the tests that verify it (generated from `traceability.toml`) |
+| [architecture.md](architecture.md) | Layers and the C ABI boundary |
+| [interface-specification.md](interface-specification.md) | The C ABI contract: status codes, ownership, QoS, the wire frame |
+| [communication-integrity.md](communication-integrity.md) | The frame checks, the faults they cover, and the application's part |
+| [failure-analysis.md](failure-analysis.md) | Failure modes, assumptions of use, and how to use hypha in a safety function |
+| [dependency-assessment.md](dependency-assessment.md) | What hypha requires of its dependencies, and what shows it |
+| [release-policy.md](release-policy.md) | Versions, what a release line freezes, upgrade and rollback, branches |
+| [releases/](releases/) | Release notes |
 
----
+## 3. Operating constraints
 
-## 3. Operating Constraints at a Glance
-
-Details live in [architecture.md](architecture.md), [execution-model.md](execution-model.md), [interface-specification.md](interface-specification.md), and [containerized-deployment.md](containerized-deployment.md).
+Details: [architecture.md](architecture.md), [execution-model.md](execution-model.md),
+[interface-specification.md](interface-specification.md),
+[containerized-deployment.md](containerized-deployment.md).
 
 | Area | Constraint |
 |---|---|
-| **Host & IPC** | Single host only (shared memory, little-endian). Communicating processes must share UID/GID with `rw` access to `/dev/shm` and `/tmp/iceoryx2`. |
-| **Domains & names** | Isolate systems with `HYPHA_DOMAIN` (`[a-z][a-z0-9_]`, ≤32 chars). Node names (`[a-z][a-z0-9_]`, ≤64 chars) are unique per domain; CLI tools share `_hyphacli_<tool>`. |
-| **Dead nodes & SHM** | Crashed nodes keep their slots until a node with the same name restarts and reclaims them, or `hypha clean` wipes the stopped domain. Clear SHM after capacity changes. |
-| **ABI & wire lock** | `abi.revision` versions `libhypha_ffi`; C++ SDK refuses mismatched revisions at start. Wire frames are magic-versioned with CRC-32C. |
-| **Threading** | The library creates no execution threads and sets no scheduling/affinity. Progress happens only while the application drives a `WaitSet`; attachments freeze during a run. |
-| **Signals & logging** | First node creation installs the process-wide `SIGINT`/`SIGTERM` stop handler (below C ABI) and locks in the single `[log]` config (each node keeps its own `slow_callback_ms`). Logging is synchronous. |
-| **Data & freshness** | Fail-restrictive: stale/missing/invalid inputs return `NOT_AVAILABLE` (`std::nullopt`), never invented defaults. Every supervised cycle input requires `silence_ms` (or `unsupervised`). |
-| **Queues & loans** | Queued inputs drop oldest beyond their per-step share. Owning subscribers hold at most `min(buffer, 2)` simultaneous loans (`BorrowLimit`). Wildcard subscriptions resolve once at creation. |
-| **Clocks & counters** | Transport age and timeouts use host monotonic time; timers follow `/clock` under sim time. All counters are 64-bit wrapping unsigned integers. |
-| **Build & tools** | Root CMake requires an explicit `CMAKE_BUILD_TYPE`. `hypha launch` requires `tmux ≥ 3.0`; `./clean-shm.sh` requires `lsof` (unless `--force`). |
+| Host and IPC | One host (shared memory, little-endian). Processes that talk share a UID and GID with read-write access to `/dev/shm` and `/tmp/iceoryx2`. |
+| Domains and names | `HYPHA_DOMAIN` separates systems (`[a-z][a-z0-9_]`, up to 32 characters). Node names (`[a-z][a-z0-9_]`, up to 64) are unique per domain; CLI tools share `_hyphacli_<tool>`. |
+| Dead nodes | A crashed node keeps its slots until a node of the same name starts and reclaims them, or `hypha clean` wipes the stopped domain. Clear shared memory after a capacity change. |
+| ABI and wire | `abi.revision` versions `libhypha_ffi`; the C++ SDK refuses another revision at start. Wire frames carry a format version and a CRC-32C. |
+| Threads | The library creates no thread and sets no scheduling or affinity. Nothing runs unless the application runs a `WaitSet`; attachments freeze during a run. |
+| Signals and logging | The first node installs the process-wide SIGINT and SIGTERM stop handler and fixes the one `[log]` configuration (each node keeps its own `slow_callback_ms`). Logging is synchronous. |
+| Freshness | Missing, stale or invalid inputs reach the step as verdicts, never as invented values. Every enabled cycle input states `silence_ms`, or is tagged `unsupervised`. |
+| Queues and loans | A queued input drops its oldest samples beyond its per-step share. A subscriber keeps one received sample past its callback; one slot stays free for the next delivery. Wildcard subscriptions resolve once, at creation. |
+| Clocks and counters | Transport ages use host monotonic time; timers and cycles follow `/clock` on simulated time. Every counter is a 64-bit unsigned integer that wraps. |
+| Build and tools | The root CMake needs an explicit `CMAKE_BUILD_TYPE`. `hypha launch` needs tmux 3.0 or newer; `./clean-shm.sh` needs `lsof`, unless `--force` removes without a holder check. |

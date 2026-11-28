@@ -30,7 +30,7 @@
 # shows nothing about sustaining it.
 #
 # A result counts for NFR-03 and NFR-04 only on the reference platform, which is not
-# defined yet (docs/sil2-readiness.md G-10, G-11). A run on any other host is a
+# defined yet. A run on any other host is a
 # measurement of that host: the report's `host` block names it.
 
 [run]

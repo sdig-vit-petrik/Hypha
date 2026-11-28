@@ -1020,8 +1020,7 @@ The script runs `target/release/hypha` without building it and forwards the exit
 report: failing limits turn nothing red, a failed run (exit 70, or no report) does, and no requirement
 takes it as evidence.
 
-A run counts for NFR-03 and NFR-04 only on the reference platform, which is not defined yet
-([sil2-readiness.md](sil2-readiness.md) G-10, G-11). Any other host is a development host, and its report
+A run counts for NFR-03 and NFR-04 only on the reference platform, which is not defined yet. Any other host is a development host, and its report
 measures that host. Read it so:
 
 - `host`: `os` and `os_release`, `arch` and `cpus` say which machine was measured. Other load on it (a

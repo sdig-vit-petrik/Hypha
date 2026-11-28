@@ -7,8 +7,8 @@
 #
 # The exit status is hypha load's: 0 every limit passed, 1 a limit failed, 70 the run
 # itself failed; 2 when there is no release build. A result counts for NFR-03 and
-# NFR-04 only on the reference platform, which is not defined yet
-# (docs/sil2-readiness.md G-10): the report's `host` block names the host it measured.
+# NFR-04 only on the reference platform, which is not defined yet: the report's `host`
+# block names the host it measured.
 set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 2

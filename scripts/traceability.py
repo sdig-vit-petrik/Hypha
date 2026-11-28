@@ -53,9 +53,9 @@ RUN_NAMES = ("check", "coverage", "miri", "fuzz", "asan", "tsan")
 # Runs that are reported with their outcome but are no reference of a requirement yet:
 # what each still lacks is its note.
 MEASUREMENT_NOTES = {
-    "rated_load": "on a development host: no reference platform is defined (G-10)",
-    "overload": "not evidence until a Linux run confirms its limits (NFR-05, R8)",
-    "overload_latency": "on a development host: no reference platform is defined (G-10)",
+    "rated_load": "on a development host: no reference platform is defined",
+    "overload": "not evidence until a Linux run confirms its limits (NFR-05)",
+    "overload_latency": "on a development host: no reference platform is defined",
 }
 MEASUREMENT_RUNS = tuple(MEASUREMENT_NOTES)
 MEASUREMENT_OUTCOMES = {
@@ -288,9 +288,8 @@ def render(requirements: list[Requirement]) -> str:
         "test binary under `<crate>/tests/`), `cxx:<file>` (a gtest source file of",
         "`crates/hypha-cxx`) or `run:<name>` (a whole run: `check.sh`, coverage, Miri,",
         "fuzzing, a sanitizer); `*` stands for any name. The gap column says what the stated",
-        "method still lacks. The letters and numbers in brackets (R1, P4, ...) are the items",
-        "of the former backlog document. `scripts/traceability.py report` writes the result",
-        "of every row from a test run.",
+        "method still lacks. `scripts/traceability.py report` writes the result of every",
+        "row from a test run.",
     ]
     sections = (("FSR", "Functional requirements"), ("NFR", "Non-functional requirements"))
     for prefix, title in sections:

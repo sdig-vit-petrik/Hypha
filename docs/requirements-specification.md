@@ -50,10 +50,10 @@ of hypha depends on that choice itself: the C++ SDK, the one library, the ROS 1
 serialization, MCAP, the Foxglove protocol.
 
 ### Verification Methods (V-Model)
-- **T (Test)**: Automated test execution in CI gates.
-- **A (Analysis)**: Formal engineering calculation or static analysis measurement.
-- **I (Inspection)**: Manual code review, schema inspection, or artifact audit.
-- **D (Demonstration)**: Operational verification on a reference target.
+- **T (Test)**: an automated test that `./test.sh` runs.
+- **A (Analysis)**: a calculation or a static analysis.
+- **I (Inspection)**: reading the code, a schema or a generated file.
+- **D (Demonstration)**: a run of a real system by hand, such as an MRS flight of `examples/check.sh` or the bridge against a live ROS 1 graph.
 
 ---
 
@@ -97,8 +97,8 @@ serialization, MCAP, the Foxglove protocol.
 | ID | Functional Requirement | Class | Verify |
 |---|---|---|---|
 | **FSR-16** | The software **shall** provide a monotonic time source for process-internal use and permit an externally controlled time source to be substituted during verification and replay. | S | T |
-| **FSR-17** | A node **shall** optionally take its time from the `/clock` topic. Its timers, sleeps and loop rates **shall** then follow that time, including a pause or a jump, and **shall** run faster than real time when the clock does, with no change to the node's code. Transport timeouts **shall** stay on the host monotonic clock: a wait for a message, a bounded run and the transport age of a message. A paused `/clock` therefore never suspends these timeouts. A node on `/clock` waits for its clock: when the clock driver dies, its participants wait without a fault, and the process that supervises the driver detects its end. This **shall** be the same for every supported host language. | N | T |
-| **FSR-37** | A node **shall not** rewind in place when its framework time goes back: a backward jump of `/clock` (a recording replayed again, a replay that seeks back) **shall** end the run of the timer or cycle that sees it, and the run of the `WaitSet` of any node on simulated time that reads it, whatever that `WaitSet` holds, and restart the process. A step back of the host wall clock is not a rewind: it **shall not** restart the process, and host timers continue on the monotonic clock. After a backward seek the restarted process **shall** rejoin the replay before it opens a port. These rules hold outside the replay lockstep too (`HYPHA_REPLAY_LOCKSTEP=0`), where the process is restarted but does not wait to rejoin. A wait for a time or a deadline in a loop the application owns that started before the jump **shall** end and report the jump. No timer, wait or loop rate **shall** stay blocked until the time again reaches its value before the jump. | N | T |
+| **FSR-17** | A node **shall** optionally take its time from the `/clock` topic. Its timers and cycles **shall** then follow that time, including a pause or a jump, and **shall** run faster than real time when the clock does, with no change to the node's code. A worker thread's sleeps and rates stay on the host clock. Transport timeouts **shall** stay on the host monotonic clock: a wait for a message, a bounded run and the transport age of a message. A paused `/clock` therefore never suspends these timeouts. A node on `/clock` waits for its clock: when the clock driver dies, its participants wait without a fault, and the process that supervises the driver detects its end. This **shall** be the same in the C++ SDK and the Rust SDK. | N | T |
+| **FSR-37** | A node **shall not** rewind in place when its framework time goes back: a backward jump of `/clock` (a recording replayed again, a replay that seeks back) **shall** end the run of the timer or cycle that sees it, and the run of the `WaitSet` of any node on simulated time that reads it, whatever that `WaitSet` holds, and restart the process. A step back of the host wall clock is not a rewind: it **shall not** restart the process, and host timers continue on the monotonic clock. After a backward seek the restarted process **shall** rejoin the replay before it opens a port. These rules hold outside the replay lockstep too (`HYPHA_REPLAY_LOCKSTEP=0`), where the process is restarted but does not wait to rejoin. No timer or cycle **shall** stay blocked until the time again reaches its value before the jump. | N | T |
 
 ### 2.5 Configuration
 
@@ -157,7 +157,7 @@ serialization, MCAP, the Foxglove protocol.
 | ID | Quality Requirement | Category | Class | Verify |
 |---|---|---|---|---|
 | **NFR-01** | The framework core **shall** be delivered as one library, `libhypha_ffi`, against which the C++ SDK and its applications link; the Rust tools link the same core statically. No framework state or control logic **shall** exist outside that artifact — every consumer, regardless of host language, **shall** exercise identical logic through it. | Architecture | S | I |
-| **NFR-02** | The core implementation shall be written in Rust, or in modern C++ adhering to a strictly enforced safe-subset profile backed by continuous static analysis and compiler enforcement. Memory safety (freedom from buffer overflows, use-after-free, and data races) shall be guaranteed by default across the codebase through language semantics or strict toolchain gates. Any region deliberately exempted from enforcement shall be a small, explicitly identified, and independently audited fraction of the codebase—never the default posture. | Language Safety | S | T, I |
+| **NFR-02** | The core **shall** be written in safe Rust. `unsafe` code **shall** be confined to named modules (the C boundary and the operating-system calls) and forbidden by lint everywhere else, so that memory safety (no buffer overflow, use-after-free or data race) follows from the language outside those modules. | Language Safety | S | T, I |
 | **NFR-03** | Dispatch latency from a publisher's send call to the corresponding subscriber's callback entry **shall** be less than 500 microseconds at the 99th percentile under rated load. | Performance | N | T, A |
 | **NFR-04** | The software **shall** sustain rated load — 46 topics, 72.5 MB/s aggregate bandwidth, and 9,960 messages/s — without message loss for any consumer that keeps pace with its subscribed topics. | Performance | N | T, A |
 | **NFR-05** | Every internal transport buffer and subscriber queue **shall** have a fixed, bounded capacity. Memory utilization **shall not** grow without bound during sustained overload. The memory of a topic is bounded when the topic declares a payload limit; a topic without one grows with its largest message. | Resource | S | T, A |
@@ -165,14 +165,15 @@ serialization, MCAP, the Foxglove protocol.
 | **NFR-07** | The middleware **shall** distribute a published message to every one of its subscribers directly, without requiring a central broker, routing daemon, or discovery server process to relay or mediate the message. | Architecture | S | D |
 | **NFR-08** | No input, configuration value or checked condition **shall** abort a shipped build. Every code path exercised in a shipped build **shall** be free of unchecked assumptions about the presence of a value, unchecked access outside the bounds of a collection, and arithmetic that can silently overflow or underflow. An internal fault ends the process as NFR-09 states. | Safety Coding | S | T |
 | **NFR-09** | No fault **shall** unwind across the interface boundary described in NFR-01. An internal fault of the library **shall** end the process (fail-stop, abort), and an exception thrown by a foreign callback **shall** be converted into an explicit, reportable error status before it reaches the library. | Robustness | S | T |
-| **NFR-10** | Unit and integration test suites **shall** enforce a minimum of 80% line coverage for each core module. | Verification | S | T |
+| **NFR-10** | The tests **shall** cover at least 80 % of the lines of each core crate, as `scripts/coverage.sh` measures. | Verification | S | T |
 | **NFR-11** | A newly initialized executable **shall** be capable of successfully publishing its first valid message within $100\text{ ms}$ of process launch, independent of external discovery handshakes, dynamic schema compilation, or registry synchronization phases. | Performance | N | T, A |
 | **NFR-12** | The transport layer **shall** support payloads from tens of bytes to tens of megabytes through the same configured transport interface, without per-payload reconfiguration or application-managed chunking. | Transport | S | T, A |
 | **NFR-13** | Every counter that the software reports, and every sequence number that it sends, **shall** wrap to zero after its maximum value and **shall** continue to count. A wrap **shall not** cause a fault, a refused operation or a restart. A receiver **shall** accept the sequence number after a wrap as the next in order, and **shall not** reject it as a duplicate or a reordered message. Every consumer that compares two values of one counter **shall** calculate the difference modulo the counter range, so that a wrap does not show as a decrease or as a large jump. | Robustness | S | T |
 
-NFR-03, NFR-04 and NFR-06 are targets. They become verifiable when a reference platform
-(hardware, kernel, scheduling setup) and a reference workload are defined; neither is
-yet. hypha gives no deadline guarantee ([execution-model.md](execution-model.md) §6.2).
+NFR-03, NFR-04, NFR-06 and NFR-11 are targets. They state a speed or a duration of a
+host, which no test asserts (#64); they become verifiable when a reference platform
+(hardware, kernel, scheduling setup) and a reference workload are defined, and neither
+is yet. hypha gives no deadline guarantee ([execution-model.md](execution-model.md) §6.2).
 The rated load of NFR-04 with the limits of NFR-03 and NFR-04 is the workload
 `examples/load/rated.toml` of `hypha load`; its per-topic split is constructed from the
 three totals, and a run of it counts only on the reference platform.
@@ -210,3 +211,4 @@ An ID is not used again.
 | 2026-11-25 | The note on NFR-03, NFR-04 and NFR-06 names the rated-load workload; no requirement changed. |
 | 2026-11-27 | FSR-05: each data definition of a topic is a stream of its own (#209), so a message of another definition is not delivered; the subscriber reports the other definitions of its topic that have a live publisher, within a second, or that it has not checked yet, in its counters and its node's input state; a frame that names another definition than its stream is rejected and counted. |
 | 2026-11-28 | FSR-42, FSR-43 and FSR-44 were added: services, typed by a ROS 1 `.srv`, with one server per name and one outcome per call; a call's timeout and the refusal of a waiting call on a dispatch thread; the replay of calls between participants (#132, native-services.md §11). |
+| 2026-11-28 | FSR-17 and FSR-37 promised sleeps, loop rates and application waits that follow `/clock`; no SDK has them, so the requirements name timers and cycles. NFR-02 states the Rust core and its `unsafe` modules; it named a C++ alternative and an audit that do not exist. NFR-10 names the crate and the script. NFR-11 is a target like NFR-03: its test no longer asserts a host speed (#64). The verification methods name what runs. |

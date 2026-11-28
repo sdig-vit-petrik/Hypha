@@ -312,7 +312,7 @@ class Report(unittest.TestCase):
         results = tree.results()
         traceability.read_run("overload=limits-fail", results)
         text, _, _ = traceability.build_report(tree.root, requirements, results)
-        note = "not evidence until a Linux run confirms its limits (NFR-05, R8)"
+        note = "not evidence until a Linux run confirms its limits (NFR-05)"
         self.assertIn(f"| overload | limits FAIL, {note} |", text)
         self.assertIn("| overload_latency | not run, on a development host", text)
         self.assertEqual(traceability.exit_status(0, 0, results), 0)
@@ -320,7 +320,7 @@ class Report(unittest.TestCase):
     def test_the_runs_table_marks_the_measurement_as_taken_on_a_development_host(self) -> None:
         tree = Tree(self)
         requirements = traceability.load_checked(tree.root)
-        note = "on a development host: no reference platform is defined (G-10)"
+        note = "on a development host: no reference platform is defined"
         expected = {
             "pass": "limits pass",
             "limits-fail": "limits FAIL",

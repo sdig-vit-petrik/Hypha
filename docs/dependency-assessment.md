@@ -1,10 +1,11 @@
 # Dependency assessment
 
 The software in `libhypha_ffi` that hypha did not write: what hypha needs from each
-part, what shows that it delivers, and what is not shown. It has the form IEC 61508-3
-asks for pre-existing software (7.4.2.12, 7.4.2.13). First issue, not reviewed.
+part, what shows that it delivers, and what is not shown. It answers the questions
+IEC 61508-3 asks of pre-existing software (7.4.2.12, 7.4.2.13), as engineering
+information; nobody has reviewed it.
 
-Readers: an assessor, and the engineer who updates a dependency.
+Readers: an integrator who judges the transport, and the engineer who updates a dependency.
 
 ## 1. Status
 
@@ -13,8 +14,7 @@ Readers: an assessor, and the engineer who updates a dependency.
 - The list is the output of `cargo tree --locked -p hypha_ffi -e normal` at C ABI
   revision 1. `Cargo.lock` pins every version; `cargo deny` checks advisories and
   licences on every change.
-- A dependency update follows [safety-plan.md](safety-plan.md) §6 and updates this
-  document in the same change.
+- A dependency update updates this document in the same change.
 
 ## 2. The parts
 
@@ -71,8 +71,8 @@ changes no algorithm.
 | `toml`, `serde` | A parameter file parses to its values or to an error; no input aborts the process | `hypha_core/parameters`, the fuzz target `config_load` | |
 | Operating-system crates | Each call hypha makes behaves as the Linux manual states | The tests that exercise the calls | No list of the calls in use |
 | `transforms` | Interpolation between two stamped transforms | `hypha_ffi/transform_buffer`, `cxx:test_transform_buffer` | Numerical limits |
-| Procedural macros | Correct generated code | The tests of the code they generate | They are tools of class T3 ([safety-plan.md](safety-plan.md) §8) |
-| Rust `std` | — | — | Not assessed; see the compiler in [safety-plan.md](safety-plan.md) §8 |
+| Procedural macros | Correct generated code | The tests of the code they generate | A defect in them can put a defect in the code |
+| Rust `std` | — | — | Not assessed, like the compiler that ships it |
 
 ## 5. Functions that are present and not needed
 
@@ -84,8 +84,8 @@ type or a configuration path is linked and unreachable has not been checked.
 
 In order of cost:
 
-1. A fault-injection test for TR-11.
+1. A fault-injection test for TR-11 (#12).
 2. A list of the system calls in use, from the operating-system crates.
 3. For TR-11 and TR-12: an assessment of iceoryx2 as pre-existing software, or a
    certified variant from its vendor if one exists, or the system-level argument
-   above (watchdog and safe state) accepted by the assessor.
+   above (watchdog and safe state) accepted in the integrator's safety case.
