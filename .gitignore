@@ -81,7 +81,7 @@ coverage/
 /ca-bundle.crt
 
 
-.codegraphy/*
+/.codegraph/
 
 
 build_*/
