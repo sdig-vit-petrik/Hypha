@@ -18,9 +18,8 @@
 ///    where a start requires a table;
 ///  - the verdict of a delivered input, by the rule of the capture, from `silence_ms`
 ///    (`silence_ms = 0` and the tag unsupervised are no limit, and Input::untimed() says so);
-///  - the counters of an input: received() counts in the next step each sample given to
-///    deliver() or set(), deliveredCount() each one that step takes as usable;
-///    setNeverArrived() sets both to zero;
+///  - the counters of an input: received() counts in the next step each sample given to deliver()
+///    or set(), deliveredCount() each one that step takes as usable; setNeverArrived() zeroes both;
 ///  - the answers of a Transforms port, from the transforms given to deliver() and
 ///    deliverStatic(): the library code of a cycle's TF input looks them up;
 ///  - the bound of perStep() on the sends of a step;

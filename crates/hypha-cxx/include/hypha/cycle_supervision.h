@@ -63,6 +63,18 @@ inline void forgetJudgement(HyphaCycleBindingView& facts, bool countsForHealth)
     facts.ok = countsForHealth ? 0 : 1;
 }
 
+/// @brief The alive value of a message: an integral member, read through a pointer to member.
+template <typename M, typename Counter>
+struct MemberCounter
+{
+    Counter M::* field;
+
+    uint64_t operator()(const M& message) const
+    {
+        return static_cast<uint64_t>(message.*field);
+    }
+};
+
 /// @brief The supervision of one input port. Latest and Arrivals hold one by composition.
 class InputSupervision
 {
@@ -112,6 +124,15 @@ class InputSupervision
     bool untimed() const
     {
         return this->untimed_;
+    }
+
+    /// @brief untimed() of a testing::StepHarness port, which starts nothing: no table, the
+    ///        tag unsupervised, or `silence_ms = 0` in its table.
+    /// @throws std::logic_error without a loaded configuration.
+    /// @throws ParameterError when the table's `silence_ms` is missing or out of range.
+    bool untimedInHarness(bool unsupervised, Duration limitMax) const
+    {
+        return this->name_.empty() || unsupervised || tableSilenceNanos(this->name_, limitMax) == 0;
     }
 
     /// @brief The view of this binding: of this step in step(), else of the last finished

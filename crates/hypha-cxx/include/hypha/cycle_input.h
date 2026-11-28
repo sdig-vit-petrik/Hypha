@@ -28,22 +28,6 @@
 
 namespace hypha {
 
-namespace detail {
-
-/// @brief The alive value of a message: an integral member, read through a pointer to member.
-template <typename M, typename Counter>
-struct MemberCounter
-{
-    Counter M::* field;
-
-    uint64_t operator()(const M& message) const
-    {
-        return static_cast<uint64_t>(message.*field);
-    }
-};
-
-}  // namespace detail
-
 /// @brief An input port of messages @p M: the base of Latest and Arrivals.
 ///
 /// The port declares the service policy of its topic: its Qos option, or QosOf<M>::value.
@@ -92,9 +76,8 @@ class Input : public Port
     ///        first sample, Usable from it on, until a later sample replaces the value. False
     ///        for a port with a limit, a disabled port, and before start(); in a
     ///        testing::StepHarness it is read from the parameter file, as a start decides it.
-    /// @throws std::logic_error in a StepHarness without a loaded configuration.
-    /// @throws ParameterError in a StepHarness when the table's `silence_ms` is missing or
-    ///         outside its range.
+    /// @throws std::logic_error, ParameterError in a StepHarness: see
+    ///         detail::InputSupervision::untimedInHarness().
     bool untimed() const
     {
         if (!this->enabled()) {
@@ -103,12 +86,10 @@ class Input : public Port
         if (this->supervision_.decided()) {
             return this->supervision_.untimed();
         }
-        if (!this->enabledByHarness()) {
-            return false;
-        }
-        const bool noTable = this->supervision_.name().empty() || this->settings_.unsupervised;
-        return noTable
-            || detail::tableSilenceNanos(this->supervision_.name(), this->settings_.limitMax) == 0;
+        return this->enabledByHarness()
+            && this->supervision_.untimedInHarness(
+                this->settings_.unsupervised, this->settings_.limitMax
+            );
     }
 
     /// @brief True when setIgnored(true) hides the fault of this port.
