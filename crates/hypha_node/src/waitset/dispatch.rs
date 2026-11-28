@@ -11,6 +11,7 @@ use super::{
 };
 use crate::cycle::{Cycle, CycleId};
 use crate::status::Error;
+use hypha_core::dispatch::{CallbackBudget, callback_budget};
 
 /// One timer firing of the current turn, in registration order.
 #[derive(Clone, Copy)]
@@ -39,7 +40,6 @@ pub(super) struct CallbackDispatcher<'a> {
     /// The node this run serves. Its transport owns the latched topics.
     pub(super) node: &'a HyphaNode,
     pub(super) batch_size: u32,
-    pub(super) warn_nanos: u64,
     pub(super) warn_interval_nanos: u64,
     pub(super) slow_callbacks: u64,
     pub(super) failure: Option<(AttachmentId, HyphaStatus)>,
@@ -189,7 +189,7 @@ impl CallbackDispatcher<'_> {
         cycle: Option<CycleId>,
         missed: u64,
     ) -> HyphaCallbackResult {
-        let warn_nanos = self.warn_nanos;
+        let configured = self.node.slow_callback_ms;
         let warn_interval = self.warn_interval_nanos;
         let health = self.health;
         let set = self.set;
@@ -201,17 +201,22 @@ impl CallbackDispatcher<'_> {
         let Some(registration) = self.find(attachment) else {
             return invalid(Error::InvalidState);
         };
-        let Registration { id, ref mut target, ref mut warnings, .. } = *registration;
-        let (result, was_slow) = match (owner, target) {
-            (Some(cycle), _) => timed(warnings, id, warn_nanos, warn_interval, || {
-                invoke_cycle(health, cycle, set, missed)
-            }),
-            (None, Target::Timer { callback, .. }) => {
-                timed(warnings, id, warn_nanos, warn_interval, || {
-                    invoke_interval(health, callback, missed)
+        let Registration { ref mut target, ref mut warnings, .. } = *registration;
+        let Target::Timer { ref timer, ref mut callback, .. } = *target else {
+            return invalid(Error::InvalidState);
+        };
+        let period = timer.period().nanos();
+        let budget = callback_budget(configured, Some(period.unsigned_abs()));
+        let (result, was_slow) = match owner {
+            Some(cycle) => {
+                let subject = Subject::Cycle(cycle.name());
+                timed(warnings, subject, budget, warn_interval, || {
+                    invoke_cycle(health, cycle, set, missed)
                 })
             }
-            (None, _) => return invalid(Error::InvalidState),
+            None => timed(warnings, Subject::Timer(period), budget, warn_interval, || {
+                invoke_interval(health, callback, missed)
+            }),
         };
         self.count_slow(u64::from(was_slow));
         result
@@ -270,24 +275,44 @@ fn invalid(status: Error) -> HyphaCallbackResult {
     HyphaCallbackResult::fail(HyphaStatus::from(status) as i32)
 }
 
-/// Time one callback of registration `id` and count it in `warnings` when slow.
+/// What a slow-callback line calls the registration: a topic, a timer by its period or a
+/// cycle by its name, as the user knows them.
+pub(super) enum Subject<'a> {
+    Topic(&'a str),
+    /// A timer, by its period in nanoseconds.
+    Timer(i64),
+    Cycle(&'a str),
+}
+
+impl std::fmt::Display for Subject<'_> {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Topic(topic) => write!(out, "topic '{topic}'"),
+            Self::Timer(period) => write!(out, "timer {} ms", period / 1_000_000),
+            Self::Cycle(name) => write!(out, "cycle '{name}'"),
+        }
+    }
+}
+
+/// Time one callback of `subject` and count it in `warnings` when it takes longer than its
+/// `budget`, which a line names when the budget says so.
 pub(super) fn timed<F: FnOnce() -> HyphaCallbackResult>(
     warnings: &mut CallbackWarnings,
-    id: AttachmentId,
-    warn_nanos: u64,
+    subject: Subject<'_>,
+    budget: CallbackBudget,
     warn_interval_nanos: u64,
     body: F,
 ) -> (HyphaCallbackResult, bool) {
-    if warn_nanos == 0 {
-        return (body(), false);
-    }
     let started = Instant::now();
     let result = body();
     let elapsed = started.elapsed();
-    if !hypha_core::dispatch::is_slow_callback(elapsed, warn_nanos) {
+    if !hypha_core::dispatch::is_slow_callback(elapsed, budget.nanos) {
         return (result, false);
     }
     warnings.slow_callbacks = warnings.slow_callbacks.wrapping_add(1);
+    if !budget.warns {
+        return (result, true);
+    }
 
     let interval = Duration::from_nanos(warn_interval_nanos);
     let is_due = hypha_core::dispatch::is_warning_due(
@@ -295,11 +320,14 @@ pub(super) fn timed<F: FnOnce() -> HyphaCallbackResult>(
         interval,
     );
     if is_due {
-        log::warn!(target: "hypha", "hypha: attachment {} callback took {} ms, threshold {} ms, {} warnings suppressed",
-                id,
-                elapsed.as_millis(),
-                Duration::from_nanos(warn_nanos).as_millis(),
-                warnings.suppressed_warnings);
+        let nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        let line = hypha_core::dispatch::slow_callback_line(
+            &subject.to_string(),
+            nanos,
+            budget.nanos,
+            warnings.suppressed_warnings,
+        );
+        log::warn!(target: "hypha", "{line}");
         warnings.last_warning = Some(Instant::now());
         warnings.suppressed_warnings = 0;
     } else {
@@ -311,7 +339,7 @@ pub(super) fn timed<F: FnOnce() -> HyphaCallbackResult>(
 impl Dispatcher for CallbackDispatcher<'_> {
     fn on_event(&mut self, attachment: AttachmentId) -> EventOutcome {
         let batch_size = self.batch_size;
-        let warn_nanos = self.warn_nanos;
+        let budget = callback_budget(self.node.slow_callback_ms, None);
         let warn_interval = self.warn_interval_nanos;
         let health = self.health;
         let set = self.set;
@@ -367,10 +395,13 @@ impl Dispatcher for CallbackDispatcher<'_> {
                 *transport_failing = failed;
                 let (step, stop_early) = match received {
                     Ok(Some(sample)) => {
-                        let (result, was_slow) =
-                            timed(warnings, id, warn_nanos, warn_interval, || {
-                                invoke_data(health, callback, &sample, received_nanos, set)
-                            });
+                        let (result, was_slow) = timed(
+                            warnings,
+                            Subject::Topic(&subscriber.topic),
+                            budget,
+                            warn_interval,
+                            || invoke_data(health, callback, &sample, received_nanos, set),
+                        );
                         if was_slow {
                             slow = slow.saturating_add(1);
                         }
@@ -683,6 +714,21 @@ fn refuse_timer_rewind(
 pub(super) fn timer_subject(id: AttachmentId, period_nanos: i64) -> String {
     let period_millis = period_nanos / 1_000_000;
     format!("timer {id} (period {period_millis} ms)")
+}
+
+#[cfg(test)]
+mod slow_callback_subject_tests {
+    use super::Subject;
+
+    #[test]
+    fn a_slow_callback_is_named_by_its_topic_its_timer_period_or_its_cycle() {
+        assert_eq!(
+            Subject::Topic("/sensing/lidar/points").to_string(),
+            "topic '/sensing/lidar/points'"
+        );
+        assert_eq!(Subject::Timer(100_000_000).to_string(), "timer 100 ms");
+        assert_eq!(Subject::Cycle("ekf").to_string(), "cycle 'ekf'");
+    }
 }
 
 #[cfg(test)]

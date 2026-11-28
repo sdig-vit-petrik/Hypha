@@ -26,6 +26,7 @@ mod render;
 
 use std::fmt;
 
+pub use config::slow_callback_ms;
 pub use engine::{PreparedConfig, commit, prepare, validate};
 pub use facade::install;
 pub use level::Level;

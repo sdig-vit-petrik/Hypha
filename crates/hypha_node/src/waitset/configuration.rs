@@ -6,9 +6,6 @@ use super::{
 };
 use std::cell::RefCell;
 
-/// The callback duration that produces a warning, 10 ms.
-const CALLBACK_WARN_NANOS: u64 = 10_000_000;
-
 /// The shortest interval between two warnings for one attachment, 1 s.
 const WARNING_INTERVAL_NANOS: u64 = 1_000_000_000;
 
@@ -26,7 +23,6 @@ fn build(node: Arc<HyphaNode>) -> Result<Box<HyphaWaitSet>, Error> {
         cycles: RefCell::new(Vec::new()),
         next_cycle: std::cell::Cell::new(1),
         limits: DispatchLimits::default(),
-        warn_nanos: CALLBACK_WARN_NANOS,
         warn_interval_nanos: WARNING_INTERVAL_NANOS,
         pending_detach: RefCell::new(Vec::new()),
         run_attaches: RefCell::new(RunAttaches::new()),

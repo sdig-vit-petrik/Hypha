@@ -103,7 +103,6 @@ pub struct HyphaWaitSet {
     /// The id the next cycle takes. Starts at one and only grows.
     next_cycle: std::cell::Cell<crate::cycle::CycleId>,
     limits: DispatchLimits,
-    warn_nanos: u64,
     warn_interval_nanos: u64,
     /// Registrations detached by a callback during the current run, removed and released
     /// once the run returns.

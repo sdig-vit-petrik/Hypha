@@ -46,6 +46,10 @@ pub struct HyphaNode {
     /// True while a committed cycle of this node drives `/clock`.
     pub(crate) drives_clock: std::sync::atomic::AtomicBool,
     pub(crate) schema: crate::schema::SchemaState,
+    /// The `[log] slow_callback_ms` of the parameter file: the budget of every callback of
+    /// this node, 0 for no warning line. `None` leaves each callback its own default
+    /// (`hypha_core::dispatch::callback_budget`).
+    pub(crate) slow_callback_ms: Option<u32>,
     /// Execution counters every `WaitSet` on this node adds to.
     pub(crate) health: std::sync::Arc<crate::node_health::ExecutionHealth>,
     /// The rows of the node introspection. Endpoints keep a handle to it.
@@ -318,6 +322,7 @@ pub fn node_create(
     let use_sim_time = sim_time_requested().map_err(|cause| report_invalid(&cause))?;
     let open_loop = use_sim_time && !lockstep;
     let node_name = effective_node_name(name, parameters)?;
+    let slow_callback_ms = parameters.log_table().and_then(hypha_log::slow_callback_ms);
     let transport = hypha_iceoryx2::Iox2Transport::with_name(&node_name).map_err(|cause| {
         log::error!(target: "hypha", "hypha: node creation refused: the iceoryx2 node '{node_name}' cannot be opened: {cause:?}");
         Error::from(cause)
@@ -395,6 +400,7 @@ pub fn node_create(
         committed_cycles: std::sync::atomic::AtomicUsize::new(0),
         drives_clock: std::sync::atomic::AtomicBool::new(false),
         schema: crate::schema::SchemaState::default(),
+        slow_callback_ms,
         health: std::sync::Arc::default(),
         introspection,
         left: std::sync::Arc::default(),

@@ -1230,6 +1230,7 @@ counters are the `log.*` metrics (section 2.4).
 level = "info"                 # modules without an entry; default "debug"
 console = true                 # standard error; default true
 console_level = "info"         # default "trace"
+slow_callback_ms = 50          # 0 to 3600000; default: the period of a timer or a cycle, 10 for a subscription
 [log.sink.main]                # any number of named file sinks
 path = "log/scan_cycle.log"    # required; relative to this file
 level = "debug"                # default "info"
@@ -1239,6 +1240,17 @@ enabled = true                 # default true
 [log.module."localisation"]
 level = "debug"                # default log.level; enabled = false is "off"
 ```
+
+`slow_callback_ms` is the node's, not the process's, whatever the first table says: it is
+the time a callback may take before the node warns of it. The line names the callback, the
+time it took and the budget, at most once a second for each callback: `hypha: callback of
+topic '/sensing/lidar/points' took 46 ms, budget 10 ms, 9 warnings suppressed` (`timer
+100 ms` and `cycle 'ekf'` for the others). Without the key a timer or a cycle is judged
+against its own period (a 10 Hz callback that takes 45 ms logs nothing) and a subscription
+against 10 ms; a value replaces that for every callback of the node, and 0 writes no line.
+`node.slow_callbacks` (section 2.4) counts the slow callbacks either way. An invalid value
+refuses the file when it loads, with exit code 78 like the rest of the table. The key needs
+no C function: node creation reads it. Execution-model.md section 5 has the rules.
 
 Levels are `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `off`. A line reaches
 a target at or above both its module level and the target level. The parameter file

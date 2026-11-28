@@ -54,7 +54,6 @@ impl RunDriver for NativeRun<'_> {
             set,
             node: set.node(),
             batch_size: set.limits.batch_size(),
-            warn_nanos: set.warn_nanos,
             warn_interval_nanos: set.warn_interval_nanos,
             slow_callbacks: 0,
             failure: None,
