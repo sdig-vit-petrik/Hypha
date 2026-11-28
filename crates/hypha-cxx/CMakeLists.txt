@@ -382,6 +382,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_qos.cpp
     test/test_topic_overloading.cpp
     test/test_sensor_msgs_companions.cpp
+    test/test_point_cloud2_unaligned.cpp
     test/test_sensor_msgs_ros2_names.cpp
   )
   # The ROS 2 names of sensor_msgs, for test_sensor_msgs_ros2_names.cpp.
@@ -513,12 +514,13 @@ endif()
 
 # The typed loan's and the views' tests under AddressSanitizer and UBSan, on request: a
 # moved-from loan, a loan that outlives its publisher, its node or its step, a span past
-# the publish, a view kept past its callback or its step.
+# the publish, a view kept past its callback or its step, a cloud iterator over a field at an
+# odd offset.
 option(HYPHA_TYPED_LOAN_SANITIZE "Build test_typed_loan_sanitized with ASan and UBSan" OFF)
 if(HYPHA_BUILD_TESTS AND HYPHA_TYPED_LOAN_SANITIZE)
   add_executable(test_typed_loan_sanitized
     test/test_main.cpp test/test_typed_loan.cpp test/test_typed_loan_contract.cpp
-    test/test_typed_view.cpp test/test_cycle_view.cpp)
+    test/test_typed_view.cpp test/test_cycle_view.cpp test/test_point_cloud2_unaligned.cpp)
   target_link_libraries(test_typed_loan_sanitized PRIVATE hypha GTest::gtest)
   target_compile_definitions(test_typed_loan_sanitized PRIVATE HYPHA_NO_LOGGING)
   target_compile_options(test_typed_loan_sanitized PRIVATE
