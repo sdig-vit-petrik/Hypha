@@ -111,6 +111,69 @@ impl DispatchLimits {
     }
 }
 
+/// The time a callback may take before it is slow, when nothing says otherwise, and the
+/// budget of a subscription: 10 ms of host time. A timer or a cycle is judged against its
+/// own period instead.
+pub const DEFAULT_CALLBACK_BUDGET_NANOS: u64 = 10_000_000;
+
+/// What one callback is judged against: the time it may take and whether crossing it is
+/// written to the log. A slow callback is counted whatever `warns` says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallbackBudget {
+    /// A callback that takes longer than this is slow.
+    pub nanos: u64,
+    /// Whether a slow callback writes a line.
+    pub warns: bool,
+}
+
+/// The budget of a callback from the node's `[log] slow_callback_ms` and, for a timer or a
+/// cycle, its period.
+///
+/// A configured value is the budget of every callback of the node. Zero writes no line
+/// and leaves the budget at what it would be without the key, so the counter goes on.
+/// Without the key a timer or a cycle has its period, and a subscription
+/// [`DEFAULT_CALLBACK_BUDGET_NANOS`].
+#[must_use]
+pub fn callback_budget(configured_ms: Option<u32>, period_nanos: Option<u64>) -> CallbackBudget {
+    let own = period_nanos.filter(|period| *period > 0).unwrap_or(DEFAULT_CALLBACK_BUDGET_NANOS);
+    match configured_ms {
+        None => CallbackBudget { nanos: own, warns: true },
+        Some(0) => CallbackBudget { nanos: own, warns: false },
+        Some(millis) => {
+            CallbackBudget { nanos: u64::from(millis).saturating_mul(1_000_000), warns: true }
+        }
+    }
+}
+
+/// Nanoseconds as milliseconds with the fraction that matters, rounded up to a
+/// microsecond: `10`, `2.5`, `10.001`.
+fn millis_text(nanos: u64) -> String {
+    let micros = nanos.div_ceil(1_000);
+    let (millis, fraction) = (micros / 1_000, micros % 1_000);
+    if fraction == 0 {
+        return millis.to_string();
+    }
+    let fraction = format!("{fraction:03}");
+    format!("{millis}.{}", fraction.trim_end_matches('0'))
+}
+
+/// The warning for a slow callback of `subject` (`topic '/x'`, `timer 100 ms`,
+/// `cycle 'ekf'`): how long it took, the budget it crossed and how many warnings the rate
+/// limit held back since the last line.
+#[must_use]
+pub fn slow_callback_line(
+    subject: &str,
+    elapsed_nanos: u64,
+    budget_nanos: u64,
+    suppressed: u64,
+) -> String {
+    format!(
+        "hypha: callback of {subject} took {} ms, budget {} ms, {suppressed} warnings suppressed",
+        millis_text(elapsed_nanos),
+        millis_text(budget_nanos)
+    )
+}
+
 /// Whether one callback's measured duration crosses the slow-callback
 /// threshold. A zero threshold disables the warning.
 #[must_use]

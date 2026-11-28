@@ -166,6 +166,7 @@ fault.**
 | Feature | Question it answers | API | Users |
 |---|---|---|---|
 | Log | How do I write a log line? | `HYPHA_LOG_*`, `hypha_log/hypha_log.h`, `[log]`, `hypha_log_write`, `hypha_log_enabled`, `hypha_log_module_register` | app 15, mrs 11, ex 7 |
+| Slow callback | Which callback is slow, and how do I set what slow means for this node? | The warning names the topic, `timer <period>` or `cycle '<name>'`, how long it took and the budget (`hypha: callback of topic '/x' took 46 ms, budget 10 ms, 9 warnings suppressed`), at most once a second for each. The budget is the node's `[log] slow_callback_ms` (0 to 3600000; 0 writes no line); without it, a timer or a cycle has its own period and a subscription 10 ms. No C ABI function: the key is read in Rust at node creation, and `node.slow_callbacks` counts the same callbacks (#128) | Autoware port |
 
 ### 3.9 Discovery and schema
 
