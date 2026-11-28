@@ -33,6 +33,33 @@ fn pool_log_level(bytes: u64) -> log::Level {
     if bytes >= NOTEWORTHY_POOL_BYTES { log::Level::Info } else { log::Level::Debug }
 }
 
+/// Log the pool of a new publisher of `spec` and check a bounded one against the shared
+/// memory of the host; a growable one is told that its later segments go unchecked.
+fn size_pool(
+    spec: &TopicSpec,
+    policy: &QosPolicy,
+    initial_payload: usize,
+    max_payload: Option<usize>,
+    bounded_deployment: bool,
+) -> Result<(), PortError> {
+    if let Some(payload) = max_payload {
+        let pool = qos::pool_size(&spec.name, policy, spec.loaned_samples, payload);
+        log::log!(target: "hypha/transport", pool_log_level(pool.bytes),
+                "hypha_iceoryx2: topic '{}' publisher pool: {} samples of {} bytes, {} bytes of shared memory \
+                 when every subscriber's queue is full; policy {policy}, {} loans",
+                spec.name, pool.samples, pool.sample_bytes, pool.bytes, spec.loaned_samples);
+        crate::shm_capacity::check(&spec.name, pool.samples, payload, bounded_deployment)?;
+    } else {
+        let pool = qos::pool_size(&spec.name, policy, spec.loaned_samples, initial_payload);
+        log::info!(target: "hypha/transport",
+                "hypha_iceoryx2: topic '{}' has a growable payload: its first segment is {} samples of {} bytes \
+                 ({} bytes); its later segments are not checked against /dev/shm, and an undersized /dev/shm can \
+                 stop the process with SIGBUS. Name a payload bound to size the pool",
+                spec.name, pool.samples, pool.sample_bytes, pool.bytes);
+    }
+    Ok(())
+}
+
 /// The one domain-wide event, notified whenever a subscriber is created.
 ///
 /// A latched publisher hands its history to new subscribers when this event fires.
@@ -217,21 +244,7 @@ impl Iox2Transport {
         // (`PublishersBefore::list`): a subscriber that did not list this port is seen by its
         // first send.
         std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
-        if let Some(payload) = max_payload {
-            let pool = qos::pool_size(&spec.name, &policy, spec.loaned_samples, payload);
-            log::log!(target: "hypha/transport", pool_log_level(pool.bytes),
-                    "hypha_iceoryx2: topic '{}' publisher pool: {} samples of {} bytes, {} bytes of shared memory \
-                     when every subscriber's queue is full; policy {policy}, {} loans",
-                    spec.name, pool.samples, pool.sample_bytes, pool.bytes, spec.loaned_samples);
-            crate::shm_capacity::check(&spec.name, pool.samples, payload, bounded_deployment)?;
-        } else {
-            let pool = qos::pool_size(&spec.name, &policy, spec.loaned_samples, initial_payload);
-            log::info!(target: "hypha/transport",
-                    "hypha_iceoryx2: topic '{}' has a growable payload: its first segment is {} samples of {} bytes \
-                     ({} bytes); its later segments are not checked against /dev/shm, and an undersized /dev/shm can \
-                     stop the process with SIGBUS. Name a payload bound to size the pool",
-                    spec.name, pool.samples, pool.sample_bytes, pool.bytes);
-        }
+        size_pool(spec, &policy, initial_payload, max_payload, bounded_deployment)?;
         let publisher = Arc::new(publisher);
         crate::schema::write_schema_file(spec)?;
 
