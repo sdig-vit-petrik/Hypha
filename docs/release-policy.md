@@ -35,7 +35,7 @@ mix two lines in one domain.
 |---|---|
 | Operating system | Ubuntu 26.04, on amd64 and arm64 |
 | C++ compiler | The GCC of that distribution; C++23 |
-| Rust | One exact version, `channel` of `rust-toolchain.toml` (`rust-version` is its major.minor) |
+| Rust | One exact version for development and CI, `channel` of `rust-toolchain.toml`; the MSRV, `rust-version` of `Cargo.toml`, is the highest `rust-version` of the dependencies (1.89), and `test.sh` and CI build the workspace with it too |
 | Builder image | `docker/Dockerfile`, which installs exactly these |
 
 macOS is a development platform with no guarantee: CI builds the workspace there and

@@ -32,6 +32,10 @@ esac
 
 if [[ "$suite" == all || "$suite" == rust ]]; then
   cargo clippy --locked --workspace --all-targets -- -D warnings
+  # The MSRV of Cargo.toml (the highest of the dependencies') builds the workspace too.
+  msrv="$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml).0"
+  rustc "+$msrv" --version
+  CARGO_TARGET_DIR=target/msrv cargo "+$msrv" check --locked --workspace --all-targets
   cargo nextest run --locked --workspace
   cargo test --locked --workspace --doc
   # The debug library exports exactly the recorded C symbols.

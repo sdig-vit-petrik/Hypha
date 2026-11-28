@@ -380,7 +380,7 @@ pub(crate) fn peer_node(
 }
 
 pub(crate) fn node_name(view: &impl iceoryx2::node::NodeView) -> String {
-    view.details().as_ref().map_or_default(|details| details.name().as_str().to_owned())
+    view.details().as_ref().map(|details| details.name().as_str().to_owned()).unwrap_or_default()
 }
 
 pub(crate) fn pid_of(view: &impl iceoryx2::node::NodeView) -> Option<i32> {
