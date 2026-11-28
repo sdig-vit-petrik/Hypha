@@ -59,6 +59,8 @@ pub struct TopicInfo {
     pub publishers: usize,
     /// At least one subscriber exists outside the caller.
     pub subscribed: bool,
+    /// How many subscribers exist outside the caller.
+    pub subscribers: usize,
 }
 
 /// A session on the bus: the handle every endpoint is made from.
