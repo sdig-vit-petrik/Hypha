@@ -331,6 +331,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_parameters.cpp
     test/test_parameter_lists.cpp
     test/test_config_views.cpp
+    test/test_config_walk.cpp
     test/test_node.cpp
     test/test_node_creation_race.cpp
     test/test_schema.cpp
@@ -353,6 +354,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_triggered_cycle.cpp
     test/test_cycle_timer.cpp
     test/test_twist_mux_shape.cpp
+    test/test_newest_only.cpp
     test/test_transforms_port.cpp
     test/test_transform_buffer.cpp
     test/test_subscriber_diagnostics.cpp
@@ -379,6 +381,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_fail_run.cpp
     test/test_application_skeleton.cpp
     test/test_worker_stop.cpp
+    test/test_handover.cpp
     test/test_step_harness.cpp
     test/test_raw_endpoints.cpp
     test/test_qos.cpp

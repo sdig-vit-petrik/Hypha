@@ -2,15 +2,41 @@
 
 use std::sync::Arc;
 
-use super::{CaptureClock, CycleHistory, HistorySample};
+use super::{CycleHistory, HistorySample};
+
+/// The clock a capture admits and judges its samples on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureClock {
+    /// Host monotonic time. Every retained sample is admitted and judged by its send time.
+    Host {
+        /// Host monotonic time of the capture.
+        steady_nanos: u64,
+    },
+    /// Data time for one replay step: only samples sent before `cut_nanos` are admitted,
+    /// each judged by `cut_nanos - framework_sent_nanos`.
+    Replay {
+        /// The deadline of the step, in framework nanoseconds.
+        cut_nanos: u64,
+    },
+    /// Data time for a step of a triggered cycle: the samples sent at or before
+    /// `cut_nanos` are admitted, each judged by `cut_nanos - framework_sent_nanos`.
+    ReplayThrough {
+        /// The time of the step, in framework nanoseconds.
+        cut_nanos: u64,
+    },
+}
 
 impl CaptureClock {
-    /// The clock of a trigger port: a replay step admits its trigger samples through its
-    /// time; host time admits every retained sample on any port.
-    pub(crate) const fn for_trigger(self) -> Self {
-        match self {
-            Self::Replay { cut_nanos } => Self::ReplayThrough { cut_nanos },
-            other => other,
+    /// The clock of a step: host time without a replay cut; with one, the strict cut, or
+    /// for a triggered step everything through it. A triggered step at T reads every input
+    /// through T: the samples one upstream step sent with the trigger sample carry T, and
+    /// the upstream hold has every sample stamped T of the reporting upstreams queued
+    /// (§6.6, #231).
+    pub(crate) const fn of_step(replay_cut: Option<u64>, triggered: bool, steady: u64) -> Self {
+        match (replay_cut, triggered) {
+            (Some(cut_nanos), true) => Self::ReplayThrough { cut_nanos },
+            (Some(cut_nanos), false) => Self::Replay { cut_nanos },
+            (None, _) => Self::Host { steady_nanos: steady },
         }
     }
 

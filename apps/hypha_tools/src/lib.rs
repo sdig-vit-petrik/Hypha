@@ -3,7 +3,7 @@
 //!
 //! | Binary | What it does |
 //! |---|---|
-//! | `hypha topic` | Bus introspection. `list` names the topics that publish while it watches. `echo` prints each message as named fields, or with `-p` as one CSV row. `hz` reports the publish cadence. `bw` reports bandwidth and mean message size. |
+//! | `hypha topic` | Bus introspection. `list` names the topics that publish while it watches. `echo` prints each message as named fields, or with `-p` as one CSV row. `hz` reports the publish cadence. `delay` reports the time from an input topic to an output topic, from send stamps alone. `bw` reports bandwidth and mean message size. |
 //! | `hypha top` | Full-screen bus monitor. Shows per-topic rate and bandwidth, the node registry, and a message inspector. |
 //! | `hypha node` | Node registry query. `list` shows every node the registry holds, alive or dead. `info` shows the state, PID, and executable of each node of one name. |
 //! | `hypha record` | Writes live bus traffic into an MCAP file. Each topic's schema goes into the file, so a recording decodes without the node that made it. |
@@ -15,6 +15,7 @@
 //! | `hypha foxglove` | Serves the bus to Foxglove Studio over a WebSocket. |
 pub mod cdr;
 pub mod convert;
+pub mod delay;
 pub mod echo_args;
 pub mod following;
 pub mod foxglove;

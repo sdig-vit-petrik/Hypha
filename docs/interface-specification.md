@@ -537,7 +537,7 @@ what the code does. It is not a residual-risk argument.
 | Threat | Defense | Limit |
 |---|---|---|
 | Corruption | CRC-32C over the header fields, the latch flag and the payload. | Residual error probability is not assessed. |
-| Loss | Sequence counter. | The receiver checks order modulo 2^64, not continuity. A forward gap is accepted. Its count is read through `hypha_subscriber_missing_sequences`, which misses a loss before the publisher's first accepted frame. |
+| Loss | Sequence counter. | The receiver checks order modulo 2^64, not continuity. A forward gap is accepted. Its count is read through `hypha_subscriber_missing_sequences`, which misses a loss before the first accepted frame of a publisher that existed when the subscriber was created. |
 | Duplication | Per-publisher sequence. | A repeated or older sequence from a known publisher is refused. A subscription tracks the 4096 publishers that sent most recently, so its memory stays bounded while publishers restart for years. A publisher that stayed silent while 4096 others sent is forgotten, and its next frame is accepted as its first. |
 | Insertion, wrong address | Publisher id and sequence are inside the CRC, and the CRC starts from the topic code: a frame of another topic is refused. | No publisher allow-list and no authentication. Two topics share a code with a probability of 2^-32. |
 | Delay | Host monotonic send time and each input binding's maximum age at capture. | Transport age only. Both ends must share one host. |
@@ -551,7 +551,8 @@ no user-space buffer; each line is written on the thread that logs.
 - **`[log]` table.** Node creation applies it before the transport starts. It refuses
   with `InvalidArgument`, and one line on standard error naming the file, table and
   key, an unknown table or key, a wrong type, an unknown level, a sink with no or an
-  empty `path`, `rotation_mb` (1 to 1024) or `rotation_count` (1 to 100) out of range,
+  empty `path`, `rotation_mb` (1 to 1024), `rotation_count` (1 to 100) or
+  `slow_callback_ms` (0 to 3600000) out of range,
   two enabled sinks on one absolute path, an invalid module name, or a sink file that
   cannot be created or opened. It gives `InvalidState` when another process holds a
   sink's lock or the process already has another configuration. A refused table
@@ -559,6 +560,9 @@ no user-space buffer; each line is written on the thread that logs.
   node applies its table use the default (console on at `trace`, level `debug`, no
   file) and are not routed again. A `[log.module.<name>]` entry for a name that never
   registers is not detected.
+- **`slow_callback_ms`.** A key of `[log]` that the node reads, not the engine: it is the
+  budget of every callback of that node (0: no warning line), and two nodes of one process
+  may differ in it though the rest of the table must be equal. execution-model.md §5.
 - **Modules.** `default` is registered at start as identifier 0. The engine keeps at
   most 256 modules; past that a new name (from the C ABI, the Rust `log` facade or a
   framework report) writes under `default`, with no warning. A module's level is

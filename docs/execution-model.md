@@ -177,11 +177,23 @@ request, or a timer.
 | Registrations per `WaitSet` | 128 | Attach returns `ResourceLimit` |
 | Samples per attachment per turn | 8 | The attachment stays ready and the rotation moves on |
 | Work items before a readiness recheck | 64 | The loop rechecks the native `WaitSet` |
-| Slow callback warning | 10 ms of host time | Counter, plus a warning at most once per second. Simulated time never makes a callback slow |
+| Slow callback budget | The period of a timer or a cycle; 10 ms of host time for a subscription | Counter, plus a warning at most once per second for each callback. Simulated time never makes a callback slow |
 
 These are engineering defaults, not safety-derived limits. Measure them on
 your target. A limit is refused, never clamped: a zero limit, or a batch size
 above the dispatch budget, returns `InvalidArgument`.
+
+The slow-callback budget is the one limit a node sets in its parameter file:
+`slow_callback_ms` in `[log]` (0 to 3600000). A value replaces the default of every
+callback of the node, so a node whose clustering callback takes 40 ms by design sets
+`slow_callback_ms = 50` and is warned of the callback that takes 60. Zero writes no line
+and leaves the counter, which then judges against the default. The line names the
+callback: `hypha: callback of topic '/sensing/lidar/points' took 46 ms, budget 10 ms,
+9 warnings suppressed`, `... of timer 100 ms ...` or `... of cycle 'ekf' ...`. A 10 Hz
+timer or cycle is judged against its 100 ms period, so a step of 45 ms logs nothing. The
+count is `node.slow_callbacks` and, for one run, `slow_callbacks` of its report. Only
+a timer, a cycle on host time and a subscription are timed; a replay cycle on simulated
+time and a triggered cycle are not.
 
 The dispatcher rotates over ready attachments with a cursor. It does not
 restart each scan at the first registration. Rejected frames count against
@@ -384,8 +396,15 @@ calling thread.
 
 ### 6.4 Input supervision
 
-Every enabled input that counts for health has a silence limit, unless its code tags
-it `unsupervised`; the decision is made below the C ABI (`hypha_runtime::port_limits`).
+Every enabled input, advisory or not, has a silence limit or says that it has none:
+`silence_ms = 0` in its table (a ROS timeout of 0.0), or the tag `unsupervised` in its
+code. An input never runs without a limit because a key was left out: without
+`silence_ms` and without the tag, the start is refused. The decision is made below the C
+ABI (`hypha_runtime::port_limits`). An input with no limit, an *untimed* input, is
+`NeverArrived` before its first sample and `Usable` from it on, valid until a later sample
+replaces it; it is never stale and logs no fault (`Input::untimed()`, `silence_nanos = 0`
+in `~/introspection`, "no time limit" in `hypha top`). A required untimed input keeps the
+node `WAITING` until its first sample; an advisory one does not count.
 A port with a silence limit checks that its input is current. Two checks exist:
 staleness (the silence limit) and stagnation. One limit, `silence_ms`, decides both
 whether a value may be used (the `Stale` verdict) and whether the port is stale
@@ -448,8 +467,9 @@ nothing. An input without a silence limit never logs `never arrived`. Two ports 
 topic log under their own names. `<in>` is `cycle '<cycle>' input '<port>' (<topic>)`,
 or `cycle '<cycle>' input (<topic>)` without a table; an advisory input's line ends in
 ` (advisory)`, and an advisory input reports its faults at INFO where the table says WARN:
-the node is healthy without it. An `unsupervised` or an ignored input is not advisory: its
-lines have the levels of the table. Ages and limits are whole milliseconds.
+the node is healthy without it. Neither `unsupervised` nor ignoring makes an input
+advisory: without the tag its lines have the levels of the table. Ages and limits are whole
+milliseconds.
 
 | Change | Level | Line |
 |---|---|---|
@@ -470,7 +490,10 @@ input takes none. Without a budget, no cycle-wide limit applies.
 
 A queued input has one overflow behaviour, and no option selects another: the
 pending samples beyond its share are the oldest, so it discards them, examines
-the newest, and counts each discard. In a triggered cycle the triggers keep their
+the newest, and counts each discard. A queued input bound newest only (`newestOnly`, C
+ABI `HYPHA_CYCLE_INPUT_MODE_NEWEST`) has a share of one: it examines its newest pending
+sample and discards the older ones the same way, while its queue keeps the depth of its
+`perStep()`. In a triggered cycle the triggers keep their
 pending samples for later steps, and on host time a queued input that is no trigger
 keeps the samples sent after the step's trigger sample: they are not pending for
 that step and no share discards them (section 6.6).
@@ -479,7 +502,8 @@ Each cause of loss has its own counter:
 
 1. History overwrite: the history dropped a sample before the input read it.
 2. Age rejection: the input read the sample, and the age rule refused it.
-3. Overflow discard: the input discarded an old sample beyond its share on purpose.
+3. Overflow discard: the input discarded an old sample beyond its share on purpose, or a
+   newest-only trigger passed a sample for a newer one (section 6.6 item 7).
 
 The transport's cumulative missing-sequence count is read atomically, so health
 queries do not take the source-history or sequence-validator locks.
@@ -492,12 +516,12 @@ A cycle runs either on a rate or on triggers, never both. A trigger is one of th
 cycle's `Arrivals` inputs (`Cycle::setTrigger(port)`, C ABI `hypha_cycle_set_trigger`
 on a cycle created with period 0); each call adds one trigger, a repeat adds nothing,
 and the order of the calls has no meaning. A trigger is queued and wired and has its
-own positive silence limit. Two triggers may not read one topic through `sharing()`,
-since each sample would step twice: `setTrigger` refuses the second with
+own silence limit, or none: an untimed trigger (section 6.4) has no fallback of its own
+(item 3), is never stale and never late. Two triggers may not read one topic through
+`sharing()`, since each sample would step twice: `setTrigger` refuses the second with
 `InvalidArgument`. A cycle has at most 64 triggers. A cycle with both a rate and a
-trigger, with neither, or with a trigger that has no positive silence limit is refused
-at start with `InvalidArgument`, and one log line names the cycle and the reason, and
-the trigger that has no limit.
+trigger, or with neither, is refused at start with `InvalidArgument`, and one log line
+names the cycle and the reason.
 
 1. **One step per trigger sample.** The samples of all triggers run in one order:
    by framework send stamp, a tie by port (the binding index of the port, which is
@@ -528,23 +552,48 @@ the trigger that has no limit.
    port is judged at each step by its newest sample against its own limit: under
    simulated time the samples sent at or before T count, and the age is T − sent, so
    a sample exactly at its limit is usable; in host time every retained sample counts,
-   as for a `Latest` input, one stamped after the step included. Under simulated time
-   every other input is cut strictly before T, as a grid step is cut at its deadline.
-   In host time a queued
-   (`Arrivals`) input that is no trigger takes its pending samples, in arrival order,
-   up to the first one sent after the trigger sample, by the host send time of both. A
-   sample sent with the trigger sample, by one step of one upstream cycle, has the same
-   send time and is taken. A later one waits for a later trigger step or a fallback,
-   so the trigger samples drained in one turn each find their own arrivals; with two
-   publishers on the input, an earlier sample that arrives behind a later one waits
-   with it. The input's verdict counts every sample that has arrived, the waiting ones
-   included. A `Latest` input and the transform input are captured as a host-time rate
-   step captures them. Under simulated time a sample stamped exactly T, as the outputs
-   of the step that sent the trigger sample are, is cut and belongs to the next step:
-   the two clocks differ here.
+   as for a `Latest` input, one stamped after the step included.
+
+   A queued (`Arrivals`) input that is no trigger follows one rule on both clocks: **a
+   trigger step holds the samples that the upstream step which sent its trigger sample
+   sent with it, and none that a later upstream step sent.** One step of a cycle stamps all its outputs with one send
+   time, so the pair a driver publishes (an IMU and a magnetometer message) is matched
+   in the step of the trigger sample, live and in a lockstep replay of its recording
+   (#231).
+   - Under simulated time the step reads every other input through T, as it reads its
+     triggers: a sample stamped T is in the step, one stamped after T is not, whatever
+     the input's mode. An upstream step at a later time sends nothing the step holds.
+     The rule knows an upstream step by its time alone: two steps of one triggered
+     upstream at one time T (`dt = 0`) count as one, and the first trigger step at T
+     here takes the samples of both. A fallback at T reads its inputs through T too.
+     The hold of item 5 makes this deterministic: the step runs only once every upstream has
+     reported T, an upstream reports T only after it sent every output stamped T, and
+     the player sends every message stamped T before `/clock = T`, so each such sample
+     is in the input when the step captures. A publisher that reports no progress, such
+     as a plain callback, is not waited for, and the messages stamped at the first
+     instant of a pass follow its `/clock` (replay-flow-control.md §4.3): whether such a
+     sample stamped T is in the step depends on when it arrived. A grid step is cut
+     strictly before its deadline instead (section 11.1). Several trigger samples stamped T run as several
+     steps at T, in the order of item 1; the first of them takes the queued samples
+     stamped T, and the later ones find them taken.
+   - In host time a queued (`Arrivals`) input that is no trigger takes its pending
+     samples, in arrival order, up to the first one sent after the trigger sample, by
+     the host send time of both. A sample sent with the trigger sample, by one step of
+     one upstream cycle, has the same send time and is taken. A later one waits for a
+     later trigger step or a fallback, so the trigger samples drained in one turn each
+     find their own arrivals; with two publishers on the input, an earlier sample that
+     arrives behind a later one waits with it. The input's verdict counts every sample
+     that has arrived, the waiting ones included. A `Latest` input and the transform
+     input are captured as a host-time rate step captures them: the newest retained
+     sample, which may be newer than the trigger sample.
 3. **Fallback.** When no step ran for the shortest silence limit (`silence_ms`) of
-   the triggers, one step runs without a trigger sample. The limit counts from the
-   last step, or from the cycle's first evaluation when that is later: a trigger
+   the triggers that have one, one step runs without a trigger sample. An untimed
+   trigger counts for no fallback and is never due in one. A cycle whose triggers are
+   all untimed runs no fallback: before its first trigger sample it runs no step, so
+   nothing judges its inputs, and `~/state` shows its required inputs `NEVER_ARRIVED`
+   and the node `WAITING` (its `CycleState.steps` stays 0), as a ROS callback with no
+   timeout never runs. The limit counts from the last step, or from the cycle's first
+   evaluation when that is later: a trigger
    stamped before the first evaluation moves the count no earlier. It repeats every
    shortest limit until a trigger arrives. In the fallback step every trigger is
    empty; a trigger without a sample for its own limit, since its last step or the
@@ -566,13 +615,13 @@ the trigger that has no limit.
    every publisher does, and the `WaitSet` wakes at the cycle's next fallback
    deadline, so a fallback runs on its deadline. A wildcard trigger has no listener: a
    cycle with one polls its triggers every tenth of its shortest silence limit, at
-   least every millisecond. Under simulated time the wake follows the rule of a cycle
-   timer (section 11.1).
+   least every millisecond, and every millisecond when no trigger has a limit. Under
+   simulated time the wake follows the rule of a cycle timer (section 11.1).
 5. **Simulated time.** A step at T, for a trigger or a fallback, runs when the node's
    clock is at least T and every upstream of the cycle has reported at least T on
    `/clock_progress`, so no trigger stamped T can still come. A grid replay cycle needs
    T − 1 ns (section 11.1): it cuts its inputs strictly before T, while a triggered step
-   reads its triggers through T. A held step waits for as long as its
+   reads its inputs through T (item 2). A held step waits for as long as its
    upstream does not report; the player's `--timeout` is the bound. The trigger stamps of
    each port must ascend in arrival order: a trigger stamped before the step that ran
    last, from a publisher that does not report progress or from several publishers on
@@ -585,6 +634,26 @@ the trigger that has no limit.
    triggered cycles has no delay element: it holds for good, until the player's
    `--timeout` ends it with an error that names the loop's nodes, or a stop does. A loop needs a delay element, a rate cycle or a clock driver, as an
    algebraic loop does in any block-diagram tool.
+7. **Newest only.** A trigger bound newest only (`newestOnly`, C ABI
+   `HYPHA_CYCLE_INPUT_MODE_NEWEST`) steps on the newest of its samples that are due
+   together and passes the older ones; ROS's subscriber with `queue_size` 1. Each passed
+   sample is consumed with no step and counted as an overflow discard of its port
+   (section 6.5): `work_limit_drops` in the report of the port's next step, the cumulative
+   `work_limit_drops_total`, and, for a required input, the `dropped` of its `~/state`
+   row. The rule is the reader's: the transport queue keeps its depth, nothing is lost on
+   the wire, and neither the publishers nor the topic's policy change. What is due together depends on the clock.
+   In host time it is every sample of the port pending when the node gets its turn, so a
+   step slower than its topic steps next on the newest sample of what arrived meanwhile,
+   not on a backlog. The merge of item 1 stays: a sample of another trigger stamped
+   between a passed sample and the newest still steps, before the newest. A sample older
+   than its limit is late (item 3), not passed. Under simulated time a step at T sees the
+   samples stamped at or before T, and the step at an earlier stamp runs first, so a sample
+   is passed only by a later sample of the same stamp T, as one step of an upstream sends
+   them. By item 5 every upstream has reported T before the step runs, so all samples
+   stamped T are there: which sample steps follows from the recording, not from when the
+   node drained its inputs. A publisher that reports no progress is not waited for (item
+   5), and a second sample of its stamp T that arrives after the step at T steps on its
+   own. Two publishers on one topic keep the limit of section 11.1 (#262).
 
 ### 6.7 The TF input
 
@@ -595,7 +664,8 @@ below the C ABI, that the step looks up with explicit results and never waits on
 1. **Filled before the step, under the step's cut.** The input is two queued, optional
    bindings. Before the step every captured `TFMessage` goes into the buffer, those of
    `/tf_static` as static. Under simulated time that is every sample sent strictly
-   before the step's time, so a replay sees the same buffer on every run; in host time
+   before the time of a rate step, or at or before the time of a triggered step (section
+   6.6 item 2), so a replay sees the same buffer on every run; in host time
    every retained sample. A sample that does not decode fails the step with
    `InvalidFrame`. A transform the buffer refuses (a rotation that is not a unit
    quaternion, a non-finite value, a second parent for a frame, a cycle, a frame both

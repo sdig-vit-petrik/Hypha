@@ -8,8 +8,8 @@ mod helpers;
 use helpers::{message_stamp_fits_ros_time, shares_history};
 
 use super::{
-    BindingCapture, BindingOptions, CaptureClock, CycleHistory, Supervision, SupervisionLimits,
-    TriggerPorts, TriggerStep,
+    BindingCapture, BindingOptions, CaptureClock, CycleHistory, Passed, Supervision,
+    SupervisionLimits, TriggerPorts, TriggerStep,
 };
 
 const STATUS_INVALID_ARGUMENT: i32 = 1;
@@ -44,10 +44,11 @@ pub struct CycleTime {
     /// True when the message stamp is present and a `RosTime` can hold it. Derived.
     pub message_stamp_valid: bool,
     /// The data-time cut of a replay step, in framework nanoseconds: only samples stamped
-    /// before it are admitted, and ages count from it. `None` judges in host time.
+    /// before it are admitted, or at it in a step of a triggered cycle, and ages count from
+    /// it. `None` judges in host time.
     pub replay_cut_nanos: Option<u64>,
     /// What the trigger ports hold in a step of a triggered cycle; `None` for a rate cycle.
-    /// Under a replay cut the trigger ports admit their samples through the cut.
+    /// Under a replay cut every input of such a step admits its samples through the cut.
     pub trigger_step: Option<TriggerStep>,
 }
 
@@ -428,10 +429,8 @@ impl CycleRuntime {
         let Ok(capture_steady_u64) = u64::try_from(time.capture_steady_nanos) else {
             return self.fail(STATUS_INVALID_ARGUMENT);
         };
-        let clock = match time.replay_cut_nanos {
-            Some(cut_nanos) => CaptureClock::Replay { cut_nanos },
-            None => CaptureClock::Host { steady_nanos: capture_steady_u64 },
-        };
+        let triggered = time.trigger_step.is_some();
+        let clock = CaptureClock::of_step(time.replay_cut_nanos, triggered, capture_steady_u64);
         let sent_through = self.firing_sent_nanos(clock, time);
         if let Err(status) = self.arrival_assignments(clock, sent_through) {
             return self.fail(status);
@@ -564,7 +563,7 @@ impl CycleRuntime {
                 if let Some(port) = self.triggers.iter().position(|&trigger| trigger == index) {
                     let step = time.trigger_step.ok_or(STATUS_INVALID_ARGUMENT)?;
                     let options = other.options;
-                    capture.capture_trigger(&guard, options, step.fires(port), clock.for_trigger());
+                    capture.capture_trigger(&guard, options, step.fires(port), clock);
                     // The schedule found the port silent; the capture clock may read a
                     // little earlier than the schedule's.
                     if step.is_due(port) {
@@ -618,20 +617,20 @@ impl CycleRuntime {
         }
     }
 
-    /// Consume the oldest pending sample of trigger port `port` without a step, and count
-    /// it as an age rejection of that port.
+    /// Consume the oldest pending sample of trigger port `port` without a step, counted as
+    /// `why` says on that port.
     ///
     /// # Errors
     ///
     /// Returns `STATUS_INVALID_ARGUMENT` without such a port or a pending sample.
-    pub fn refuse_trigger(&mut self, port: usize) -> Result<(), i32> {
+    pub fn pass_trigger(&mut self, port: usize, why: Passed) -> Result<(), i32> {
         let index = *self.triggers.get(port).ok_or(STATUS_INVALID_ARGUMENT)?;
         let history = self.bindings.get(index).and_then(|slot| slot.history.as_ref());
         let (Some(history), Some(capture)) = (history, self.captures.get_mut(index)) else {
             return Err(STATUS_INVALID_ARGUMENT);
         };
         let history = crate::locked(history);
-        if capture.refuse_pending(&history) { Ok(()) } else { Err(STATUS_INVALID_ARGUMENT) }
+        if capture.pass_pending(&history, why) { Ok(()) } else { Err(STATUS_INVALID_ARGUMENT) }
     }
 
     /// Report the alive counter of a binding's newest accepted sample.

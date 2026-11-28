@@ -53,13 +53,13 @@ CAPS = {
 # Production files above their cap: strict shrink-only ratchet (hard failure on growth).
 PROD_RATCHET = {
     "apps/hypha_tools/src/bin/hypha/top/intercept.rs": 1554,
-    "apps/hypha_tools/src/bin/hypha/top/ui.rs": 1530,
+    "apps/hypha_tools/src/bin/hypha/top/ui.rs": 1361,
     "apps/hypha_tools/src/load/coordinator.rs": 1057,
     "apps/hypha_tools/src/bin/hypha/top/intercept_ui.rs": 859,
     "crates/hypha_cycle/src/capture.rs": 857,
     "apps/hypha_ros_bridge/src/automatic_runtime.rs": 844,
     "apps/hypha_tools/src/bin/hypha/top/state.rs": 840,
-    "crates/hypha_node/src/subscriber.rs": 826,
+    "crates/hypha_node/src/subscriber.rs": 740,
     "crates/hypha_cycle/src/runtime.rs": 717,
     "apps/hypha_tools/src/bin/hypha/top/graph_ui.rs": 670,
     "crates/hypha_node/src/cycle/tick.rs": 651,
@@ -170,6 +170,9 @@ MAX_TEST_SLEEPS = 168
 SLEEP_ALLOWLIST = frozenset({
     "crates/hypha-cxx/test/test_worker_stop.cpp",
     "crates/hypha-cxx/base/test/test_clock.cpp",
+    "crates/hypha_ffi/tests/slow_callback_budget.rs",  # the sleep is the overrun under test
+    "crates/hypha_node/tests/subscriber_missing_sequences.rs",  # a creation race: stagger and pacing are its stimulus
+    "crates/hypha-cxx/test/test_handover.cpp",  # the sleep lets a pop wait before the stop
 })
 # 6. #[allow(...)] ratchet in shipped Rust (use #[expect(lint, reason = "...")] per docs/rust-style.md).
 MAX_PROD_ALLOWS = 72

@@ -95,6 +95,8 @@ pub(crate) enum Request {
     Triggered {
         cycle: CycleId,
         silences_nanos: Vec<i64>,
+        /// The trigger ports that step on their newest due sample only.
+        newest: hypha_cycle::TriggerPorts,
         /// Whether every trigger topic has a listener that wakes the `WaitSet`.
         notified: bool,
     },
@@ -309,9 +311,10 @@ fn register(set: &HyphaWaitSet, request: Request) -> Result<(HyphaAttachmentId, 
             let run_anchored = sim_time && (cycle.is_some() || hypha_time::sim_time_has_value());
             Ok((id, Target::Timer { timer, callback, cycle, run_anchored, control }))
         }
-        Request::Triggered { cycle, silences_nanos, notified } => {
+        Request::Triggered { cycle, silences_nanos, newest, notified } => {
             let schedule = hypha_runtime::trigger_schedule::TriggerSchedule::new(&silences_nanos)
-                .ok_or(Error::InvalidArgument)?;
+                .ok_or(Error::InvalidArgument)?
+                .newest_only(newest);
             let wake = triggered_wake(set, schedule.shortest(), notified);
             let id = set.native_attach(Vec::new(), wake)?;
             let state = super::triggered::TriggeredCycle::new(cycle, schedule);
@@ -341,8 +344,9 @@ fn timer_wake(period: Duration, node_clock: bool, sim_time: bool) -> Trigger {
 }
 
 /// The wake of a triggered cycle whose shortest silence limit is `shortest_nanos`. A
-/// cycle with a trigger that has no listener polls its triggers at a tenth of that limit.
-fn triggered_wake(set: &HyphaWaitSet, shortest_nanos: i64, notified: bool) -> Trigger {
+/// cycle with a trigger that has no listener polls its triggers at a tenth of that limit,
+/// or every [`WILDCARD_POLL_PERIOD`] when no trigger has a limit.
+fn triggered_wake(set: &HyphaWaitSet, shortest_nanos: Option<i64>, notified: bool) -> Trigger {
     // A node on its own simulated clock is woken by its `/clock` listener.
     if set.node().uses_sim_time {
         return Trigger::Timed;
@@ -353,7 +357,7 @@ fn triggered_wake(set: &HyphaWaitSet, shortest_nanos: i64, notified: bool) -> Tr
     if notified {
         return Trigger::Timed;
     }
-    let tenth = u64::try_from(shortest_nanos / 10).unwrap_or(0);
+    let tenth = shortest_nanos.and_then(|shortest| u64::try_from(shortest / 10).ok()).unwrap_or(0);
     Trigger::Periodic(Duration::from_nanos(tenth).max(WILDCARD_POLL_PERIOD))
 }
 
@@ -364,10 +368,12 @@ pub(crate) fn attach_triggered_cycle(
     set: &HyphaWaitSet,
     cycle: &Cycle,
     silences_nanos: Vec<i64>,
+    newest: hypha_cycle::TriggerPorts,
     listeners: Vec<Vec<hypha_iceoryx2::Iox2Listener>>,
 ) -> Result<(HyphaAttachmentId, Vec<HyphaAttachmentId>), Error> {
     let notified = listeners.iter().all(|trigger| !trigger.is_empty());
-    let wake = attach(set, Request::Triggered { cycle: cycle.id, silences_nanos, notified })?;
+    let request = Request::Triggered { cycle: cycle.id, silences_nanos, newest, notified };
+    let wake = attach(set, request)?;
     let mut attached = Vec::with_capacity(listeners.len());
     for listener in listeners.into_iter().flatten() {
         match attach(set, Request::TriggerWake { listener: Box::new(listener) }) {

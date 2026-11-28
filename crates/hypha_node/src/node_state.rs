@@ -161,6 +161,7 @@ fn judge(
             continue;
         }
         let health = *crate::locked(&cycle.snapshots.health);
+        let steps = crate::locked(&cycle.snapshots.step_times).summary();
         rows.push(CycleState {
             name: cycle.name().to_owned(),
             steps: health.steps,
@@ -169,6 +170,13 @@ fn judge(
             max_step_nanos: health.max_step_nanos,
             overruns: health.overruns,
             output_drops: health.output_pool_drops,
+            step_p50_nanos: steps.p50_nanos,
+            step_p90_nanos: steps.p90_nanos,
+            step_p99_nanos: steps.p99_nanos,
+            recent_step_p50_nanos: steps.recent_p50_nanos,
+            recent_step_p90_nanos: steps.recent_p90_nanos,
+            recent_step_p99_nanos: steps.recent_p99_nanos,
+            recent_step_max_nanos: steps.recent_max_nanos,
         });
     }
     let view_of = |row: &InputBindingRow, subscriber: &EndpointRow| -> Option<Judged> {

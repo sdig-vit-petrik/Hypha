@@ -790,7 +790,7 @@ TEST(RunNodeLifecycle, AMissingSilenceLimitReturnsTheConfigurationCode)
     EXPECT_EQ(exitCode, hypha::kExitConfiguration);
     EXPECT_NE(
         output.find(
-            "input 'speed': missing key 'silence_ms': a required input needs a limit, or "
+            "input 'speed': missing key 'silence_ms': an input needs a limit, 0 for none, or "
             "the tag hypha::unsupervised: NotAvailable"
         ),
         std::string::npos

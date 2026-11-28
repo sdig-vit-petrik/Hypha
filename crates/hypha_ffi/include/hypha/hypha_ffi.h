@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 12
+#define HYPHA_ABI_REVISION 14
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -225,6 +225,13 @@ enum HyphaCycleInputMode
   HYPHA_CYCLE_INPUT_MODE_LATEST = 0,
   // Consume retained samples with an independent cursor.
   HYPHA_CYCLE_INPUT_MODE_QUEUED = 1,
+  // Queued, newest only: a step examines the newest pending sample and drops the older
+  // ones as work-limit drops. A trigger in this mode steps on the newest of the samples
+  // due together and passes the older ones, counted the same way: on host time every
+  // sample pending in a turn, under simulated time the samples of one stamp
+  // (execution-model.md §6.6). `max_samples_per_iteration` is the queue the binding
+  // keeps between steps.
+  HYPHA_CYCLE_INPUT_MODE_NEWEST = 2,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -418,7 +425,8 @@ typedef struct HyphaCycleBindingReport {
   // Queued retained samples still pending through the high-water mark. Zero for a
   // latest binding.
   size_t backlog_samples;
-  // The oldest excess pending samples discarded in this step.
+  // The oldest excess pending samples discarded in this step, and the samples a
+  // newest-only trigger passed for a newer one since its last step.
   uint64_t work_limit_drops;
   // Samples overwritten before this binding examined them since last capture.
   uint64_t lost_since_capture;
@@ -437,7 +445,8 @@ typedef struct HyphaCycleBindingHealth {
   // Cumulative history losses and, for a queued binding, transport sequence gaps; a
   // latest binding counts neither.
   uint64_t overrun_total;
-  // Cumulative samples intentionally discarded by queued work policies.
+  // Cumulative samples intentionally discarded by queued work policies, newest-only
+  // passes included.
   uint64_t work_limit_drops_total;
   // Cumulative age rejections.
   uint64_t age_rejections_total;
@@ -503,9 +512,9 @@ typedef struct HyphaSupervisionRanges {
 // What one input's supervision binding reads: the port table, the checks the code
 // It is read for the call only.
 //
-// `silence_ms` is required on an enabled input that counts for health unless
-// `unsupervised` is set, optional on an advisory one and refused with `unsupervised`;
-// `stagnation_ms` is read when `check_stagnation` is set. A key the request does not
+// `silence_ms` is required on an enabled input, advisory or not, unless `unsupervised`
+// is set, and refused with it; `silence_ms = 0` is an input with no time limit, as the
+// tag is. `stagnation_ms` is read when `check_stagnation` is set. A key the request does not
 // allow and a limit out of range are `InvalidArgument`; a declared limit that is
 // missing is `NotAvailable`.
 typedef struct HyphaInputSupervisionRequest {
@@ -634,7 +643,9 @@ typedef struct HyphaCycleBindingOptions {
   // `HYPHA_STATUS_INVALID_ARGUMENT`.
   uint32_t mode;
   // Queued samples examined per iteration. Must be nonzero for queued mode. A queued
-  // binding with more pending samples than its share drops the oldest of them.
+  // binding with more pending samples than its share drops the oldest of them. In
+  // newest mode, nonzero too: the samples the binding keeps pending between steps; a
+  // step examines one.
   size_t max_samples_per_iteration;
   // Nonzero excludes the binding from node health. A disabled input is never judged.
   uint8_t optional;
@@ -1011,6 +1022,26 @@ HyphaStatus hypha_config_unread_keys(const struct HyphaConfig *config,
                                      size_t out_capacity,
                                      size_t *out_len);
 
+// Write the names of the tables directly under `prefix` of `config` (the top level for a
+// zero `prefix_len`; `sensors[0]` is a table element), sorted and joined by `'\n'`, to
+// `out`: `a\nb` under `ports.inputs` for `[ports.inputs.a]` and `[ports.inputs.b]`. A name
+// that holds a scalar or a list is no table, a table with no key is not listed, and a
+// prefix that is no table gives empty text. Nothing is marked as read. `TooLarge` when
+// `out_capacity` is too small; `out_len` then holds the byte length.
+//
+// `InvalidArgument`: a null `config` or `out_len`, a null `prefix` with a nonzero length,
+// or a `prefix` that is not UTF-8.
+//
+// # Safety
+// `config` is live. `prefix` holds `prefix_len` bytes when that is nonzero. `out` is
+// null or `out_capacity` writable bytes. `out_len` points to a writable `usize`.
+HyphaStatus hypha_config_table_names(const struct HyphaConfig *config,
+                                     const char *prefix,
+                                     size_t prefix_len,
+                                     char *out,
+                                     size_t out_capacity,
+                                     size_t *out_len);
+
 // Mark `key`, a key, a table or a list entry (`sensors[0].rate`), as set on purpose and
 // not read, for `reason`: it and every key under it leave `hypha_config_unread_keys`, and
 // it becomes a node manifest row with source `IntrospectedConfig::SOURCE_IGNORED` whose
@@ -1282,7 +1313,8 @@ HyphaStatus hypha_cycle_set_class_based(struct HyphaCycle *cycle,
 
 // Atomically attach the cycle timer, triggers or clock driver after all bindings; an
 // uncommitted cycle never runs. `InvalidArgument`: neither a period nor a trigger, both,
-// any trigger binding without a positive silence limit, or a refused `[cycle]` key.
+// or a refused `[cycle]` key. A trigger binding without a silence limit is untimed: it
+// runs no fallback of its own, and a cycle of untimed triggers runs no fallback.
 // `InvalidState`: a committed cycle, a running `WaitSet`, any cycle on a CLI tool node
 // or on a node with a clock driver, and a driver in a process already on simulated
 // time, on a node with another cycle, or while another process publishes `/clock`. A

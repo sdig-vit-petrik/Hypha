@@ -41,12 +41,22 @@ pub struct CycleSnapshots {
     pub(crate) period_nanos: i64,
     pub(crate) committed: AtomicBool,
     pub(crate) health: Mutex<HyphaCycleHealth>,
+    /// The distribution of the step durations, which `~/state` reports.
+    pub(crate) step_times: Mutex<hypha_cycle::StepTimes>,
     pub(crate) bindings: Mutex<Vec<HyphaCycleBindingView>>,
     /// The source counters of each input, in binding order, at the last step.
     pub(crate) input_counts: Mutex<Vec<InputCounts>>,
     /// What each input reads about the other streams of its topic, in binding order; `None`
     /// for an input without a subscriber of one stream.
     pub(crate) watches: Mutex<Vec<Option<crate::topic_streams::Watch>>>,
+}
+
+impl CycleSnapshots {
+    /// Count a step of `duration_nanos` whose capture began at host monotonic `steady_nanos`.
+    pub(crate) fn record_step_time(&self, duration_nanos: u64, steady_nanos: i64) {
+        let steady = u64::try_from(steady_nanos).unwrap_or(0);
+        crate::locked(&self.step_times).record(duration_nanos, steady);
+    }
 }
 
 // Another thread reads it during a run (`hypha_cycle_health`, `hypha_cycle_binding`).

@@ -24,6 +24,42 @@ pub(crate) type Ipc = iceoryx2::service::ipc_threadsafe::Service;
 /// The first buffer size of a growable publisher that names none.
 const GROWABLE_INITIAL_PAYLOAD: usize = 4096;
 
+/// The size of a pool from which its line is an info message at start, not a debug one.
+const NOTEWORTHY_POOL_BYTES: u64 = 1 << 20;
+
+/// The level of the line that tells a publisher's pool: a pool of a megabyte or more is worth
+/// reading at start, a small one is not.
+fn pool_log_level(bytes: u64) -> log::Level {
+    if bytes >= NOTEWORTHY_POOL_BYTES { log::Level::Info } else { log::Level::Debug }
+}
+
+/// Log the pool a publisher of `spec` reserves, and refuse a bounded one that `/dev/shm`
+/// cannot hold. A growable payload is sized by its first segment and only logged.
+fn announce_pool(
+    spec: &TopicSpec,
+    policy: &hypha_core::port::QosPolicy,
+    max_payload: Option<usize>,
+    initial_payload: usize,
+    bounded_deployment: bool,
+) -> Result<(), PortError> {
+    if let Some(payload) = max_payload {
+        let pool = qos::pool_size(&spec.name, policy, spec.loaned_samples, payload);
+        log::log!(target: "hypha/transport", pool_log_level(pool.bytes),
+                "hypha_iceoryx2: topic '{}' publisher pool: {} samples of {} bytes, {} bytes of shared memory \
+                 when every subscriber's queue is full; policy {policy}, {} loans",
+                spec.name, pool.samples, pool.sample_bytes, pool.bytes, spec.loaned_samples);
+        crate::shm_capacity::check(&spec.name, pool.samples, payload, bounded_deployment)?;
+    } else {
+        let pool = qos::pool_size(&spec.name, policy, spec.loaned_samples, initial_payload);
+        log::info!(target: "hypha/transport",
+                "hypha_iceoryx2: topic '{}' has a growable payload: its first segment is {} samples of {} bytes \
+                 ({} bytes); its later segments are not checked against /dev/shm, and an undersized /dev/shm can \
+                 stop the process with SIGBUS. Name a payload bound to size the pool",
+                spec.name, pool.samples, pool.sample_bytes, pool.bytes);
+    }
+    Ok(())
+}
+
 /// The one domain-wide event, notified whenever a subscriber is created.
 ///
 /// A latched publisher hands its history to new subscribers when this event fires.
@@ -204,16 +240,10 @@ impl Iox2Transport {
                 PortError::Backend(3)
             }
         })?;
-        match max_payload {
-            Some(payload) => {
-                let subscribers = qos::subscriber_capacity(&spec.name, &policy);
-                let samples = qos::pool_samples(&policy, subscribers, spec.loaned_samples);
-                crate::shm_capacity::check(&spec.name, samples, payload, bounded_deployment)?;
-            }
-            None => log::info!(target: "hypha/transport",
-                "hypha_iceoryx2: topic '{}' has a growable payload; its later segments are not checked against \
-                 /dev/shm, and an undersized /dev/shm can stop the process with SIGBUS", spec.name),
-        }
+        // Pairs with the fence of `PublishersBefore::list`: a subscriber that did not list this
+        // port sees it by its first send.
+        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+        announce_pool(spec, &policy, max_payload, initial_payload, bounded_deployment)?;
         let publisher = Arc::new(publisher);
         crate::schema::write_schema_file(spec)?;
 
@@ -391,12 +421,14 @@ impl Iox2Transport {
             &port_name,
             slots,
         )?;
+        let publishers_before = crate::subscriber::PublishersBefore::list(&service);
         // A typed subscriber lets the domain resolve its schema even for a relayed publisher.
         crate::schema::write_schema_file(spec)?;
 
         let subscriber = Iox2Subscriber::new(
             subscriber,
             created_nanos,
+            publishers_before,
             service,
             stream,
             self.node.clone(),

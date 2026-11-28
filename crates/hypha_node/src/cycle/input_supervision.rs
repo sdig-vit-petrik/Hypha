@@ -14,9 +14,9 @@ use crate::status::Error;
 /// What one input's supervision binding reads: the port table, the checks the code
 /// It is read for the call only.
 ///
-/// `silence_ms` is required on an enabled input that counts for health unless
-/// `unsupervised` is set, optional on an advisory one and refused with `unsupervised`;
-/// `stagnation_ms` is read when `check_stagnation` is set. A key the request does not
+/// `silence_ms` is required on an enabled input, advisory or not, unless `unsupervised`
+/// is set, and refused with it; `silence_ms = 0` is an input with no time limit, as the
+/// tag is. `stagnation_ms` is read when `check_stagnation` is set. A key the request does not
 /// allow and a limit out of range are `InvalidArgument`; a declared limit that is
 /// missing is `NotAvailable`.
 #[repr(C)]
@@ -72,12 +72,7 @@ pub fn cycle_bind_input_supervision(
         .get(binding_index as usize)
         .ok_or((Error::InvalidArgument, String::new()))?;
     let enabled = input.history.is_some();
-    let advisory = registration
-        .input_options
-        .get(binding_index as usize)
-        .is_some_and(|options| options.optional != 0);
     let declared = Declared {
-        advisory,
         unsupervised: request.unsupervised != 0,
         stagnation: request.check_stagnation != 0,
     };
@@ -105,8 +100,8 @@ pub fn cycle_bind_input_supervision(
     }))
 }
 
-/// The rule for a port without a table: it reads no key, and an enabled input that
-/// counts for health needs the tag `unsupervised`.
+/// The rule for a port without a table: it reads no key, so an enabled input, advisory
+/// or not, has no time limit and must say so with the tag `unsupervised`.
 fn unnamed_port(
     declared: Declared,
     enabled: bool,
@@ -114,18 +109,12 @@ fn unnamed_port(
     if declared.stagnation {
         return Err((Error::InvalidArgument, "supervision needs a named port".to_owned()));
     }
-    let both_tags = declared.unsupervised && declared.advisory;
-    if both_tags {
-        return Err((
-            Error::InvalidArgument,
-            "the tags unsupervised and advisory exclude each other".to_owned(),
-        ));
-    }
-    let needs_tag = enabled && !declared.advisory && !declared.unsupervised;
+    let needs_tag = enabled && !declared.unsupervised;
     if needs_tag {
         return Err((
             Error::InvalidArgument,
-            "a required input without a table needs the tag hypha::unsupervised".to_owned(),
+            "an input without a table has no time limit and needs the tag hypha::unsupervised"
+                .to_owned(),
         ));
     }
     Ok(None)

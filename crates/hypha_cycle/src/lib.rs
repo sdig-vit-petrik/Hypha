@@ -16,12 +16,13 @@ mod history;
 mod judgement;
 mod replay_fidelity;
 mod runtime;
+mod step_times;
 mod supervision;
 mod trigger;
 
 pub use capture::{
     BindingCapture, BindingCounters, BindingOptions, CaptureClock, CaptureMode, HeldReport,
-    InputVerdict, QueueOverflowPolicy, held_report, judge_value,
+    InputVerdict, Passed, QueueOverflowPolicy, held_report, judge_value,
 };
 pub use history::{CycleHistory, HistorySample, HistoryStats, SampleOrigin};
 pub use judgement::{JudgementEvent, judgement_line};
@@ -32,6 +33,7 @@ pub use runtime::{
     CycleHealth, CycleRuntime, CycleTime, EmissionBudget, OutputError, OutputFailurePolicy,
     StagedMessage,
 };
+pub use step_times::{StepSummary, StepTimes};
 pub use supervision::{FAULT_STAGNANT, FAULT_STALE, Supervision, SupervisionLimits};
 pub use trigger::{TriggerPorts, TriggerStep};
 

@@ -99,7 +99,7 @@ impl CallbackDispatcher<'_> {
     /// any trigger port, in merge order, and the fallbacks due before them.
     ///
     /// Under simulated time a step at `t` runs once the clock reached `t` and every
-    /// upstream reported at least `t`, and its other inputs are cut strictly before `t`.
+    /// upstream reported at least `t`, and every input is read through `t`.
     pub(super) fn run_triggered(&mut self, attachment: AttachmentId, now: i64) -> Progression {
         self.triggered_turn(attachment, now)
             .unwrap_or_else(|status| fail_with(&mut self.failure, attachment, status))
@@ -152,10 +152,26 @@ impl CallbackDispatcher<'_> {
             let (time, trigger) = match event {
                 TriggerEvent::Trigger { time, port } => (time, TriggerStep::Sample { port }),
                 TriggerEvent::Fallback { time, due } => (time, TriggerStep::Fallback { due }),
+                TriggerEvent::Superseded { port, .. } => {
+                    // A newer sample of a newest-only port is due with it: consumed and
+                    // counted as a work-limit drop of that port, with no step.
+                    let passed = hypha_cycle::Passed::Superseded;
+                    cycle
+                        .step_mut()?
+                        .runtime
+                        .pass_trigger(port, passed)
+                        .map_err(Error::from_code)?;
+                    continue;
+                }
                 TriggerEvent::Late { port, .. } => {
                     // Older than its port's limit, or stamped before its port's last step:
                     // consumed and counted as an age rejection of that port, with no step.
-                    cycle.step_mut()?.runtime.refuse_trigger(port).map_err(Error::from_code)?;
+                    let passed = hypha_cycle::Passed::Late;
+                    cycle
+                        .step_mut()?
+                        .runtime
+                        .pass_trigger(port, passed)
+                        .map_err(Error::from_code)?;
                     continue;
                 }
             };
@@ -171,7 +187,7 @@ impl CallbackDispatcher<'_> {
 }
 
 /// Run one step of `cycle` at `time`, its trigger ports holding `trigger`; under simulated
-/// time its other inputs are cut at `time`.
+/// time its inputs are read through `time`.
 fn step_triggered(
     cycle: &Cycle,
     set: &HyphaWaitSet,

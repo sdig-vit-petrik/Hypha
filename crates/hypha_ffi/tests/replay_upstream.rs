@@ -50,6 +50,9 @@ enum Kind {
     /// Emits the sample of the trigger port that fired plus a million times the port's
     /// position plus one; 0 on a fallback.
     Tag,
+    /// Reads a trigger, its first binding, and a partner, its second, and keeps the words
+    /// each held ([`Context::pairs`]); emits the trigger's word.
+    Pair,
 }
 
 /// One step as the test reads it back.
@@ -63,7 +66,11 @@ struct Record {
 
 struct Context {
     kind: Kind,
+    /// How many outputs the cycle has; a step emits its word on each.
+    outputs: u32,
     steps: Mutex<Vec<Record>>,
+    /// For [`Kind::Pair`], the words of the trigger and of the partner of each step.
+    pairs: Mutex<Vec<(Vec<u64>, Vec<u64>)>>,
 }
 
 /// The payloads binding `binding` of `image` captured, in order; `None` past the last
@@ -146,15 +153,27 @@ extern "C" fn run_step(
                 .map(|(port, payload)| (port + 1) * 1_000_000 + little_endian(&payload));
             (tagged, tagged.unwrap_or(0))
         }
+        Kind::Pair => {
+            let words = |binding| -> Vec<u64> {
+                let payloads = unsafe { captured_by(image, binding) }.expect("a binding");
+                payloads.iter().map(|payload| word(payload)).collect()
+            };
+            let (trigger, partner) = (words(0), words(1));
+            let newest = trigger.last().copied();
+            context.pairs.lock().expect("pairs").push((trigger, partner));
+            (newest, newest.unwrap_or(0))
+        }
     };
     context.steps.lock().expect("steps").push(Record { scheduled, seen });
-    let status = unsafe { emit_message(emission, 0, &emitted.to_le_bytes()) };
-    assert_eq!(status, HyphaStatus::Ok);
+    for output in 0..context.outputs {
+        let status = unsafe { emit_message(emission, output, &emitted.to_le_bytes()) };
+        assert_eq!(status, HyphaStatus::Ok);
+    }
     HyphaCallbackResult { action: HYPHA_ACTION_CONTINUE, status: 0 }
 }
 
-/// One node with a cycle that reads its inputs and writes `output`; the cycle owns the
-/// output publisher.
+/// One node with a cycle that reads its inputs and writes its outputs; the cycle owns the
+/// output publishers.
 struct Stage {
     name: String,
     node: *mut HyphaNode,
@@ -165,8 +184,9 @@ struct Stage {
     context: Box<Context>,
 }
 
-/// One input of a stage: its topic, the silence limit of its port when it is a trigger,
-/// and the depth of its subscriber.
+/// One input of a stage: its topic, the silence limit of its port when it is a trigger
+/// (zero for an input of a triggered stage that is no trigger), and the depth of its
+/// subscriber.
 #[derive(Clone, Copy)]
 struct Input<'a> {
     topic: &'a str,
@@ -183,7 +203,7 @@ impl<'a> Input<'a> {
 
 impl Stage {
     fn new(label: &str, kind: Kind, input: &str, output: &str) -> Self {
-        Self::build(label, kind, &[Input::on(input, 0)], output, false)
+        Self::build(label, kind, &[Input::on(input, 0)], &[output], false)
     }
 
     /// A stage whose cycle runs on each sample of `input`, falling back after `SILENCE`.
@@ -193,18 +213,33 @@ impl Stage {
 
     /// A stage whose cycle runs on each sample of any of `triggers`.
     fn triggers(label: &str, kind: Kind, triggers: &[Input<'_>], output: &str) -> Self {
-        Self::build(label, kind, triggers, output, true)
+        Self::build(label, kind, triggers, &[output], true)
     }
 
-    fn build(label: &str, kind: Kind, inputs: &[Input<'_>], output: &str, triggered: bool) -> Self {
+    fn build(
+        label: &str,
+        kind: Kind,
+        inputs: &[Input<'_>],
+        outputs: &[&str],
+        triggered: bool,
+    ) -> Self {
         let name = unique(label);
         let millis = |silence: u64| i64::try_from(silence / MS).unwrap();
-        let triggers = inputs.iter().filter(|_| triggered);
+        let is_trigger = |input: &Input<'_>| triggered && input.silence > 0;
+        let triggers = inputs.iter().filter(|input| is_trigger(input));
         let tables: Vec<i64> = triggers.map(|input| millis(input.silence)).collect();
         let node = create_sim_node_with_triggers(&name, &tables);
         let waitset = unsafe { create_waitset(node) };
-        let output = unsafe { open_declared_publisher(node, output, CHAIN_TYPE, CHAIN_MD5) };
-        let context = Box::new(Context { kind, steps: Mutex::new(Vec::new()) });
+        let outputs: Vec<*mut HyphaPublisher> = outputs
+            .iter()
+            .map(|output| unsafe { open_declared_publisher(node, output, CHAIN_TYPE, CHAIN_MD5) })
+            .collect();
+        let context = Box::new(Context {
+            kind,
+            outputs: u32::try_from(outputs.len()).unwrap(),
+            steps: Mutex::new(Vec::new()),
+            pairs: Mutex::new(Vec::new()),
+        });
         let label = c_text(&name);
         let mut cycle = ptr::null_mut();
         let status = unsafe {
@@ -243,7 +278,7 @@ impl Stage {
                     hypha_cycle_bind_input(cycle, source, &raw const bind, &raw mut index)
                 };
                 assert_eq!(status, HyphaStatus::Ok);
-                if triggered {
+                if is_trigger(input) {
                     let bound = unsafe { bind_trigger(cycle, node, index, millis(input.silence)) };
                     assert_eq!(bound.status, HyphaStatus::Ok, "{}", bound.detail);
                     assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, index) }, HyphaStatus::Ok);
@@ -251,23 +286,29 @@ impl Stage {
                 (source, declarer)
             })
             .collect();
-        let mut out_index = 0_u32;
-        let status = unsafe {
-            hypha_cycle_bind_output(
-                cycle,
-                output,
-                HyphaCycleOutputFailure::FailRun as u32,
-                1,
-                &raw mut out_index,
-            )
-        };
-        assert_eq!(status, HyphaStatus::Ok);
+        for output in outputs {
+            let mut out_index = 0_u32;
+            let status = unsafe {
+                hypha_cycle_bind_output(
+                    cycle,
+                    output,
+                    HyphaCycleOutputFailure::FailRun as u32,
+                    1,
+                    &raw mut out_index,
+                )
+            };
+            assert_eq!(status, HyphaStatus::Ok);
+        }
         assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
         Self { name, node, waitset, inputs, cycle, context }
     }
 
     fn steps(&self) -> Vec<Record> {
         self.context.steps.lock().expect("steps").clone()
+    }
+
+    fn pairs(&self) -> Vec<(Vec<u64>, Vec<u64>)> {
+        self.context.pairs.lock().expect("pairs").clone()
     }
 }
 
@@ -318,6 +359,20 @@ impl Bus {
 
     fn add_stage(&mut self, label: &str, kind: Kind, input: &str, output: &str) -> usize {
         self.stages.push(Stage::new(label, kind, input, output));
+        self.stages.len() - 1
+    }
+
+    /// A rate stage that writes each step's word to every one of `outputs`.
+    fn add_fanout(&mut self, label: &str, kind: Kind, input: &str, outputs: &[&str]) -> usize {
+        self.stages.push(Stage::build(label, kind, &[Input::on(input, 0)], outputs, false));
+        self.stages.len() - 1
+    }
+
+    /// A [`Kind::Pair`] stage that steps on each sample of `trigger` and also reads the
+    /// queued input `partner`, which is no trigger.
+    fn add_pairing(&mut self, label: &str, trigger: &str, partner: &str, output: &str) -> usize {
+        let inputs = [Input::on(trigger, SILENCE), Input::on(partner, 0)];
+        self.stages.push(Stage::build(label, Kind::Pair, &inputs, &[output], true));
         self.stages.len() - 1
     }
 
@@ -589,6 +644,54 @@ fn a_loop_of_two_triggered_cycles_holds_without_failing() {
         }
     }
     assert!(bus.stage(a).steps().is_empty(), "the held trigger never ran");
+}
+
+/// What each step of a cycle that steps on `/pp_imu` held of `/pp_imu` and of its partner
+/// `/pp_mag`, when one step of an upstream rate cycle sends one word on both; `pair_first`
+/// runs the pairing cycle before the upstream one, and `observe` adds a reader of both
+/// topics, as `hypha topic echo` would be.
+fn pairs_output(chunk: u64, pair_first: bool, observe: bool) -> Vec<(Vec<u64>, Vec<u64>)> {
+    let mut bus = Bus::new();
+    let up = bus.add_fanout("pp_up", Kind::Relay, "/pp_in", &["/pp_imu", "/pp_mag"]);
+    let pair = bus.add_pairing("pp_pair", "/pp_imu", "/pp_mag", "/pp_out");
+    let observers: Vec<*mut HyphaSubscriber> = ["/pp_imu", "/pp_mag"]
+        .into_iter()
+        .filter(|_| observe)
+        .map(|topic| unsafe { open_subscriber(bus.player, topic, CHAIN_MD5, DEPTH) })
+        .collect();
+    bus.feed("/pp_in", PERIODS);
+    let order = if pair_first { [pair, up] } else { [up, pair] };
+    bus.replay_with(chunk, &order, || {
+        for &observer in &observers {
+            let _ = Bus::observed(observer);
+        }
+    });
+    for observer in observers {
+        unsafe { hypha_subscriber_destroy(observer) };
+    }
+    bus.stage(pair).pairs()
+}
+
+#[test]
+fn a_pair_sent_by_one_upstream_step_is_matched_in_the_step_of_its_trigger_sample() {
+    // #231: the partner is stamped with the trigger sample's time, and is in its step.
+    let reference = pairs_output(1, false, false);
+    assert_eq!(reference.len(), usize::try_from(PERIODS).unwrap(), "{reference:?}");
+    for (trigger, partner) in &reference {
+        assert_eq!(trigger.len(), 1, "a trigger step: {reference:?}");
+        assert_eq!(partner, trigger, "the partner of its own upstream step: {reference:?}");
+    }
+    for chunk in [1, 3, 7] {
+        for pair_first in [false, true] {
+            for observe in [false, true] {
+                let seen = pairs_output(chunk, pair_first, observe);
+                assert_eq!(
+                    seen, reference,
+                    "chunk {chunk}, pair first {pair_first}, observed {observe}"
+                );
+            }
+        }
+    }
 }
 
 fn fallback_times(chunk: u64) -> Vec<i64> {

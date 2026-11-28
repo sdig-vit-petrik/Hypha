@@ -39,7 +39,7 @@ Each `hypha::Request<Srv>&` is resolved by `reply(resp)`, `refuse([reason])`, or
 
 ## 3. Time, lockstep, recording, replay
 
-- **Stamps & lockstep:** requests carry client `framework_sent_nanos`; responses carry server step/callback time. A server step at deadline `D` admits requests strictly `< D`, ordered by `(stamp, client_node, client_port, sequence)`. Participant clients and servers are mutual lockstep upstreams with strict cuts (no deadlock, even within one `WaitSet`). `execution-model.md` §6.6 widens so non-trigger upstreams report `T - 1 ns`. Timeouts trigger at the first client step with `D >= S + timeout`.
+- **Stamps & lockstep:** requests carry client `framework_sent_nanos`; responses carry server step/callback time. A server step at deadline `D` admits requests strictly `< D`, ordered by `(stamp, client_node, client_port, sequence)`. Participant clients and servers are mutual lockstep upstreams with strict cuts (no deadlock, even within one `WaitSet`). `execution-model.md` §6.6 widens so an upstream that feeds a step only requests or responses reports `T - 1 ns`; one that feeds it a topic still reports `T`, since a triggered step reads its topic inputs through `T` (#231). Timeouts trigger at the first client step with `D >= S + timeout`.
 - **Recording:** `hypha record` does **not** record request-response services (prevents replaying calls into live servers). Instead, clients publish `hypha_msgs/ServiceCall` to a call-log topic when subscribed (one atomic check when idle); `hypha record` records it, `hypha play` never republishes it, and `hypha top` reads it. `--serve` / `--call` replay modes wait for Stage 4.
 
 ## 4. Wire integrity and failure semantics

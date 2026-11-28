@@ -214,6 +214,11 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   Budget for the whole pool: with subscribers that drain at different rates every slot was
   written, so a large-message topic needs the whole pool resident. Give a variable-size
   topic of known size a byte limit on its endpoints. Growable publishers are not checked.
+  A bounded publisher whose full pool takes more than half of the whole `/dev/shm` logs a
+  warning too, though it fits what is free: the topics of a domain share it. A bounded
+  publisher whose pool is a megabyte or more logs it at start (`publisher pool: <n> samples
+  of <b> bytes, <t> bytes`), and `hypha topic pool` gives the number before a node exists.
+  The rule and worked numbers for an image or a cloud are in `docs/cpp-api.md` §7.1.
 - **A sample's slice is not its message.** Since `IOX7` the message is the first
   `payload_len` bytes of the iceoryx2 slice; the slice keeps the size the publisher loaned,
   so a shrunk loan (`hypha_loan_shrink`) leaves bytes past the message (zeros, never an
@@ -244,7 +249,8 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
 - **Logging is one configuration for each process, and the first `[log]` table
   wins.** Node creation gives the `[log]` table of its parameter file to
   `hypha_log`. A later node with an equal table is accepted. A later node with a
-  different table fails with `InvalidState`. The configuration stays after the
+  different table fails with `InvalidState`, except in `slow_callback_ms`, which the
+  node reads for itself (execution-model.md §5). The configuration stays after the
   node is destroyed. A relative sink path resolves against the directory of the
   file that wrote it. Another process that holds the lock on a sink file also gives
   `InvalidState`. A second `Node` with another parameter file also throws
@@ -387,8 +393,8 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   publishers interleave. Timestamp binary search is valid only while no descending
   adjacent pair remains in the history. Evicting those pairs restores the fast
   path; unordered histories keep the per-sample replay admission rules. A sample
-  stamped exactly at a replay cut belongs to the next step, except on a trigger port of
-  a triggered cycle, which admits it at its own step ("replay through T").
+  stamped exactly at a replay cut belongs to the next step of a rate cycle, while a step
+  of a triggered cycle admits it on every input ("replay through T", #231).
 - **A wall clock that steps back inside one host turn makes a fresh trigger late.** The
   trigger schedule maps each pending stamp onto the monotonic clock by the turn's one
   wall reading, and a stamp from the future counts as sent now. When a port holds a
@@ -490,7 +496,22 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   queues of all publishers. Drain only at a due step, or only one queue's depth, and
   the player's next chunk pushes unread samples out of a queue: a transport gap that a
   selection supersedes fails the step (#222), and a loss before a publisher's first
-  accepted frame is not counted at all (#247). Host time keeps its drain at the step.
+  accepted frame is not counted when the publisher existed before the subscriber
+  (#247). Host time keeps its drain at the step.
+- **A publisher that came after a subscriber is told by the creation order, and two
+  fences.** A subscriber lists the publisher ports of each stream right after its own
+  port exists; at a publisher's first frame, a port that is not on that list and is still
+  registered owes it every frame, and the frames before the first are counted lost
+  (`communication-integrity.md` §3). A port that is not listed and no longer registered
+  may have left before the listing, and is not judged. iceoryx2 orders its registry with
+  acquire and release only, so hypha adds a SeqCst fence after creating a subscriber and
+  after creating a publisher: without them, a publisher and a subscriber created at once
+  could each miss the other, and the subscriber would count the frames sent before it as
+  lost. A publisher from a build without the fence, or a native iceoryx2 application on
+  the topic, can in principle hit that race; in practice the hosts order it anyway (ARMv8
+  load-acquire after a store-release, x86 `lock xadd`), which is also why no test can show
+  the fences are needed. The same-instant race is exercised by
+  `a_subscriber_and_a_publisher_created_at_once_count_no_loss`.
 - **Benchmarks: a green test run misses a slowdown.** A hot-path change (dispatch,
   publish, receive, cycle tick, wire codec) reports its benchmark numbers before and
   after, in the commit message. `cargo bench -p hypha_wire --bench codec` measures the

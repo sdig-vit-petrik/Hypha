@@ -357,6 +357,40 @@ void grabLoop(std::stop_token stop)             // this->stopToken(), copied int
 - Reference: `hypha/worker.h`, `hypha/application_node.h`; the thread rules in
   [ros1-migration-guide.md](ros1-migration-guide.md#106-threads).
 
+### 2.6 A hand-over from threads the node does not own
+
+A vendor SDK that calls back on its own threads (a lidar's cloud, IMU and fault callbacks),
+or a blocking device read, must not publish from there: `Publisher::publish()` runs on one
+thread at a time. `hypha/handover.h` is the bounded queue between those threads and the
+one worker that owns the publishers, as ROS 1's callback queue was:
+
+```cpp
+hypha::Handover<Cloud, Imu> queue(8U, this->stopToken());          // 8 of each kind
+hypha::Handover<Cloud, Imu> queue({2U, 400U}, this->stopToken());  // 2 clouds, 400 samples
+
+queue.push(toRos(cloud));                       // any thread; never waits
+while (auto item = queue.pop()) {               // the worker; ends at the node's stop
+    std::visit([this](const auto& m) { this->send(m); }, *item);
+}
+```
+
+- A kind at its depth drops its oldest message. Every drop is counted (`dropped()`, all
+  kinds; `dropped<Kind>()`), `push()` returns true for it, and the log carries a warning at
+  most once a second. A burst of one kind never displaces another: each has its own depth.
+- `pop()` waits for a message and returns them in the order they were pushed (one pushing
+  thread's order is kept). `popFor(timeout)` also returns empty at the timeout; `stopped()`
+  tells it from the stop. After the stop both return what is queued first, then empty: the
+  worker's loop drains and ends, and the destructor only joins.
+- The stop is the `std::stop_token` given at construction, `this->stopToken()` of the
+  application (section 2.5; valid in the constructor's initializer list). A default token
+  never stops a wait.
+- A `Handover` is neither copyable nor movable; a kind that is move-only is fine. Each kind
+  appears once: send two kinds of one type as two wrapper types.
+- The count is not in `~/state`: that needs a field in `hypha_msgs/NodeState` and a way for
+  an application to register a counter, which is runtime work (issue #233).
+- Reference: `hypha/handover.h`; the thread rules in
+  [ros1-migration-guide.md](ros1-migration-guide.md#106-threads).
+
 ## 3. Time and clock
 
 Pace periodic work with a cycle (section 5.4) or `Node::timer()`; there is no blocking
@@ -419,8 +453,8 @@ Reference: `hypha/node.h`, `hypha/publisher.h`, `hypha/topic.h`, `hypha/options.
   message; a larger one is `TooLarge`. A growable publisher reserves its pool at its first
   slot size, 4096 bytes per sample: give small messages the policy's `initialPayload`
   (a hint, not a bound; a larger message still grows the segment) to keep the topic's
-  shared memory small (engineering-traps.md). Sizing an image or cloud pool is the
-  developer's job (`examples/large_payload`).
+  shared memory small (engineering-traps.md). An image or a cloud names its bound and a
+  policy, and section 7.1 sizes its pool; `examples/large_payload` is the raw version.
 - A large message is written once, in its slot: `loan(head, capacityBytes)` reserves it
   for `head`'s small fields and gives a `Loan<M>` whose `data()` is the loaned field's
   bytes in shared memory (reference `hypha/loan.h`). The loaned field is the message's
@@ -578,6 +612,7 @@ and `unsupervised`, `examples/mrs/managers/mission.cpp` `perStep(64)`.
 | `advisory`, `unsupervised`, `limitMax(d)` | ✓         | ✓           |            |               |               |
 | `hostClock`                                   | ✓         |              |            |               |               |
 | `perStep(n)`                                  |            | ✓           | ✓         |               |               |
+| `newestOnly`                                  |            | ✓           |            |               |               |
 | `latched`, `maxPayloadDynamic(b)`           |            |              | ✓         | ✓            |               |
 | a `hypha::Qos` value                          | ✓         | ✓           | ✓         | ✓            | ✓            |
 | `diagnostic`                                  |            |              | ✓         |               |               |
@@ -594,16 +629,35 @@ port table refused in `setup()` exits 78 as it does in a cycle.
 
 Three tags of an input answer three separate questions; none implies another:
 
-| Tag             | Question it answers                        | `silence_ms`                  | Counts for `inputsOk()` and the node state |
-| --------------- | ------------------------------------------ | ----------------------------- | ------------------------------------------ |
-| `optionalTopic` | May the deployment leave the port unwired? | as without the tag            | a disabled port is not judged              |
-| `advisory`      | Is the node healthy without this input?    | optional; supervised if given | no                                         |
-| `unsupervised`  | Does the input have an age limit at all?   | refused; never stale          | yes                                        |
+| Tag             | Question it answers                        | `silence_ms`                         | Counts for `inputsOk()` and the node state |
+| --------------- | ------------------------------------------ | ------------------------------------ | ------------------------------------------ |
+| `optionalTopic` | May the deployment leave the port unwired? | as without the tag                   | a disabled port is not judged              |
+| `advisory`      | Is the node healthy without this input?    | as without the tag                   | no                                         |
+| `unsupervised`  | Has the input no age limit, by its nature? | refused; never stale                 | yes, unless also `advisory`                |
 
-`advisory` and `unsupervised` exclude each other (`start()` fails). An input that
-counts for health and is not `unsupervised` needs a `silence_ms` ("Input
-supervision"). `ignored = true` in the table is the operator's override of what
-`advisory` promises: the port starts with its fault overridden.
+Every enabled input states its time limit, advisory or not: a `silence_ms` in its table,
+or the tag `unsupervised` ("Input supervision"); without either, `start()` fails. An
+input has **no time limit** (it is *untimed*) when its table sets `silence_ms = 0`, a ROS
+timeout of 0.0 that the deployment chooses, or when its code tags it `unsupervised`, for
+an input that never has one (a configuration topic, a port without a table). An untimed
+input is `NeverArrived` before its first sample, `Usable` from it on until a later sample
+replaces the value, and never `stale()`; `port.untimed()` says so, so the node needs not
+read `silence_ms` itself. `advisory` and `unsupervised` combine: an input that may never
+be published and never expires (an operator's pause switch). A required untimed input
+keeps the node `WAITING` until its first sample. `ignored = true` in the table is the
+operator's override of what `advisory` promises: the port starts with its fault
+overridden; an untimed input has no fault, and the key is refused on it.
+
+```cpp
+// twist_mux: a lock masks the velocities below its priority. One declaration for every
+// lock; the table of each says whether it expires (silence_ms = 500) or not (0).
+hypha::Latest<std_msgs::Bool> lock{*this, name, hypha::advisory};
+
+bool masks() const  // ROS: hasExpired() || getMessage().data
+{
+    return this->lock.usable() ? this->lock->data : !this->lock.untimed();
+}
+```
 
 ### 5.4 Cycle node (L3)
 
@@ -747,14 +801,35 @@ of the sample, or reads `port.sentAt(0)`, its host-monotonic send time, which is
 wall time (execution-model.md §6.6 item 2). Each trigger has its own `silence_ms`: `usable()` and
 `stale()` of every trigger port judge its newest sample against it in every step. After
 the shortest `silence_ms` without a step a fallback step runs with every trigger empty
-and each trigger that is past its own limit `stale()`. On host time an `Arrivals`
-port that is no trigger holds, in a trigger step, the samples sent up to the trigger
-sample; a later one is in a later step. The rules are in
+and each trigger that is past its own limit `stale()`. An untimed trigger
+(`silence_ms = 0`, or `unsupervised`) has no limit of its own: it is never `stale()`, and
+the fallback runs after the shortest limit of the other triggers; a cycle whose triggers
+are all untimed runs no fallback and no step before its first trigger sample, as a ROS
+callback with no timeout. An `Arrivals` port that is no trigger holds, in a trigger step,
+the samples sent up to the trigger sample, the ones one upstream step sent with it
+included; a later one is in a later step. Under simulated time that is every sample
+stamped at or before the step's time T, on every port. The rules are in
 execution-model.md §6.6. `examples/mrs/managers/estimation_manager.cpp` and
 `control_manager.cpp` are triggered cycles. `start()` fails for a rate with a trigger
 ("a rate and a trigger exclude each other"), a `Latest` trigger ("the trigger must be
-an Arrivals port"), a trigger without `silence_ms`, also when `unsupervised` (the error
-names the port), and two triggers on one topic through `sharing()`.
+an Arrivals port"), and two triggers on one topic through `sharing()`.
+
+**Newest only.** ROS's `queue_size` 1: `Arrivals<Twist> cmd{*this, "cmd", newestOnly}`
+steps on the newest pending sample and passes the older ones, which is what twist_mux's
+subscribers do. On host time a trigger with the tag steps once per turn of the node on
+the newest of the samples pending in it, so a step that is slow on a fast topic leaves no
+backlog; another trigger's sample between them still steps. Under simulated time a step at
+T sees the samples stamped up to T and a later stamp is its own step, so only a second
+sample stamped T passes the first; which sample steps follows from the recording, not from
+when the node got its turn (execution-model.md §6.6 item 7). An `Arrivals` port with the
+tag that is no trigger examines one sample per step, the newest, and asks for one from the
+`arrival_budget`. A passed sample is counted, never silent: `work_limit_drops` of the step's
+report, `bindingHealth().work_limit_drops_total`, and, for a required input, the `dropped`
+of its `~/state` row. The queue keeps its `perStep()` depth, so a burst between two turns
+is not a transport loss, and the topic's policy is untouched: the tag needs nothing from
+the publishers. A
+plain `subscribe` callback has no counterpart; port a callback with `queue_size` 1 as a
+triggered cycle. C ABI: `HYPHA_CYCLE_INPUT_MODE_NEWEST`.
 
 In a `StepHarness` test of a triggered step, `deliver()` the sample of the port that
 fires, and `deliver(port, {}, sentAt)` each other trigger with the send time of its
@@ -827,7 +902,7 @@ counts no queue evictions: a transport drop shows only as a gap in `overrun_tota
 | `lost()`                                                                | `Arrivals`  | Samples the history overwrote before this port read them.                                           |
 | `bindingHealth().overrun_total`                                         | every input   | History losses and, for a queued input, transport sequence gaps. A `Latest` input counts neither in host time; under replay it counts transport gaps and the evictions of execution-model.md §11.1. |
 | `bindingHealth().age_rejections_total`                                  | every input   | Samples the age rule refused. They were received, not lost.                                         |
-| `bindingHealth().work_limit_drops_total`, `.capture.work_limit_drops` | queued inputs | Samples over the step's share, dropped on purpose; `capture.` counts the latest step only.        |
+| `bindingHealth().work_limit_drops_total`, `.capture.work_limit_drops` | queued inputs | Samples over the step's share, dropped on purpose, and the samples a `newestOnly` port passed for a newer one; `capture.` counts the latest step only. |
 
 #### Topic states of an input port
 
@@ -926,21 +1001,20 @@ ignored = false          # optional; default false
 
 The parameter file cannot switch supervision off, and code sets no limit value:
 
-- `silence_ms` is required on an enabled input that counts for health and is not
-  `unsupervised`, optional on an `advisory` one, refused on an `unsupervised` one.
-  `unsupervised` with `advisory` fails `start()`. `stagnation_ms` is required with
-  `setAlive()` and refused without it.
+- `silence_ms` is required on an enabled input, `advisory` or not, unless it is
+  `unsupervised`, and refused on an `unsupervised` one. `silence_ms = 0` is no time limit.
+  `stagnation_ms` is required with `setAlive()` and refused without it.
 - A missing required key fails `start()` with `NotAvailable`, and a `CycleNode` under
   `runNode` exits 78 (a composed cycle exits as the application decides):
-  `hypha: cycle '<cycle>': input '<port>': missing key 'silence_ms': a required input needs a limit, or the tag hypha::unsupervised: NotAvailable`.
-- A limit is 1 ms to 3600 s; `limitMax(d)` lowers the top for the port. A value outside
+  `hypha: cycle '<cycle>': input '<port>': missing key 'silence_ms': an input needs a limit, 0 for none, or the tag hypha::unsupervised: NotAvailable`.
+- A limit is 0 (none) or 1 ms to 3600 s; `limitMax(d)` lowers the top for the port. A value outside
   fails `start()`; the library never clamps. The limit is inclusive: a value exactly
   `silence_ms` old is usable.
 - An unknown key fails `start()`, naming the port and the key (known: `topic`,
   `ignored`, `silence_ms`, and `stagnation_ms` with `setAlive()`, and any other key the
   application read before `start()`: section 9, port tables).
-- A sharing port has no `topic` key; a port without a table name that counts for health
-  needs `unsupervised`, else `start()` fails with `a required input without a table needs the tag hypha::unsupervised`.
+- A sharing port has no `topic` key; an enabled port without a table name, advisory or
+  not, reads no limit and needs `unsupervised`, else `start()` fails with `an input without a table has no time limit and needs the tag hypha::unsupervised`.
 - A port with no silence limit and no `setAlive()` is never stale. A disabled port needs
   no limits. `ignored = true` starts the port with its fault overridden, and fails
   `start()` on a port with no limit.
@@ -1042,7 +1116,8 @@ struct hypha::QosOf<my_msgs::Image>
   and the node's own report types `NodeState` (`~/state`) and `NodeIntrospection`
   (`~/introspection`) to `reportQos` (2 publishers, 2 subscribers, depth 1, 1 KiB
   first slot: only tools read them, from the observer slots). An application cannot
-  remap them.
+  remap them. For a large message hypha offers `hypha::imageQos` and `hypha::cloudQos` as
+  options of the port, and maps no type to them (section 7.1).
 - A policy's node slots are its `max_publishers` plus the subscribers it admits, plus 2 kept
   for the moment a node's refresh of the other versions of a topic opens the stream, and for
   the check of its record when an endpoint drops: neither takes a slot an endpoint needs, and
@@ -1066,14 +1141,86 @@ struct hypha::QosOf<my_msgs::Image>
 - A latched sample reaches only the subscriber that joined, so a join adds no
   `integrity.sequence_gap` rejection at a connected subscriber.
 - `sub.missingSequences()` counts the frames a subscriber lost before it read them (a
-  queue overflow adds to it; a loss before a publisher's first accepted frame is not
-  counted). `sub.metrics()` returns a `hypha::SubscriberMetrics`: `sequenceGap` counts
+  queue overflow adds to it; a loss before a publisher's first accepted frame is counted
+  only when the publisher came after the subscriber, `communication-integrity.md` §3). `sub.metrics()` returns a `hypha::SubscriberMetrics`: `sequenceGap` counts
   the frames that arrived and were refused because their sequence was not newer, so a
   lost frame raises `missingSequences()` and not `sequenceGap`; `invalidFrame`,
   `corruptPayload`, `schemaMismatch` and `invalidTimestamp` count the other refusals;
   `loanBudget`, `loanHeld` and `loanRefused` describe its owning samples. Both read
   from any thread while the node runs, and give zeros for a disabled subscriber
   (`loanBudget` included). A `RawSubscriber` has the same two; a cycle port has none.
+
+### 7.1 Sizing the pool of a large message
+
+An image or a point cloud is megabytes, and a publisher's pool holds that many of them, so its
+policy and its payload bound decide the shared memory of the topic. The rule has three steps.
+
+1. **The message size**, in serialized bytes: `hypha::serializedSize(head, n)` (`hypha/message_size.h`)
+   gives the size of a message whose single array holds `n` bytes, from a `head` that names its
+   other fields (`frame_id`, `encoding`, a cloud's `fields`). The array of `head` is not read, so
+   it stays empty. An `Image` is `37 + frame_id + encoding` bytes around its pixels (48 for
+   `"camera"` and `"mono8"`), a `PointCloud2` is 100 to 200 bytes of its field list around its
+   points. For a cloud whose point count varies, `n` is the point count you accept
+   times `point_step`: a larger cloud is refused with `TooLarge`, by the bound.
+2. **The pool**, of one publisher:
+
+   ```text
+   slots = (subscribers + 3) x (maxDepth + 2) + 1 + 2
+   bytes = slots x (message + 104, rounded up to a multiple of 8)
+   ```
+
+   `subscribers` and `maxDepth` are the policy's. The 3 are the observer slots of tools and
+   bridges, the 2 of `maxDepth + 2` the samples a subscriber holds at once (a callback, or a
+   received sample kept), the 1 the latch, and the last 2 the publisher's loans. `slots` is
+   `qos::pool_samples` in Rust; the default policy (8 publishers, 16 subscribers, depth 32) is
+   649 of them. A slot is resident once it was written, and the pool is the most a publisher takes,
+   reached when every subscriber's queue is full; a topic with `publishers > 1` takes that much
+   for each publisher that runs.
+3. **The policy** is as small as the application is: its subscribers are the readers that exist,
+   its `maxDepth` the frames a reader may queue. `imageQos` (1 publisher, 2 subscribers, depth 2:
+   23 slots) and `cloudQos` (1, 2, depth 3: 28 slots) are such policies. Both ends of the topic name
+   the policy as the option of the port, and each names its own topic, so two cameras need no
+   header of their own:
+
+   ```cpp
+   hypha::Output<sensor_msgs::Image> image{
+       *this, "image", hypha::imageQos, hypha::maxPayloadDynamic(bound)};
+   hypha::Latest<sensor_msgs::Image> frame{*this, "image", hypha::imageQos};
+   ```
+
+   A reader that names no policy gets `QosMismatch` at start, with both policies in the log. A
+   third subscriber is refused too: declare a policy of your own, in the header of section 7.
+
+   No type is mapped to these policies, as `TFMessage` is to `tfQos`. A type is mapped once for
+   the whole application, so two lidars could not differ, and `hypha play` or a bridge would create
+   the topic with `default` and refuse the typed reader that came after.
+
+What a pool costs is printed without code: `hypha topic pool --payload <bytes> --publishers 1
+--subscribers 2 --depth 2` (a limit left out is the `default` policy's), and every publisher whose pool is a
+megabyte or more logs it at start:
+`topic '/image' publisher pool: 23 samples of 5039000 bytes, 115897000 bytes of shared memory when
+every subscriber's queue is full; policy ..., 2 loans`.
+
+| Topic | Message | `imageQos` or `cloudQos` | One pool |
+| --- | --- | --- | --- |
+| 5 MP mono8 camera, 2592 x 1944 | `serializedSize(head, 5'038'848)` = 5,038,896 | `imageQos`, 23 slots of 5,039,000 | 115,897,000 bytes (110.5 MiB) |
+| 5 MP rgb8 camera, 3 bytes a pixel | `serializedSize(head, 15'116'544)` = 15,116,591 | `imageQos`, 23 slots of 15,116,696 | 347,684,008 bytes (331.6 MiB) |
+| 64,000-point lidar, 26 bytes a point | `serializedSize(head, 64'000 * 26)` = 1,664,156 | `cloudQos`, 28 slots of 1,664,264 | 46,599,392 bytes (44.4 MiB) |
+
+The same lidar on the `default` policy, with a bound of 1,800,000 bytes, is 649 slots of
+1,800,104: 1,168,267,496 bytes (1.09 GiB).
+
+A depth of 1 in the policy (a reader that wants the newest frame only) takes the camera pool of
+the table to 18 slots, 90.7 MB for the mono8. A publisher that names no bound is
+growable: it reserves its pool at its first slot size (4096 bytes, or the policy's `initialPayload`),
+and its later segments are never checked: name the bound.
+
+**/dev/shm.** The pools of a domain are files in `/dev/shm`, and a write past its free space stops the
+process with SIGBUS. The sum of the pools of its topics must fit, with room for the rest of the
+system: in a container, `shm_size` is that sum and more. At start, on Linux, a publisher whose
+pool is larger than the free space logs `may need <n> bytes of shared memory` (and refuses in a
+bounded deployment), and one that takes more than half of the whole `/dev/shm` logs a warning that
+names the share. A growable publisher is not checked.
 
 A policy with a deeper queue, such as an IMU at `maxDepth = 200`:
 [ros1-migration-guide.md](ros1-migration-guide.md#105-queue-depth).
@@ -1127,13 +1274,19 @@ for (const auto sensor : settings.list("sensors")) {
   application's to check.
 - **Types.** A value keeps its TOML type: `"5"` is no number, `5` no text, `1` no
   `bool`. A whole number reads as a floating-point type. `${NAME}` always gives text.
-- **Lists.** An array is a list of scalars or of tables (`[[name]]`), never mixed,
-  never nested; an empty array has length zero. `list(name)` throws for a missing or
-  scalar name, `at(index)` past the end. A scalar element reads with the key `""`, a
-  table element by field, a nested table by a dotted name (`limits.max`). Elements
-  read as `bool`, `int64_t`, `double` or `std::string`. A list name may not equal a
-  scalar name or be a dotted prefix of one (`InvalidArgument`). Errors name the
-  entry: `sensors[2].topic`.
+- **Lists.** An array is a list of scalars or of tables (`[[name]]`), never mixed, and
+  never a list of lists (a matrix is a flat list, below); an empty array has length zero.
+  `list(name)` throws for a missing or scalar name, `at(index)` past the end. A scalar
+  element reads with the key `""`, a table element by field, a nested table by a dotted
+  name (`limits.max`). Elements read as `bool`, `int64_t`, `double` or `std::string`. A
+  list name may not equal a scalar name or be a dotted prefix of one (`InvalidArgument`).
+  Errors name the entry: `sensors[2].topic`. An entry of a table list may hold lists of
+  its own, arrays of scalars or `[[sensors.points]]` tables, read through the entry:
+  `for (const auto sensor : cfg.list("sensors")) { auto w = sensor.requiredArray<double>("weights");
+  for (const auto point : sensor.list("points")) ... }`; the errors name them
+  (`sensors[1].weights[2]`), and `unreadKeys()` lists them as `sensors[1].weights`. The
+  C ABI reads such a list by the name of its entry: `hypha_config_list_len(config,
+  "sensors[1].weights")`, and `hypha_config_value` a scalar of an entry the same way.
 - **Environment.** Any string value, list elements, `[log]` and `include` too, may
   hold `${NAME}`, expanded when its file is read. An unset or empty variable fails
   node creation: ``could not load TOML configuration `<file>` at `<key>`: environment variable `<NAME>` is unset`` (or `is empty`). `$NAME` stays literal. An empty
@@ -1176,7 +1329,38 @@ for (const auto sensor : settings.list("sensors")) {
 
   The check is in the C ABI layer (`hypha_config_ignore`, and `hypha_config_unread_keys`
   leaves ignored keys out), so every SDK gets it.
-- **Arrays of scalars.** `cfg.requiredArray<T>(key)` returns `std::vector<T>`; `cfg.requiredArray<T, N>(key)` returns `std::array<T, N>` and refuses any other length. `optionalArray<T>` and `optionalArray<T, N>` return a `std::optional` of the same, empty only when the key is absent. T is any type `required<T>` reads (bool, an integer, float, double, std::string), and each element gets the same conversion and range check. A key that is not an array, an element of the wrong type, an array of tables and a wrong length throw `ParameterError` for the `required*` and the `optional*` form alike, and the message names the key and, for an element, its index (`hypha: parameter 'voxel_weights[2]': expected a number, found "x"`; `hypha: parameter 'extrinsic_t': expected 3 elements, found 4`). An empty array is an empty vector, and a length error for N > 0. Reading an array marks the key as read, so `unreadKeys()` does not list it. An array inside an entry of a table list is refused like a nested list.
+- **Arrays of scalars.** `cfg.requiredArray<T>(key)` returns `std::vector<T>`; `cfg.requiredArray<T, N>(key)` returns `std::array<T, N>` and refuses any other length. `optionalArray<T>` and `optionalArray<T, N>` return a `std::optional` of the same, empty only when the key is absent. T is any type `required<T>` reads (bool, an integer, float, double, std::string), and each element gets the same conversion and range check. A key that is not an array, an element of the wrong type, an array of tables and a wrong length throw `ParameterError` for the `required*` and the `optional*` form alike, and the message names the key and, for an element, its index (`hypha: parameter 'voxel_weights[2]': expected a number, found "x"`; `hypha: parameter 'extrinsic_t': expected 3 elements, found 4`). An empty array is an empty vector, and a length error for N > 0. Reading an array marks the key as read, so `unreadKeys()` does not list it. An array inside an entry of a table list is read through the entry (Lists, above).
+- **One value or a list.** `cfg.requiredScalarOrArray<T>(key)` returns a `std::vector<T>`
+  for a key given as one value or as an array (`topic = "/a"` or `topic = ["/a", "/b"]`),
+  the ROS parameter that takes one or many; `optionalScalarOrArray<T>` is empty only when
+  the key is absent. An array reads as `requiredArray<T>()` does, a value of another type
+  throws `ParameterError` naming the key. A key given as one value is recorded as that
+  value, an array as the array.
+- **A matrix.** `cfg.requiredMatrix<double>("mixer", rows, cols)` reads the flat,
+  row-major list that a ROS matrix parameter is (`mixer = [1, 0, 0, 1, 0.5, 0.5]`) into a
+  `hypha::Matrix<T>` (`rows`, `cols`, `values`, `at(row, col)`; `<hypha/config_matrix.h>`,
+  which `config.h` includes). A 0 for `rows` or `cols` takes that size from the length:
+  `requiredMatrix<double>("mixer", 0, 6)` is any number of rows of 6 columns. A length that
+  does not fit throws `ParameterError`: `hypha: parameter 'mixer': expected 4 x 2 = 8
+  elements, found 6`. A TOML list of lists (`[[1, 0], [0, 1]]`) is not read: write the flat
+  list, as ROS does. With Eigen,
+  `Eigen::Map<const Eigen::Matrix<double, -1, -1, Eigen::RowMajor>>(m.values.data(), m.rows, m.cols)`
+  views it with no copy.
+- **One of a list.** `constraints::oneOf({4800, 9600, 19200})` accepts the listed values
+  (`required<uint32_t>("baud_rate", constraints::oneOf({4800, 9600, 19200}))`, or
+  `oneOf({"fast", "slow"})` for text), numbers compared exactly whatever the integer
+  width. It refuses with the list: `hypha: parameter 'baud_rate' must be one of 4800, 9600,
+  19200`. `optional<T>(key, fallback, oneOf(...))` checks the fallback too.
+- **The tables under a scope.** `cfg.tables()` is a `std::vector<ConfigView>`, one scope
+  for each table directly under the scope, sorted by name; `key()` is the name of one. Where
+  ROS reads a parameter namespace, a node reads the tables of its configuration:
+  `for (const auto& input : hypha::config("ports.inputs").tables()) { priority[input.key()] =
+  input.required<int>("priority"); }`, so that the tables are the list and a test file with
+  other inputs works as well, with no second list of names. A key that holds a value or a
+  list is no table, and a table with no key is not there. It reads nothing: a key of a
+  table that the node does not read stays an unread key. It works inside a list entry
+  too (`sensor.tables()`). The C ABI call is `hypha_config_table_names(config, prefix, ...)`,
+  names joined by `'\n'` (`abi.revision` 14).
 - **Porting.** A ROS 1 list parameter, with the fixed-size form:
   [ros1-migration-guide.md](ros1-migration-guide.md#108-a-list-of-scalars-in-the-parameter-file).
 - **Without a bus.** A `hypha::ConfigContext` serves `hypha::config()` in a test
@@ -1196,7 +1380,7 @@ included), an include cycle, a chain deeper than 16, or more than 256 included f
 read in one load (a file included twice counts twice). One file may appear in two
 branches with disjoint keys.
 
-Reference: `hypha/config.h`.
+Reference: `hypha/config.h`, `hypha/config_list.h` and `hypha/config_matrix.h`, which it includes.
 
 ### 9.1 Node introspection
 
@@ -1204,7 +1388,7 @@ Reference: `hypha/config.h`.
 identity, the configuration rows, and every live endpoint, cycle and cycle input
 binding with its effective settings. `hypha::nodeState()` returns the
 `hypha_msgs::NodeState` that `runNode` publishes on `~/state`; section 2 gives the rule
-that judges `state`. A program with its own `main()` publishes both itself. No example
+that judges `state`. Each `CycleState` row carries the distribution of the cycle's step times: the median, the 90th and the 99th percentile of every step since the commit (`step_p50_nanos`, `step_p90_nanos`, `step_p99_nanos`) and of the last 10 to 20 seconds with their longest (`recent_step_*`), beside `last_step_nanos` and `max_step_nanos`, in host monotonic nanoseconds. A quantile is the upper edge of a bucket of a fixed histogram (16 buckets per power of two): at most 1/16 above the true value, never below. `hypha topic delay <input> <output>` gives the time from an input to an output instead ([tools.md](tools.md)). A program with its own `main()` publishes both itself. No example
 calls them; `hypha node` and `hypha top` ([tools.md](tools.md)) show them. The fields
 are in `crates/hypha_msgs/msg/hypha_msgs/NodeIntrospection.msg`, `NodeState.msg` and
 the row messages; the row rules and counters in `hypha/introspection.h`. Its C ABI
@@ -1329,6 +1513,7 @@ counters are the `log.*` metrics (section 2.4).
 level = "info"                 # modules without an entry; default "debug"
 console = true                 # standard error; default true
 console_level = "info"         # default "trace"
+slow_callback_ms = 50          # 0 to 3600000; default: the period of a timer or a cycle, 10 for a subscription
 [log.sink.main]                # any number of named file sinks
 path = "log/scan_cycle.log"    # required; relative to this file
 level = "debug"                # default "info"
@@ -1338,6 +1523,17 @@ enabled = true                 # default true
 [log.module."localisation"]
 level = "debug"                # default log.level; enabled = false is "off"
 ```
+
+`slow_callback_ms` is the node's, not the process's, whatever the first table says: it is
+the time a callback may take before the node warns of it. The line names the callback, the
+time it took and the budget, at most once a second for each callback: `hypha: callback of
+topic '/sensing/lidar/points' took 46 ms, budget 10 ms, 9 warnings suppressed` (`timer
+100 ms` and `cycle 'ekf'` for the others). Without the key a timer or a cycle is judged
+against its own period (a 10 Hz callback that takes 45 ms logs nothing) and a subscription
+against 10 ms; a value replaces that for every callback of the node, and 0 writes no line.
+`node.slow_callbacks` (section 2.4) counts the slow callbacks either way. An invalid value
+refuses the file when it loads, with exit code 78 like the rest of the table. The key needs
+no C function: node creation reads it. Execution-model.md section 5 has the rules.
 
 Levels are `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `off`. A line reaches
 a target at or above both its module level and the target level. The parameter file
@@ -1415,15 +1611,17 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hyph
 | `hypha/node.h`                                                         | `Node`, `RunResult`, `StopReason`, `Timer`, `ok`, `nodeName`, `requestStop`                                                                                                            |
 | `hypha/application_node.h`                                             | `ApplicationNode`, `runNode`, `failRun`, `stopToken`, the exit codes                                                                                                                                        |
 | `hypha/worker.h`                                                       | `sleepFor`, `sleepUntil`, `Rate`: a worker thread's sleep and rate, ended by the node's stop                                                                                                           |
+| `hypha/handover.h`                                                     | `Handover<Kinds...>`: the bounded queue from threads the node does not own to the worker that publishes, with counted drop-oldest                                                                                                           |
 | `hypha/callback.h`, `hypha/topic.h`                                  | `bind<&Class::method>(object)`; `Topic`, `validateTopicName`                                                                                                                                   |
-| `hypha/options.h`, `hypha/qos.h`                                     | The option tags; `Qos`, `QosOf`, `defaultQos`, `tfQos`                                                                                                                                       |
+| `hypha/options.h`, `hypha/qos.h`                                     | The option tags; `Qos`, `QosOf`, `defaultQos`, `tfQos`, `imageQos`, `cloudQos`                                                                                                                                     |
+| `hypha/message_size.h`                                               | `serializedSize(message)`, `serializedSize(head, loanedBytes)`: the bound of a payload                                                                                                                             |
 | `hypha/publisher.h`, `hypha/subscriber.h`                            | `Publisher<M>`, `Subscriber<M>`, `MessagePtr<M>`                                                                                                                                               |
 | `hypha/cycle.h`                                                        | `Hz`, `CycleTime`, `InputVerdict`, `CycleHealth`, `BindingHealth`                                                                                                                          |
 | `hypha/cycle_node.h`                                                   | `CycleNode`; it includes `cycle_runtime.h` (`Cycle`), `cycle_latest.h`, `cycle_arrivals.h` (with `cycle_arrivals_merge.h`: `visitArrivalsInOrder`), `cycle_output.h`, `cycle_input.h` (with `cycle_sharing.h`: `sharing`), `cycle_supervision.h`, `cycle_port.h` |
 | `hypha/cycle_transforms.h`, `hypha/transform_buffer.h`, `hypha/transform_types.h`, `hypha/testing.h` | `Transforms`; `TransformBuffer`, `StaticTransformBroadcaster`; `TransformError`, `TransformTopics`; `testing::StepHarness` |
 | `hypha/raw_api.h`, `hypha/raw.h`                                     | Raw endpoints, `lookupDefinition`, `listNodes`; `RawSample`, `NodeInfo`, `Metric`, `SubscriberMetrics`                                                                                                          |
 | `hypha/status.h`                                                       | `Status`, `ConfigError`, `require`                                                                                                                                                             |
-| `hypha/config.h`                                                       | `config()`, `ConfigView`, `ConfigList`, `ConfigContext`, `ParameterError`; it includes `constraints.h` (`constraints`)                                                                                                 |
+| `hypha/config.h`                                                       | `config()`, `ConfigView`, `ConfigContext`, `ParameterError`; it includes `config_list.h` (`ConfigList`), `config_matrix.h` (`Matrix`) and `constraints.h` (`constraints`)                                                                                                 |
 | `hypha/introspection.h`, `hypha/metrics.h`                           | `introspect`, `nodeState`, `recordConfig`; `metrics`, `metric`                                                                                                                             |
 | `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h` | `Duration`, `Time`, literals; `now`, `isClockValid`, `steadyNow`, simulated time; `toRosTime`, `rosTimeFromSeconds`, `rosTimeFromNanos`, `fromRosTime`                                                                                             |
 | `hypha_base/short_namespace.h`                                     | the alias `hy` of `hypha`; `HYPHA_NO_SHORT_NAMESPACE` leaves it out                                                                                                                      |

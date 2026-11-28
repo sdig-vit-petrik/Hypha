@@ -9,6 +9,7 @@ use iceoryx2::prelude::CallbackProgression;
 use iceoryx2::service::port_factory::PortFactory;
 
 use hypha_core::port::{PortError, QosRequest, SchemaScope, topic_matches_pattern};
+use iceoryx2::identifiers::UniquePublisherId;
 use iceoryx2::port::ReceiveError;
 use iceoryx2::port::listener::Listener;
 use iceoryx2::port::subscriber::Subscriber;
@@ -32,6 +33,8 @@ struct SingleSubscriber {
     subscriber: Subscriber<Ipc, [u8], Iox2FrameHeader>,
     /// Steady-clock time before the subscriber was created; a sample sent earlier is history.
     created_nanos: u64,
+    /// The publisher ports that existed once the subscriber did.
+    publishers_before: PublishersBefore,
     service: DataPortFactory,
     topic: Arc<str>,
     event_source: EventSource,
@@ -56,9 +59,60 @@ enum SubscriberKind {
         subscribers: Vec<NamedSubscriber>,
         current_idx: std::sync::atomic::AtomicUsize,
         created_nanos: u64,
+        /// For each stream of `subscribers`, the publisher ports that existed once its
+        /// subscriber did.
+        publishers_before: Vec<PublishersBefore>,
         /// Last, so they drop after the subscribers.
         _schema_releases: Vec<crate::schema::SchemaRelease>,
     },
+}
+
+/// The publisher ports of a stream that existed once its subscriber did, listed right after
+/// the subscriber was created.
+///
+/// A port that is not among them either registered after the listing, so after the
+/// subscriber, or left the registry before the listing. The first kind owed the subscriber
+/// every frame: a publisher updates its connections before every send, so each sample it
+/// sent reached the subscriber's queue, or was pushed out of it, and none is history from
+/// before it. The second kind may have sent before the subscriber existed, and its last
+/// frames can still arrive through the connection iceoryx2 keeps while it holds data. The
+/// two are told apart when the port's first frame is validated: a port that is still
+/// registered then, with an id that is unique, registered after the listing
+/// ([`Iox2Subscriber::publisher_came_after`]).
+///
+/// iceoryx2 orders its registry with acquire and release only, so a subscriber and a
+/// publisher created at once could each miss the other; a sequentially consistent fence
+/// after each registration (here, and after a publisher's creation in
+/// `Iox2Transport::publish`) makes at least one see the other. The fences cannot be shown by
+/// a test: the hosts it runs on order these operations anyway (an `ARMv8` load-acquire after a
+/// store-release, x86 `lock xadd`). A port that registers while the subscriber is created
+/// may be listed, and counts as one that may have sent before.
+pub(crate) struct PublishersBefore(Box<[UniquePublisherId]>);
+
+impl PublishersBefore {
+    /// List the publisher ports of `service` now.
+    pub(crate) fn list(service: &DataPortFactory) -> Self {
+        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+        let mut ports = Vec::new();
+        service.dynamic_config().list_publishers(|publisher| {
+            ports.push(publisher.publisher_id);
+            CallbackProgression::Continue
+        });
+        Self(ports.into_boxed_slice())
+    }
+
+    /// True when `port` came after the subscriber of `service` (see the type).
+    fn came_after(&self, port: UniquePublisherId, service: &DataPortFactory) -> bool {
+        if self.0.contains(&port) {
+            return false;
+        }
+        let mut registered = false;
+        service.dynamic_config().list_publishers(|publisher| {
+            registered = publisher.publisher_id == port;
+            if registered { CallbackProgression::Stop } else { CallbackProgression::Continue }
+        });
+        registered
+    }
 }
 
 /// The next sample of `subscriber` that is not history of an unlatched publisher.
@@ -101,7 +155,11 @@ impl Iox2Subscriber {
                 let received =
                     receive_current(&single.subscriber, &single.topic, single.created_nanos)
                         .map_err(receive_port_error)?;
-                Ok(received.map(|sample| Iox2Sample { sample, topic: Arc::clone(&single.topic) }))
+                Ok(received.map(|sample| Iox2Sample {
+                    sample,
+                    topic: Arc::clone(&single.topic),
+                    stream: 0,
+                }))
             }
             SubscriberKind::Set { subscribers, current_idx, created_nanos, .. } => {
                 if subscribers.is_empty() {
@@ -122,7 +180,7 @@ impl Iox2Subscriber {
                             break;
                         };
                         match receive_current(sub, topic, *created_nanos) {
-                            Ok(Some(sample)) => found = Some((sample, Arc::clone(topic))),
+                            Ok(Some(sample)) => found = Some((sample, Arc::clone(topic), index)),
                             Ok(None) => {}
                             Err(cause) => {
                                 if first_error.is_none() {
@@ -133,8 +191,8 @@ impl Iox2Subscriber {
                     }
                     index = advance(index);
                     current_idx.store(index, Relaxed);
-                    if let Some((sample, topic)) = found {
-                        return Ok(Some(Iox2Sample { topic, sample }));
+                    if let Some((sample, topic, stream)) = found {
+                        return Ok(Some(Iox2Sample { topic, sample, stream }));
                     }
                     if index == start_idx {
                         break;
@@ -143,6 +201,26 @@ impl Iox2Subscriber {
 
                 first_error.map_or(Ok(None), Err)
             }
+        }
+    }
+
+    /// True when the port that sent `sample`, which this subscriber received, did not exist
+    /// yet when the subscriber was created: every frame that publisher sent was then owed to
+    /// the subscriber, from its first. A port listed at creation, or one that left before
+    /// the listing, may have sent before the subscriber existed. Reads the registry of the
+    /// sample's stream unless the port was listed: ask once per publisher, at its first
+    /// frame.
+    #[must_use]
+    pub fn publisher_came_after(&self, sample: &Iox2Sample) -> bool {
+        let port = sample.sample.header().publisher_id();
+        match &self.inner {
+            SubscriberKind::Single(single) => {
+                single.publishers_before.came_after(port, &single.service)
+            }
+            SubscriberKind::Set { subscribers, publishers_before, .. } => subscribers
+                .get(sample.stream)
+                .zip(publishers_before.get(sample.stream))
+                .is_some_and(|((_, _, service), listed)| listed.came_after(port, service)),
         }
     }
 
@@ -237,6 +315,7 @@ impl Iox2Subscriber {
     pub(crate) fn new(
         subscriber: Subscriber<Ipc, [u8], Iox2FrameHeader>,
         created_nanos: u64,
+        publishers_before: PublishersBefore,
         service: DataPortFactory,
         stream: Stream,
         node: crate::transport::SharedNode,
@@ -247,6 +326,7 @@ impl Iox2Subscriber {
             inner: SubscriberKind::Single(Box::new(SingleSubscriber {
                 subscriber,
                 created_nanos,
+                publishers_before,
                 service,
                 topic: Arc::from(stream.topic),
                 event_source,
@@ -293,7 +373,7 @@ impl Iox2Subscriber {
         spec: &hypha_core::port::TopicSpec,
     ) -> Result<Self, PortError> {
         let created_nanos = steady_nanos()?;
-        let (subscribers, streams) = open_matching_streams(node, spec)?;
+        let (subscribers, publishers_before, streams) = open_matching_streams(node, spec)?;
         let is_topic = !spec.name.contains('*');
         if is_topic && subscribers.is_empty() {
             return Err(PortError::NotAvailable);
@@ -307,6 +387,7 @@ impl Iox2Subscriber {
                 subscribers,
                 current_idx: std::sync::atomic::AtomicUsize::new(0),
                 created_nanos,
+                publishers_before,
                 _schema_releases: schema_releases,
             },
         })
@@ -367,17 +448,22 @@ fn candidate_streams(
     }
 }
 
-/// The subscribers of every stream that `spec` selects, and the streams in the same order.
+/// What [`open_matching_streams`] opens: the subscribers, their listings and the streams.
+type MatchingStreams = (Vec<NamedSubscriber>, Vec<PublishersBefore>, Vec<Stream>);
+
+/// The subscribers of every stream that `spec` selects, the publishers each one listed once
+/// it existed, and the streams, in the same order.
 fn open_matching_streams(
     node: &crate::transport::SharedNode,
     spec: &hypha_core::port::TopicSpec,
-) -> Result<(Vec<NamedSubscriber>, Vec<Stream>), PortError> {
+) -> Result<MatchingStreams, PortError> {
     let own_schema = match spec.schemas {
         SchemaScope::Own => Some(spec.stream_schema_hash().ok_or(PortError::InvalidTopic)?),
         SchemaScope::Every => None,
         SchemaScope::Stream(hash) => Some(hash),
     };
     let mut subscribers = Vec::new();
+    let mut publishers_before = Vec::new();
     let mut streams = Vec::new();
     let port_name = crate::transport::node_port_name(node)?;
     for (name, stream) in candidate_streams(spec)? {
@@ -426,8 +512,41 @@ fn open_matching_streams(
             &port_name,
             slots,
         )?;
+        publishers_before.push(PublishersBefore::list(&service));
         subscribers.push((subscriber, Arc::from(full_topic), service));
         streams.push(stream);
     }
-    Ok((subscribers, streams))
+    Ok((subscribers, publishers_before, streams))
+}
+
+#[cfg(test)]
+mod came_after_tests {
+    #![expect(clippy::expect_used, reason = "a failed setup is a test failure")]
+
+    use super::PublishersBefore;
+    use crate::transport::Iox2Transport;
+    use hypha_core::port::TopicSpec;
+
+    /// Finding of the review of #247: a port that is on no listing may also have left the
+    /// registry before the subscriber listed it, after it sent a last frame that the
+    /// subscriber's queue still holds. Such a port may have sent before the subscriber existed
+    /// and owes it nothing; only a port still registered, and not listed, came after it.
+    #[test]
+    fn only_a_port_still_registered_and_not_listed_came_after_the_subscriber() {
+        let transport = Iox2Transport::with_name(&hypha_testkit::unique_name("left_before"))
+            .expect("transport");
+        let spec = TopicSpec::new(&format!("/{}", hypha_testkit::unique_name("left_before")))
+            .with_type("std_msgs/String");
+        let listed = transport.publish(&spec).expect("publisher");
+        let service = std::sync::Arc::clone(&listed.service);
+        let before = PublishersBefore::list(&service);
+        let staying = transport.publish(&spec).expect("publisher");
+        let left = transport.publish(&spec).expect("publisher");
+        let (listed_id, staying_id, left_id) =
+            (listed.publisher.id(), staying.publisher.id(), left.publisher.id());
+        drop(left);
+        assert!(!before.came_after(listed_id, &service), "listed: it may have sent before");
+        assert!(before.came_after(staying_id, &service), "registered after the listing");
+        assert!(!before.came_after(left_id, &service), "it may have left before the listing");
+    }
 }
