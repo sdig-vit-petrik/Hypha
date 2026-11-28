@@ -521,7 +521,7 @@ fn open_matching_streams(
 
 #[cfg(test)]
 mod came_after_tests {
-    #![allow(clippy::expect_used, reason = "a failed setup is a test failure")]
+    #![expect(clippy::expect_used, reason = "a failed setup is a test failure")]
 
     use super::PublishersBefore;
     use crate::transport::Iox2Transport;
