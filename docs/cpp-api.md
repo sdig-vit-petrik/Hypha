@@ -100,7 +100,8 @@ process session, for code without the `Node` at hand: `hypha::Node().advertise<T
 It needs a named `Node` created first; without one the call throws
 `... failed: InvalidState: no session exists; create a named hypha::Node first`.
 The object form holds the endpoints as members, and `hypha::bind` registers a member
-function as the callback:
+function as the callback (`hypha::bind<&C::onInput>(*this, index)` binds arguments that
+come first in the call: which of several inputs a sample came from):
 
 ```cpp
 #include <hypha/hypha.h>
@@ -317,6 +318,45 @@ wrapper for `integrity.*`, `loan.*`). On host time a `node.last_sweep_end_nanos`
 stops moving shows that no thread runs the node's `WaitSet`; under simulated time it
 follows the replay clock, so on its own it shows nothing.
 
+### 2.5 A worker thread ends at the node's stop
+
+An application that owns a thread (a device driver's grab loop) takes the node's stop
+with `this->stopToken()`, a `std::stop_token` that `runNode` stops when the run ends,
+whatever ended it: `hypha::requestStop()`, SIGINT or SIGTERM, `failRun()`, a refused
+start-up. It is stopped before the application's destructor runs, so the destructor only
+joins. `hypha/worker.h` gives the thread what `ros::ok()`, `ros::Duration::sleep()` and
+`ros::Rate` gave:
+
+```cpp
+void grabLoop(std::stop_token stop)             // this->stopToken(), copied into the thread
+{
+    hypha::Rate rate(30.0, stop);               // ros::Rate rate(30)
+    do {
+        grabAndPublish();
+    } while (rate.sleep());                     // false: the node stopped
+    // after a failed grab: if (!hypha::sleepFor(stop, std::chrono::milliseconds(100))) return;
+}
+```
+
+- `sleepFor(stop, span)` and `sleepUntil(stop, steadyDeadline)` return true when the whole
+  time passed and false when the stop ended the sleep or was already there. They are
+  `[[nodiscard]]` because a stopped sleep returns at once each time: a loop that ignores
+  the answer spins. `span` is a `std::chrono` duration or a `hypha::Duration`.
+- `Rate(hz, stop)` or `Rate(Duration, stop)` keeps a grid: the first tick is one period
+  after construction, work shortens the wait and never moves the grid. `sleep()` returns
+  true after the tick, false at the stop (not, as in ROS, at an overrun). A pass that
+  ran past a tick returns from `sleep()` at once; one that ran past whole periods skips
+  them without a burst and adds them to `missedCount()`, as `Timer::missedCount()` does.
+  `reset()` starts the grid again. A rate outside 1 ns to 24 h throws
+  `std::invalid_argument`.
+- Time here is host (steady clock) time, also under simulated time: framework time moves
+  with `/clock`, which a thread has no wait for. A loop that has to follow simulated time
+  is a timer or a cycle.
+- The token also ends a `std::condition_variable_any::wait(lock, stop, predicate)` on the
+  worker's own queue, and a `std::stop_callback` can wake any other blocking wait.
+- Reference: `hypha/worker.h`, `hypha/application_node.h`; the thread rules in
+  [ros1-migration-guide.md](ros1-migration-guide.md#106-threads).
+
 ## 3. Time and clock
 
 Pace periodic work with a cycle (section 5.4) or `Node::timer()`; there is no blocking
@@ -353,7 +393,13 @@ Reference: `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h`,
 ```cpp
 status.header.stamp = time.stamp;                      // in a step
 status.header.stamp = hypha::toRosTime(hypha::now());  // in a callback
+status.header.stamp = hypha::rosTimeFromSeconds(packetSeconds);  // or ...FromNanos(n)
 ```
+
+On simulated time `hypha::now()` is the placeholder zero until the node's clock has a
+value: `hypha::isClockValid()` (true on host time; on simulated time after the first
+`/clock` sample, `setSimTime` or `enableSimTime`) says whether a stamp taken from it is
+a time. The run reads `/clock`, so a constructor or `setup()` sees false.
 
 ## 4. Publishing
 
@@ -363,6 +409,11 @@ Outside a cycle, `node.advertise<M>(port | hypha::Topic{...}, options...)` creat
 exists (section 1); before that `advertise` throws `... InvalidState: no session exists`.
 Reference: `hypha/node.h`, `hypha/publisher.h`, `hypha/topic.h`, `hypha/options.h`.
 
+- `publish()` is `[[nodiscard]]`: a refused send is a result to read, never a silent loss.
+  `publishOrWarn(msg)` is the call for a node with no reaction to a refusal: it returns
+  the same `bool` and logs a warning with the topic and the status, at most once a second
+  for each publisher (copies of a publisher share one count; a disabled publisher is
+  silent). A cycle `Output::send` needs neither.
 - A fixed-size message is bounded to its encoded size. Any other is growable, unless
   `hypha::maxPayloadDynamic(bytes)` or the policy's field (section 7) names its largest
   message; a larger one is `TooLarge`. A growable publisher reserves its pool at its first
@@ -631,7 +682,8 @@ threads or composes cycles (`examples/sensor_fusion/src/fusion_main.cpp`) from
   then its options; `Output` takes a port name only (`hypha/cycle_latest.h`).
 - `start()` binds the ports in declaration order. A failure names the cycle, the
   port and the status: `hypha: cycle 'controller_node': input 'topic_speed': NotAvailable`.
-- One process has one `CycleNode`; a second step is a composed `hypha::Cycle` (5.5).
+- One process has one `CycleNode`; a second step is a composed `hypha::Cycle` (5.5), and a
+  second rate inside the one step a `CycleTimer` ("A second rate in a step").
 - On host time a rate step starts when the run wakes at its deadline: on Linux within the
   kernel's wake-up latency, on macOS late by up to half the wait and at most about 10 ms
   (execution-model.md §11). `CycleTime::now` is the wall time at the start of the step,
@@ -735,6 +787,53 @@ value goes out with no step, and the first step runs at start + period, once eve
 there, not at the start value as a ROS 1 simulator does with its first `/clock`. The start
 value lies from zero up to, not including, 2^32 seconds, the range of the seconds a `/clock`
 message carries: `start()` refuses any other, and its error names the range.
+
+#### A second rate in a step
+
+A `hypha::CycleTimer` (`hypha/cycle_timer.h`) is the `ros::Timer` of a step: a member that
+the step polls with its own time, for work at a second rate over the step's state (a 10 Hz
+status beside a 100 Hz loop, a gains update, a loop that upstream ran from its own timer).
+It is a value on `CycleTime::now`, so it ticks the same on host time, under simulated time,
+in a replay and in a `StepHarness`, and two replays give the same ticks. It adds nothing to
+the C ABI and allocates nothing.
+
+```cpp
+hypha::CycleTimer status{hypha::Hz(10.0)};                  // running; anchored at its first poll
+hypha::CycleTimer gains{hypha::Hz(10.0)};                   // gains.stop() in the constructor
+hypha::CycleTimer loop{hypha::Duration::fromMillis(10)};    // upstream's 100 Hz timer body
+
+void step(const hypha::CycleTime& time) override {
+    if (const auto tick = this->status.poll(time)) {        // first, before the ports
+        this->publishStatus(tick.missed());                 // once, missed periods counted
+    }
+    for (auto n = this->loop.poll(time).periods; n > 0; --n) {
+        this->onLoop();                                     // or once per period
+    }
+    // ... then read the ports; activate() calls gains.start(time), deactivate() gains.stop()
+}
+```
+
+- `poll(time)` gives a `Tick`: `periods`, the instants of the grid in (previous poll, now];
+  `expected`, the newest of them (ROS `current_expected`); `elapsed`, the time since the step
+  of the previous tick (ROS `current_real - last_real`), empty for the first tick after the
+  grid was anchored. A `Tick` is true when `periods` is not 0.
+- The first poll anchors the grid at the step's time and gives no tick. An early step gets
+  none, a late one more than one period; the grid never drifts. The periods beyond the first
+  are missed: `tick.missed()`, and `missedTotal()` since construction. Running the body once
+  is the rule of a hypha timer (execution-model.md §11); once per period is what a ROS timer
+  did after a slow callback, and what a port that must equal upstream step by step writes.
+  There is no cap on the count: the body chooses.
+- `stop()` ends the ticks, and a stopped timer misses nothing. `start(time)` starts a stopped
+  timer one period after `time`; `start()` anchors it at its next poll. Either on a running
+  timer changes nothing, as ROS `start()`: `stop()` and `start(time)` anchor it again.
+- Poll it in every step, first, as ROS ran a due timer before the next callback; a step that
+  does not poll leaves its periods to the next poll's count. Time that goes back (a step of
+  the host wall clock) anchors the grid at the new time.
+- It wakes nothing: a tick runs in the first step at or after its instant. In a triggered
+  cycle that is a trigger step or the fallback step, so the shortest `silence_ms` bounds how
+  late it runs. A cycle with no fallback (untimed triggers, #238) runs no step while its
+  triggers are silent, and the periods of that stretch arrive as the next step's count.
+  Work that must run on its own deadline is a rate cycle.
 
 #### Loss counters
 
@@ -1170,7 +1269,7 @@ same `std::expected<geometry_msgs::TransformStamped, hypha::TransformError>`.
 
 ```cpp
 // or {node, {.tf = "/tf", .tfStatic = "/tf_static"}, hypha::Duration::fromSeconds(10)}
-hypha::TransformBuffer tf{node};
+hypha::TransformBuffer tf{node};   // a member: `TransformBuffer tf_;` then `tf_ = TransformBuffer(node);`
 const std::optional<hypha::Time> stamp = hypha::fromRosTime(scan.header.stamp);
 if (stamp.has_value()) {
     const auto found = tf.lookup("map", "lidar", *stamp);   // in a callback or a worker thread
@@ -1332,7 +1431,8 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hyph
 | Header                                                                   | Holds                                                                                                                                                                                                |
 | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `hypha/node.h`                                                         | `Node`, `RunResult`, `StopReason`, `Timer`, `ok`, `nodeName`, `requestStop`                                                                                                            |
-| `hypha/application_node.h`                                             | `ApplicationNode`, `runNode`, `failRun`, the exit codes                                                                                                                                        |
+| `hypha/application_node.h`                                             | `ApplicationNode`, `runNode`, `failRun`, `stopToken`, the exit codes                                                                                                                                        |
+| `hypha/worker.h`                                                       | `sleepFor`, `sleepUntil`, `Rate`: a worker thread's sleep and rate, ended by the node's stop                                                                                                           |
 | `hypha/callback.h`, `hypha/topic.h`                                  | `bind<&Class::method>(object)`; `Topic`, `validateTopicName`                                                                                                                                   |
 | `hypha/options.h`, `hypha/qos.h`                                     | The option tags; `Qos`, `QosOf`, `defaultQos`, `tfQos`                                                                                                                                       |
 | `hypha/publisher.h`, `hypha/subscriber.h`                            | `Publisher<M>`, `Subscriber<M>`, `MessagePtr<M>`                                                                                                                                               |
@@ -1343,7 +1443,7 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hyph
 | `hypha/status.h`                                                       | `Status`, `ConfigError`, `require`                                                                                                                                                             |
 | `hypha/config.h`                                                       | `config()`, `ConfigView`, `ConfigList`, `ConfigContext`, `ParameterError`; it includes `constraints.h` (`constraints`)                                                                                                 |
 | `hypha/introspection.h`, `hypha/metrics.h`                           | `introspect`, `nodeState`, `recordConfig`; `metrics`, `metric`                                                                                                                             |
-| `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h` | `Duration`, `Time`, literals; `now`, `steadyNow`, simulated time; `toRosTime`, `fromRosTime`                                                                                             |
+| `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h` | `Duration`, `Time`, literals; `now`, `isClockValid`, `steadyNow`, simulated time; `toRosTime`, `rosTimeFromSeconds`, `rosTimeFromNanos`, `fromRosTime`                                                                                             |
 | `hypha_base/short_namespace.h`                                     | the alias `hy` of `hypha`; `HYPHA_NO_SHORT_NAMESPACE` leaves it out                                                                                                                      |
 | `hypha_log/hypha_log.h`                                                | The `HYPHA_LOG_*` macros                                                                                                                                                                           |
 | `hypha/hypha_ffi.h`                                                    | The C ABI below them all: [interface-specification.md](interface-specification.md)                                                                                                                    |

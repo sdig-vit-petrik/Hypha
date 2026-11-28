@@ -565,10 +565,10 @@ impl InterceptView {
             .is_none_or(|seen| now.saturating_duration_since(seen) >= OFFLINE_AFTER);
         StatusLine {
             armed: spec.map(|spec| spec.armed),
-            last_error: applied.map_or_default(|state| state.last_error.clone()),
+            last_error: applied.map(|state| state.last_error.clone()).unwrap_or_default(),
             pending: backend.is_some_and(|state| state.applied_revision < self.written_revision),
             offline,
-            config_error: backend.map_or_default(|state| state.config_error.clone()),
+            config_error: backend.map(|state| state.config_error.clone()).unwrap_or_default(),
             message: self.message.clone(),
         }
     }
@@ -707,7 +707,7 @@ impl InterceptView {
             .and_then(|wire| read_scalar(&type_name, wire).ok());
         let width = integer_width(&type_name).map_or(0, |bytes| bytes.saturating_mul(8));
         let mut bits = vec![BitState::Keep; width];
-        let mut text = current.as_ref().map_or_default(edit_text);
+        let mut text = current.as_ref().map(edit_text).unwrap_or_default();
         match stored {
             Some(OverrideSpec::Value { value }) => text = value,
             Some(OverrideSpec::Bits { set, clear }) => {

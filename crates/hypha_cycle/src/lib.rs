@@ -1,4 +1,13 @@
 //! Safe, transport-independent cycle input capture and execution policy.
+//!
+//! # Module map
+//! - `history`: bounded per-source sample ring buffer
+//! - `capture`: step image capture, `Latest`/`Arrivals` cursors, verdicts, overflow drops
+//! - `supervision`: `silence_ms` staleness and `stagnation_ms` alive-counter rules
+//! - `judgement`: transition log formatting for supervision state changes
+//! - `trigger`: multi-trigger ordering and fallback deadline rules
+//! - `replay_fidelity`: replay loss detection and supersession rules
+//! - `runtime`: cycle execution state machine and per-step emission budgets
 
 #![forbid(unsafe_code)]
 
@@ -12,7 +21,7 @@ mod trigger;
 
 pub use capture::{
     BindingCapture, BindingCounters, BindingOptions, CaptureClock, CaptureMode, HeldReport,
-    InputVerdict, QueueOverflowPolicy, held_report, judge_value,
+    InputVerdict, Passed, QueueOverflowPolicy, held_report, judge_value,
 };
 pub use history::{CycleHistory, HistorySample, HistoryStats, SampleOrigin};
 pub use judgement::{JudgementEvent, judgement_line};

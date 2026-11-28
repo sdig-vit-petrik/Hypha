@@ -1,12 +1,12 @@
 //! An input bound newest only, `HYPHA_CYCLE_INPUT_MODE_NEWEST` (#210): ROS's subscriber
 //! queue of one, decided by the reader alone, with no change to the topic's policy.
 //!
-//! A step that is slow on a fast topic leaves a backlog. A trigger in queued mode steps
-//! once for each sample of it; a newest-only trigger steps once, on the newest, and counts
-//! the samples it passed as work-limit drops. Under simulated time a step at T sees the
-//! samples stamped up to T, so a later stamp is its own step: which sample steps depends on
-//! the recording alone, not on when the node got its turn. Every case below holds by
-//! construction: the backlog is sent by the step itself, before it returns.
+//! Which sample steps, on either clock, is decided in `hypha_runtime::trigger_schedule`, and
+//! the count of the passed samples in `hypha_cycle`. These cases wire it through the C ABI: a
+//! slow step on a fast topic leaves a backlog, and the step after it holds only the newest
+//! sample. Every case holds by construction: the backlog is sent by the step itself, before
+//! it returns.
+
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::expect_used,
@@ -24,8 +24,7 @@ use std::time::{Duration, Instant};
 mod common;
 use crate::common::c_text;
 use crate::common::replay::{
-    SERIAL, SimulatedClock, open_declared_publisher, open_subscriber, run_for, send_payload,
-    send_stamped, set_clock,
+    SERIAL, open_declared_publisher, open_subscriber, run_for, send_payload,
 };
 use crate::common::supervision::{bind_trigger, node_with_triggers};
 use crate::common::unique;
@@ -33,7 +32,6 @@ use hypha_ffi::waitset::*;
 use hypha_ffi::*;
 
 const MS: i64 = 1_000_000;
-const SECOND: i64 = 1_000_000_000;
 const TYPE: &str = "std_msgs/Counter";
 const MD5: &str = "d9d213e8c146065ec958333c617eb1a6";
 /// The trigger's silence limit: ten seconds, so no sample goes stale and no fallback runs.
@@ -46,7 +44,6 @@ const QUEUE: usize = 8;
 /// What one step saw of its input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Seen {
-    scheduled: i64,
     /// The first byte of each sample the step holds: at most one for a trigger.
     newest: Option<u8>,
     samples: usize,
@@ -71,7 +68,7 @@ impl Context {
 
 extern "C" fn record(
     image: *const HyphaCycleImage,
-    time: *const HyphaCycleTime,
+    _time: *const HyphaCycleTime,
     _emission: *mut HyphaCycleEmission,
     context: *mut c_void,
 ) -> HyphaCallbackResult {
@@ -96,7 +93,6 @@ extern "C" fn record(
         unsafe { *view.payload }
     });
     let seen = Seen {
-        scheduled: unsafe { (*time).scheduled_nanos },
         newest,
         samples: report.sample_count,
         dropped: report.work_limit_drops,
@@ -215,19 +211,6 @@ fn values(steps: &[Seen]) -> Vec<Option<u8>> {
 }
 
 #[test]
-fn on_host_time_a_trigger_steps_once_for_each_sample_a_slow_step_left_behind() {
-    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
-    let rig = Rig::new("newest_host_queued", HyphaCycleInputMode::Queued, 0);
-    rig.backlog_of_first_step(&[2, 3, 4, 5]);
-    unsafe { send_payload(rig.publisher, &[1]) };
-
-    let steps = rig.run_until_steps(5);
-
-    assert_eq!(values(&steps), [Some(1), Some(2), Some(3), Some(4), Some(5)], "{steps:?}");
-    assert!(steps.iter().all(|step| step.dropped_total == 0), "{steps:?}");
-}
-
-#[test]
 fn on_host_time_a_newest_only_trigger_steps_on_the_newest_sample_a_slow_step_left_behind() {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
     let rig = Rig::new("newest_host_trigger", HyphaCycleInputMode::Newest, 0);
@@ -257,77 +240,6 @@ fn on_host_time_a_newest_only_input_of_a_rate_cycle_takes_its_newest_sample() {
     assert_eq!((found.samples, found.newest), (1, Some(5)), "{steps:?}");
     assert_eq!((found.dropped, found.dropped_total), (3, 3), "{steps:?}");
     assert!(steps.iter().all(|step| step.samples <= 1), "{steps:?}");
-}
-
-/// The steps of a trigger in `mode` under simulated time for samples `(value, stamp)`,
-/// stamped after one second: sent in one turn when `split` is zero, else the first `split`
-/// of them a turn earlier.
-fn simulated_steps(
-    label: &str,
-    mode: HyphaCycleInputMode,
-    sent: &[(u8, i64)],
-    split: usize,
-) -> Vec<Seen> {
-    let base = SECOND;
-    let last = sent.iter().map(|(_, stamp)| *stamp).max().expect("samples");
-    {
-        let clock = SimulatedClock::start(base);
-        let rig = Rig::new(&format!("{label}_{split}"), mode, 0);
-        let (early, late) = sent.split_at(split);
-        for &(value, stamp) in early {
-            unsafe { send_stamped(rig.publisher, value, base + stamp) };
-        }
-        if !early.is_empty() {
-            // A turn between the two sends: the clock is past the first stamp only.
-            set_clock(base + early[0].1);
-            rig.run_until_steps(1);
-        }
-        for &(value, stamp) in late {
-            unsafe { send_stamped(rig.publisher, value, base + stamp) };
-        }
-        set_clock(base + last + 10 * MS);
-        run_for(rig.waitset, 30_000_000);
-        let mut steps = rig.steps();
-        for step in &mut steps {
-            step.scheduled -= base;
-        }
-        drop(rig);
-        drop(clock);
-        steps
-    }
-}
-
-#[test]
-fn on_simulated_time_a_newest_only_trigger_steps_on_each_stamp_whatever_the_turns() {
-    // A replay step takes no time: a step at T sees the samples stamped up to T, and a
-    // later stamp is its own step, in one turn or in two.
-    let sent = [(1, 10 * MS), (2, 20 * MS), (3, 30 * MS)];
-    let together = simulated_steps("newest_sim_one", HyphaCycleInputMode::Newest, &sent, 0);
-    let apart = simulated_steps("newest_sim_two", HyphaCycleInputMode::Newest, &sent, 1);
-
-    assert_eq!(values(&together), [Some(1), Some(2), Some(3)], "{together:?}");
-    let scheduled: Vec<i64> = together.iter().map(|step| step.scheduled).collect();
-    assert_eq!(scheduled, [10 * MS, 20 * MS, 30 * MS], "{together:?}");
-    assert!(together.iter().all(|step| step.dropped_total == 0), "{together:?}");
-    assert_eq!(apart, together, "the turns do not decide what steps");
-}
-
-#[test]
-fn on_simulated_time_a_newest_only_trigger_passes_a_sample_of_its_own_stamp() {
-    // Two samples stamped 10 come from one step of an upstream: the newer one steps. The
-    // upstream hold brings both before the step at 10 runs when the upstream reports its
-    // progress (the schedule's causal-interleaving property); this publisher reports none,
-    // so both are sent before the turn.
-    let sent = [(1, 10 * MS), (2, 10 * MS), (3, 20 * MS)];
-    let steps = simulated_steps("newest_sim_tie", HyphaCycleInputMode::Newest, &sent, 0);
-
-    assert_eq!(values(&steps), [Some(2), Some(3)], "{steps:?}");
-    assert_eq!(steps[0].scheduled, 10 * MS, "{steps:?}");
-    assert_eq!((steps[0].dropped, steps[0].dropped_total), (1, 1), "{steps:?}");
-
-    // In queued mode each of the three steps.
-    let queued = simulated_steps("newest_sim_queued", HyphaCycleInputMode::Queued, &sent, 0);
-    assert_eq!(values(&queued), [Some(1), Some(2), Some(3)], "{queued:?}");
 }
 
 #[test]

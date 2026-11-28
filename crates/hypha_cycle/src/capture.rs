@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 mod clock;
+pub use clock::CaptureClock;
 use clock::{accepted_on, value_usable_within};
 
 use super::{CycleHistory, HistorySample, Supervision};
@@ -29,26 +30,13 @@ pub enum QueueOverflowPolicy {
     Carry,
 }
 
-/// The clock a capture admits and judges its samples on.
+/// Why a trigger sample is passed without a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CaptureClock {
-    /// Host monotonic time. Every retained sample is admitted and judged by its send time.
-    Host {
-        /// Host monotonic time of the capture.
-        steady_nanos: u64,
-    },
-    /// Data time for one replay step: only samples sent before `cut_nanos` are admitted,
-    /// each judged by `cut_nanos - framework_sent_nanos`.
-    Replay {
-        /// The deadline of the step, in framework nanoseconds.
-        cut_nanos: u64,
-    },
-    /// Data time for a trigger port of a replay step: the samples sent at or before
-    /// `cut_nanos` are admitted, each judged by `cut_nanos - framework_sent_nanos`.
-    ReplayThrough {
-        /// The time of the step, in framework nanoseconds.
-        cut_nanos: u64,
-    },
+pub enum Passed {
+    /// Older than its port's limit, or stamped before its port's last step: an age rejection.
+    Late,
+    /// A newer sample of a newest-only port supersedes it: a work-limit drop.
+    Superseded,
 }
 
 /// One binding's capture policy.
@@ -348,30 +336,22 @@ impl BindingCapture {
         self.stale = !fresh;
     }
 
-    /// Advance past the oldest pending sample without delivering it, and count it as
-    /// rejected. Returns whether a pending sample existed.
-    pub fn refuse_pending(&mut self, history: &CycleHistory) -> bool {
+    /// Advance past the oldest pending sample without delivering it, counted as `why` says (a
+    /// superseded one also in the next capture's report). Returns whether one was pending.
+    pub fn pass_pending(&mut self, history: &CycleHistory, why: Passed) -> bool {
         let start = history.cursor_offset(self.cursor);
         let Some(sample) = history.samples().get(start) else {
             return false;
         };
         self.cursor = sample.sequence.wrapping_add(1);
-        self.counters.age_rejections_total = self.counters.age_rejections_total.wrapping_add(1);
-        true
-    }
-
-    /// Advance past the oldest pending sample without delivering it: a newer sample of a
-    /// newest-only trigger supersedes it. It counts as a work-limit drop, a sample left on
-    /// purpose, in the cumulative count now and in the report of the next capture. Returns
-    /// whether a pending sample existed.
-    pub fn supersede_pending(&mut self, history: &CycleHistory) -> bool {
-        let start = history.cursor_offset(self.cursor);
-        let Some(sample) = history.samples().get(start) else {
-            return false;
+        let total = match why {
+            Passed::Late => &mut self.counters.age_rejections_total,
+            Passed::Superseded => {
+                self.superseded_since_capture = self.superseded_since_capture.wrapping_add(1);
+                &mut self.counters.work_limit_drops_total
+            }
         };
-        self.cursor = sample.sequence.wrapping_add(1);
-        self.superseded_since_capture = self.superseded_since_capture.wrapping_add(1);
-        self.counters.work_limit_drops_total = self.counters.work_limit_drops_total.wrapping_add(1);
+        *total = total.wrapping_add(1);
         true
     }
 

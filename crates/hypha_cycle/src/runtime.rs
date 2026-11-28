@@ -8,8 +8,8 @@ mod helpers;
 use helpers::{message_stamp_fits_ros_time, shares_history};
 
 use super::{
-    BindingCapture, BindingOptions, CaptureClock, CycleHistory, Supervision, SupervisionLimits,
-    TriggerPorts, TriggerStep,
+    BindingCapture, BindingOptions, CaptureClock, CycleHistory, Passed, Supervision,
+    SupervisionLimits, TriggerPorts, TriggerStep,
 };
 
 const STATUS_INVALID_ARGUMENT: i32 = 1;
@@ -618,36 +618,20 @@ impl CycleRuntime {
         }
     }
 
-    /// Consume the oldest pending sample of trigger port `port` without a step, and count
-    /// it as an age rejection of that port.
+    /// Consume the oldest pending sample of trigger port `port` without a step, counted as
+    /// `why` says on that port.
     ///
     /// # Errors
     ///
     /// Returns `STATUS_INVALID_ARGUMENT` without such a port or a pending sample.
-    pub fn refuse_trigger(&mut self, port: usize) -> Result<(), i32> {
+    pub fn pass_trigger(&mut self, port: usize, why: Passed) -> Result<(), i32> {
         let index = *self.triggers.get(port).ok_or(STATUS_INVALID_ARGUMENT)?;
         let history = self.bindings.get(index).and_then(|slot| slot.history.as_ref());
         let (Some(history), Some(capture)) = (history, self.captures.get_mut(index)) else {
             return Err(STATUS_INVALID_ARGUMENT);
         };
         let history = crate::locked(history);
-        if capture.refuse_pending(&history) { Ok(()) } else { Err(STATUS_INVALID_ARGUMENT) }
-    }
-
-    /// Consume the oldest pending sample of trigger port `port` without a step: a newer
-    /// sample of the port supersedes it. It counts as a work-limit drop of that port.
-    ///
-    /// # Errors
-    ///
-    /// Returns `STATUS_INVALID_ARGUMENT` without such a port or a pending sample.
-    pub fn supersede_trigger(&mut self, port: usize) -> Result<(), i32> {
-        let index = *self.triggers.get(port).ok_or(STATUS_INVALID_ARGUMENT)?;
-        let history = self.bindings.get(index).and_then(|slot| slot.history.as_ref());
-        let (Some(history), Some(capture)) = (history, self.captures.get_mut(index)) else {
-            return Err(STATUS_INVALID_ARGUMENT);
-        };
-        let history = crate::locked(history);
-        if capture.supersede_pending(&history) { Ok(()) } else { Err(STATUS_INVALID_ARGUMENT) }
+        if capture.pass_pending(&history, why) { Ok(()) } else { Err(STATUS_INVALID_ARGUMENT) }
     }
 
     /// Report the alive counter of a binding's newest accepted sample.

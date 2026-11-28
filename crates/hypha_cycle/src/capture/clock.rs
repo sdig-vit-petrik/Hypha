@@ -2,7 +2,29 @@
 
 use std::sync::Arc;
 
-use super::{CaptureClock, CycleHistory, HistorySample};
+use super::{CycleHistory, HistorySample};
+
+/// The clock a capture admits and judges its samples on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureClock {
+    /// Host monotonic time. Every retained sample is admitted and judged by its send time.
+    Host {
+        /// Host monotonic time of the capture.
+        steady_nanos: u64,
+    },
+    /// Data time for one replay step: only samples sent before `cut_nanos` are admitted,
+    /// each judged by `cut_nanos - framework_sent_nanos`.
+    Replay {
+        /// The deadline of the step, in framework nanoseconds.
+        cut_nanos: u64,
+    },
+    /// Data time for a trigger port of a replay step: the samples sent at or before
+    /// `cut_nanos` are admitted, each judged by `cut_nanos - framework_sent_nanos`.
+    ReplayThrough {
+        /// The time of the step, in framework nanoseconds.
+        cut_nanos: u64,
+    },
+}
 
 impl CaptureClock {
     /// The clock of a trigger port: a replay step admits its trigger samples through its

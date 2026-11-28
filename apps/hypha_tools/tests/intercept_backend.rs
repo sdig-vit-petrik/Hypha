@@ -343,14 +343,28 @@ fn state_topic_is_latched() {
     await_state(&mut early, None, |state| state.applied_revision == 4);
     let config = std::path::absolute(&bench.config).expect("config path");
 
+    // Latched means the late subscriber's first sample was sent before it existed. The tool
+    // also republishes its state every 500 ms, so a window shorter than that, which a
+    // loaded host can miss, is not needed: the send stamp tells the latch from a republish.
+    let before = hypha_node::sdk::clock::steady_now_nanos();
     let mut late = bench.state_subscriber();
-    let deadline = Instant::now() + Duration::from_millis(200);
-    let mut state = None;
-    while state.is_none() && Instant::now() < deadline {
-        state = read_state(&mut late);
+    let deadline = Instant::now() + LIMIT;
+    let first = loop {
+        if let Some(sample) = late.try_receive().expect("state receive") {
+            break sample;
+        }
+        assert!(Instant::now() < deadline, "the late subscriber received no state");
         std::thread::sleep(Duration::from_millis(5));
-    }
-    let state = state.expect("a late subscriber receives the latched state at once");
+    };
+    let sent = first.identity().expect("identity").transport_sent_nanos;
+    assert!(
+        i64::try_from(sent).expect("a stamp") < before,
+        "the first state sample was sent after the late subscriber existed: not latched"
+    );
+    let message =
+        hypha_node::sdk::msgs::std_msgs::String::decode_from(first.bytes().expect("payload"))
+            .expect("std_msgs/String");
+    let state = toml::from_str::<BackendState>(&message.data).expect("state TOML");
     assert_eq!(state.backend, bench.name);
     assert_eq!(Path::new(&state.config_path), config.as_path());
 }

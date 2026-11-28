@@ -106,7 +106,7 @@ pub fn list_nodes() -> Result<Vec<DiscoveredNode>, PortError> {
         out.push(node);
         CallbackProgression::Continue
     })
-    .map_err(crate::transport::node_list_failed)?;
+    .map_err(crate::data_service::node_list_failed)?;
     if pid_unreadable {
         log::error!(target: "hypha/transport", "hypha_iceoryx2: cannot read the process id of a listed node");
         return Err(PortError::Backend(5));
@@ -117,11 +117,12 @@ pub fn list_nodes() -> Result<Vec<DiscoveredNode>, PortError> {
 /// One registry entry, or `None` when its process id cannot be read.
 pub(crate) fn discovered_node(view: &impl NodeView, is_alive: bool) -> Option<DiscoveredNode> {
     let pid = view.id().pid::<Ipc>().ok()?.value();
-    let name = view.details().as_ref().map_or_default(|d| d.name().as_str().to_string());
+    let name = view.details().as_ref().map(|d| d.name().as_str().to_string()).unwrap_or_default();
     let executable = view
         .details()
         .as_ref()
-        .map_or_default(|d| String::from_utf8_lossy(d.executable().as_bytes()).into_owned());
+        .map(|d| String::from_utf8_lossy(d.executable().as_bytes()).into_owned())
+        .unwrap_or_default();
     Some(DiscoveredNode { name, executable, pid, is_alive })
 }
 
@@ -158,7 +159,7 @@ fn count_service_ports(
         let locked_node = crate::locked(node);
         let node_ref = locked_node.as_ref().ok_or(PortError::Backend(1))?;
         let node_id = *node_ref.id();
-        let service = crate::transport::data_service_builder(node_ref, &service_name).open();
+        let service = crate::data_service::data_service_builder(node_ref, &service_name).open();
         service.ok().map(|service| (service, node_id))
     };
     let Some((service, node_id)) = opened else {
