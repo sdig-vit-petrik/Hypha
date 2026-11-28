@@ -1,3 +1,4 @@
+// test-layer: unit (no node, no bus, no C function; #336)
 /// @file
 /// The names of the result enums: every enumerator by its own name, "Unknown" for a value
 /// outside the enum, as Status::name() gives.

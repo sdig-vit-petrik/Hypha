@@ -57,6 +57,56 @@ const NO_PREAMBLE: &[(&str, &str)] = &[
     ("hypha_log_write", "a null text with a length is counted as rejected; log_boundary"),
 ];
 
+/// Step-test services with no configuration and no port, for the rows that need a live one.
+fn step_services() -> *mut HyphaStepServices {
+    let mut out = null_mut();
+    // SAFETY: a null configuration is allowed; the name and `out` are valid.
+    let status =
+        unsafe { hypha_step_services_create(null(), "c".as_ptr().cast(), 1, &raw mut out) };
+    assert_eq!(status, HyphaStatus::Ok);
+    out
+}
+
+extern "C" fn step_ok(_emission: *mut HyphaCycleEmission, _context: *mut std::ffi::c_void) -> u8 {
+    1
+}
+
+extern "C" fn request_state(_state: *const HyphaStepRequestState, _context: *mut std::ffi::c_void) {
+}
+
+extern "C" fn sent_call(
+    _request: *const u8,
+    _len: usize,
+    _sent: i64,
+    _context: *mut std::ffi::c_void,
+) {
+}
+
+/// The releases `count_release` saw, over every row.
+static RELEASED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn released() -> usize {
+    RELEASED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+extern "C" fn count_release(_context: *mut std::os::raw::c_void) {
+    RELEASED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+extern "C" fn serve(
+    _view: *const HyphaRequestView,
+    _context: *mut std::os::raw::c_void,
+) -> HyphaCallbackResult {
+    HyphaCallbackResult::continue_run()
+}
+
+extern "C" fn done(
+    _result: *const HyphaCallResult,
+    _context: *mut std::os::raw::c_void,
+) -> HyphaCallbackResult {
+    HyphaCallbackResult::continue_run()
+}
+
 struct Row {
     name: &'static str,
     check: fn(&Live),
@@ -167,6 +217,9 @@ static ROWS: &[Row] = rows! {
     }
     hypha_cycle_image_alive => |_live| {
         assert_eq!(unsafe { hypha_cycle_image_alive(null(), 0, 0) }, INVALID);
+    }
+    hypha_cycle_image_clear => |_live| {
+        assert_eq!(unsafe { hypha_cycle_image_clear(null(), HYPHA_CYCLE_CLEAR_INPUT, 0) }, INVALID);
     }
     hypha_cycle_image_set_ignored => |_live| {
         assert_eq!(unsafe { hypha_cycle_image_set_ignored(null(), 0, 0) }, INVALID);
@@ -605,6 +658,174 @@ static ROWS: &[Row] = rows! {
         // SAFETY: a null transform is refused before it is read.
         let no_transform = unsafe { hypha_transform_check(name, 1, "b".as_ptr().cast(), 1, null(), 0) };
         assert_eq!(no_transform, INVALID);
+    }
+    hypha_service_server_create => |live| {
+        // SAFETY: every field of a description accepts all-zero bits.
+        let desc: HyphaServiceDesc = unsafe { std::mem::zeroed() };
+        let mut out = null_mut();
+        let before = released();
+        // SAFETY: a null node is refused before the description is read.
+        let no_node = unsafe {
+            hypha_service_server_create(null_mut(), &raw const desc, Some(serve), null_mut(), Some(count_release), &raw mut out)
+        };
+        assert_eq!(no_node, INVALID);
+        // SAFETY: a missing handler is refused before the description is read.
+        let no_handler = unsafe {
+            hypha_service_server_create(live.node, &raw const desc, None, null_mut(), Some(count_release), &raw mut out)
+        };
+        assert_eq!(no_handler, INVALID);
+        assert_eq!(released().wrapping_sub(before), 2, "a refused create releases its context, once each");
+        assert!(out.is_null());
+    }
+    hypha_service_server_destroy => |_live| { unsafe { hypha_service_server_destroy(null_mut()) } }
+    hypha_request_answer => |_live| {
+        assert_eq!(unsafe { hypha_request_answer(null_mut(), HYPHA_ANSWER_REPLY, null(), 0) }, INVALID);
+    }
+    hypha_request_defer => |_live| {
+        assert_eq!(unsafe { hypha_request_defer(null_mut(), &mut null_mut()) }, INVALID);
+    }
+    hypha_request_destroy => |_live| { unsafe { hypha_request_destroy(null_mut()) } }
+    hypha_service_client_create => |live| {
+        // SAFETY: every field of a description accepts all-zero bits.
+        let mut desc: HyphaServiceDesc = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { hypha_service_client_create(null_mut(), &raw const desc, &mut null_mut()) }, INVALID);
+        assert_eq!(unsafe { hypha_service_client_create(live.node, null(), &mut null_mut()) }, INVALID);
+        desc.blocking = 2;
+        assert_eq!(unsafe { hypha_service_client_create(live.node, &raw const desc, &mut null_mut()) }, INVALID);
+    }
+    hypha_service_client_destroy => |_live| { unsafe { hypha_service_client_destroy(null_mut()) } }
+    hypha_client_call => |_live| {
+        let before = released();
+        let mut status = 0_u32;
+        // SAFETY: a null client is refused before the request is read.
+        let refused = unsafe {
+            hypha_client_call(null(), null(), 0, Some(done), null_mut(), Some(count_release), &raw mut status)
+        };
+        assert_eq!(refused, INVALID);
+        assert_eq!(released().wrapping_sub(before), 1, "a refused call releases its context once");
+    }
+    hypha_client_status => |_live| {
+        assert_eq!(unsafe { hypha_client_status(null(), null_mut()) }, INVALID);
+    }
+    hypha_client_wait_for_server => |_live| {
+        assert_eq!(unsafe { hypha_client_wait_for_server(null(), 0, null_mut()) }, INVALID);
+    }
+    hypha_cycle_bind_server => |_live| {
+        // SAFETY: every field of a description accepts all-zero bits.
+        let desc: HyphaServiceDesc = unsafe { std::mem::zeroed() };
+        let mut index = 7_u32;
+        // SAFETY: a null cycle is refused before the description is read.
+        assert_eq!(unsafe { hypha_cycle_bind_server(null_mut(), &raw const desc, &raw mut index) }, INVALID);
+        assert_eq!(index, 0, "a refused bind writes the index first");
+        assert_eq!(unsafe { hypha_cycle_bind_server(null_mut(), &raw const desc, null_mut()) }, INVALID);
+    }
+    hypha_cycle_bind_client => |_live| {
+        // SAFETY: every field of a description accepts all-zero bits.
+        let desc: HyphaServiceDesc = unsafe { std::mem::zeroed() };
+        // SAFETY: a null cycle is refused before the description is read.
+        assert_eq!(unsafe { hypha_cycle_bind_client(null_mut(), &raw const desc, &mut 0) }, INVALID);
+        assert_eq!(unsafe { hypha_cycle_bind_client(null_mut(), &raw const desc, null_mut()) }, INVALID);
+    }
+    hypha_cycle_requests => |_live| {
+        // SAFETY: a null emission is refused before anything is read.
+        assert_eq!(unsafe { hypha_cycle_requests(null_mut(), 0, Some(serve), null_mut()) }, INVALID);
+        assert_eq!(unsafe { hypha_cycle_requests(null_mut(), 0, None, null_mut()) }, INVALID);
+    }
+    hypha_cycle_next_result => |_live| {
+        let mut found = 1_u8;
+        // SAFETY: a null emission is refused before anything is read.
+        let refused = unsafe { hypha_cycle_next_result(null_mut(), 0, Some(done), null_mut(), &raw mut found) };
+        assert_eq!(refused, INVALID);
+        assert_eq!(found, 0, "a refused read writes found first");
+        assert_eq!(unsafe { hypha_cycle_next_result(null_mut(), 0, Some(done), null_mut(), null_mut()) }, INVALID);
+    }
+    hypha_cycle_unread_results => |_live| {
+        let mut unread = 9_u64;
+        // SAFETY: a null emission is refused before anything is read.
+        assert_eq!(unsafe { hypha_cycle_unread_results(null_mut(), 0, &raw mut unread) }, INVALID);
+        assert_eq!(unread, 0, "a refused read writes 0 first");
+        assert_eq!(unsafe { hypha_cycle_unread_results(null_mut(), 0, null_mut()) }, INVALID);
+    }
+    hypha_cycle_call => |_live| {
+        let mut status = 0_u32;
+        // SAFETY: a null emission is refused before the request is read.
+        assert_eq!(unsafe { hypha_cycle_call(null_mut(), 0, null(), 0, &raw mut status) }, INVALID);
+        assert_eq!(status, HYPHA_CALL_BUSY, "a refused call writes Busy first");
+        assert_eq!(unsafe { hypha_cycle_call(null_mut(), 0, null(), 0, null_mut()) }, INVALID);
+    }
+    hypha_step_services_create => |live| {
+        let mut out = null_mut();
+        // SAFETY: a null output is refused before anything is read.
+        assert_eq!(unsafe { hypha_step_services_create(live.config, "c".as_ptr().cast(), 1, null_mut()) }, INVALID);
+        // SAFETY: a null name with a length is refused, and `out` is written null first.
+        assert_eq!(unsafe { hypha_step_services_create(null(), null(), 1, &raw mut out) }, INVALID);
+        assert!(out.is_null(), "a refused create writes null");
+    }
+    hypha_step_services_destroy => |_live| {
+        assert_eq!(unsafe { hypha_step_services_destroy(null_mut()) }, HyphaStatus::Ok);
+    }
+    hypha_step_services_bind => |_live| {
+        // SAFETY: every field of a description accepts all-zero bits.
+        let desc: HyphaServiceDesc = unsafe { std::mem::zeroed() };
+        let mut index = 7_u32;
+        // SAFETY: null services are refused before the description is read.
+        assert_eq!(unsafe { hypha_step_services_bind(null_mut(), &raw const desc, 0, &raw mut index) }, INVALID);
+        assert_eq!(index, 0, "a refused bind writes the index first");
+        let services = step_services();
+        // SAFETY: a null description is refused before anything is read.
+        assert_eq!(unsafe { hypha_step_services_bind(services, null(), 1, &raw mut index) }, INVALID);
+        // SAFETY: `services` is live and not used after.
+        unsafe { hypha_step_services_destroy(services) };
+    }
+    hypha_step_services_deliver => |_live| {
+        let mut id = 0_u64;
+        // SAFETY: null services are refused before the request is read.
+        let refused = unsafe { hypha_step_services_deliver(null_mut(), 0, null(), 0, null(), 0, 0, 0, &raw mut id) };
+        assert_eq!(refused, INVALID);
+        assert_eq!(id, u64::MAX, "a refused delivery writes no id");
+        let services = step_services();
+        // SAFETY: an unknown server is refused.
+        let unknown = unsafe { hypha_step_services_deliver(services, 0, null(), 0, "t".as_ptr().cast(), 1, 0, 0, &raw mut id) };
+        assert_eq!(unknown, INVALID);
+        // SAFETY: `services` is live and not used after.
+        unsafe { hypha_step_services_destroy(services) };
+    }
+    hypha_step_services_feed => |_live| {
+        // SAFETY: null services are refused before the bytes are read.
+        assert_eq!(unsafe { hypha_step_services_feed(null_mut(), 0, HYPHA_CALL_ANSWERED, null(), 0, 0, 0) }, INVALID);
+        let services = step_services();
+        // SAFETY: an unknown outcome is refused.
+        assert_eq!(unsafe { hypha_step_services_feed(services, 0, 99, null(), 0, 0, 0) }, INVALID);
+        // SAFETY: `services` is live and not used after.
+        unsafe { hypha_step_services_destroy(services) };
+    }
+    hypha_step_services_step => |_live| {
+        // SAFETY: null services are refused before the step runs.
+        assert_eq!(unsafe { hypha_step_services_step(null_mut(), 0, Some(step_ok), null_mut()) }, INVALID);
+        let services = step_services();
+        // SAFETY: a missing step is refused.
+        assert_eq!(unsafe { hypha_step_services_step(services, 0, None, null_mut()) }, INVALID);
+        // SAFETY: `services` is live and not used after.
+        unsafe { hypha_step_services_destroy(services) };
+    }
+    hypha_step_services_request => |_live| {
+        // SAFETY: null services are refused before the callback runs.
+        assert_eq!(unsafe { hypha_step_services_request(null(), 0, 0, Some(request_state), null_mut()) }, INVALID);
+        let services = step_services();
+        // SAFETY: a missing callback and an unknown server are refused.
+        assert_eq!(unsafe { hypha_step_services_request(services, 0, 0, None, null_mut()) }, INVALID);
+        assert_eq!(unsafe { hypha_step_services_request(services, 0, 0, Some(request_state), null_mut()) }, INVALID);
+        // SAFETY: `services` is live and not used after.
+        unsafe { hypha_step_services_destroy(services) };
+    }
+    hypha_step_services_calls => |_live| {
+        // SAFETY: null services are refused before the callback runs.
+        assert_eq!(unsafe { hypha_step_services_calls(null(), 0, Some(sent_call), null_mut()) }, INVALID);
+        let services = step_services();
+        // SAFETY: an unknown client is refused.
+        assert_eq!(unsafe { hypha_step_services_calls(services, 0, Some(sent_call), null_mut()) }, INVALID);
+        // SAFETY: `services` is live and not used after.
+        unsafe { hypha_step_services_destroy(services) };
     }
     hypha_node_default_waitset => |live| {
         assert_eq!(unsafe { hypha_node_default_waitset(null_mut(), &mut null_mut()) }, INVALID);

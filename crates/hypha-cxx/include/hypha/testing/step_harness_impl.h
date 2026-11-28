@@ -77,7 +77,7 @@ inline const HyphaTransformBuffer* StepHarness::transformsFor(const Port& port, 
             "hypha: a Transforms port needs a positive cache: " + std::string(Status(status).name())
         );
     }
-    this->transforms_.push_back(FedTransforms{&port, backend::UniqueTransformBuffer(created)});
+    this->transforms_.push_back(FedTransforms{&port, backend::UniqueTransformBuffer(created), {}});
     return created;
 }
 
@@ -108,6 +108,67 @@ inline void StepHarness::feed(
         throw std::runtime_error(
             "hypha: deliver() on a Transforms port refused: " + std::string(Status(status).name())
         );
+    }
+    if (isStatic) {
+        for (FedTransforms& held : this->transforms_) {
+            if (held.port == &port) {
+                held.statics.push_back(std::move(payload));
+            }
+        }
+    }
+}
+
+inline void StepHarness::clearAfterStep(Port& port, void (*forget)(Port&))
+{
+    this->clears_.emplace_back(&port, forget);
+}
+
+inline bool StepHarness::cleared(const Port& port) const
+{
+    for (const std::pair<Port*, void (*)(Port&)>& clear : this->clears_) {
+        if (clear.first == &port) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Applies the clears of the step that returned: an input forgets its delivery and value; a
+/// Transforms port gets a new buffer fed its static transforms again, as a started cycle's
+/// TF input forgets the dynamic ones alone.
+inline void StepHarness::applyClears()
+{
+    for (const std::pair<Port*, void (*)(Port&)>& clear : this->clears_) {
+        Port* const port = clear.first;
+        if (clear.second != nullptr) {
+            this->dropPending(*port);
+            std::erase_if(this->deliveries_, [port](const Delivery& item) {
+                return item.port == port;
+            });
+            clear.second(*port);
+            continue;
+        }
+        for (FedTransforms& held : this->transforms_) {
+            if (held.port != port) {
+                continue;
+            }
+            const int64_t         cacheNanos = static_cast<Transforms*>(port)->cache_.nanos();
+            HyphaTransformBuffer* created = nullptr;
+            ::HyphaStatus         status =
+                backend::createFedTransformBuffer(static_cast<uint64_t>(cacheNanos), &created);
+            held.buffer = backend::UniqueTransformBuffer(created);
+            for (const std::vector<uint8_t>& payload : held.statics) {
+                if (status == HYPHA_STATUS_OK) {
+                    status = backend::transformBufferFeed(created, payload, true);
+                }
+            }
+            if (status != HYPHA_STATUS_OK) {
+                throw std::runtime_error(
+                    "hypha: clear() of a Transforms port refused: "
+                    + std::string(Status(status).name())
+                );
+            }
+        }
     }
 }
 
@@ -215,6 +276,7 @@ inline void StepHarness::beginStep(Time now)
         store.destroy(store.sent);
     }
     this->stores_.clear();
+    this->clears_.clear();
     this->running_ = std::move(this->pending_);
     this->pending_.clear();
     for (Pending& item : this->running_) {
@@ -277,6 +339,27 @@ const std::vector<M>& StepHarness::sent(const Output<M>& port) const
     }
     static const std::vector<M> none;
     return none;
+}
+
+template <typename M>
+void StepHarness::setNeverArrived(Latest<M>& port)
+{
+    this->forget(port);
+    this->startCountersOver(port);
+    port.hasHeld_ = false;
+    port.fresh_ = false;
+    port.verdict_ = InputVerdict::NeverArrived;
+    StepHarness::judge(port, HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, false);
+}
+
+template <typename M>
+void StepHarness::setNeverArrived(Arrivals<M>& port)
+{
+    this->forget(port);
+    this->startCountersOver(port);
+    port.sampleCount_ = 0;
+    port.verdict_ = InputVerdict::NeverArrived;
+    StepHarness::judge(port, HYPHA_CYCLE_VERDICT_NEVER_ARRIVED, false);
 }
 
 }  // namespace hypha::testing

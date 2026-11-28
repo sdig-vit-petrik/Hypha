@@ -177,8 +177,9 @@ examples/autoware/tools/port.py verify` (run by `./check.sh`) checks them.
 `point_field_conversion.h` needs `<sensor_msgs/PointField.h>` (or `PointCloud2.h`) before
 it, as upstream does. Left out: `fill_image.h` and `point_cloud_conversion.h` (the second
 needs the deprecated `sensor_msgs/PointCloud`, which hypha does not ship). The SDK has no
-counterpart of `camera_info_manager`: a port reads its camera calibration into a
-`sensor_msgs::CameraInfo` itself (#265 leaves that decision open).
+counterpart of `camera_info_manager` (it needs a `NodeHandle`, a service and a URL
+scheme): the calibration, in TOML, is read by `hypha::readCameraInfo()` and written by
+`hypha::writeCameraInfo()` (section 9, *Camera calibration*).
 `crates/hypha-cxx/test/test_sensor_msgs_companions.cpp` runs them.
 
 An application generates its own `.msg` and
@@ -194,7 +195,29 @@ target_link_libraries(app PRIVATE hypha::sdk app_msgs)
 ```
 
 `DEPENDS` names a standard package or one an earlier call declared; never copy or
-regenerate a standard package. Every message `M` carries the pointer typedefs of both
+regenerate a standard package.
+
+**Adding to a package of the SDK.** A package of the SDK is the SDK's, so its name in a
+call that gives definitions of the application's own adds to it: the call reads what the
+SDK ships under the package, so a `.srv` of the application can name
+`sensor_msgs/CameraInfo` without `DEPENDS`, and it emits only the application's:
+
+```cmake
+hypha_generate_messages(PACKAGE sensor_msgs
+                        SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/srv/sensor_msgs")   # SetFocusRegion.srv
+target_link_libraries(app PRIVATE hypha::sdk sensor_msgs_additions)
+```
+
+The headers land at `<OUT_DIR>/sensor_msgs/SetFocusRegion.h`, beside the SDK's headers of
+the package and not among them (an application's install names its own list,
+`HYPHA_GENERATED_HEADERS` of the target). The target is `<package>_additions`: the package's
+own target is the SDK's. A definition of a name the package has, a message or a service or
+a half of a service (`SetCameraInfoRequest`), is refused naming it: ROS's definitions
+are not redefined, and the application defines its service under a name of its own, or
+in a package of its own. `PACKAGE` in its own `DEPENDS` is refused. One call adds to a
+package. `DEPENDS` on the package in a later call names the SDK's definitions of it, not
+the added ones; `hypha_generate_ros2_headers()` for the package covers both.
+`test/package_consumer` adds to `sensor_msgs` from an installed prefix. Every message `M` carries the pointer typedefs of both
 ROS generations: `M::Ptr` and `M::ConstPtr` (ROS 1), `M::SharedPtr`, `M::ConstSharedPtr`
 and `M::UniquePtr` (ROS 2), and `M_<Allocator>` names `M` as ROS 2's allocator template does. Each field `f` names its type `M::_f_type`, as both
 generations' C++ does, and has ROS 2's fluent setter `M& set__f(const M::_f_type&)`. Messages compare with `==`
@@ -903,6 +926,7 @@ counts no queue evictions: a transport drop shows only as a gap in `overrun_tota
 | `bindingHealth().overrun_total`                                         | every input   | History losses and, for a queued input, transport sequence gaps. A `Latest` input counts neither in host time; under replay it counts transport gaps and the evictions of execution-model.md §11.1. |
 | `bindingHealth().age_rejections_total`                                  | every input   | Samples the age rule refused. They were received, not lost.                                         |
 | `bindingHealth().work_limit_drops_total`, `.capture.work_limit_drops` | queued inputs | Samples over the step's share, dropped on purpose, and the samples a `newestOnly` port passed for a newer one; `capture.` counts the latest step only. |
+| `bindingHealth().cleared_total`                                         | every input   | Pending samples a step's `clear()` dropped (a reset, below). A rate step leaves none pending.     |
 
 #### Topic states of an input port
 
@@ -953,7 +977,7 @@ with it; the header gives the setters and the rules. `send()` outside a step thr
 `std::logic_error("hypha: output '<port>': send() outside a step")`: a `setup()` that
 sends fails start-up, so send an initial message from the first step.
 
-A harness predicts which ports a start would enable, from the parameter file that a `Node` or a `ConfigContext` holds when the harness is built. An `optionalTopic` port is enabled when its table, `[ports.inputs.<name>]` or `[ports.outputs.<name>]`, sets a non-empty `topic`; a missing table, a missing `topic`, `topic = ""` and a harness without a file leave it disabled, so a step under test takes the branch for a port that is not wired. The constructor throws `ConfigError` for such an optional port whose `topic` is a name a start would refuse, or whose entry is a plain string (`mag = "/x"`) where a start needs a table, and `ParameterError` for a `topic` that is not text. A port that requires its topic, or sits on a `hypha::Topic{...}` literal, is enabled without a check of its table or name: a start refuses a missing, empty or invalid one, the harness does not. Wire an optional port in the test's file to test the branch behind it: `deliver()` to the input and the step reads its three verdicts (usable, stale, never arrived), and `sent()` keeps what the step sends on the output. An enabled output reports a subscriber (`hasSubscribers()` is true), since no transport counts one. On a disabled input `deliver()`, `set()`, `setStale()` and `setStagnant()` throw `std::logic_error` and name the table that lacks a `topic`: a started cycle gives it no sample and never judges it; `setNeverArrived()` stays allowed, because it is true of a disabled port. A disabled output counts the sends of the step and keeps none, as in a started cycle, so `sent()` of it is empty. The harness opens no subscriber and no publisher and checks no key of a table other than `topic` and `silence_ms`. `testing.h` lists what a harness step shares with a started cycle and what it leaves out.
+A harness predicts which ports a start would enable, from the parameter file that a `Node` or a `ConfigContext` holds when the harness is built. An `optionalTopic` port is enabled when its table, `[ports.inputs.<name>]` or `[ports.outputs.<name>]`, sets a non-empty `topic`; a missing table, a missing `topic`, `topic = ""` and a harness without a file leave it disabled, so a step under test takes the branch for a port that is not wired. The constructor throws `ConfigError` for such an optional port whose `topic` is a name a start would refuse, or whose entry is a plain string (`mag = "/x"`) where a start needs a table, and `ParameterError` for a `topic` that is not text. A port that requires its topic, or sits on a `hypha::Topic{...}` literal, is enabled without a check of its table or name: a start refuses a missing, empty or invalid one, the harness does not. Wire an optional port in the test's file to test the branch behind it: `deliver()` to the input and the step reads its three verdicts (usable, stale, never arrived), and `sent()` keeps what the step sends on the output. An enabled output reports a subscriber (`hasSubscribers()` is true), since no transport counts one. On a disabled input `deliver()`, `set()`, `setStale()` and `setStagnant()` throw `std::logic_error` and name the table that lacks a `topic`: a started cycle gives it no sample and never judges it; `setNeverArrived()` stays allowed, because it is true of a disabled port. A disabled output counts the sends of the step and keeps none, as in a started cycle, so `sent()` of it is empty. The harness opens no subscriber and no publisher and checks no key of a table other than `topic`, `silence_ms` and the keys of a service port. `testing.h` lists what a harness step shares with a started cycle and what it leaves out.
 
 `harness.deliver(port, value, sentAt)` hands a `Latest` port a value sent at `sentAt`. Each later `step(time)` judges it as a capture does: usable while `time.now - sentAt <= silence_ms` of `[ports.inputs.<name>]` (read when `deliver()` is called, so a `Node` or `ConfigContext` must hold the file), stale after; a port without `silence_ms`, without a table, or tagged `unsupervised` never goes stale. `fresh()` is true in the first step that finds the value usable. `lastKnown()` keeps a value that was usable once. A value that is stale in its first judged step is never held, as in a capture. A `sentAt` after the step time is stale with age 0 until that time; a real cycle under simulated time does not admit such a sample at all. `set()`, `setStale()` and `setNeverArrived()` state a verdict directly; a later `set()` or `deliver()` on the same port replaces the earlier state. The counters advance as on the bus: the next step counts each value given to `deliver()` or `set()` in `received()` and each one it takes as usable in `deliveredCount()`, so two values before one step are two received and one delivered; `setNeverArrived()` sets both to zero.
 
@@ -965,6 +989,44 @@ A harness predicts which ports a start would enable, from the parameter file tha
 harness.deliver(node.tf, {odomInMap});          // geometry_msgs::TransformStamped values
 harness.deliverStatic(node.tf, {lidarInBase});
 harness.step(node, time);                       // node.tf.lookup("map", "lidar", at) finds it
+```
+
+A service port's peer is the test (`hypha/testing/step_harness_services.h`): no fake
+server process, no fake client. `harness.request(port, request, {.client, .sentAt})`
+delivers a request to a `Requests` port, as `rosservice call` would, and returns a probe
+that tells what became of it: `queued()` (no step read it), `deferred()`, `replied()` with
+`response()`, `refused()` or `failed()` with `reason()`, `answeredAt()` and `describe()`
+for a test message. `harness.calls(port)` lists the requests the last step sent on a
+`Calls` port; `harness.answer(port, response)` and `harness.outcome(port,
+hypha::CallOutcome::Timeout, "after 1 s")` end its oldest call in flight (`Refused`,
+`NoServer`, `NotSent`, `ServerLost` or `Timeout`), read by the next step, or with a time
+`at` by the first step after it; with no call in flight they throw `std::logic_error`.
+The library runs a harness step's services as a started cycle's on simulated time, so the
+rules of section 8.5 hold: a step at T reads the requests sent before T (by default a
+request is sent just before the next step), in step order, at most `per_step`; answers and
+calls leave after the step; a request read and left alone is refused; a step that throws
+answers what it read as failed and ends its calls `NotSent`, and passes the outcomes it did
+not read to the next step, where a successful step drops and counts them; a call left open
+past its timeout ends `Timeout`. `per_step`, `outstanding` and `timeout_ms` are read from
+the parameter file and refused as a start refuses them; a port without a table keeps the
+defaults.
+
+```cpp
+UavManager                  node;  // section 8.6
+hypha::testing::StepHarness harness{node};
+auto takeoff = harness.request(node.takeoff, {});
+harness.step(node, at(0));
+ASSERT_EQ(harness.calls(node.switchController).size(), 1U);
+harness.answer(node.switchController, {.success = true});
+harness.step(node, at(10));
+harness.outcome(node.switchTracker, hypha::CallOutcome::Timeout, "after 1 s");
+harness.step(node, at(20));                     // disarms: toggle_output first
+harness.answer(node.toggleOutput, {.success = true});
+harness.step(node, at(30));                     // then arming
+harness.answer(node.arming, {.success = true});
+harness.step(node, at(40));
+ASSERT_TRUE(takeoff.replied()) << takeoff.describe();
+EXPECT_EQ(takeoff.response().message, "could not activate the tracker (timeout after 1 s)");
 ```
 
 The harness moves no clock. In a started cycle `hypha::now()` returns `CycleTime::now` while the step runs; in a harness step it returns the process clock. Step code reads the `CycleTime` it is given. A test of code that still calls `hypha::now()` sets simulated time itself: `hypha::enableSimTime(time.now)` once, `hypha::setSimTime(time.now)` before each `step()`, `hypha::disableSimTime()` at the end. `steadyNow()` is real elapsed time and is never set.
@@ -1031,6 +1093,33 @@ Each change of an input's judgement is logged once; execution model §6.4 lists 
 
 Reference: `<hypha/cycle_input.h>` (`stale()`, `stagnant()`, `setAlive()`, `setIgnored()`),
 `<hypha/cycle_runtime.h>` (`inputsOk()`).
+
+#### A reset: `clear()`
+
+A node that resets (robot_localization's `reset` and `set_pose`, an EKF that starts again)
+forgets what its inputs and its TF input hold with `clear()`, in the step:
+
+```cpp
+void RosEkf::reset()                        // called from step()
+{
+    for (OdomInput& input : this->odom_inputs) {
+        input.port.clear();                 // hypha::Arrivals<nav_msgs::Odometry>
+    }
+    this->transforms.clear();               // tf2's tfBuffer_.clear(); static ones stay
+    this->filter_.reset();                  // the node's own state, as upstream
+}
+```
+
+The clear applies when the step returns: the rest of the step still reads its capture.
+Later steps see only later samples. Until one arrives the input has no value (`has()`
+is false) and is `NeverArrived`, and it turns `Stale` when the newest sample before the
+clear passes `silence_ms`: a clear restarts no timer and hides no silent source. A trigger
+port cannot be cleared (`std::logic_error`). The pending samples it drops are counted in
+`bindingHealth().cleared_total`. A `Transforms` port forgets its dynamic transforms and
+keeps the static ones; a lookup misses until a new transform arrives. Under replay a clear
+at step T forgets what the cut of T admitted, the same in every run and every `--chunk`.
+In a `StepHarness`, `harness.cleared(port)` tells whether the last step cleared the port,
+and later steps find it cleared. The rules: [execution-model.md](execution-model.md) §6.8.
 
 ### 5.5 Cycle composition (L2)
 
@@ -1228,15 +1317,322 @@ The pool size and the start-order rules are in [engineering-traps.md](engineerin
 safe overflow and the frame checks in [interface-specification.md](interface-specification.md#service-limits-and-wildcards).
 Reference: `<hypha/qos.h>`, and `<hypha/status.h>` for `Status`, `require()` and `ConfigError`.
 
-## 8. Request and reply
+## 8. Services
 
-hypha has no RPC. A request and its answer are two topics: the client publishes the
-request with an identifier such as a sequence number, and the server publishes the reply
-with the same identifier. Latch both when either side can start first. A reply that does
-not arrive within the client's own deadline is a timeout the client decides on; it may
-send the request again. `examples/mrs/host/include/mrs_host/service.h` carries the MRS
-services this way. A `.srv` file still generates `Request` and `Response` message types,
-each with its own MD5 (engineering-traps.md).
+A service is a request and its answer between nodes, typed by a ROS 1 `.srv`
+(design: [native-services.md](design/native-services.md)). A name has at most one
+server, across every version of its type; a call ends in exactly one outcome. Sections
+8.1 to 8.3 cover plain nodes and `ApplicationNode`s; section 8.5 the ports of a cycle,
+`Requests<Srv>` and `Calls<Srv>`.
+
+The SDK ships `std_srvs` (`Empty`, `Trigger`, `SetBool`) and the standard services of
+ROS 1 Noetic for the packages whose messages it ships, each as `<package>/<Name>.h` with
+`Request`, `Response`, `TYPE_NAME` and `MD5`, and the `.srv` unchanged, so the MD5 is
+ROS's: `nav_msgs/GetMap` (`6cdd0a18...`), `GetPlan`, `LoadMap`, `SetMap`;
+`sensor_msgs/SetCameraInfo` (`bef1df59...`); `diagnostic_msgs/AddDiagnostics`, `SelfTest`;
+`tf2_msgs/FrameGraph`. A ROS client through the bridge, a recorded call and a port written
+against `nav_msgs::GetMap` meet them as they are in ROS. Every other package of ROS 1
+that the SDK ships has no service (`std_msgs`, `geometry_msgs`, `rosgraph_msgs`).
+`hypha_generate_messages()` with `SRV_DIR` generates an application's own, and its call
+for a package of the SDK adds to it (section 1.1, "Adding to a package of the SDK"). A
+map does not fit the default 4 KiB bound of a service (section 8.4): the server and its
+clients include one header that specializes `hypha::ServicePolicyOf<nav_msgs::GetMap>`
+with bounds for their map, 64 MiB at most.
+
+### 8.1 A server
+
+```cpp
+#include <std_srvs/SetBool.h>
+
+auto server = node.advertiseService<std_srvs::SetBool>(
+    "set_enabled", [this](hypha::Request<std_srvs::SetBool>& request) {
+        if (!this->ready_) {
+            request.refuse("not initialised");   // the client reads Refused
+            return;
+        }
+        request.reply({.success = true, .message = request->data ? "on" : "off"});
+    });
+```
+
+```toml
+[ports.servers.set_enabled]
+service = "~/set_enabled"          # /<node>/set_enabled
+```
+
+The handler runs on the run's thread, between turns, as a subscription callback does.
+It does one of three things with the request: `reply(response)`, `refuse()` or
+`refuse("why")`, or `defer()`. A request it leaves without any of the three is refused
+when it returns (`the server's handler did not answer the request`), counted and logged
+once. A handler that throws answers its request as failed, which the client reads as
+`ServerLost`, and fails the run as any callback that throws does.
+
+`hypha::Service{"/abs/name"}` instead of a port fixes the name in code. A port without a
+table is refused with `ConfigError` (exit 78), and the message prints the stanza to add.
+A second server of a name that a live node serves is refused (`ResourceLimit`), naming
+the holder and the type it serves. Destroying the `ServiceServer` ends every request it
+holds: their clients read `ServerLost`.
+
+**Deferred answers.** `request.defer()` returns a `hypha::Deferred<Srv>`, a move-only
+handle that any thread answers later with `reply()` or `refuse()`: the camera's handler
+hands the request to the worker thread that owns the device, which answers between two
+grabs.
+
+```cpp
+void setup(hypha::Node& node) override
+{
+    this->setExposure_ = node.advertiseService<camera_control_msgs::SetExposure>(
+        "set_exposure", [this](hypha::Request<camera_control_msgs::SetExposure>& request) {
+            this->commands_.push({request->target_exposure, request.defer()});
+        });
+}
+
+// on the worker, between two grabs
+while (auto command = this->commands_.tryPop()) {
+    float reached = 0.0F;
+    const bool success = this->device_.setExposure(command->target, reached);
+    command->reply.reply({.reached_exposure = reached, .success = success});
+}
+```
+
+A `Deferred` destroyed while it holds a request refuses it (`a deferred request was
+destroyed unanswered`): no request ends in silence. Once its server is destroyed, its
+`reply()` returns `Disconnected`, as it does once the client left. An answer from
+another thread is stamped with the process's framework time and is not part of a
+deterministic replay.
+
+### 8.2 A client in a node
+
+```cpp
+auto trigger = node.serviceClient<std_srvs::SetBool>(hypha::Service{"/localization/ekf/trigger_node"});
+if (trigger.call({.data = true}, [](const hypha::CallResult<std_srvs::SetBool>& r) {
+        if (!r.ok() || !r.response().success) HYPHA_LOG_WARN("trigger_node: {}", hypha::describe(r));
+    }) != hypha::CallStatus::Sent) {
+    HYPHA_LOG_WARN("trigger_node: not sent");
+}
+```
+
+`call()` sends at once and returns `[[nodiscard]] hypha::CallStatus`: `Sent`, or a local
+refusal that sends nothing and calls nothing: `Busy` (the client has its limit of calls
+in flight, calls the server still holds after they timed out included) or `TooLarge`
+(above the bound). After `Sent` the callback runs exactly once with the outcome, on the
+run's thread at a later turn, never inside `call()`:
+
+| `CallOutcome` | When | `mayHaveRun()` | `safeToRetry()` |
+|---|---|---|---|
+| `Answered` | the server replied; `ok()` and `response()` | yes | no |
+| `Refused` | `refuse()`, a request left unanswered, a `Deferred` destroyed unanswered, a response above its bound | no | yes |
+| `NoServer` | no live server of the stream until the timeout | no | yes |
+| `NotSent` | nothing was sent: the transport refused the request, or a blocking call was `Busy` or `TooLarge` | no | yes |
+| `ServerLost` | the server exited, crashed or was destroyed; its handler threw; its answer did not verify | yes | no |
+| `Timeout` | no answer within the timeout | yes | no |
+
+`describe(result)` is the outcome as one line: `refused: not armed`, `timeout after 1 s
+(policy defaultService)`. A client may call before its server exists: the call is held
+in one of its slots and sent when a server appears; it ends `NoServer` at its deadline.
+`ready()` (ROS 1: `exists()`) says whether a live server exists now, `pending()` whether
+an outcome is still to come. Destroying the client drops the outcomes of its calls in
+flight uncalled.
+
+The timeout is the policy's (1 s for `defaultService`); `hypha::timeout(d)` as the last
+argument of `serviceClient()` overrides it in code, and `timeout_ms` in the client's
+table overrides both:
+
+```toml
+[ports.clients.trigger]
+service = "/localization/ekf/trigger_node"
+timeout_ms = 2000
+outstanding = 1                    # calls in flight, at most the policy's
+```
+
+### 8.3 A blocking client: a worker thread, a test, a tool
+
+```cpp
+auto takeoff = node.serviceClient<std_srvs::Trigger>(hypha::Service{"/uav1/uav_manager/takeoff"}, hypha::blocking);
+if (!takeoff.waitForServer(hypha::Duration::fromSeconds(5))) { /* no server */ }
+const hypha::CallResult<std_srvs::Trigger> r = takeoff.callAndWait({});
+```
+
+A blocking client is attached to no `WaitSet`: `callAndWait()` waits on the calling
+thread for the outcome and returns it, and a call it refused before sending reads
+`NotSent`. On the run's thread, inside any callback, `callAndWait()` and
+`waitForServer()` throw (`InvalidState`): that thread is the one that must deliver the
+answer. The message says what to use instead: `call(request, onResult)`. The library
+starts no thread for it.
+
+From the shell, `hypha service call <service> '<toml>'` (`'data = true'`) is the operator's
+`rosservice call`: a server registers the definitions of its `.srv` when it is created,
+so the tool encodes the request, prints the response, and exits with a code per outcome
+([tools.md](tools.md), `hypha service`). Every client, the tool's included, logs each
+finished call as a `hypha_msgs/ServiceCall` on `<service>/calls` while someone reads it:
+`hypha topic echo /camera/set_enabled/calls`, recorded by `hypha record`. A record carries the
+first 16 KiB of the request and of the response, their lengths and a `truncated` flag, so a
+log costs no payload bound.
+
+### 8.4 Limits, and services in a cycle
+
+A service has a policy as a topic does (section 7): `hypha::ServicePolicy`, mapped to the
+type by `hypha::ServicePolicyOf<Srv>` in a header both ends include. The default,
+`defaultService`, admits 8 clients (and 3 more for tools), 2 calls in flight each, 4 KiB
+each way, a timeout of 1 s. A request above its bound is `TooLarge` at `call()`; a
+response above it gives the server `TooLarge` from `reply()` and the client `Refused`
+with the sizes. Data of map size goes on a latched topic, and a service carries a small
+request and its acknowledgement.
+
+### 8.5 A server and a client in a cycle
+
+In a cycle a service is a port (`hypha/cycle_service.h`, `CycleNode::Requests`,
+`CycleNode::Calls`). Requests are an input of the server's steps, and calls an output of
+the client's, so a service changes nothing between two steps and a replay repeats it
+exactly (FSR-44).
+
+```cpp
+class ControlManager final : public hypha::CycleNode {
+    Requests<mrs_msgs::String>  switchTracker{*this, "switch_tracker"};  // [ports.servers.switch_tracker]
+    Calls<std_srvs::SetBool>    arming{*this, "arming"};                  // [ports.clients.arming]
+    Arrivals<nav_msgs::Odometry> odometry{*this, "odometry"};
+
+    void step(const hypha::CycleTime&) override {
+        for (hypha::Request<mrs_msgs::String>& request : this->switchTracker.requests()) {
+            request.reply({.success = this->select(request->value), .message = "switched"});
+        }
+        if (auto result = this->arming.result()) {          // the call of an earlier step
+            if (!result->ok()) HYPHA_LOG_WARN("arming: %s", hypha::describe(*result).c_str());
+        }
+        if (this->mustDisarm() && this->arming.call({.data = false}) != hypha::CallStatus::Sent) {
+            HYPHA_LOG_WARN("arming: %s", hypha::toString(this->arming.lastStatus()));
+        }
+    }
+};
+```
+
+- `requests()` gives the step its requests, at most `per_step` of the server's table
+  (default 8); a later call in the same step gives the same ones. Each is answered by
+  `reply()`, `refuse()` or `defer()`, and the answer leaves after the step, with its
+  outputs. A request the step read and left alone is refused after it. A step that never
+  calls `requests()` reads none: they wait for a later step, bounded by the client's
+  timeout. A step that fails sends no output and no answer: the requests it read end
+  `ServerLost` (`server step failed`), because the step may have changed state.
+- A `Deferred<Srv>`, from `defer()` in a step or from a plain server's handler, answered
+  during a step of any cycle of the node leaves after that step, and `reply()` returns `Ok`
+  at once. A step that then fails answers it as failed: the client reads `ServerLost`
+  (`server step failed`), and the `Deferred` is used up. An answer that cannot leave after
+  the step is logged. Answered on another thread, or in a plain callback, it leaves at once.
+  A chain of calls is a `hypha::Sequence` (section 8.6).
+- `call()` stages a call: `Sent`, `Busy` (the port has `outstanding` calls in flight,
+  default 1, those of this step included) or `TooLarge`. A sent call leaves after the step,
+  stamped with its time. A step that fails sends none: each call it staged ends `NotSent`,
+  which the next step reads.
+- `result()` gives the next outcome a step holds, `results()` all of them: the outcomes of
+  calls of earlier steps. An outcome a successful step does not read is dropped after it,
+  logged once and counted (`unreadResults()`), so a port used to fire and forget does not
+  wedge; a step that fails passes the outcomes it did not read to the next step. Timeouts count in framework time: a
+  call of a step at S times out at the first step at or after S + timeout.
+- Under simulated time a step at T holds the requests and outcomes stamped before T, the
+  requests in the order of stamp, client node, client port and sequence. A request is
+  therefore served at the server's first step after the client's, and its answer read at
+  the client's first step after that, whatever `--chunk` or turn order, also when client
+  and server are two cycles of one `WaitSet` (`execution-model.md` §6.6 item 5). Two cycles
+  of two `WaitSet`s of one node are not held against each other: that is logged, and not
+  deterministic. A triggered server reads a request at its next trigger after the request:
+  a server triggered only by its client's topic serves the call of the client's step at `t`
+  at the trigger the client sends next, since the trigger at `t` and the request carry one
+  stamp and requests are cut before it.
+- A request from outside the replay (`hypha service call`, a plain node) is served at the
+  first step after it came, and the answer of a server that reports no progress is read at
+  the first step after it came, whatever their stamps: not deterministic, logged once.
+- A step that fails on replay fidelity (a lost input) has already sent its answers and
+  calls, as it has sent its outputs.
+- A `testing::StepHarness` drives these ports with the test as client and server (section
+  5.4, "Test a step without a bus"), by the same rules.
+
+### 8.6 A chain of calls: `hypha::Sequence`
+
+A callback that calls one service after another and then replies (MRS `uav_manager`'s
+takeoff, `docs/design/native-services.md` §8.2) is a `hypha::Task`, a C++ coroutine that a
+`hypha::Sequence` runs over steps (`hypha/sequence.h`, included by `hypha/cycle_node.h`).
+It reads in the order of the ROS callback, and each failure is a value the code handles.
+
+```cpp
+class UavManager final : public hypha::CycleNode {
+  public:
+    Requests<std_srvs::Trigger> takeoff{*this, "takeoff"};
+    Calls<mrs_msgs::String>     switchController{*this, "switch_controller"};
+    Calls<mrs_msgs::String>     switchTracker{*this, "switch_tracker"};
+    Calls<mrs_msgs::Vec1>       trackerTakeoff{*this, "tracker_takeoff"};
+    Calls<std_srvs::SetBool>    toggleOutput{*this, "toggle_output"};
+    Calls<std_srvs::SetBool>    arming{*this, "arming"};
+    Calls<std_srvs::Trigger>    eland{*this, "eland"};
+
+    void step(const hypha::CycleTime& time) override {
+        for (hypha::Request<std_srvs::Trigger>& request : this->takeoff.requests()) {
+            if (this->takeoffSeq_.running()) {
+                request.reply({.success = false, .message = "takeoff in progress"});
+            } else {
+                this->takeoffSeq_.start(request.defer(), this->runTakeoff());
+            }
+        }
+        this->takeoffSeq_.advance(time);  // in every step while it runs
+    }
+
+  private:
+    hypha::Task<std_srvs::Trigger::Response> runTakeoff() {
+        auto a = co_await hypha::call(this->switchController, {.value = "MpcController"});
+        if (!succeeded(a)) co_return co_await this->disarm("could not activate the controller", a);
+        auto b = co_await hypha::call(this->switchTracker, {.value = "LandoffTracker"});
+        if (!succeeded(b)) co_return co_await this->disarm("could not activate the tracker", b);
+        co_await hypha::sleepFor(hypha::Duration::fromMillis(300));  // the motors ramp up
+        auto c = co_await hypha::call(this->trackerTakeoff, {.goal = this->takeoffHeight_});
+        if (!succeeded(c)) {
+            auto e = co_await hypha::call(this->eland, {});
+            co_return {.success = false,
+                       .message = "takeoff was not successful (" + c.description() + "); eland: "
+                                  + e.description()};
+        }
+        co_return {.success = true, .message = "taking off"};
+    }
+
+    /// Turn the output off, then disarm, and fail the takeoff with the reason.
+    template <typename Srv>
+    hypha::Task<std_srvs::Trigger::Response> disarm(std::string what, hypha::CallResult<Srv> why) {
+        co_await hypha::call(this->toggleOutput, {.data = false});
+        co_await hypha::call(this->arming, {.data = false});
+        co_return {.success = false, .message = what + " (" + why.description() + ")"};
+    }
+
+    template <typename Srv>
+    static bool succeeded(const hypha::CallResult<Srv>& r) { return r.ok() && r.response().success; }
+
+    hypha::Sequence<std_srvs::Trigger> takeoffSeq_;
+    double                             takeoffHeight_{1.5};
+};
+```
+
+- `co_await hypha::call(port, request)` stages the call as `port.call()` does, and resumes
+  with its `CallResult` in the first step that reads the outcome: answered, refused, no
+  server, not sent, server lost or timeout. A call that returns `Busy` or `TooLarge`
+  resumes at once as `NotSent` with that status.
+- `co_await hypha::sleepFor(d)` resumes at the first `advance()` at least `d` of step time
+  later; `co_await hypha::until(pred)` once `pred()` holds, checked when reached and at
+  each `advance()`. A Task may `co_await` another Task (`disarm()` above).
+- `start(request.defer(), task)` begins the Task at the next `advance(time)`, which runs it
+  until it waits on something not ready; its `co_return` answers the request, which leaves
+  after the step. `hypha::Sequence<>` runs a Task that answers nothing, such as the work
+  after the answer. `running()`, `waitingFor()` (`the outcome of a call to
+  'switch_tracker'`, `the end of a sleep`, `a condition`) and `lastAnswer()` show where it is.
+- A Task that throws, or an `advance()` that throws, ends the sequence, refuses the request
+  with the reason and rethrows: the step fails, and its client reads `ServerLost`.
+  Destroying a running sequence refuses its request.
+- A step that does not read an outcome drops it, so call `advance()` in every step while
+  the sequence runs: otherwise the next `advance()` throws `std::logic_error` and names the
+  port. Read no other outcome of a port the sequence waits on, and keep no reference to
+  step-local data or to an input's value across a `co_await`.
+- What the sequence does follows the step's inputs and time alone, so a replay repeats
+  it. One frame is allocated per Task called; `advance()` allocates nothing of its own.
+
+`advance()` takes the step's time, not `hypha::now()`, so a sleep counts in step time also
+under a `testing::StepHarness`. `crates/hypha-cxx/test/test_sequence.cpp` tests this
+takeoff shape with every failure branch, and the example compiles in
+`test_cycle_doc_examples.cpp`.
 
 ## 9. Parameters
 
@@ -1361,6 +1757,65 @@ for (const auto sensor : settings.list("sensors")) {
   table that the node does not read stays an unread key. It works inside a list entry
   too (`sensor.tables()`). The C ABI call is `hypha_config_table_names(config, prefix, ...)`,
   names joined by `'\n'` (`abi.revision` 14).
+- **Another TOML file.** `hypha::ConfigFile file(path)` loads a TOML file with the
+  parameter-file loader (`include`, `${NAME}`) apart from the node's configuration, and
+  `file.view(prefix)` reads it with every `ConfigView` reader; `path()` resolves against
+  that file's directory, `unreadKeys()` lists its unread keys, and its reads are no
+  parameters of the node (no manifest rows). A file that is missing or not TOML throws
+  `ConfigError` (the loader logs the reason with the line). Views borrow the file. No C
+  function of its own: it is `hypha_config_create` and the configuration readers.
+- **An optional file name.** `cfg.optionalPath(key)` is `path(key)`, or no value when
+  `key` is not set; a key that is set and empty throws as `path()` does.
+- **Camera calibration (#265, #316).** `<hypha/camera_info.h>` reads a camera
+  calibration into a `sensor_msgs::CameraInfo`, from a table of the parameter file or
+  from a file of its own, both TOML with the keys of the ROS calibration file:
+
+  ```toml
+  image_width = 640
+  image_height = 480
+  camera_name = "narrow_stereo"           # optional
+  distortion_model = "plumb_bob"
+  distortion_coefficients = [-0.3635, 0.1619, -0.0001, 0.0003, 0.0]   # any length
+  camera_matrix = [                       # 3 x 3, row-major (ROS's K)
+      430.215, 0.0, 306.691,
+      0.0, 430.532, 227.225,
+      0.0, 0.0, 1.0,
+  ]
+  rectification_matrix = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]   # 3 x 3 (R)
+  projection_matrix = [432.0, 0.0, 306.0, 0.0, 0.0, 432.0, 227.0, 0.0, 0.0, 0.0, 1.0, 0.0]  # 3 x 4 (P)
+  binning_x = 0                           # optional, 0 when absent
+  binning_y = 0                           # optional, 0 when absent
+  [roi]                                   # optional; each key optional, 0 or false
+  x_offset = 0
+  y_offset = 0
+  height = 0
+  width = 0
+  do_rectify = false
+  ```
+
+  A matrix is the flat row-major array (the `data` of the ROS file, as for any matrix
+  parameter) and its length is checked against its shape. In the node's own file the
+  keys sit in a table, `[camera_info]` (and `[camera_info.roi]`), read with
+  `hypha::readCameraInfo(hypha::config("camera_info"))`. A file of its own, which
+  `set_camera_info` can rewrite at run time, is
+  `hypha::readCameraInfo(hypha::config().path("camera_info_url"), &cameraName)`;
+  `readCameraInfoIfPresent(path)` returns no value when nothing is at `path`, so the
+  camera runs uncalibrated as with `camera_info_manager` (the driver logs it), and
+  `config().optionalPath("camera_info_url")` makes the key itself optional.
+  `hypha::writeCameraInfo(path, info, cameraName)` writes the same TOML (into
+  `<path>.tmp`, then renamed over `path`, creating missing directories) and refuses a
+  calibration the reader would refuse; what it writes reads back equal. The file is
+  read by the parameter-file loader through `ConfigFile`; the SDK holds no parser.
+  Strict, like a bad parameter: a missing key, an unknown key (a typo, or the ROS
+  `rows`/`cols`/`data` layout, which the message tells to flatten), a size of 0, a number
+  that is not finite, an empty `distortion_model` or a matrix of the wrong length throw
+  `ConfigError` naming the file or table and the key, so a bad calibration read in the
+  constructor or `setup()` ends the node with 78:
+  `hypha: camera calibration 'left.toml': camera_matrix: expected 3 x 3 = 9 elements, found 8`.
+  `header` of the result is empty: the driver names the frame and stamps each message.
+  The ROS calibration YAML is not read: convert it once by hand
+  ([ros1-migration-guide.md](ros1-migration-guide.md), the `camera_info_manager` row).
+  `crates/hypha-cxx/test/test_camera_info.cpp` runs it.
 - **Porting.** A ROS 1 list parameter, with the fixed-size form:
   [ros1-migration-guide.md](ros1-migration-guide.md#108-a-list-of-scalars-in-the-parameter-file).
 - **Without a bus.** A `hypha::ConfigContext` serves `hypha::config()` in a test
@@ -1422,7 +1877,9 @@ hypha::Transforms tf{*this};                               // a member of the Cy
 const auto found = this->tf.lookupLatest("map", "base_link");  // in step(): base_link in map
 ```
 
-Buffer, clock steps, losses: [execution-model.md](execution-model.md) §6.7.
+Buffer, clock steps, losses: [execution-model.md](execution-model.md) §6.7. `tf.clear()` in a
+step forgets the dynamic transforms when the step returns, as tf2's `Buffer::clear()`, and
+keeps the static ones (§5.4, a reset).
 
 ### 10.2 Looking transforms up in a plain node, and sending transforms
 
@@ -1621,7 +2078,8 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hyph
 | `hypha/cycle_transforms.h`, `hypha/transform_buffer.h`, `hypha/transform_types.h`, `hypha/testing.h` | `Transforms`; `TransformBuffer`, `StaticTransformBroadcaster`; `TransformError`, `TransformTopics`; `testing::StepHarness` |
 | `hypha/raw_api.h`, `hypha/raw.h`                                     | Raw endpoints, `lookupDefinition`, `listNodes`; `RawSample`, `NodeInfo`, `Metric`, `SubscriberMetrics`                                                                                                          |
 | `hypha/status.h`                                                       | `Status`, `ConfigError`, `require`                                                                                                                                                             |
-| `hypha/config.h`                                                       | `config()`, `ConfigView`, `ConfigContext`, `ParameterError`; it includes `config_list.h` (`ConfigList`), `config_matrix.h` (`Matrix`) and `constraints.h` (`constraints`)                                                                                                 |
+| `hypha/config.h`                                                       | `config()`, `ConfigView`, `ParameterError`; it includes `config_file.h` (`ConfigContext`, `ConfigFile`), `config_list.h` (`ConfigList`), `config_matrix.h` (`Matrix`) and `constraints.h` (`constraints`)                                                                                                 |
+| `hypha/camera_info.h`                                                  | `readCameraInfo`, `readCameraInfoIfPresent`, `writeCameraInfo`: the camera calibration in TOML as `sensor_msgs::CameraInfo`                                                              |
 | `hypha/introspection.h`, `hypha/metrics.h`                           | `introspect`, `nodeState`, `recordConfig`; `metrics`, `metric`                                                                                                                             |
 | `hypha_base/time.h`, `hypha_base/clock.h`, `hypha/message_stamp.h` | `Duration`, `Time`, literals; `now`, `isClockValid`, `steadyNow`, simulated time; `toRosTime`, `rosTimeFromSeconds`, `rosTimeFromNanos`, `fromRosTime`                                                                                             |
 | `hypha_base/short_namespace.h`                                     | the alias `hy` of `hypha`; `HYPHA_NO_SHORT_NAMESPACE` leaves it out                                                                                                                      |

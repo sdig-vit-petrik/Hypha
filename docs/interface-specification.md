@@ -215,6 +215,122 @@ semantics and its `HYPHA_TF_*` results are those of a cycle's TF input
   before a send, needs no node, and records the reason for `hypha_last_error` on a
   refusal (`InvalidArgument`); the C++ broadcasters call it.
 
+## Services
+
+A service is a request and its answer between nodes, typed by a `.srv`
+([design/native-services.md](design/native-services.md)). The C ABI is coarse on
+purpose: sixteen functions, ten for plain nodes and six for the ports of a cycle, and
+every rule of a call decided below them, once.
+
+| Function | What it does |
+|---|---|
+| `hypha_service_server_create(node, desc, serve, context, release, out)` | Creates the server of `desc` and attaches it to the node's default `WaitSet`; the run calls `serve` for each request |
+| `hypha_service_server_destroy(server)` | Ends every request the server holds (their clients read `ServerLost`) and detaches it |
+| `hypha_request_answer(request, kind, bytes, len)` | Replies (`HYPHA_ANSWER_REPLY`, the encoded response) or refuses (`HYPHA_ANSWER_REFUSE`, the reason) |
+| `hypha_request_defer(request, out)` | Takes the handler's request over, to answer later from any thread |
+| `hypha_request_destroy(request)` | Releases a deferred request; one still unanswered is refused |
+| `hypha_service_client_create(node, desc, out)` | Creates a client: attached to the default `WaitSet`, or blocking (`desc.blocking`) |
+| `hypha_service_client_destroy(client)` | Detaches it; the outcomes of its calls in flight are dropped uncalled |
+| `hypha_client_call(client, request, len, done, context, release, status)` | Calls; `done` gets the one outcome, later on the run's thread or, for a blocking client, before the call returns |
+| `hypha_client_status(client, out)` | Whether a live server exists now, and the calls pending |
+| `hypha_client_wait_for_server(client, timeout_nanos, ready)` | Waits for a server; a blocking client only |
+| `hypha_cycle_bind_server(cycle, desc, out_index)` | Gives an uncommitted cycle a server, a `Requests` port; the cycle owns it |
+| `hypha_cycle_bind_client(cycle, desc, out_index)` | Gives an uncommitted cycle a client, a `Calls` port; the cycle owns it |
+| `hypha_cycle_requests(emission, server, each, context)` | In a step: calls `each` with each request the step reads |
+| `hypha_cycle_next_result(emission, client, done, context, found)` | In a step: calls `done` with the next outcome the step holds |
+| `hypha_cycle_call(emission, client, request, len, status)` | In a step: stages a call, sent after the step |
+| `hypha_cycle_unread_results(emission, client, out)` | In a step: the outcomes successful steps did not read and dropped |
+| `hypha_step_services_create(config, cycle_name, len, out)` | Makes the services of a cycle under a step test: no node, no bus; `config` (null for none) holds the ports' tables |
+| `hypha_step_services_destroy(services)` | Ends every request they hold; null does nothing |
+| `hypha_step_services_bind(services, desc, client, out_index)` | Binds a server (`client` 0) or a client (1), as `hypha_cycle_bind_server`/`_client` do |
+| `hypha_step_services_deliver(services, server, request, len, client_node, len, sent_nanos, stamped, out_id)` | Delivers a test's request, sent at `sent_nanos` or (`stamped` 0) just before the next step |
+| `hypha_step_services_feed(services, client, outcome, bytes, len, sent_nanos, stamped)` | Ends the oldest call in flight with an outcome (`bytes`: the response, else the reason) |
+| `hypha_step_services_step(services, now_nanos, step, context)` | Runs one step at `now_nanos`: `step` gets the emission the four step functions above take, and returns 1 when it succeeded |
+| `hypha_step_services_request(services, server, id, done, context)` | What became of a delivered request: `HYPHA_STEP_REQUEST_QUEUED`, `_DEFERRED`, `_REPLIED`, `_REFUSED`, `_FAILED`, with its bytes and stamp |
+| `hypha_step_services_calls(services, client, each, context)` | The calls the client sent after the last step, in call order |
+
+- **Declaration.** `HyphaServiceDesc` names a port (`literal` 0: the `service` key of
+  `[ports.servers.<port>]` or `[ports.clients.<port>]`) or the service (`literal` 1:
+  absolute, relative or `~/`), the `.srv` type and MD5, a `HyphaServicePolicy`
+  (`name_len` 0 and every field 0 for `defaultService`), a client's timeout
+  (`timeout_nanos`, 0 for the policy's; the table's `timeout_ms` wins), for a client,
+  `blocking`, and, for a server, the definitions of the `.srv`'s two halves
+  (`request_definition`, `response_definition` with their lengths; null with length 0
+  for none; a half of no fields is an empty text, and two empty texts register only under the MD5 of the empty service, `d41d8cd98f00b204e9800998ecf8427e`). A server registers those definitions in the schema store while it stands,
+  so a tool encodes a request of a type it was not built with; a server without them
+  serves. A client's definitions are unused. Its texts are borrowed for the call. A port without a table is
+  `InvalidArgument`, and `hypha_last_error` gives the stanza to add; an invalid name is
+  `InvalidTopic`; a name a live node serves is `ResourceLimit` and the reason names the
+  holder and its type; another policy on the stream is `QosMismatch`; a create during a
+  run is `InvalidState`. A create writes null to `out` first.
+- **Contexts.** `context` and `release` pass to the library at the call, and `release`
+  runs exactly once: when the server is destroyed, after `done` ran, or at once when the
+  call is refused or no outcome follows (`Busy`, `TooLarge`, a destroyed client).
+- **Requests.** `serve` receives a `HyphaRequestView`, borrowed for the call: the
+  request handle, the payload and the client's node name. The handler answers the
+  request, defers it, or leaves it: a request left open when `serve` returns is refused
+  (`the server's handler did not answer the request`), counted and logged once per
+  server. A failing `HyphaCallbackResult` answers an open request as failed (the client
+  reads `ServerLost`) and fails the run as any callback's failure does. A request is
+  answered once; a second answer, or a defer of an answered one, is `InvalidState`. A
+  deferred request may be answered and destroyed on any thread; once its server or its
+  client is gone, its answer is `Disconnected`. A response above the bound is `TooLarge`,
+  and the client reads `Refused` with the sizes.
+- **Calls.** `hypha_client_call` writes `HYPHA_CALL_SENT`, `HYPHA_CALL_BUSY` (the
+  client's limit of calls in flight, calls the server still holds after they timed out
+  included) or `HYPHA_CALL_TOO_LARGE` to `status`. After `SENT`, `done` runs exactly once
+  with a `HyphaCallResult`, borrowed for the call: the outcome (`HYPHA_CALL_ANSWERED`,
+  `_REFUSED`, `_NO_SERVER`, `_NOT_SENT`, `_SERVER_LOST`, `_TIMEOUT`), `may_have_run`,
+  `safe_to_retry`, the response of an answered call, a description of one line, and the
+  framework times of the call and of its outcome. A call made while the stream has no
+  server is held in one of the client's slots and sent when a server appears (the graph
+  event wakes the run); it ends `NO_SERVER` at its deadline. A call still connected at its
+  deadline probes the server's node, at most once a second per service: a dead node ends
+  it `SERVER_LOST`, a live one `TIMEOUT`. Deadlines are on the scheduling clock: simulated
+  time when the process is on it, else the host monotonic clock.
+- **Blocking clients (FSR-43).** A blocking client's `hypha_client_call` waits on the
+  calling thread, on the client's own response event, and calls `done` before it
+  returns; `hypha_client_wait_for_server` polls the stream for a live server. Both are
+  `InvalidState` on a thread that runs a `WaitSet` dispatch, with a reason that names
+  what to use instead, and `hypha_client_wait_for_server` is `InvalidState` for a client
+  of a `WaitSet`. A blocking client makes one call at a time; concurrent calls queue.
+- **Ports of a cycle.** A cycle's server and clients are created at bind, with the
+  declaration rules above (`desc.blocking` 0), and attached to nothing: the cycle's steps
+  drive them. A server's table may set `per_step` (default 8, at most its slots); a
+  client's `outstanding` defaults to 1. In a step, `hypha_cycle_requests` gives the step
+  its requests on its first call (on simulated time those stamped before the step's time,
+  ordered by stamp, client node name, client port name and sequence; at most `per_step`)
+  and the same ones on a later call; a step that never calls it reads none, and they stay
+  queued. Each `view->request` is valid for the step and answered or deferred as a
+  handler's; the answer leaves after the step, stamped with its time, and so does the
+  answer to a deferred request given during a cycle step on the run's thread. After the
+  step a request it read and left open is refused (`the server's step read the request
+  and did not answer it`). A step that sends nothing (it failed, stopped, or continued
+  with a status) answers every request it read, and every deferred request it answered,
+  as failed (`server step failed`: the client reads `ServerLost`). `hypha_cycle_call`
+  writes `SENT`, `BUSY` (the calls in flight with those staged in this step at the limit)
+  or `TOO_LARGE`; a staged call leaves after the step, stamped with its time, and a step
+  that sends nothing ends it `NOT_SENT`, held for the next step. `hypha_cycle_next_result`
+  gives the outcomes a step holds, in call order, writing `found` 0 after the last: those
+  that came before the step (on simulated time, stamped before its time) and the calls
+  whose deadline is at or before the step's time; an outcome a successful step does not
+  take is dropped after it and counted (`hypha_cycle_unread_results`), and one a step that
+  sends nothing did not take goes to the next step. The cut binds the requests and answers
+  of peers that report progress only; those of a tool or a plain node are read at the first
+  step after they came. Deadlines are counted from the step that staged the call, on its
+  scheduling clock. The three take the step's emission handle; a null one is
+  `InvalidArgument`.
+- **A step test's services.** `hypha_step_services_*` hold the servers and clients of a
+  cycle that was not started, with the test as their peer (`testing::StepHarness`). The
+  step's emission comes from `hypha_step_services_step`, and the step reads, answers and
+  calls through the functions above, by the same rules, as a step on simulated time: the
+  test is a peer that reports progress, so a step at T reads the requests and outcomes
+  stamped before T. The tables are read by the start's reader and refused alike; a port
+  without one keeps the defaults. A fed outcome ends the oldest call in flight
+  (`InvalidState` when none is); a call left open past its deadline ends `TIMEOUT` and
+  frees its slot. Texts and bytes are borrowed for the call; the views a callback gets
+  are borrowed for the callback.
+
 ## Clocks and send times
 
 Two clocks drive the framework, and the split is deliberate:

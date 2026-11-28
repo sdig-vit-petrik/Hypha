@@ -62,6 +62,8 @@ pub(super) struct SupervisionCopy {
 pub(super) struct SupervisionUpdate {
     pub(super) alive: Option<u64>,
     pub(super) ignored: Option<bool>,
+    /// The step cleared the input: applied after it returns.
+    pub(super) clear: bool,
 }
 
 impl SupervisionCopy {
@@ -112,6 +114,76 @@ pub struct EmissionView<'a, 'b> {
     /// True between a reserve and its commit.
     pub(super) open: bool,
     pub(super) error: Option<Error>,
+    /// The cycle's servers and clients, for the step's requests, outcomes and calls.
+    pub(super) services: &'a mut crate::service::CycleServices,
+}
+
+impl<'a, 'b> EmissionView<'a, 'b> {
+    /// The view of a step that has staged nothing yet.
+    pub(super) fn new(
+        emissions: &'a mut Vec<StagedMessage<Option<HyphaLoan>>>,
+        outputs: &'a [CycleOutput],
+        budget: &'a mut EmissionBudget<'b>,
+        services: &'a mut crate::service::CycleServices,
+    ) -> Self {
+        Self { emissions, outputs, budget, open: false, error: None, services }
+    }
+}
+
+/// Run `body` with the emission of a step that has services and no output: a step test's
+/// (`hypha::testing::StepHarness`), whose outputs the SDK keeps itself. The service
+/// functions of the C ABI take it as any step's emission.
+pub fn with_service_emission<R>(
+    services: &mut crate::service::CycleServices,
+    body: impl FnOnce(&mut EmissionView<'_, '_>) -> R,
+) -> R {
+    let mut emissions = Vec::new();
+    let mut budget = EmissionBudget::without_outputs();
+    let mut view = EmissionView::new(&mut emissions, &[], &mut budget, services);
+    body(&mut view)
+}
+
+/// The requests the step reads from its server `server` (`docs/design/native-services.md`
+/// §2): on the first call of the step, those due; the same ones on a later call.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown server.
+pub fn emission_requests<'view>(
+    view: &'view mut EmissionView<'_, '_>,
+    server: u32,
+) -> Result<&'view mut [crate::service::StepRequest], Error> {
+    view.services.requests(server)
+}
+
+/// The next outcome of its client `client` that the step reads; `None` when none is left.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown client.
+pub fn emission_next_result(
+    view: &mut EmissionView<'_, '_>,
+    client: u32,
+) -> Result<Option<crate::service::CallResult>, Error> {
+    view.services.next_result(client)
+}
+
+/// The outcomes of its client `client` that successful steps did not read and dropped.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown client.
+pub fn emission_unread_results(view: &mut EmissionView<'_, '_>, client: u32) -> Result<u64, Error> {
+    view.services.unread_results(client)
+}
+
+/// Stage a call of its client `client` with `request`, sent after the step succeeds.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown client.
+pub fn emission_call(
+    view: &mut EmissionView<'_, '_>,
+    client: u32,
+    request: &[u8],
+) -> Result<crate::service::CallStatus, Error> {
+    view.services.call(client, request)
 }
 
 fn sample_view(sample: &hypha_cycle::HistorySample) -> HyphaCycleSampleView {
@@ -268,6 +340,37 @@ pub fn image_set_ignored(
     Ok(())
 }
 
+/// Asks to clear input `index` (`HYPHA_CYCLE_CLEAR_INPUT`) or the TF input `index`
+/// (`HYPHA_CYCLE_CLEAR_TRANSFORMS`) when the step returns; a repeat in one step asks once.
+/// The rest of the step still reads what it captured.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown kind or index, or a trigger port; `InvalidState`
+/// while the binding is borrowed.
+pub fn image_clear(view: &ImageView<'_>, kind: u32, index: u32) -> Result<(), Error> {
+    match kind {
+        super::types::HYPHA_CYCLE_CLEAR_INPUT => {
+            let capture = usize::try_from(index).ok().and_then(|i| view.captures.get(i));
+            // The pending samples of a trigger port are the steps its schedule plans.
+            if capture.is_none_or(hypha_cycle::BindingCapture::is_trigger) {
+                return Err(Error::InvalidArgument);
+            }
+            let cell = supervision_copy(view, index).ok_or(Error::InvalidArgument)?;
+            cell.try_borrow_mut().map_err(|_| Error::InvalidState)?.update.clear = true;
+            Ok(())
+        }
+        super::types::HYPHA_CYCLE_CLEAR_TRANSFORMS => {
+            let input = usize::try_from(index)
+                .ok()
+                .and_then(|i| view.transforms.get(i))
+                .ok_or(Error::InvalidArgument)?;
+            input.request_clear();
+            Ok(())
+        }
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
 /// The view of input `binding_index` in the step, after any rejection of the step.
 ///
 /// # Errors
@@ -364,5 +467,27 @@ pub(super) fn binding_report(capture: &hypha_cycle::BindingCapture) -> HyphaCycl
         lost_total: capture.counters.overrun_total,
         stale_since_capture: capture.stale_since_capture,
         stale_total: capture.counters.age_rejections_total,
+    }
+}
+
+/// Clear each input the finished step asked to clear, and log it once per clear.
+pub(super) fn apply_clears(
+    cycle_name: &str,
+    inputs: &[std::sync::Arc<super::source::CycleInputSource>],
+    port_names: &[String],
+    runtime: &mut hypha_cycle::CycleRuntime,
+    copies: &mut [std::cell::RefCell<SupervisionCopy>],
+) {
+    for (index, copy) in copies.iter_mut().enumerate() {
+        if !std::mem::take(&mut copy.get_mut().update.clear) {
+            continue;
+        }
+        let Ok(dropped) = runtime.clear_binding(index) else {
+            continue;
+        };
+        let topic = inputs.get(index).map_or("", |source| source.topic.as_str());
+        let port = port_names.get(index).map_or("", String::as_str);
+        let subject = super::tick::input_subject(cycle_name, port, topic);
+        log::info!(target: "hypha", "hypha: {subject} cleared: {dropped} pending sample(s) dropped");
     }
 }

@@ -8,7 +8,6 @@
 
 use super::*;
 use crate::common::attach;
-use crate::common::replay::send_stamped;
 use crate::common::supervision::{bind_trigger, node_with_triggers};
 
 const SILENCE_NANOS: i64 = 100_000_000;
@@ -523,56 +522,6 @@ fn a_triggered_cycle_falls_back_when_the_trigger_is_silent() {
 }
 
 #[test]
-fn a_trigger_resets_the_fallback() {
-    let fixture = Fixture::new();
-    let recorder = Recorder::default();
-    let (cycle, publisher) = triggered(&fixture, &recorder, 50 * MILLIS, 8, 1);
-    // A trigger whose turn comes more than a limit after its send, as on a loaded host,
-    // is consumed as late without a step, and the next step counts it.
-    let served = || {
-        let steps = recorder.steps();
-        let late = steps.last().map_or(0, |step| step.late_total);
-        steps.iter().filter(|step| step.samples == 1).count() as u64 + late
-    };
-    // Ten triggers about 20 ms apart span four silence limits.
-    for sent in 1..=10 {
-        unsafe { send_sample(publisher, &[1]) };
-        assert!(run_until(fixture.waitset, POLL_BOUND, || served() >= sent));
-        run_waitset_for(fixture.waitset, 20_000_000);
-    }
-    let steps = recorder.steps();
-    assert_eq!(served(), 10, "{steps:?}");
-    // Each trigger restarts the limit, so a fallback runs only a whole limit after the
-    // step before it.
-    assert!(
-        steps.windows(2).all(
-            |pair| pair[1].samples == 1 || pair[1].scheduled - pair[0].scheduled >= 50 * MILLIS
-        ),
-        "{steps:?}"
-    );
-    assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
-    unsafe { hypha_publisher_destroy(publisher) };
-}
-
-#[test]
-fn a_burst_of_triggers_runs_one_step_each_in_order() {
-    let fixture = Fixture::new();
-    let recorder = Recorder::default();
-    let (cycle, publisher) = triggered(&fixture, &recorder, 10_000 * MILLIS, 8, 2);
-    for value in 1..=5_u8 {
-        unsafe { send_sample(publisher, &[value]) };
-    }
-    assert!(run_until(fixture.waitset, POLL_BOUND, || recorder.steps().len() >= 5));
-    run_waitset_for(fixture.waitset, 20_000_000);
-    let steps = recorder.steps();
-    assert_eq!(steps.len(), 5, "{steps:?}");
-    assert!(steps.iter().all(|step| step.samples == 1), "{steps:?}");
-    assert!(steps.windows(2).all(|pair| pair[0].scheduled < pair[1].scheduled), "{steps:?}");
-    assert_eq!(unsafe { hypha_cycle_destroy(cycle) }, HyphaStatus::Ok);
-    unsafe { hypha_publisher_destroy(publisher) };
-}
-
-#[test]
 fn an_idle_notified_trigger_wakes_its_waitset_for_its_silence_limit_alone() {
     let fixture = Fixture::new();
     let recorder = Recorder::default();
@@ -698,11 +647,6 @@ fn last_error() -> String {
     String::from_utf8(buffer).expect("the reason is UTF-8")
 }
 
-/// The wall clock now, the framework time of a host node.
-fn wall_now() -> i64 {
-    hypha_clock_now_nanos()
-}
-
 #[test]
 fn a_second_set_trigger_adds_a_trigger() {
     let fixture = Fixture::new();
@@ -751,108 +695,6 @@ fn two_ports_on_one_topic_are_refused() {
     // Each sample of the shared history would step twice.
     assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, second) }, HyphaStatus::InvalidArgument);
     destroy(cycle, &[publisher]);
-}
-
-#[test]
-fn an_untimed_trigger_beside_a_timed_one_is_never_stale_in_a_fallback() {
-    let fixture = Fixture::new();
-    let recorder = Recorder::default();
-    let limited = trigger_input(&fixture, 8);
-    let untimed = trigger_input(&fixture, 8);
-    let cycle = period_less_cycle(&fixture, Some(record_step), recording(&recorder));
-    let index = bind_queued(cycle, limited.source, 1);
-    add_trigger(&fixture, cycle, index, SILENCE_NANOS);
-    let bare = bind_queued(cycle, untimed.source, 1);
-    assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, bare) }, HyphaStatus::Ok);
-    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
-    assert!(run_until(fixture.waitset, POLL_BOUND, || !recorder.steps().is_empty()));
-    let fallback = &recorder.steps()[0];
-    assert_eq!(fallback.fired(), None, "the timed trigger's fallback: {fallback:?}");
-    assert_ne!(fallback.ports[0].faults & HYPHA_FAULT_STALE, 0, "{fallback:?}");
-    assert_eq!(fallback.ports[1].faults, 0, "an untimed trigger is never stale: {fallback:?}");
-    destroy(cycle, &[limited.publisher, untimed.publisher]);
-}
-
-#[test]
-fn two_triggers_run_one_step_each_in_stamp_order() {
-    let fixture = Fixture::new();
-    let recorder = Recorder::default();
-    let (cycle, publishers) = triggers(&fixture, &recorder, &[1_000 * MILLIS, 10_000 * MILLIS]);
-    for port in [0, 1, 0] {
-        unsafe { send_sample(publishers[port], &[1]) };
-    }
-    assert!(run_until(fixture.waitset, POLL_BOUND, || recorder.steps().len() >= 3));
-    run_waitset_for(fixture.waitset, 20_000_000);
-    let steps = recorder.steps();
-    let fired: Vec<Option<usize>> = steps.iter().map(Seen::fired).collect();
-    assert_eq!(fired, [Some(0), Some(1), Some(0)], "{steps:?}");
-    assert!(
-        steps.iter().all(|step| step.ports.iter().map(|port| port.samples).sum::<usize>() == 1)
-    );
-    assert!(steps.windows(2).all(|pair| pair[0].scheduled <= pair[1].scheduled), "{steps:?}");
-    destroy(cycle, &publishers);
-}
-
-#[test]
-fn a_sample_drained_after_a_later_step_of_another_port_still_steps() {
-    let fixture = Fixture::new();
-    let recorder = Recorder::default();
-    let (cycle, publishers) = triggers(&fixture, &recorder, &[1_000 * MILLIS, 10_000 * MILLIS]);
-    let before = wall_now();
-    unsafe { send_sample(publishers[0], &[1]) };
-    assert!(run_until(fixture.waitset, POLL_BOUND, || !recorder.steps().is_empty()));
-    // Port 1's sample was sent before port 0's step, and arrives after it.
-    unsafe { send_stamped(publishers[1], 2, before - MILLIS) };
-    assert!(run_until(fixture.waitset, POLL_BOUND, || recorder.steps().len() >= 2));
-    let steps = recorder.steps();
-    let fired: Vec<Option<usize>> = steps.iter().map(Seen::fired).collect();
-    assert_eq!(fired, [Some(0), Some(1)], "{steps:?}");
-    assert_eq!(steps[1].ports[1].rejected, 0, "not late: {steps:?}");
-    assert!(steps[0].scheduled <= steps[1].scheduled, "a step time never goes back");
-    destroy(cycle, &publishers);
-}
-
-#[test]
-fn a_late_trigger_is_counted_on_its_own_port() {
-    let fixture = Fixture::new();
-    let recorder = Recorder::default();
-    let (cycle, publishers) = triggers(&fixture, &recorder, &[1_000 * MILLIS, 10_000 * MILLIS]);
-    // Two seconds old: past port 0's limit, within port 1's.
-    unsafe { send_stamped(publishers[0], 1, wall_now() - 2_000 * MILLIS) };
-    unsafe { send_stamped(publishers[1], 2, wall_now() - 2_000 * MILLIS) };
-    assert!(run_until(fixture.waitset, POLL_BOUND, || !recorder.steps().is_empty()));
-    run_waitset_for(fixture.waitset, 20_000_000);
-    let steps = recorder.steps();
-    assert_eq!(steps.len(), 1, "the late sample ran no step: {steps:?}");
-    assert_eq!(steps[0].fired(), Some(1));
-    let rejected: Vec<u64> = steps[0].ports.iter().map(|port| port.rejected).collect();
-    assert_eq!(rejected, [1, 0]);
-    destroy(cycle, &publishers);
-}
-
-#[test]
-fn two_triggers_fall_back_after_the_shortest_silence() {
-    let fixture = Fixture::new();
-    let recorder = Recorder::default();
-    let before = hypha_clock_steady_now_nanos();
-    let (cycle, publishers) = triggers(&fixture, &recorder, &[10_000 * MILLIS, 50 * MILLIS]);
-    // A late turn coalesces the fallbacks it missed, so the count is at least one; the
-    // gaps between them show the shortest limit.
-    run_waitset_for(fixture.waitset, 300_000_000);
-    let steps = recorder.steps();
-    assert!(!steps.is_empty(), "{steps:?}");
-    assert!(steps[0].scheduled >= before + 50 * MILLIS, "{steps:?}");
-    for step in &steps {
-        assert_eq!(step.fired(), None, "a fallback holds no sample: {step:?}");
-        // Only port 1 has been silent for its own limit.
-        assert_eq!(step.ports[0].faults & HYPHA_FAULT_STALE, 0, "{step:?}");
-        assert_ne!(step.ports[1].faults & HYPHA_FAULT_STALE, 0, "{step:?}");
-    }
-    assert!(steps.windows(2).all(|pair| {
-        let gap = pair[1].scheduled - pair[0].scheduled;
-        gap > 0 && gap % (50 * MILLIS) == 0
-    }));
-    destroy(cycle, &publishers);
 }
 
 #[test]

@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 14
+#define HYPHA_ABI_REVISION 19
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -35,6 +35,12 @@
 // broken, not late. It replaces `UNKNOWN_FRAME`, `NOT_CONNECTED` and `AFTER_BUFFER`
 // while that frame's newest transform is a refused one.
 #define HYPHA_TF_REFUSED 6
+
+// `hypha_cycle_image_clear`: `index` names an input binding.
+#define HYPHA_CYCLE_CLEAR_INPUT 0
+
+// `hypha_cycle_image_clear`: `index` names a TF input (`hypha_cycle_bind_transforms`).
+#define HYPHA_CYCLE_CLEAR_TRANSFORMS 1
 
 // Freshness verdict: no sample admitted since the binding was created.
 #define HYPHA_CYCLE_VERDICT_NEVER_ARRIVED 0
@@ -126,6 +132,57 @@
 
 // A periodic registration on framework time, owned by the `WaitSet`.
 #define HYPHA_ATTACH_TIMER 2
+
+// `hypha_client_call` sent the request, or holds it until a server appears: one outcome
+// follows.
+#define HYPHA_CALL_SENT 0
+
+// `hypha_client_call` refused: the client has its limit of calls in flight.
+#define HYPHA_CALL_BUSY 1
+
+// `hypha_client_call` refused: the request is above the service's bound.
+#define HYPHA_CALL_TOO_LARGE 2
+
+// The outcome of a call: the server answered.
+#define HYPHA_CALL_ANSWERED 0
+
+// The server refused, or left the request unanswered.
+#define HYPHA_CALL_REFUSED 1
+
+// No live server of the stream until the timeout.
+#define HYPHA_CALL_NO_SERVER 2
+
+// Nothing was sent: the transport refused the request.
+#define HYPHA_CALL_NOT_SENT 3
+
+// The server crashed or left, failed while it handled the call, or its answer did not
+// verify.
+#define HYPHA_CALL_SERVER_LOST 4
+
+// No answer within the timeout.
+#define HYPHA_CALL_TIMEOUT 5
+
+// Answer a request with a response: `bytes` is the encoded response.
+#define HYPHA_ANSWER_REPLY 0
+
+// Refuse a request: `bytes` is the reason, UTF-8, possibly empty.
+#define HYPHA_ANSWER_REFUSE 1
+
+// A delivered request no step has read yet.
+#define HYPHA_STEP_REQUEST_QUEUED 0
+
+// A step read the request and deferred it; it has no answer yet.
+#define HYPHA_STEP_REQUEST_DEFERRED 1
+
+// Answered with a response: the bytes are the encoded response.
+#define HYPHA_STEP_REQUEST_REPLIED 2
+
+// Refused (`refuse()`, left unanswered by the step that read it, a response above the
+// bound): the bytes are the reason.
+#define HYPHA_STEP_REQUEST_REFUSED 3
+
+// The step that held it failed; its client reads `ServerLost`: the bytes are the reason.
+#define HYPHA_STEP_REQUEST_FAILED 4
 
 // What a call reports back.
 //
@@ -317,6 +374,10 @@ typedef uint32_t HyphaNumberConstraint;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
+// A client, owned by its caller. Dropping it drops the outcomes of its calls in flight
+// without calling them: their callbacks belong to an owner that is gone.
+typedef struct HyphaClient HyphaClient;
+
 // A loaded parameter configuration, independent of any bus session. Opaque to the caller.
 typedef struct HyphaConfig HyphaConfig;
 
@@ -360,6 +421,18 @@ typedef struct HyphaNode HyphaNode;
 
 // A sending endpoint. Opaque to the caller.
 typedef struct HyphaPublisher HyphaPublisher;
+
+// A request of a server: borrowed by a handler for its call or by a cycle step, or
+// deferred and owned by its caller, who may answer it from any thread. Dropped open, it
+// refuses the request.
+typedef struct HyphaRequest HyphaRequest;
+
+// A server, owned by its caller. Dropping it ends every request it holds: their clients
+// read `ServerLost`, and a deferred handle's later answer is refused with `Disconnected`.
+typedef struct HyphaServer HyphaServer;
+
+// The servers and clients of a cycle under a step test. Opaque to C callers.
+typedef struct HyphaStepServices HyphaStepServices;
 
 // A receiving endpoint. Opaque to the caller.
 //
@@ -454,6 +527,8 @@ typedef struct HyphaCycleBindingHealth {
   uint64_t latest_unavailable_iterations;
   // Transitions from usable to stale latest value.
   uint64_t usable_to_stale_transitions;
+  // Cumulative pending samples that a step's clear dropped (`hypha_cycle_image_clear`).
+  uint64_t cleared_total;
 } HyphaCycleBindingHealth;
 
 // The held sample facts of one input binding: the newest usable sample it captured.
@@ -779,6 +854,154 @@ typedef struct HyphaPublisherOptions {
   // The service policy this publisher declares, and its payload bound.
   struct HyphaQos qos;
 } HyphaPublisherOptions;
+
+// The limits of a service. A `name_len` of 0 selects `defaultService` and every other
+// field must then be 0.
+typedef struct HyphaServicePolicy {
+  // The policy's name, `name_len` bytes of UTF-8; not NUL-terminated.
+  const char *name;
+  // Bytes of `name`.
+  size_t name_len;
+  // Clients the service admits, beyond the three for tools.
+  uint32_t clients;
+  // Calls one client may have in flight.
+  uint32_t outstanding;
+  // The largest request payload, in bytes.
+  uint64_t request_bytes;
+  // The largest response payload, in bytes.
+  uint64_t response_bytes;
+  // A call's timeout when its client names none.
+  uint64_t timeout_nanos;
+} HyphaServicePolicy;
+
+// What a server or a client is made of. Each text is `*_len` bytes of UTF-8, not
+// NUL-terminated, borrowed for the call.
+typedef struct HyphaServiceDesc {
+  // The port, whose `[ports.servers.<port>]` or `[ports.clients.<port>]` table names the
+  // service; or, with `literal` 1, the service: absolute, relative or `~/`.
+  const char *name;
+  // Bytes of `name`.
+  size_t name_len;
+  // 1 when `name` is the service, 0 when it is a port.
+  uint8_t literal;
+  // The `.srv` type, as `std_srvs/SetBool`.
+  const char *type_name;
+  // Bytes of `type_name`.
+  size_t type_name_len;
+  // The `.srv` MD5: 32 lower-case hexadecimal digits.
+  const char *md5;
+  // Bytes of `md5`: 32.
+  size_t md5_len;
+  // The limits, which both ends of the service declare alike.
+  struct HyphaServicePolicy policy;
+  // A client's timeout; 0 for the policy's. A client table's `timeout_ms` wins over both.
+  uint64_t timeout_nanos;
+  // A client: 1 for a blocking client, attached to nothing, whose call waits on the
+  // calling thread. 0 for a client of the node's `WaitSet`. A server: 0.
+  uint8_t blocking;
+  // A server: the definition of the request half (`<type>Request`) with its
+  // dependencies, registered in the schema store so tools can encode a request. Null
+  // with length 0 for none. A client: unused.
+  const char *request_definition;
+  // Bytes of `request_definition`.
+  size_t request_definition_len;
+  // A server: the definition of the response half; null with length 0 for none.
+  const char *response_definition;
+  // Bytes of `response_definition`.
+  size_t response_definition_len;
+} HyphaServiceDesc;
+
+// The one outcome of a call, borrowed for the outcome callback.
+typedef struct HyphaCallResult {
+  // One of the `HYPHA_CALL_ANSWERED` ... `HYPHA_CALL_TIMEOUT` outcomes.
+  uint32_t outcome;
+  // 1 when the server may have run the request: answered, server lost, timeout.
+  uint8_t may_have_run;
+  // 1 when a blind retry is safe: refused, no server, not sent.
+  uint8_t safe_to_retry;
+  // The encoded response of an answered call; null and 0 otherwise.
+  const uint8_t *response;
+  // Bytes of `response`.
+  size_t response_len;
+  // What became of the call, as one line: `refused: not armed`,
+  // `timeout after 1 s (policy defaultService)`.
+  const char *description;
+  // Bytes of `description`.
+  size_t description_len;
+  // The client's framework time of the call, in nanoseconds.
+  int64_t sent_nanos;
+  // The client's framework time of the outcome, in nanoseconds.
+  int64_t done_nanos;
+} HyphaCallResult;
+
+// Called once with the outcome of a call. For a client of the node's `WaitSet` it runs on
+// that `WaitSet`'s thread, and a failing result fails the run; for a blocking client it
+// runs on the calling thread before `hypha_client_call` returns, and its result is ignored.
+//
+// # Safety
+// Must not unwind. `result` is valid only for the call.
+typedef struct HyphaCallbackResult (*HyphaCallDoneCallback)(const struct HyphaCallResult *result,
+                                                            void *context);
+
+// What `hypha_client_status` reads.
+typedef struct HyphaClientStatus {
+  // 1 when a live server of the client's stream exists now.
+  uint8_t ready;
+  // Calls whose outcome is still to come.
+  uint32_t pending;
+} HyphaClientStatus;
+
+// One request, borrowed for the handler's call.
+typedef struct HyphaRequestView {
+  // Answer it with `hypha_request_answer`, or take it over with `hypha_request_defer`;
+  // left alone, it is refused when the handler returns. Valid during the call only.
+  struct HyphaRequest *request;
+  // The encoded request.
+  const uint8_t *payload;
+  // Bytes of `payload`.
+  size_t payload_len;
+  // The client's node name; empty when it cannot be read.
+  const char *client_node;
+  // Bytes of `client_node`.
+  size_t client_node_len;
+} HyphaRequestView;
+
+// Called for each request of a server, on the thread that runs the node's `WaitSet`.
+// A failing result answers an open request as failed (the client reads `ServerLost`) and
+// fails the run.
+//
+// # Safety
+// Must not unwind. `view` is valid only for the call.
+typedef struct HyphaCallbackResult (*HyphaServeCallback)(const struct HyphaRequestView *view,
+                                                         void *context);
+
+// One step of a test: run it with `emission` and `context`; return 1 when it succeeded,
+// 0 when it failed (it threw, or latched a failure).
+typedef uint8_t (*HyphaStepServicesStep)(struct HyphaCycleEmission *emission,
+                                         void *context);
+
+// What became of a delivered request, borrowed for the callback.
+typedef struct HyphaStepRequestState {
+  // One of the `HYPHA_STEP_REQUEST_*` states.
+  uint32_t state;
+  // The response or the reason, as `state` says; null and 0 for none.
+  const uint8_t *bytes;
+  // Bytes of `bytes`.
+  size_t bytes_len;
+  // The framework time the answer carries: that of the step it left after, or of the
+  // answer of a deferred request given outside a step. 0 without an answer.
+  int64_t answered_nanos;
+} HyphaStepRequestState;
+
+// Receives what became of one request, with the caller's context.
+typedef void (*HyphaStepRequestStateCallback)(const struct HyphaStepRequestState *state,
+                                              void *context);
+
+// Receives one call a client sent: its encoded request, `len` bytes, and its stamp.
+typedef void (*HyphaStepSentCallback)(const uint8_t *request,
+                                      size_t len,
+                                      int64_t sent_nanos,
+                                      void *context);
 
 // Endpoint and resource options of a subscriber, passed to `hypha_subscribe_typed`.
 //
@@ -1166,6 +1389,20 @@ HyphaStatus hypha_cycle_image_alive(const struct HyphaCycleImage *image,
 HyphaStatus hypha_cycle_image_set_ignored(const struct HyphaCycleImage *image,
                                           uint32_t binding_index,
                                           uint8_t ignore);
+
+// Clear, when the step returns, the input binding `index` (`kind` is
+// `HYPHA_CYCLE_CLEAR_INPUT`) or the TF input `index` (`HYPHA_CYCLE_CLEAR_TRANSFORMS`).
+// An input forgets its held sample and the pending samples its capture admitted, counted
+// in `cleared_total`; a TF input forgets its dynamic transforms and keeps the static ones.
+// The rest of the step still reads what it captured; a repeat in one step clears once.
+// Valid only during the step callback. `InvalidArgument` for a null `image`, an unknown
+// `kind` or index, or a trigger port, whose pending samples are the cycle's steps.
+//
+// # Safety
+// `image` must be a callback-live pointer.
+HyphaStatus hypha_cycle_image_clear(const struct HyphaCycleImage *image,
+                                    uint32_t kind,
+                                    uint32_t index);
 
 // Fill `out` with the health, held sample and supervision of binding `binding_index`
 // at this step. `InvalidArgument` for a null pointer or an index past the last binding;
@@ -1779,6 +2016,341 @@ HyphaStatus hypha_schema_lookup(const struct HyphaNode *node,
                                 char *definition,
                                 size_t definition_capacity,
                                 size_t *definition_len);
+
+// Create the client `desc` describes. A server need not exist. With `blocking` 0 it is
+// attached to the node's `WaitSet`, whose run delivers its outcomes; create it before
+// the run. With `blocking` 1 it is attached to nothing.
+//
+// `InvalidArgument`, `InvalidTopic`, `QosMismatch`, `InvalidState`: as for
+// `hypha_service_server_create`; `ResourceLimit`: the stream's clients of this kind are
+// at their limit (a tool node takes one of three slots of its own).
+//
+// # Safety
+// `node` is live; `desc` is readable with its texts; `out` is writable.
+HyphaStatus hypha_service_client_create(struct HyphaNode *node,
+                                        const struct HyphaServiceDesc *desc,
+                                        struct HyphaClient **out);
+
+// Destroy a client. The outcomes of its calls in flight are dropped uncalled, and their
+// contexts released. Null does nothing.
+//
+// # Safety
+// `client` is null or comes from `hypha_service_client_create`, used no more.
+void hypha_service_client_destroy(struct HyphaClient *client);
+
+// Call with the encoded `request`. `status` receives `HYPHA_CALL_SENT`: `done` runs once
+// with the outcome, on the `WaitSet` thread at a later turn, or, for a blocking client, on
+// this thread before the call returns. Or `HYPHA_CALL_BUSY` (the client has its limit of
+// calls in flight) or `HYPHA_CALL_TOO_LARGE` (the request is above the bound): nothing is
+// sent and `done` is not called. `release` runs once with `context` in every case.
+//
+// `InvalidState`: a blocking client called on a thread that runs a `WaitSet` dispatch
+// (that thread would deliver the answer it waits for; `hypha_last_error` says what to use
+// instead). `InvalidArgument`: a null argument.
+//
+// # Safety
+// `client` is live; `request` points to `len` readable bytes (null when `len` is 0);
+// `status` is writable.
+HyphaStatus hypha_client_call(const struct HyphaClient *client,
+                              const uint8_t *request,
+                              size_t len,
+                              HyphaCallDoneCallback done,
+                              void *context,
+                              HyphaContextRelease release,
+                              uint32_t *status);
+
+// Read whether a live server of the client's stream exists now, and how many of its calls
+// are pending. Any thread may call it.
+//
+// # Safety
+// `client` is live; `out` is writable.
+HyphaStatus hypha_client_status(const struct HyphaClient *client,
+                                struct HyphaClientStatus *out);
+
+// Wait up to `timeout_nanos` of host time for a live server of a blocking client's
+// stream; `ready` receives 1 when one exists. `InvalidState`: a client of a `WaitSet`, or
+// a thread that runs a dispatch.
+//
+// # Safety
+// `client` is live; `ready` is writable.
+HyphaStatus hypha_client_wait_for_server(const struct HyphaClient *client,
+                                         uint64_t timeout_nanos,
+                                         uint8_t *ready);
+
+// Bind the server `desc` describes to an uncommitted cycle, as a `Requests` port: the
+// cycle's steps read its requests with `hypha_cycle_requests` and answer them, and each
+// answer leaves after the step (`docs/design/native-services.md` §2). `out_index`
+// receives its index among the cycle's servers, from zero. Its table
+// (`[ports.servers.<port>]`) may set `per_step`, the requests one step takes (default 8).
+// The cycle owns the server: destroying the cycle ends every request it holds.
+//
+// The errors of `hypha_service_server_create`, and `InvalidState` for a committed cycle
+// or a running `WaitSet`. `desc->blocking` must be 0.
+//
+// # Safety
+// `cycle` is a live handle; `desc` is readable with its texts; `out_index` is writable.
+HyphaStatus hypha_cycle_bind_server(struct HyphaCycle *cycle,
+                                    const struct HyphaServiceDesc *desc,
+                                    uint32_t *out_index);
+
+// Bind a client of the service `desc` describes to an uncommitted cycle, as a `Calls`
+// port: a step stages calls with `hypha_cycle_call`, sent after the step succeeds, and a
+// later step reads their outcomes with `hypha_cycle_next_result`
+// (`docs/design/native-services.md` §3). `out_index` receives its index among the
+// cycle's clients, from zero. Its calls in flight are at most the table's `outstanding`,
+// else one. A server need not exist.
+//
+// The errors of `hypha_service_client_create`, and `InvalidState` for a committed cycle
+// or a running `WaitSet`. `desc->blocking` must be 0.
+//
+// # Safety
+// `cycle` is a live handle; `desc` is readable with its texts; `out_index` is writable.
+HyphaStatus hypha_cycle_bind_client(struct HyphaCycle *cycle,
+                                    const struct HyphaServiceDesc *desc,
+                                    uint32_t *out_index);
+
+// Read the requests of the step's server `server`: `each` runs once per request, in
+// order, with `context`; its result is ignored. On the first call of a step these are the
+// requests due (on simulated time, those stamped before the step's time, in the order of
+// stamp, client node, client port and sequence), at most the port's `per_step`; a later
+// call in the same step gives the same ones. Each request is answered with
+// `hypha_request_answer` or deferred with `hypha_request_defer` during the step; the
+// answer leaves after the step. One left alone is refused after the step; a failed step
+// answers every request it read as failed (the client reads `ServerLost`). A step that
+// never calls this reads none, and its requests stay queued.
+//
+// `InvalidArgument`: a null argument or an unknown server.
+//
+// # Safety
+// `emission` is the step's emission handle, during the step; `view->request` is valid for
+// the step.
+HyphaStatus hypha_cycle_requests(struct HyphaCycleEmission *emission,
+                                 uint32_t server,
+                                 HyphaServeCallback each,
+                                 void *context);
+
+// Read the next outcome of the step's client `client`, in call order: `found` receives 1
+// and `done` runs with it and `context` (its result ignored), or 0 when the step has read
+// every outcome it holds. A step holds the outcomes that came before it (on simulated
+// time, stamped before its time) and those of calls that timed out by its time; one it
+// does not read is dropped after it, and counted.
+//
+// `InvalidArgument`: a null argument or an unknown client.
+//
+// # Safety
+// `emission` is the step's emission handle, during the step; `found` is writable.
+HyphaStatus hypha_cycle_next_result(struct HyphaCycleEmission *emission,
+                                    uint32_t client,
+                                    HyphaCallDoneCallback done,
+                                    void *context,
+                                    uint8_t *found);
+
+// Stage a call of the step's client `client` with the encoded `request`: `status`
+// receives `HYPHA_CALL_SENT`, and the call leaves after the step succeeds, stamped with
+// its time (a failed step ends it `NotSent`, read by the next step); or
+// `HYPHA_CALL_BUSY` (the client has its limit of calls in flight, those staged in this
+// step included) or `HYPHA_CALL_TOO_LARGE`: nothing is sent and no outcome follows.
+//
+// `InvalidArgument`: a null argument or an unknown client.
+//
+// # Safety
+// `emission` is the step's emission handle, during the step; `request` points to `len`
+// readable bytes (null when `len` is 0); `status` is writable.
+HyphaStatus hypha_cycle_call(struct HyphaCycleEmission *emission,
+                             uint32_t client,
+                             const uint8_t *request,
+                             size_t len,
+                             uint32_t *status);
+
+// Read how many outcomes of the step's client `client` successful steps did not read and
+// dropped, since the client was bound: `out` receives the count, which wraps. A failed
+// step drops none: what it did not read goes to the next step.
+//
+// `InvalidArgument`: a null argument or an unknown client.
+//
+// # Safety
+// `emission` is the step's emission handle, during the step; `out` is writable.
+HyphaStatus hypha_cycle_unread_results(struct HyphaCycleEmission *emission,
+                                       uint32_t client,
+                                       uint64_t *out);
+
+// Create the server `desc` describes and attach it to the node's `WaitSet`, whose run
+// calls `serve` with `context` for each request. Create it before the run. `release`
+// runs once with `context`: when the server is destroyed, or at once on a refusal.
+//
+// `InvalidArgument`: a null argument, text that is not UTF-8, a policy with a name of
+// length 0 and a field that is not 0, `blocking` not 0, or a port with no table (the
+// reason names the stanza to add); `InvalidTopic`: an invalid service name;
+// `ResourceLimit`: a live node serves the name (the reason names it); `QosMismatch`: the
+// service exists with another policy; `InvalidState`: during a run. `hypha_last_error`
+// gives the reason of each.
+//
+// # Safety
+// `node` is live; `desc` is readable with its texts; `out` is writable.
+HyphaStatus hypha_service_server_create(struct HyphaNode *node,
+                                        const struct HyphaServiceDesc *desc,
+                                        HyphaServeCallback serve,
+                                        void *context,
+                                        HyphaContextRelease release,
+                                        struct HyphaServer **out);
+
+// Destroy a server: every request it holds ends (their clients read `ServerLost`, and a
+// deferred request's later answer is `Disconnected`), and its handler's context is
+// released. Null does nothing.
+//
+// # Safety
+// `server` is null or comes from `hypha_service_server_create`, used no more.
+void hypha_service_server_destroy(struct HyphaServer *server);
+
+// Answer `request`: `kind` `HYPHA_ANSWER_REPLY` with the encoded response in `bytes`, or
+// `HYPHA_ANSWER_REFUSE` with the reason. A request is answered once, from the handler or,
+// deferred, from any thread; afterwards it is answered whatever the status.
+//
+// `InvalidState`: answered or deferred already; `TooLarge`: a response above the bound
+// (the client is refused with the sizes); `Disconnected`: the client or the server is
+// gone; `InvalidArgument`: a null argument, another kind, a reason that is not UTF-8.
+//
+// # Safety
+// `request` is the handler's request during its call, or a live deferred one; `bytes`
+// points to `len` readable bytes (it may be null when `len` is 0).
+HyphaStatus hypha_request_answer(struct HyphaRequest *request,
+                                 uint32_t kind,
+                                 const uint8_t *bytes,
+                                 size_t len);
+
+// Take the handler's `request` over, to answer later from any thread: `out` receives the
+// deferred request, which `hypha_request_destroy` releases. The handler's request is then
+// answered. `InvalidState`: answered, deferred already, or itself a deferred request.
+//
+// # Safety
+// `request` is the handler's request during its call; `out` is writable.
+HyphaStatus hypha_request_defer(struct HyphaRequest *request,
+                                struct HyphaRequest **out);
+
+// Release a deferred request. One still unanswered is refused, and counted and logged
+// once per server. Any thread may call it. Null does nothing.
+//
+// # Safety
+// `request` is null or comes from `hypha_request_defer`, used no more.
+void hypha_request_destroy(struct HyphaRequest *request);
+
+// Create the services of the cycle named `cycle_name` (`cycle_name_len` bytes of UTF-8)
+// for a step test, with no node and no bus. `config` is null or a live configuration that
+// holds the ports' tables (`[ports.servers.<port>]`, `[ports.clients.<port>]`), read when
+// a port is bound as a start reads them; a port without a table keeps the defaults.
+//
+// `*out` (null on a refusal) is owned by the caller, released with
+// `hypha_step_services_destroy`. `InvalidArgument`: null `out`, a name that is not UTF-8.
+//
+// # Safety
+// `config` is null or live for the call. `cycle_name` holds `cycle_name_len` bytes.
+// `out` is null or writable.
+HyphaStatus hypha_step_services_create(const struct HyphaConfig *config,
+                                       const char *cycle_name,
+                                       size_t cycle_name_len,
+                                       struct HyphaStepServices **out);
+
+// Destroy `services`: each request it holds ends, and a deferred one answered later is
+// refused with `Disconnected`. Null is accepted.
+//
+// # Safety
+// `services` is null or a live handle that no thread uses during the call.
+HyphaStatus hypha_step_services_destroy(struct HyphaStepServices *services);
+
+// Bind the server (`client` 0) or the client (`client` 1) that `desc` describes, as
+// `hypha_cycle_bind_server` and `hypha_cycle_bind_client` bind one to a cycle:
+// `out_index` receives its index among the servers or the clients, from zero, which the
+// step's service functions take. Its table may set `per_step`, or `timeout_ms` and
+// `outstanding`, refused as a start refuses them.
+//
+// `InvalidArgument`: a null argument, a malformed declaration or table.
+//
+// # Safety
+// `services` is live; `desc` is readable with its texts; `out_index` is writable.
+HyphaStatus hypha_step_services_bind(struct HyphaStepServices *services,
+                                     const struct HyphaServiceDesc *desc,
+                                     uint8_t client,
+                                     uint32_t *out_index);
+
+// Deliver the encoded `request` (`len` bytes) from the client node `client_node` to server
+// `server`, sent at `sent_nanos` when `stamped` is 1, or just before the next step when it
+// is 0. A step at T reads the requests sent before T, in step order, at most its
+// `per_step`. `out_id` receives the request's id, for `hypha_step_services_request`.
+//
+// `InvalidArgument`: a null argument, an unknown server, a name that is not UTF-8.
+//
+// # Safety
+// `services` is live; `request` holds `len` bytes (null when `len` is 0); `client_node`
+// holds `client_node_len` bytes; `out_id` is writable.
+HyphaStatus hypha_step_services_deliver(struct HyphaStepServices *services,
+                                        uint32_t server,
+                                        const uint8_t *request,
+                                        size_t len,
+                                        const char *client_node,
+                                        size_t client_node_len,
+                                        int64_t sent_nanos,
+                                        uint8_t stamped,
+                                        uint64_t *out_id);
+
+// End the oldest call in flight of client `client` with `outcome` (`HYPHA_CALL_ANSWERED`
+// ... `HYPHA_CALL_TIMEOUT`): `bytes` is the encoded response of an answered call, else the
+// reason. Its answer is stamped `sent_nanos` when `stamped` is 1, read by the next step
+// whose time is after it; with `stamped` 0 the next step reads it.
+//
+// `InvalidArgument`: a null argument, an unknown client or outcome, a reason that is not
+// UTF-8. `InvalidState`: the client has no call in flight.
+//
+// # Safety
+// `services` is live; `bytes` holds `len` bytes (null when `len` is 0).
+HyphaStatus hypha_step_services_feed(struct HyphaStepServices *services,
+                                     uint32_t client,
+                                     uint32_t outcome,
+                                     const uint8_t *bytes,
+                                     size_t len,
+                                     int64_t sent_nanos,
+                                     uint8_t stamped);
+
+// Run one step at framework time `now_nanos`: `step` runs once with the step's emission,
+// which the service functions of a cycle step take, and `context`. Before it, the step's
+// requests and outcomes are collected as a started cycle on simulated time collects them;
+// after it, a successful step's answers and calls leave (the calls for
+// `hypha_step_services_calls`), and a failed step answers what it read as failed and ends
+// its calls `NotSent`. The emission takes no output message.
+//
+// `InvalidArgument`: a null argument.
+//
+// # Safety
+// `services` is live and used by no other call during the step.
+HyphaStatus hypha_step_services_step(struct HyphaStepServices *services,
+                                     int64_t now_nanos,
+                                     HyphaStepServicesStep step,
+                                     void *context);
+
+// Read what became of request `id` of server `server`: `done` runs once with it and
+// `context`, its bytes borrowed for the call.
+//
+// `InvalidArgument`: a null argument, an unknown server or request.
+//
+// # Safety
+// `services` is live.
+HyphaStatus hypha_step_services_request(const struct HyphaStepServices *services,
+                                        uint32_t server,
+                                        uint64_t id,
+                                        HyphaStepRequestStateCallback done,
+                                        void *context);
+
+// Read the calls client `client` sent after the last step, in call order: `each` runs
+// once per call with its encoded request, borrowed for the call, its stamp (the step's
+// time) and `context`. A failed step sent none.
+//
+// `InvalidArgument`: a null argument or an unknown client.
+//
+// # Safety
+// `services` is live.
+HyphaStatus hypha_step_services_calls(const struct HyphaStepServices *services,
+                                      uint32_t client,
+                                      HyphaStepSentCallback each,
+                                      void *context);
 
 // Subscribe to `topic` with `options` and record `data_type` (null: empty) in the node
 // introspection. A topic carries one stream for each schema: with `expected_md5` the

@@ -54,6 +54,9 @@ pub struct CallReport {
     pub event: CallEvent,
     /// True for a call that had already timed out ([`Iox2Client::expire`]).
     pub late: bool,
+    /// The framework send time of the server's answer, from its frame; `None` for a call
+    /// that disconnected without one, or for an answer that did not verify.
+    pub framework_sent_nanos: Option<u64>,
 }
 
 /// Whether the server of a stream is alive, as the probe found it.
@@ -202,6 +205,12 @@ impl Iox2Client {
             .is_some_and(|probe| probe.server == Some(server) && probe.found == Liveness::Dead)
     }
 
+    /// Push the node id of the stream's server now, if it has one, onto `ids`: the
+    /// upstream of a client in a replay (`docs/design/native-services.md` §4).
+    pub fn server_node_ids(&self, ids: &mut Vec<u128>) {
+        ids.extend(self.server_node().map(|node| node.value()));
+    }
+
     /// The node of the stream's server now.
     fn server_node(&self) -> Option<UniqueNodeId> {
         let mut server = None;
@@ -290,15 +299,23 @@ impl Iox2Client {
             // Read the connection first: the server answers and then drops its request, so a
             // disconnect seen here means any response sent before it is visible below.
             let connected = call.pending.is_connected();
+            let mut stamp = None;
             let event = if call.pending.has_response() {
                 match call.pending.receive() {
-                    Ok(Some(response)) => Some(classify(
-                        &self.key,
-                        self.client_id,
-                        call.sequence,
-                        &FrameHeader::from(*response.user_header()),
-                        response.payload(),
-                    )),
+                    Ok(Some(response)) => {
+                        let header = FrameHeader::from(*response.user_header());
+                        let event = classify(
+                            &self.key,
+                            self.client_id,
+                            call.sequence,
+                            &header,
+                            response.payload(),
+                        );
+                        if !matches!(event, CallEvent::Invalid(_)) {
+                            stamp = Some(header.metadata.framework_sent_nanos);
+                        }
+                        Some(event)
+                    }
                     Ok(None) => None,
                     Err(_) => Some(CallEvent::Invalid("receive")),
                 }
@@ -318,7 +335,12 @@ impl Iox2Client {
                 self.counters.late_responses = self.counters.late_responses.wrapping_add(1);
             }
             self.counters.finished = self.counters.finished.wrapping_add(1);
-            out.push(CallReport { id: CallId(call.sequence), event, late });
+            out.push(CallReport {
+                id: CallId(call.sequence),
+                event,
+                late,
+                framework_sent_nanos: stamp,
+            });
             *slot = None;
         }
     }

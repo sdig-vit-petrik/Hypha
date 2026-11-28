@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
+mod clear;
 mod clock;
+mod evictions;
+use clear::{Cleared, LastTake};
 pub use clock::CaptureClock;
 use clock::{accepted_on, value_usable_within};
 
@@ -78,6 +81,9 @@ pub struct BindingCounters {
     pub latest_unavailable_iterations: u64,
     /// Transitions from usable latest value to stale value.
     pub usable_to_stale_transitions: u64,
+    /// Samples a step's clear dropped before this binding took them
+    /// ([`BindingCapture::clear`]).
+    pub cleared_total: u64,
 }
 
 /// The immutable samples and diagnostics frozen for one binding.
@@ -122,8 +128,17 @@ pub struct BindingCapture {
     stale: bool,
     /// Captured on the host clock under replay too: see [`BindingCapture::host_clock`].
     host_clock: bool,
+    /// A trigger port of a triggered cycle: see [`BindingCapture::is_trigger`].
+    trigger: bool,
     /// The judgement last reported by [`BindingCapture::take_judgement_events`].
     reported: crate::judgement::JudgementTracker,
+    /// What the last capture could take, for a clear after its step.
+    last_take: Option<LastTake>,
+    /// The samples the last clear forgot, while any of them is retained or no later
+    /// sample was admitted.
+    cleared: Option<Cleared>,
+    /// History losses a clear found, reported by the next capture.
+    carried_lost: u64,
 }
 
 impl BindingCapture {
@@ -178,7 +193,11 @@ impl BindingCapture {
             first_nanos: None,
             stale: false,
             host_clock: false,
+            trigger: false,
             reported: crate::judgement::JudgementTracker::default(),
+            last_take: None,
+            cleared: None,
+            carried_lost: 0,
         })
     }
 
@@ -204,6 +223,17 @@ impl BindingCapture {
 
     pub(crate) const fn set_host_clock(&mut self) {
         self.host_clock = true;
+    }
+
+    /// Whether this binding is a trigger port of a triggered cycle. Its pending samples are
+    /// the steps its schedule plans, so no step clears it.
+    #[must_use]
+    pub const fn is_trigger(&self) -> bool {
+        self.trigger
+    }
+
+    pub(crate) const fn set_trigger(&mut self) {
+        self.trigger = true;
     }
 
     /// Supervision state, or `None` when this binding is not supervised.
@@ -282,8 +312,8 @@ impl BindingCapture {
         self.received_total = accepted_on(history, clock);
         self.judge(Some(history), silence_nanos, clock);
         let usable_newer = latest_delivery && self.verdict == InputVerdict::Usable;
-        if usable_newer && let Some(newest) = clock.newest_admitted_arc(history) {
-            self.hold_latest_usable(newest);
+        if usable_newer && let Some(newest) = self.newest_judged(history, clock).cloned() {
+            self.hold_latest_usable(&newest);
         }
         if let Some(supervision) = self.supervision.as_mut() {
             supervision.set_stale(self.stale);
@@ -321,13 +351,26 @@ impl BindingCapture {
             self.verdict = InputVerdict::NeverArrived;
             return;
         }
-        let newest_admitted = history.and_then(|history| clock.newest_admitted(history));
-        let held = self.held.as_deref().filter(|_| self.mode == CaptureMode::Latest);
-        let reference = newest_admitted.or(held);
-        let fresh = if let Some(sample) = reference {
+        let newest_admitted = history.and_then(|history| self.newest_judged(history, clock));
+        let held = self.held.as_ref().filter(|_| self.mode == CaptureMode::Latest);
+        let reference = newest_admitted.or(held).map(Arc::clone);
+        if let Some(history) = history {
+            self.end_spent_clear(history, reference.is_some());
+        }
+        let before_clear = self.cleared.as_ref().and_then(|cleared| cleared.newest.as_deref());
+        let fresh = if let Some(sample) = reference.as_deref() {
             let sent = clock.sent(sample);
             self.age_nanos = now.saturating_sub(sent);
             value_usable_within(silence_nanos, sent, now)
+        } else if let Some(sample) = before_clear {
+            // Nothing since a clear: no value, and the silence counts from the newest
+            // sample before it, so a clear never hides a source that stopped.
+            let sent = clock.sent(sample);
+            self.age_nanos = now.saturating_sub(sent);
+            let fresh = value_usable_within(silence_nanos, sent, now);
+            self.verdict = if fresh { InputVerdict::NeverArrived } else { InputVerdict::Stale };
+            self.stale = !fresh;
+            return;
         } else {
             self.age_nanos = now.saturating_sub(first);
             false
@@ -414,8 +457,9 @@ impl BindingCapture {
         clock: CaptureClock,
     ) -> u64 {
         let high_water = history.high_water_next();
+        self.last_take = Some(LastTake { clock, sent_through: None, high_water });
         self.received_total = accepted_on(history, clock);
-        self.lost_since_capture = 0;
+        self.lost_since_capture = std::mem::take(&mut self.carried_lost);
         self.stale_since_capture = 0;
         self.backlog_samples = 0;
         self.work_limit_drops = std::mem::take(&mut self.superseded_since_capture);
@@ -493,24 +537,6 @@ impl BindingCapture {
         )
     }
 
-    /// Move the cursor up to `oldest` past evicted samples, and count them as lost.
-    fn skip_evicted(&mut self, oldest: u64) {
-        self.count_evicted_from(self.cursor, oldest);
-    }
-
-    /// Count the evicted samples from `from` up to `oldest` as lost, and move the cursor
-    /// up to `oldest`.
-    fn count_evicted_from(&mut self, from: u64, oldest: u64) {
-        if before(from, oldest) {
-            let lost = oldest.wrapping_sub(from);
-            self.lost_since_capture = lost;
-            self.counters.overrun_total = self.counters.overrun_total.wrapping_add(lost);
-        }
-        if before(self.cursor, oldest) {
-            self.cursor = oldest;
-        }
-    }
-
     /// Capture queued work assigned by the scheduler, on `clock`.
     pub fn capture_assigned_on(
         &mut self,
@@ -534,6 +560,9 @@ impl BindingCapture {
         sent_through: Option<u64>,
     ) {
         let high_water = self.begin_capture(history, options, clock);
+        if let Some(last) = self.last_take.as_mut() {
+            last.sent_through = sent_through;
+        }
         let take = Take { assigned, sent_through, examine: Examine::WithinLimit };
         self.capture_queued(history, high_water, options, clock, take);
     }
@@ -553,6 +582,7 @@ impl BindingCapture {
             before(sample.sequence, high_water)
                 && clock.admits(sample)
                 && !history.is_rejected(sample.sequence)
+                && !self.forgets(sample)
         });
         if clock.is_replay()
             && let Some(oldest) = history.samples().front().map(|sample| sample.sequence)
@@ -593,72 +623,6 @@ impl BindingCapture {
                 self.counters.usable_to_stale_transitions.wrapping_add(1);
         }
         self.previous_latest_verdict = Some(self.verdict);
-    }
-
-    /// The replay loss rule of a latest binding, at a capture that selects `selected`,
-    /// with `oldest` the oldest retained sequence.
-    ///
-    /// Invariant: a sample the binding passed over without holding it, evicted or not, is
-    /// uncounted only while a newer sample that no reader rejected is retained for it or
-    /// held by it. Every later cut admits that sample, so every later step takes it or a
-    /// newer one, and the passed sample is superseded in data time. The passed samples run
-    /// from `passed_from` up to the newest selection, the sample before the cursor, which
-    /// never moves back:
-    /// - a newer selection supersedes them as well, and the run extends to it; an older
-    ///   one, a fallback past a rejected sample, supersedes none of them;
-    /// - the newest selection evicted with no rejection is a value for good, so they are
-    ///   superseded for good, and the run ends;
-    /// - a capture that selects nothing has no such retained sample, since it would
-    ///   select it: every one of them that is evicted counts, with those evicted unread
-    ///   since, from past the sample the binding holds for good. One of them may be the
-    ///   value this step or a later one is due, and the capture knows no later deadline.
-    ///
-    /// A sample that may have been rejected before its eviction counts as rejected.
-    fn account_evictions(
-        &mut self,
-        history: &CycleHistory,
-        oldest: u64,
-        selected: Option<u64>,
-        clock: CaptureClock,
-    ) {
-        let newest_selected = self.cursor.wrapping_sub(1);
-        let superseded_for_good =
-            before(newest_selected, oldest) && !may_have_been_rejected(history, newest_selected);
-        if superseded_for_good {
-            self.passed_from = None;
-        }
-        if let Some(selected) = selected {
-            if self.passed_from.is_none() && before(self.cursor, selected) {
-                self.passed_from = Some(self.cursor);
-            }
-        } else {
-            let passed = self.passed_from.take().unwrap_or(self.cursor);
-            let after_held =
-                self.held_for_good(history, oldest, clock).map(|held| held.wrapping_add(1));
-            let from = after_held.filter(|after| before(passed, *after)).unwrap_or(passed);
-            self.count_evicted_from(from, oldest);
-        }
-    }
-
-    /// The newest sample this binding holds, or held before, that was evicted with no
-    /// rejection and that the replay cut of this capture, `clock`, admits, with `oldest`
-    /// the oldest retained sequence: every later cut admits it too, so no step takes a
-    /// sample older than it again. A host-clock capture may have held a sample stamped
-    /// ahead of every cut so far, which is no such value.
-    fn held_for_good(
-        &self,
-        history: &CycleHistory,
-        oldest: u64,
-        clock: CaptureClock,
-    ) -> Option<u64> {
-        [self.held.as_ref(), self.previous_held.as_ref()]
-            .into_iter()
-            .flatten()
-            .filter(|sample| clock.admits(sample))
-            .map(|sample| sample.sequence)
-            .find(|sequence| {
-                before(*sequence, oldest) && !may_have_been_rejected(history, *sequence)
-            })
     }
 
     /// Capture a trigger port of a triggered cycle on `clock`, judged as any input. When
@@ -801,13 +765,6 @@ enum Examine {
     WithinLimit,
     /// Every one: the sample of a trigger step, which the schedule judged.
     Every,
-}
-
-/// Whether a reader rejected the sample `sequence`, or may have before it was evicted:
-/// eviction forgets a rejection, so any rejected sample evicted at or after it counts.
-fn may_have_been_rejected(history: &CycleHistory, sequence: u64) -> bool {
-    history.is_rejected(sequence)
-        || history.newest_evicted_rejected().is_some_and(|newest| before_or_equal(sequence, newest))
 }
 
 /// The facts of one binding's held report.

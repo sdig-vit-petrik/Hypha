@@ -249,6 +249,27 @@ tests = ["hypha_cycle/input_supervision", "cxx:test_input_supervision"]
 id = "FSR-41"
 tests = ["hypha_ffi/introspection_snapshot", "cxx:test_node_introspection"]
 
+[[requirement]]
+id = "FSR-42"
+tests = [
+  "hypha_iceoryx2/service_transport",
+  "hypha_node/service_calls",
+  "hypha_tools/service_cli",
+  "cxx:test_services",
+  "cxx:test_cycle_services",
+]
+
+[[requirement]]
+id = "FSR-43"
+tests = ["hypha_node/service_calls", "hypha_tools/service_cli", "cxx:test_services"]
+
+[[requirement]]
+id = "FSR-44"
+tests = [
+  "hypha_tools/service_lockstep",
+  "cxx:test_cycle_services",
+]
+
 # Non-functional requirements
 
 [[requirement]]

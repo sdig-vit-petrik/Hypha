@@ -1,3 +1,4 @@
+// test-layer: unit (no node, no bus, no C function; #336)
 // The companion headers of sensor_msgs that ship beside the messages, ros/common_msgs
 // unchanged: the PointCloud2 iterators and modifier, the PointField conversions, the
 // image encodings and the distortion models, under their ROS 1 names.

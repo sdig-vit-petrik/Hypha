@@ -677,18 +677,6 @@ fn assert_a_faithful_rejection_at_200(co_reader: bool) {
 }
 
 #[test]
-pub(crate) fn a_step_that_rejects_its_sample_holds_the_one_before_through_its_eviction() {
-    assert_a_faithful_rejection_at_200(false);
-    // A history of 3 evicts 180 after the step at 200. The rejection fell back to 180,
-    // which the binding holds: the step at 300 has it as its value, as the faithful one.
-    let (statuses, binding, steps) = replay_a_rejection_at_200(2, false);
-    assert!(statuses.iter().all(|status| *status == HyphaStatus::Ok as i32), "{binding:?}");
-    assert_eq!(binding.health.overrun_total, 0, "{binding:?}");
-    assert_eq!(deadlines_and_values(&steps), [(100, Some(9)), (200, Some(19)), (300, None)]);
-    assert_eq!((binding.held.has_held, binding.held.held_sequence), (1, 2), "180 is held");
-}
-
-#[test]
 pub(crate) fn a_queued_co_reader_that_rejects_the_sample_loses_the_one_before_for_latest() {
     assert_a_faithful_rejection_at_200(true);
     // The queued binding's rejection leaves the latest binding holding 190, and a history

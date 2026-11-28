@@ -14,6 +14,11 @@ pub const HYPHA_CYCLE_VERDICT_USABLE: u32 = 1;
 /// capture clock.
 pub const HYPHA_CYCLE_VERDICT_STALE: u32 = 2;
 
+/// `hypha_cycle_image_clear`: clear the input binding of that index.
+pub const HYPHA_CYCLE_CLEAR_INPUT: u32 = 0;
+/// `hypha_cycle_image_clear`: clear the dynamic transforms of the TF input of that index.
+pub const HYPHA_CYCLE_CLEAR_TRANSFORMS: u32 = 1;
+
 /// Fault bit: the input is stale, its newest sample older than the silence limit.
 pub const HYPHA_FAULT_STALE: u32 = 1;
 /// Fault bit: the alive counter unchanged within the stagnation limit.
@@ -263,6 +268,8 @@ pub struct HyphaCycleBindingHealth {
     pub latest_unavailable_iterations: u64,
     /// Transitions from usable to stale latest value.
     pub usable_to_stale_transitions: u64,
+    /// Cumulative pending samples that a step's clear dropped (`hypha_cycle_image_clear`).
+    pub cleared_total: u64,
 }
 
 /// Everything one input binding reports: in a step from the image
@@ -298,3 +305,24 @@ pub type HyphaCycleStep = Option<
         context: *mut c_void,
     ) -> crate::waitset::HyphaCallbackResult,
 >;
+
+/// The C view of a cycle's health.
+impl From<hypha_cycle::CycleHealth> for HyphaCycleHealth {
+    fn from(health: hypha_cycle::CycleHealth) -> Self {
+        Self {
+            iterations: health.iterations,
+            missed_periods: health.missed_periods,
+            callback_failures: health.callback_failures,
+            output_attempts: health.output_attempts,
+            output_successes: health.output_successes,
+            output_failures: health.output_failures,
+            output_pool_drops: health.output_pool_drops,
+            observed_framework_nanos: health.observed_framework_nanos,
+            observed_steady_nanos: health.observed_steady_nanos,
+            steps: health.steps,
+            last_step_nanos: health.last_step_nanos,
+            max_step_nanos: health.max_step_nanos,
+            overruns: health.overruns,
+        }
+    }
+}

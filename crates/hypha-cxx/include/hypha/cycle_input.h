@@ -124,6 +124,21 @@ class Input : public Port
         this->supervision_.setIgnored(this->index_, ignore);
     }
 
+    /// @brief Forget, when the step returns, the value and the pending samples this step
+    ///        admitted (`cleared_total`): later steps see later samples only, NeverArrived
+    ///        until one comes, Stale once the last one before is older than `silence_ms`.
+    /// @throws std::logic_error outside step(), or on a trigger port.
+    void clear()
+    {
+        if (detail::CaptureStore* const harness = this->harnessStore()) {
+            harness->clearAfterStep(*this, [](Port& port) {
+                static_cast<Input<M>&>(port).forgetCleared();
+            });
+            return;
+        }
+        this->supervision_.clear(this->index_);
+    }
+
     /// @brief Declare the stagnation check: an end-to-end life sign, an integral member of
     ///        the message that the original source advances. Call before start() only.
     template <typename Counter>
@@ -230,6 +245,8 @@ class Input : public Port
         return detail::TopicSource::ofPort(name, false, settings.optionalTopic);
     }
 
+    virtual void forgetCleared() = 0;  ///< A testing::StepHarness step's clear() returned.
+
     /// @brief The library's ok bit of this binding: usable and not stagnant, or not
     ///        counted (disabled, advisory) or ignored. True before start().
     bool inputOk() const override
@@ -304,40 +321,7 @@ class Input : public Port
     }
 
     /// @brief The first port of a topic to bind opens its source.
-    ::HyphaStatus ensureSource()
-    {
-        detail::SourceSlot<M>& slot = *this->slot_;
-        if (slot.source.valid()) {
-            // Another port opened the subscriber before this port was constructed.
-            if (this->depth_ > slot.openedDepth) {
-                detail::error(
-                    this->portText() + " needs a queue of " + std::to_string(this->depth_)
-                    + " samples, but the port it shares the topic with opened it with "
-                    + std::to_string(slot.openedDepth)
-                    + "; construct both ports before either cycle starts"
-                );
-                return HYPHA_STATUS_RESOURCE_LIMIT;
-            }
-            return HYPHA_STATUS_OK;
-        }
-        const std::expected<std::string, Status> resolved = slot.topic.resolve();
-        if (!resolved) {
-            // A bad `topic` in the port's table: a restart cannot fix it.
-            this->tableRefused_ = true;
-            return static_cast<::HyphaStatus>(resolved.error());
-        }
-        std::expected<detail::InputSource, Status> opened = detail::openSource<M>(
-            backend::defaultWaitSet(),
-            *resolved,
-            backend::declaredSubscriberOptions(slot.policy, slot.depth)
-        );
-        if (!opened) {
-            return static_cast<::HyphaStatus>(opened.error());
-        }
-        slot.source = std::move(*opened);
-        slot.openedDepth = slot.depth;
-        return HYPHA_STATUS_OK;
-    }
+    ::HyphaStatus ensureSource();
 
     std::string portText() const
     {
@@ -397,3 +381,5 @@ class Input : public Port
 };
 
 }  // namespace hypha
+
+#include "hypha/detail/cycle_input_impl.h"

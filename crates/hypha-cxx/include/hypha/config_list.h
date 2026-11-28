@@ -27,13 +27,14 @@ class ConfigList
         using difference_type = std::ptrdiff_t;
         using iterator_category = std::input_iterator_tag;
 
-        Iterator(std::string list, size_t index) : list_(std::move(list)), index_(index)
+        Iterator(std::string list, size_t index, const HyphaConfig* config = nullptr)
+            : list_(std::move(list)), index_(index), config_(config)
         {
         }
 
         ConfigView operator*() const
         {
-            return ConfigView(this->list_, this->index_);
+            return ConfigView(this->config_, this->list_, this->index_);
         }
 
         Iterator& operator++()
@@ -53,13 +54,15 @@ class ConfigList
         }
 
       private:
-        std::string list_;
-        size_t      index_;
+        std::string        list_;
+        size_t             index_;
+        const HyphaConfig* config_;
     };
 
-    explicit ConfigList(std::string name) : name_(std::move(name))
+    explicit ConfigList(std::string name, const HyphaConfig* config = nullptr)
+        : name_(std::move(name)), config_(config)
     {
-        const std::expected<size_t, Status> length = detail::paramListLength(this->name_);
+        const std::expected<size_t, Status> length = detail::paramListLength(this->name_, config);
         if (!length) {
             if (length.error() == Status::NotAvailable) {
                 throw ParameterError("hypha: required list not set: " + this->name_);
@@ -80,33 +83,35 @@ class ConfigList
             const std::string entry = this->name_ + "[" + std::to_string(index) + "]";
             throw ParameterError("hypha: list entry not set: " + entry);
         }
-        return ConfigView(this->name_, index);
+        return ConfigView(this->config_, this->name_, index);
     }
 
     Iterator begin() const
     {
-        return Iterator(this->name_, 0);
+        return Iterator(this->name_, 0, this->config_);
     }
 
     Iterator end() const
     {
-        return Iterator(this->name_, this->size_);
+        return Iterator(this->name_, this->size_, this->config_);
     }
 
   private:
-    std::string name_;
-    size_t      size_{0};
+    std::string        name_;
+    size_t             size_{0};
+    const HyphaConfig* config_{nullptr};
 };
 
 inline ConfigList ConfigView::list(const std::string& key) const
 {
-    return ConfigList(this->name(key));
+    return ConfigList(this->name(key), this->config_);
 }
 
 inline std::optional<ConfigList> ConfigView::optionalList(const std::string& key) const
 {
-    const std::expected<size_t, Status> length = detail::paramListLength(this->name(key));
-    const bool                          notSet = !length && length.error() == Status::NotAvailable;
+    const std::expected<size_t, Status> length =
+        detail::paramListLength(this->name(key), this->config_);
+    const bool notSet = !length && length.error() == Status::NotAvailable;
     if (notSet) {
         return std::nullopt;
     }
@@ -116,8 +121,8 @@ inline std::optional<ConfigList> ConfigView::optionalList(const std::string& key
 inline std::vector<ConfigView> ConfigView::tables() const
 {
     std::vector<ConfigView> found;
-    for (const std::string& table : backend::tableNames(this->name())) {
-        found.emplace_back(this->name(table));
+    for (const std::string& table : backend::tableNames(this->name(), this->config_)) {
+        found.push_back(ConfigView(this->config_, this->name(table)));
     }
     return found;
 }

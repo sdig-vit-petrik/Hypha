@@ -241,6 +241,11 @@ if(HYPHA_BUILD_TESTS)
   add_executable(replay_loop_peer test/replay_loop_peer.cpp)
   target_link_libraries(replay_loop_peer PRIVATE hypha)
 
+  # A participant with a Requests or a Calls port. The Rust test
+  # apps/hypha_tools/tests/service_lockstep.rs runs several under hypha play (FSR-44).
+  add_executable(service_lockstep_peer test/service_lockstep_peer.cpp)
+  target_link_libraries(service_lockstep_peer PRIVATE hypha hypha_test_srvs)
+
   # The exit code of a real runNode process: 0 clean, 78 configuration, 70 runtime.
   add_executable(run_node_exit_code_node test/run_node_exit_code_node.cpp)
   target_link_libraries(run_node_exit_code_node PRIVATE hypha)
@@ -332,6 +337,9 @@ if(HYPHA_BUILD_TESTS)
     test/test_publisher.cpp
     test/test_typed_loan.cpp
     test/test_subscriber.cpp
+    test/test_services.cpp
+    test/test_cycle_services.cpp
+    test/test_standard_services.cpp
     test/subscriber_latest_pair_is_consistent.cpp
     test/test_parameters.cpp
     test/test_parameter_lists.cpp
@@ -361,6 +369,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_twist_mux_shape.cpp
     test/test_newest_only.cpp
     test/test_transforms_port.cpp
+    test/test_cycle_clear.cpp
     test/test_transform_buffer.cpp
     test/test_subscriber_diagnostics.cpp
     test/test_cycle_sample_stamps.cpp
@@ -388,12 +397,37 @@ if(HYPHA_BUILD_TESTS)
     test/test_worker_stop.cpp
     test/test_handover.cpp
     test/test_step_harness.cpp
+    test/test_step_harness_services.cpp
+    test/test_sequence.cpp
     test/test_raw_endpoints.cpp
     test/test_qos.cpp
     test/test_topic_overloading.cpp
     test/test_sensor_msgs_companions.cpp
+    test/test_camera_info.cpp
     test/test_sensor_msgs_ros2_names.cpp
   )
+  # The services of test_services.cpp: the camera's typed setter, and a bounded echo; and
+  # String and Vec1, shaped as mrs_msgs/String and mrs_msgs/Vec1, for the takeoff sequence.
+  hypha_generate_messages(PACKAGE camera_control_msgs
+    SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/srv/camera_control_msgs"
+    OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_generated/include")
+  hypha_generate_messages(PACKAGE hypha_test_srvs
+    SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/srv/hypha_test_srvs"
+    OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_generated/include")
+  target_link_libraries(test_hypha PRIVATE camera_control_msgs hypha_test_srvs)
+  # The camera proof from the shell calls the setters with `hypha service call`.
+  if(HYPHA_BUILD_APPS)
+    target_compile_definitions(test_hypha PRIVATE
+      HYPHA_TEST_HYPHA_TOOL="$<TARGET_FILE:hypha::hypha>")
+  endif()
+  # A service and a message of the application's own, added to the SDK's package
+  # sensor_msgs (test_standard_services.cpp): the package's own definitions are read, not
+  # emitted again, and the target is sensor_msgs_additions.
+  hypha_generate_messages(PACKAGE sensor_msgs
+    MSG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/msg/sensor_msgs"
+    SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/srv/sensor_msgs"
+    OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_generated/include")
+  target_link_libraries(test_hypha PRIVATE sensor_msgs_additions)
   # The ROS 2 names of sensor_msgs, for test_sensor_msgs_ros2_names.cpp.
   hypha_generate_ros2_headers(test_hypha_ros2_headers PACKAGES sensor_msgs)
   target_link_libraries(test_hypha PRIVATE test_hypha_ros2_headers)

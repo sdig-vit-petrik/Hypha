@@ -27,6 +27,11 @@ pub use registrations::{
 pub(crate) use registrations::{attach_cycle_timer, attach_triggered_cycle};
 pub mod run;
 pub use run::{waitset_request_stop, waitset_run};
+mod claim;
+pub use claim::WaitSetClaim;
+mod local_edges;
+mod services;
+pub(crate) use services::{ServiceTarget, attach_service, detach_service};
 pub mod timer_control;
 use timer_control::TimerControl;
 pub use timer_control::{
@@ -35,7 +40,7 @@ pub use timer_control::{
 
 use std::cell::{Ref, RefCell, RefMut};
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -175,36 +180,6 @@ pub struct WaitSetShared {
     owner: AtomicU64,
 }
 
-/// The source of the claim tokens; each thread takes one, never 0, on its first claim.
-static NEXT_CLAIM_TOKEN: AtomicU64 = AtomicU64::new(1);
-
-thread_local! {
-    static CLAIM_TOKEN: u64 = NEXT_CLAIM_TOKEN.fetch_add(1, Ordering::Relaxed);
-}
-
-/// The calling thread's claim token.
-fn claim_token() -> u64 {
-    CLAIM_TOKEN.with(|token| *token)
-}
-
-/// The claim of a `WaitSet` by the calling thread for one call or one run, released when
-/// it drops. A claim inside a claim of the same thread, such as a callback's call during
-/// the run, holds nothing more and releases nothing.
-#[must_use = "the claim holds the WaitSet until it drops"]
-pub struct WaitSetClaim<'a> {
-    shared: &'a WaitSetShared,
-    /// Whether this claim took the `WaitSet`, so its drop gives it back.
-    took: bool,
-}
-
-impl Drop for WaitSetClaim<'_> {
-    fn drop(&mut self) {
-        if self.took {
-            self.shared.owner.store(0, Ordering::Release);
-        }
-    }
-}
-
 // `hypha_waitset_request_stop` and `hypha_waitset_request_failure` reach this from
 // another thread.
 const _: () = {
@@ -221,29 +196,6 @@ impl WaitSetShared {
             failure: std::sync::atomic::AtomicBool::new(false),
             owner: AtomicU64::new(0),
         }
-    }
-
-    /// Claim the `WaitSet` for the calling thread until the claim drops: one
-    /// compare-and-swap of the owner, so of two threads that start a call or a run at once
-    /// exactly one gets it. A C call claims before it forms a reference to the `WaitSet`,
-    /// and a run claims for its whole length. Any thread may call it.
-    ///
-    /// # Errors
-    /// `InvalidState` while another thread is inside a call or a run on this `WaitSet`;
-    /// nothing is claimed then.
-    pub fn claim(&self) -> Result<WaitSetClaim<'_>, Error> {
-        let token = claim_token();
-        match self.owner.compare_exchange(0, token, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => Ok(WaitSetClaim { shared: self, took: true }),
-            Err(held) if held == token => Ok(WaitSetClaim { shared: self, took: false }),
-            Err(_) => Err(Error::InvalidState),
-        }
-    }
-
-    /// Whether a run is in progress on the calling thread: the run holds the claim for its
-    /// whole length, so a call from one of its callbacks is the only one that sees it.
-    pub(crate) fn runs_on_this_thread(&self) -> bool {
-        self.running.is_running() && self.owner.load(Ordering::Acquire) == claim_token()
     }
 
     /// Whether the application asked for the run to fail. Any thread may read it.
@@ -387,6 +339,13 @@ pub struct HyphaCallbackResult {
 }
 
 impl HyphaCallbackResult {
+    /// Whether a step that returned this sends its outputs: it continues with status 0. A
+    /// step that failed, stopped, or continued with a status sends none (FSR-38).
+    #[must_use]
+    pub const fn sends_outputs(&self) -> bool {
+        self.action == HYPHA_ACTION_CONTINUE && self.status == 0
+    }
+
     /// Go on with the run. A function, not an associated constant, so that cbindgen
     /// leaves the header alone.
     #[must_use]
@@ -544,6 +503,8 @@ enum Target {
     TriggerWake,
     /// A cycle that drives `/clock` for a simulator. Its 1 ms wake polls the acknowledgements.
     Driver(Box<clock_driver::DriverCycle>),
+    /// A server or a client, woken by its request or response event.
+    Service(ServiceTarget),
 }
 
 /// The slow-callback diagnostics of one registration, apart from its target.

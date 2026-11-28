@@ -658,15 +658,32 @@ included, uses the same `HYPHA_DOMAIN`.
 | Hand-written message age check (decides whether an input may be used) | The port's `silence_ms`, verdict `Stale`. A use of the source time as data stays logic |
 | `ros::Time::now()` for a stamp | In a cycle step `time.stamp`; elsewhere `hypha::toRosTime(hypha::now())`. See cpp-api.md §3 |
 | `header.seq` | The publisher writes it |
-| `ros::ServiceServer` | An `Arrivals<Srv::Request>` port on a request topic and an `Output<Srv::Response>` on a reply topic, matched by an identifier (cpp-api.md §8) |
-| `ros::ServiceClient::call` | An `Output` of requests and an `Arrivals` of replies; the step tracks the pending request and its own deadline (cpp-api.md §8) |
+| `nh.advertiseService` in a plain or application node | `auto s = node.advertiseService<Srv>("<port>", [](hypha::Request<Srv>& r) { r.reply({...}); });` and `[ports.servers.<port>] service = "~/<name>"` (cpp-api.md §8.1) |
+| a service callback `return false` | `r.refuse()` or `r.refuse("why")` |
+| a service callback that works over time, or on another thread's device | `r.defer()`, then answer the `hypha::Deferred<Srv>` from the thread that finishes it; one destroyed unanswered refuses |
+| `nh.serviceClient<Srv>(name)` in a plain or application node | `node.serviceClient<Srv>("<port>")`; the timeout is the policy's (1 s), or `timeout_ms` in `[ports.clients.<port>]` |
+| `client.call(srv)` in a callback | `client.call(srv.request, onResult)`: `onResult` runs at a later turn with a `CallResult`. A blocking call on the run thread is refused (`InvalidState`) |
+| `client.call(srv)` in a worker thread, a test or a tool | `node.serviceClient<Srv>(name, hypha::blocking)`, then `callAndWait(request)` |
+| `ros::service::waitForExistence(name, t)`, `client.waitForExistence(t)` | In a node: nothing; a call waits for its server until its timeout. In a test or a tool: `blockingClient.waitForServer(t)` |
+| `client.exists()` | `client.exists()` (`ready()`) |
+| `serviceClient(name, true)` (persistent) | The default: every client stays connected |
+| a service whose response is a map, a path or a cloud | `nav_msgs/GetMap` and `GetPlan` are shipped: serve them with a `ServicePolicyOf` whose response bound fits the map (64 MiB at most). A bigger or continuing stream of data goes on a latched topic (cpp-api.md §8.4) |
+| `std_srvs/*` | Shipped by the SDK: `Empty`, `Trigger`, `SetBool` |
+| `nh.advertiseService(name, &C::cb, this)` in a `CycleNode` | A `Requests<Srv>` port: `for (auto& r : port.requests()) r.reply({...});` in the step, named by `[ports.servers.<port>] service` (cpp-api.md §8.5) |
+| `client.call(srv)` in a `CycleNode` | A `Calls<Srv>` port: `port.call(srv.request)` in one step, `port.result()` in a later one (cpp-api.md §8.5) |
+| a service callback that makes a chain of blocking calls (`call()` A, then B on A's success, then reply), or sleeps between them | A `hypha::Sequence<Srv>`: `seq.start(request.defer(), this->run())` and `seq.advance(time)` in every step; `run()` is a `hypha::Task<Srv::Response>` written in the callback's order, `auto a = co_await hypha::call(portA, {...}); if (!a.ok()) co_return {...};`, `co_await hypha::sleepFor(d)` for `ros::Duration(d).sleep()`, and its `co_return` is the reply (cpp-api.md §8.6) |
+| `rosservice call` against the node under test, or a fake server node, in a test | `hypha::testing::StepHarness`: `auto r = harness.request(node.port, {...});` and after `harness.step(node, time)` `r.replied()`, `r.response()`; for a client, `harness.calls(node.port)` and `harness.answer(node.port, {...})` or `harness.outcome(node.port, hypha::CallOutcome::Timeout)`; no process, no bus (cpp-api.md §5.4, "Test a step without a bus") |
+| `nav_msgs/GetMap`, `GetPlan`, `LoadMap`, `SetMap`, `sensor_msgs/SetCameraInfo`, `diagnostic_msgs/AddDiagnostics`, `SelfTest`, `tf2_msgs/FrameGraph` | Shipped by the SDK under their ROS names and with ROS's MD5: `node.advertiseService<nav_msgs::GetMap>(...)`. Do not copy the `.srv` into a package of the node's own (`map_server_msgs/GetMap`): its type name and MD5 would no longer be ROS's. A map is larger than the default bound: specialize `hypha::ServicePolicyOf<nav_msgs::GetMap>` (cpp-api.md §8.4) |
+| a service of a package the SDK ships that ROS 1 does not have (the node's own `sensor_msgs/Foo.srv`) | `hypha_generate_messages(PACKAGE sensor_msgs SRV_DIR ...)` adds it beside the SDK's (cpp-api.md §1.1, "Adding to a package of the SDK"); link `sensor_msgs_additions` |
 | `ROS_INFO("%f", x)` | `HYPHA_LOG_INFO("{}", x)`: a `std::format` string |
 | `ROS_WARN_THROTTLE(1, ...)` | `HYPHA_LOG_WARN_THROTTLE(1.0, ...)` |
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(condition, false, ...)`: writes when the condition becomes true |
 | `tf2_ros::TransformBroadcaster` | Output on `/tf` of type `tf2_msgs::TFMessage` |
 | `tf2_ros::StaticTransformBroadcaster` | An `Output<tf2_msgs::TFMessage>` declared with `latched` and `topic = "/tf_static"` in its ports table |
+| A reset that clears state: robot_localization's `reset` service and `set_pose` (`tfBuffer_.clear()`, `clearMeasurementQueue()`), an EKF reinitialisation, a tracker reset | In the step: `port.clear()` on each input whose old samples must not reach the next step and `transforms.clear()` on the `Transforms` port (static transforms stay), beside the node's own reset. Applied when the step returns; later steps see only later samples, the inputs are `NeverArrived` until one arrives (cpp-api.md §5.4, execution-model.md §6.8). A queue the node keeps itself is the node's to empty |
 | `use_sim_time` | `HYPHA_USE_SIM_TIME=1` in the node's environment; for `ros2 bag play`'s behaviour, outside the replay lockstep, `HYPHA_REPLAY_LOCKSTEP=0` for the player and every node of the launch |
 | rosbag record / play | `hypha record` / `hypha play` (`apps/`); a topic recorded with two versions of a message is two channels, replayed as two streams |
+| `rosservice call /set_enabled "data: true"`, `rosservice call /move_to '{goal: {x: 1.0, y: 2.0}}'` (YAML) | `hypha service call /set_enabled 'data = true'`, `hypha service call /move_to 'goal = { x = 1.0, y = 2.0 }'` or `'goal.x = 1.0' 'goal.y = 2.0'` (TOML; tools.md, `hypha service`). Rewrite the request: `key: value` becomes `key = value`, `{a: 1}` becomes `{ a = 1 }`, text is quoted (`name = "left"`), `True` is `true`, a time is `{ secs = 1, nsecs = 0 }`. The response prints as TOML too. `rosservice list` / `info` are `hypha service list` / `info` |
 | roslaunch | `hypha launch` |
 | roscore | None. Nodes find each other through shared memory |
 | A second message type or MD5 on a topic: roscore refuses the connection (`md5sum mismatch`) | Each type and each version (MD5) is its own stream of the topic: both are delivered, each to its own subscribers, and two versions of a message can run side by side during a migration. A subscriber whose version nobody publishes gets nothing; its counters (`otherSchemas`) and its `~/state` row (`other_schemas`) name the version that is published, and after 5 s without a publisher of its own it logs `topic '<t>' has publishers, none of type <T> (<md5>): published are <T> (<other md5>)`. Its input is `NeverArrived` if it never had a publisher, else `Stale` after its `silence_ms`, or `Usable` on the last value when it has no limit (cpp-api.md §5) |
@@ -712,8 +729,8 @@ A step stamps its messages with `time.stamp`. Outside a step,
 `hypha::toRosTime(hypha::now())` converts the node's time; it throws only for a time
 no clock gives (negative, or after 2106).
 
-A service name does not resolve from the ports tables. Read it with
-`hypha::config().required<std::string>("<key>")` and pass the value.
+A service name resolves from the ports tables: `[ports.servers.<port>]` and
+`[ports.clients.<port>]`, key `service` (cpp-api.md §8).
 
 ---
 
@@ -739,6 +756,7 @@ of ROS's own; it cannot include both. Make only these edits:
 | `boost::shared_ptr<Msg>`, `boost::make_shared<Msg>(...)` | `std::shared_ptr<Msg>`, `std::make_shared<Msg>(...)`. The generated `Msg::Ptr` is `std::shared_ptr` (for example `std_msgs/Float64.h`). | Glue only (the paragraph below the table): change the namespace and the include (`<memory>`). Nothing else. |
 | `#include <sensor_msgs/point_cloud2_iterator.h>`, `<sensor_msgs/point_field_conversion.h>` (`PointCloud2Modifier`, `PointCloud2Iterator`, `PointCloud2ConstIterator`, `readPointCloud2BufferValue`) | Works unchanged: the SDK installs ROS's own headers beside the messages (cpp-api.md §1.1) | None. Do not write a field table or byte copies by hand. For ROS 2 code, `<sensor_msgs/point_cloud2_iterator.hpp>`. |
 | `#include <sensor_msgs/image_encodings.h>`, `<sensor_msgs/distortion_models.h>` (`image_encodings::BGR8`, `bitDepth`, `numChannels`, `isColor`, `isMono`, `isBayer`, `distortion_models::PLUMB_BOB`) | Works unchanged: the SDK installs ROS's own headers beside the messages (cpp-api.md §1.1) | None. Do not copy the file into the node. For ROS 2 code, `.hpp`. |
+| `camera_info_manager::CameraInfoManager` (`loadCameraInfo(url)`, `getCameraInfo()`, `setCameraInfo()`, `isCalibrated()`), `camera_calibration_parsers::readCalibration(file, name, info)` / `writeCalibration`, the `camera_info_url` parameter and the calibration YAML | `#include <hypha/camera_info.h>`; `std::optional<sensor_msgs::CameraInfo> info = hypha::readCameraInfoIfPresent(hypha::config().path("camera_info_url"), &cameraName);` in the constructor or `setup()` (no value: uncalibrated, as `isCalibrated()` false), `hypha::readCameraInfo(path)` where the file is required, and `hypha::writeCameraInfo(path, info, cameraName)` in the `set_camera_info` handler. The calibration is TOML with the same keys (cpp-api.md section 9, *Camera calibration*); a calibration in the node's own file is a `[camera_info]` table, `hypha::readCameraInfo(hypha::config("camera_info"))` | Convert the YAML once by hand, key by key: `image_width: 640` becomes `image_width = 640`, likewise `image_height`, `binning_x`, `binning_y`; `camera_name: left` becomes `camera_name = "left"` and `distortion_model: plumb_bob` becomes `distortion_model = "plumb_bob"` (TOML text is quoted); each matrix block (`camera_matrix`, `distortion_coefficients`, `rectification_matrix`, `projection_matrix`) with `rows`, `cols` and `data: [...]` becomes the key with its `data` as a flat array, `camera_matrix = [fx, 0, cx, 0, fy, cy, 0, 0, 1]` (9 numbers for `camera_matrix` and `rectification_matrix`, 12 for `projection_matrix`, the length of `data` for `distortion_coefficients`); drop `rows` and `cols`, the reader checks the length; a `roi:` block becomes a `[roi]` table at the end of the file, `do_rectify = true` or `false`. Name the file `.toml`, beside the parameter file, and write its path in `camera_info_url`, not a `file://` or `package://` URL. `header` is empty: set `frame_id` and the stamp when sending. A bad file throws `ConfigError` naming the file and the key, and the node exits 78; a leftover `rows`/`cols`/`data` block is refused with the flat form to write. A missing file is no error with `readCameraInfoIfPresent`: log that the camera is uncalibrated, as `camera_info_manager` warns |
 | A header-only library that ROS installs but that is not ROS API, such as `tf2/LinearMath` (`tf2::Quaternion`, `tf2::Matrix3x3`) | The same headers, copied into the node as third-party files with their licence. The SDK ships no math types. | Keep every use in the logic. In the copied headers edit only their ROS lines (`#include <ros/macros.h>` goes, `ROS_DEPRECATED` becomes `[[deprecated]]`), and list the copy and those edits in the change description. |
 | `std::mutex` that only guards callbacks | No mutex. | Delete the mutex and its lock calls. Callbacks of one `WaitSet` never run at the same time (execution-model.md section 10.1), and a cycle step runs on that `WaitSet` (execution-model.md section 6.1). Keep a mutex only where a worker thread shares the data. |
 | `pub.publish(msg);` on a plain `Publisher` (`publish` is `[[nodiscard]]`, `hypha/publisher.h`) | `pub.publishOrWarn(msg);` | A refused message is logged as a warning with the topic and the status, at most once a second for each publisher, and the call returns `false`. Use `if (!pub.publish(msg)) { ... }` with `pub.lastPublishStatus()` when the node reacts to a refusal. `publish` stays `[[nodiscard]]`: a dropped result is a silent failure. A cycle `Output::send` returns nothing, so this row does not apply to it. |
@@ -755,7 +773,9 @@ field. The SDK ships no Boost, so the node's
 own build must provide the Boost headers that its logic includes.
 
 A message type that hypha does not ship becomes a `.msg` file of the node and
-a `hypha_generate_messages()` call. Copy the `.msg` file without changes.
+a `hypha_generate_messages()` call. Copy the `.msg` file without changes. A standard
+service that hypha ships (`nav_msgs/GetMap`, `sensor_msgs/SetCameraInfo`, ...) is not
+copied: it is used under its ROS name.
 
 A `bool` field decodes as ROS 1 decodes it: a zero byte is `false`, and every
 other byte is `true`. Some ROS 1 producers send a nonzero byte other than 1
@@ -831,8 +851,9 @@ hypha has no equivalent for these. Stop and ask the user before you continue:
 - `actionlib`.
 - `nodelet` and in-process zero-copy between nodes. hypha nodes are processes;
   shared memory gives zero-copy between them.
-- A service whose caller blocks on the reply. hypha has no RPC: the call becomes a
-  request topic and a reply topic, and the caller a state over steps.
+- A service whose caller blocks on the reply inside a callback. A plain node calls with
+  `call(request, onResult)`; a cycle with a `Calls` port, and the caller becomes a state
+  over steps.
 - Missing or stale input with no rule in the ROS node. Ask which output is
   safe.
 - A per-message latency requirement that a triggered step does not meet on the
@@ -855,8 +876,8 @@ Report these:
 - **Blocker:** the node cannot be migrated without the missing item. Example:
   a lookup that must wait for its transform.
 - **Gap:** the migration is possible, but a hypha feature would make it
-  smaller or safer. Example: a service name
-  that does not resolve from the ports tables.
+  smaller or safer. Example: a service called from a cycle step, which needs the
+  request and reply topics until the cycle ports exist.
 - **Defect:** hypha does not do what its documentation says. Example: a
   verdict, a status code or a rate that differs from the documented one.
 - **Documentation fault:** a page in `docs/` that describes an API that does

@@ -410,6 +410,11 @@ turn.
 - **No timeout in the node.** A held deadline waits for as long as its upstream does not report. The
   player's `--timeout` (5 s by default) is the one bound: it names the participants that do not
   advance and ends the replay (6.1).
+- **Cycles of one node.** Two cycles of one `WaitSet` joined by a topic report as one node, so the
+  node-wide hold cannot order them; the `WaitSet` holds the reader itself, as if the sender were an
+  upstream node: a deadline `D` waits for the sender's deadlines before `D`, a triggered step at `t`
+  for the sender's step at `t`, and the turn repeats their timers while a held step can run
+  (`execution-model.md` §11.1). A client and its server in one `WaitSet` are held the same way.
 - **Scope.** The hold covers the outputs of cycle steps. A plain callback's outputs carry the clock
   when it ran, and their publisher is no upstream (§5).
 - **Progress input.** It holds 64 reports between two drains and keeps the newest report of each

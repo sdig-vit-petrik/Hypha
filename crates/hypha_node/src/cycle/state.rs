@@ -121,6 +121,8 @@ pub(crate) struct CycleStep {
     pub(crate) trigger_step: Option<hypha_cycle::TriggerStep>,
     /// The `/clock` driver settings of a simulator cycle. `None` for any other cycle.
     pub(crate) driver: Option<super::DriverSetup>,
+    /// The cycle's servers (`Requests` ports) and clients (`Calls` ports).
+    pub(crate) services: crate::service::CycleServices,
 }
 
 impl Cycle {
@@ -159,6 +161,20 @@ impl Cycle {
     /// The step state, shared. `InvalidState` inside a step.
     pub(crate) fn step_ref(&self) -> Result<Ref<'_, CycleStep>, Error> {
         self.step.try_borrow().map_err(|_| Error::InvalidState)
+    }
+}
+
+impl CycleStep {
+    /// True when an input of this cycle reads a stream that an output of `other` sends on:
+    /// `other` is then an upstream of this cycle in its `WaitSet`. Bindings fixed at
+    /// commit: no lock, no allocation.
+    pub(crate) fn reads_topic_of(&self, other: &Self) -> bool {
+        self.inputs.iter().filter_map(|source| source.subscriber.as_deref()).any(|subscriber| {
+            other
+                .outputs
+                .iter()
+                .any(|output| subscriber.port.reads_stream_of(&output.publisher.port))
+        })
     }
 }
 

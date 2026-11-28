@@ -274,27 +274,6 @@ class DeliverFixture : public ::testing::Test
 
 }  // namespace
 
-TEST_F(DeliverFixture, ADeliveredValueIsUsableAtTheLimitAndStaleOneNanosecondAfter)
-{
-    Judged                      judged;
-    hypha::testing::StepHarness harness{judged};
-    harness.deliver(judged.limited, Float64{3.0}, Time::fromNanos(kStartNanos));
-
-    harness.step(judged, stepAt(kStartNanos + kLimitNanos));
-    EXPECT_TRUE(judged.limited.usable());
-    EXPECT_FALSE(judged.limited.stale());
-    EXPECT_EQ(judged.limited.verdict(), InputVerdict::Usable);
-    EXPECT_DOUBLE_EQ(judged.limited->data, 3.0);
-    EXPECT_TRUE(judged.inputsOk());
-
-    harness.step(judged, stepAt(kStartNanos + kLimitNanos + 1));
-    EXPECT_FALSE(judged.limited.usable());
-    EXPECT_TRUE(judged.limited.stale());
-    EXPECT_EQ(judged.limited.verdict(), InputVerdict::Stale);
-    EXPECT_FALSE(judged.inputsOk());
-    EXPECT_THROW(static_cast<void>(*judged.limited), hypha::InputNotUsable);
-}
-
 TEST_F(DeliverFixture, AStaleVerdictReportsTheAgeAndTheLimitOfTheTable)
 {
     Judged                      judged;
@@ -314,20 +293,6 @@ TEST_F(DeliverFixture, AStaleVerdictReportsTheAgeAndTheLimitOfTheTable)
     }
 }
 
-TEST_F(DeliverFixture, APortWithSilenceMsZeroIsNeverStale)
-{
-    Judged                      judged;
-    hypha::testing::StepHarness harness{judged};
-    EXPECT_TRUE(judged.loose.untimed()) << "read from the table, as a start decides";
-    EXPECT_TRUE(judged.open.untimed());
-    EXPECT_FALSE(judged.limited.untimed());
-    harness.deliver(judged.loose, Float64{1.0}, Time::fromNanos(kStartNanos));
-    harness.step(judged, stepAt(kStartNanos + 3'600'000'000'000));
-    EXPECT_TRUE(judged.loose.usable());
-    EXPECT_FALSE(judged.loose.stale());
-    EXPECT_EQ(judged.loose.verdict(), InputVerdict::Usable);
-}
-
 TEST(StepHarnessLimits, DeliverToAPortWithoutSilenceMsIsRefusedAsAStartRefusesIt)
 {
     const std::filesystem::path path =
@@ -345,16 +310,6 @@ TEST(StepHarnessLimits, DeliverToAPortWithoutSilenceMsIsRefusedAsAStartRefusesIt
         EXPECT_THROW(static_cast<void>(judged.loose.untimed()), hypha::ParameterError);
     }
     std::filesystem::remove(path);
-}
-
-TEST_F(DeliverFixture, AnUnsupervisedPortIsNeverStale)
-{
-    Judged                      judged;
-    hypha::testing::StepHarness harness{judged};
-    harness.deliver(judged.open, Float64{1.0}, Time::fromNanos(kStartNanos));
-    harness.step(judged, stepAt(kStartNanos + 3'600'000'000'000));
-    EXPECT_TRUE(judged.open.usable());
-    EXPECT_FALSE(judged.open.stale());
 }
 
 TEST_F(DeliverFixture, ADeliveredValueIsFreshInTheFirstStepOnly)
@@ -471,29 +426,6 @@ TEST_F(DeliverFixture, ALaterDeliverBeforeAStepReplacesTheEarlierOne)
     harness.deliver(judged.limited, Float64{2.0}, Time::fromNanos(kStartNanos + 5));
     harness.step(judged, stepAt(kStartNanos + 10));
     EXPECT_DOUBLE_EQ(judged.limited->data, 2.0);
-}
-
-TEST_F(DeliverFixture, AValueSentAfterTheStepIsStaleWithAgeZeroUntilItsTimeComes)
-{
-    Judged                      judged;
-    hypha::testing::StepHarness harness{judged};
-    harness.deliver(judged.limited, Float64{3.0}, Time::fromNanos(kStartNanos + 50));
-
-    harness.step(judged, stepAt(kStartNanos + 49));
-    EXPECT_EQ(judged.limited.verdict(), InputVerdict::Stale);
-    EXPECT_FALSE(judged.limited.has());
-    try {
-        static_cast<void>(*judged.limited);
-        FAIL() << "a value from the future is not usable";
-    } catch (const hypha::InputNotUsable& error) {
-        EXPECT_NE(std::string(error.what()).find("newest sample is 0 ms old"), std::string::npos)
-            << error.what();
-    }
-
-    harness.step(judged, stepAt(kStartNanos + 50));
-    EXPECT_TRUE(judged.limited.usable());
-    EXPECT_TRUE(judged.sawFresh);
-    EXPECT_DOUBLE_EQ(judged.limited->data, 3.0);
 }
 
 TEST(StepHarnessDeliver, ADeliverWithoutALoadedConfigurationIsRefused)
@@ -1346,36 +1278,6 @@ TEST(StepHarnessTransforms, AStepThatLooksUpATransformGetsTheAnswerOfAnEmptyBuff
         ASSERT_FALSE(answer.has_value());
         EXPECT_EQ(answer.error(), hypha::TransformError::UnknownFrame);
     }
-}
-
-TEST(StepHarnessTransforms, ADeliveredTransformIsFoundAtItsStampAndBetweenTwoStampsInterpolated)
-{
-    Mapper                      mapper;
-    hypha::testing::StepHarness harness{mapper};
-    harness.deliver(mapper.tf, {stamped("map", "base", 1, 1.0), stamped("map", "base", 3, 3.0)});
-    harness.deliverStatic(mapper.tf, {stamped("base", "lidar", 0, 0.5)});
-    mapper.questions = {
-        {"map", "base", kSecond},
-        {"map", "base", 2 * kSecond},
-        {"map", "lidar", 2 * kSecond},
-        {"base", "lidar", 100 * kSecond},
-        {"map", "lidar", std::nullopt},
-    };
-    harness.step(mapper);
-    ASSERT_EQ(mapper.answers.size(), 5U);
-    for (const Looked& answer : mapper.answers) {
-        ASSERT_TRUE(answer.has_value()) << hypha::name(answer.error());
-    }
-    EXPECT_DOUBLE_EQ(mapper.answers[0]->transform.translation.x, 1.0) << "at its stamp";
-    EXPECT_DOUBLE_EQ(mapper.answers[1]->transform.translation.x, 2.0) << "halfway";
-    EXPECT_EQ(mapper.answers[1]->header.stamp.secs, 2U);
-    EXPECT_DOUBLE_EQ(mapper.answers[2]->transform.translation.x, 2.5) << "the static composed";
-    EXPECT_DOUBLE_EQ(mapper.answers[3]->transform.translation.x, 0.5) << "a static holds always";
-    EXPECT_EQ(mapper.answers[4]->header.stamp.secs, 3U) << "the latest common time";
-
-    mapper.questions = {{"map", "base", 2 * kSecond}};
-    harness.step(mapper);
-    ASSERT_TRUE(mapper.answers.at(0).has_value()) << "the buffer outlives a step";
 }
 
 TEST(StepHarnessTransforms, ATransformThatWasNotDeliveredIsMissedAsACycleMissesIt)

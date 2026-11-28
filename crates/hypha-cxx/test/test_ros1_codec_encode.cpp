@@ -1,3 +1,4 @@
+// test-layer: unit (no node, no bus, no C function; #336)
 // ROS 1 encoder tests: the wire bytes, the sized encode path, and the checked writer.
 // Each message is checked against the golden arrays in ros1_codec_golden.h on the checked
 // path (encode), the sized path (detail::encodeUnchecked) and encodeInto.
