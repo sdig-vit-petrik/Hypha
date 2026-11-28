@@ -232,6 +232,15 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   The bytes of a sample read in place move (`PinnedPayload::copy_out`, `release`) only in a
   drain, between steps: a C pointer from `hypha_cycle_image_sample` is valid in its step
   only, and the C++ `ViewPtr` of a step copies its bytes at the step's end when it is held.
+- **A number inside a received or loaned array is not aligned.** The ROS 1 encoding has no
+  padding: `PointCloud2::data` starts after the header's strings and the `fields` array,
+  at any byte offset, and a field may sit at an odd offset of a point. A cast pointer
+  (`reinterpret_cast<const float*>(view->data.data())`) is undefined behaviour there, which
+  UBSan reports and a compiler may exploit when it vectorises. `PointCloud2Iterator` and
+  `PointCloud2ConstIterator` copy with `std::memcpy` (`hypha::UnalignedRef`, #291), so a
+  port that uses them is safe; any other reader of `data` does the same, or calls
+  `Loan::put`. `test_point_cloud2_unaligned.cpp` runs under UBSan
+  (`-DHYPHA_TYPED_LOAN_SANITIZE=ON`, `test_typed_loan_sanitized`).
 - **The transport uses `iceoryx2::service::ipc_threadsafe::Service`, not `ipc`.**
   `ipc` ports are `!Send`, and an executor worker serving an endpoint the
   application created on another thread would then be undefined behaviour.
