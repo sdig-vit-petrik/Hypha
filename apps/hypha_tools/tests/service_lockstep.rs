@@ -7,6 +7,10 @@
 //! `hypha topic echo`, or in the pass of a `--loop`, print the same lines. The lines also
 //! show the strict cut: a request stamped `t` is served at the server's first step after
 //! `t`, and its answer is read at the client's first step after that.
+//!
+//! The same participant joins two cycles of one node by a topic (#307,
+//! `docs/execution-model.md` §11.1): the reader's steps read what the sender's earlier steps
+//! sent, whatever the chunk and whichever cycle a turn runs first.
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -274,4 +278,119 @@ fn a_loop_repeats_each_pass_after_the_participants_restart() {
     for path in outputs.iter().chain([&recording]) {
         let _ = std::fs::remove_file(path);
     }
+}
+
+/// The fact lines of each cycle of one participant, by the name each line starts with: two
+/// cycles of one node print into one file, in an order that only the turns decide.
+fn by_cycle(lines: &[String]) -> BTreeMap<String, Vec<String>> {
+    let mut cycles: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for line in lines {
+        let who = line.split_whitespace().next().unwrap_or("").to_owned();
+        cycles.entry(who).or_default().push(line.clone());
+    }
+    cycles
+}
+
+/// Replay the `topic` participant built by `peer` for each sender in `senders`, at
+/// `--chunk 50` and `--chunk 200`, and check that each cycle prints the same lines in every
+/// run; return them.
+fn linked_alike(
+    senders: &[&'static str],
+    peer: impl Fn(&'static str) -> Peer,
+) -> BTreeMap<String, Vec<String>> {
+    let mut first: Option<(String, BTreeMap<String, Vec<String>>)> = None;
+    for &sender in senders {
+        for chunk_ms in [50, 200] {
+            let lines = replay(&[peer(sender)], Run { chunk_ms, echo: false });
+            let cycles = by_cycle(&lines[0]);
+            let what = format!("sender {sender}, --chunk {chunk_ms}");
+            match &first {
+                None => first = Some((what, cycles)),
+                Some((base, expected)) => {
+                    for (who, lines) in expected {
+                        assert_eq!(
+                            Some(lines),
+                            cycles.get(who),
+                            "the {who} cycle differs between {base} and {what}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    first.expect("a run").1
+}
+
+/// The value the reader read at each of its steps.
+fn reader_reads(cycles: &BTreeMap<String, Vec<String>>) -> Vec<(i64, String)> {
+    let reads = each(&cycles["reader"], "read");
+    assert!(reads.len() >= 90, "the reader ran too few steps: {reads:?}");
+    reads
+}
+
+/// A rate cycle reads at `t` the sample its node's other cycle sent at `t - 10 ms`, whatever
+/// the chunk and whichever cycle a turn runs first (#307).
+#[test]
+fn a_topic_between_two_cycles_of_one_node_is_read_alike_whatever_the_chunk_and_the_order() {
+    let cycles = linked_alike(&["main", "second"], |sender| {
+        Peer::linked(&format!("link_{sender}"), sender, "rate")
+    });
+    let reads = reader_reads(&cycles);
+    for (t, read) in reads.iter().skip(1) {
+        assert_eq!(read, &(t - 10).to_string(), "the reader's step at {t}: {reads:?}");
+    }
+}
+
+/// Two cycles of one node that each read the other's topic: both advance, each reading the
+/// other's step one period back.
+#[test]
+fn a_feedback_loop_between_two_cycles_of_one_node_advances_and_repeats() {
+    let cycles = linked_alike(&["main", "second"], |sender| {
+        Peer::linked(&format!("loop_{sender}"), sender, "rate").feedback()
+    });
+    let reads = reader_reads(&cycles);
+    let backs = each(&cycles["sender"], "back");
+    assert!(backs.len() >= 90, "the sender ran too few steps: {backs:?}");
+    for (t, read) in reads.iter().skip(1).chain(backs.iter().skip(1)) {
+        assert_eq!(read, &(t - 10).to_string(), "the step at {t}: {reads:?} {backs:?}");
+    }
+}
+
+/// A triggered reader: on its node's other cycle's samples it reads the one that stepped
+/// it; on the player's ticks, a step at `t` reads the other cycle's sample of `t - 10 ms`
+/// (an input cut strictly before `t`) or of `t` (one read through `t`, #299), alike in
+/// every run.
+#[test]
+fn a_triggered_cycle_reads_the_topic_of_a_cycle_of_its_node_alike() {
+    let cycles = linked_alike(&["main", "second"], |sender| {
+        Peer::linked(&format!("trig_link_{sender}"), sender, "link")
+    });
+    let reads = reader_reads(&cycles);
+    for (t, read) in &reads {
+        assert_eq!(read, &t.to_string(), "the reader's step at {t}: {reads:?}");
+    }
+    let cycles = linked_alike(&["main", "second"], |sender| {
+        Peer::linked(&format!("trig_tick_{sender}"), sender, "tick")
+    });
+    let reads = reader_reads(&cycles);
+    // The first tick comes before the other cycle's first step, the second with it.
+    for (t, read) in reads.iter().skip(2) {
+        let read: i64 = read.parse().unwrap_or_else(|_| panic!("one sample at {t}: {reads:?}"));
+        assert!(read == t - 10 || read == *t, "the reader's step at {t} read {read}: {reads:?}");
+    }
+}
+
+/// A topic and a service between the same two cycles of one node: the topic is read one
+/// period back, the answer at the step after the serve.
+#[test]
+fn a_topic_and_a_service_between_two_cycles_of_one_node_repeat_exactly() {
+    let cycles = linked_alike(&["main", "second"], |sender| {
+        Peer::linked(&format!("mix_{sender}"), sender, "rate")
+            .linked_calls(&service(&format!("mix_{sender}")))
+    });
+    let reads = reader_reads(&cycles);
+    for (t, read) in reads.iter().skip(1) {
+        assert_eq!(read, &(t - 10).to_string(), "the reader's step at {t}: {reads:?}");
+    }
+    assert_strict_hops(&cycles["reader"], 1);
 }

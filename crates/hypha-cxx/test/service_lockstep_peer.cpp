@@ -2,7 +2,8 @@
 // (apps/hypha_tools/tests/service_lockstep.rs, docs/design/native-services.md §4, FSR-44).
 //
 //   HYPHA_USE_SIM_TIME=1 SERVICE_PEER_ROLE=<role> [SERVICE_PEER_TRIGGERED=1] \
-//       [SERVICE_PEER_PAIR_RATE=<hz>] [SERVICE_PEER_OUTPUT=1] \
+//       [SERVICE_PEER_PAIR_RATE=<hz>] [SERVICE_PEER_OUTPUT=1] [SERVICE_PEER_SENDER=...] \
+//       [SERVICE_PEER_READER=...] [SERVICE_PEER_LOOP=1] [SERVICE_PEER_CALLS=1] \
 //       service_lockstep_peer <parameters.toml>
 //
 // A cycle node on simulated time, run by hypha::runNode, at `[cycle] rate_hz` or, with
@@ -23,12 +24,21 @@
 //           port `call`: their requests tie on stamp and node.
 //   plain   no cycle: a plain server of `serve` that answers `<text>@plain`; it takes no
 //           part in the replay.
+//   topic   two cycles of one node joined by a topic (#307): the sender sends its step's
+//           time in ms on `link`, the reader prints what its `Arrivals` port `link_in`
+//           holds. SERVICE_PEER_SENDER=main|second picks the cycle that sends, and so the
+//           turn order; SERVICE_PEER_READER=rate|tick|link steps the reader at the rate,
+//           on each `tick`, or on each sample of `link_in`. SERVICE_PEER_LOOP=1 closes a
+//           loop: the reader sends on `back`, which the sender reads as `back_in`. With
+//           SERVICE_PEER_CALLS=1 the sender also serves `serve` and the reader calls on
+//           `call`, as `server` and `client` do.
 
 #include "hypha/cycle_node.h"
 #include "hypha/hypha.h"
 #include <hypha_test_srvs/Echo.h>
 
 #include <std_msgs/UInt32.h>
+#include <std_msgs/UInt64.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -214,6 +224,106 @@ class ServicePeer final : public hypha::CycleNode
     uint32_t                                  steps_{0};
 };
 
+/// The values of @p port, as `a,b,c`, `-` for none.
+std::string values(const hypha::Arrivals<std_msgs::UInt64>& port)
+{
+    std::string text;
+    for (const std_msgs::UInt64& sample : port.samples()) {
+        text += (text.empty() ? "" : ",") + std::to_string(sample.data);
+    }
+    return text.empty() ? std::string("-") : text;
+}
+
+/// Two cycles of one node joined by a topic: the role `topic`.
+class TopicPair final : public hypha::CycleNode
+{
+  public:
+    TopicPair()
+        : senderIsMain_(environment("SERVICE_PEER_SENDER") != "second")
+        , reader_(environment("SERVICE_PEER_READER"))
+    {
+        hypha::Cycle& sender =
+            this->senderIsMain_ ? static_cast<hypha::Cycle&>(*this) : this->second_;
+        hypha::Cycle& reader =
+            this->senderIsMain_ ? this->second_ : static_cast<hypha::Cycle&>(*this);
+        this->link_.emplace(sender, "link");
+        // A turn may run a chunk of the sender's steps before the reader drains: 20 at
+        // `--chunk 200`, which the queue must hold.
+        this->linkIn_.emplace(reader, "link_in", hypha::perStep(32));
+        if (environment("SERVICE_PEER_LOOP") == "1") {
+            this->back_.emplace(reader, "back");
+            this->backIn_.emplace(sender, "back_in", hypha::perStep(32));
+        }
+        if (environment("SERVICE_PEER_CALLS") == "1") {
+            this->requests_.emplace(sender, "serve");
+            this->calls_.emplace(reader, "call");
+        }
+        if (this->reader_ == "tick") {
+            this->tick_.emplace(reader, "tick");
+            reader.setTrigger(*this->tick_);
+        } else if (this->reader_ == "link") {
+            reader.setTrigger(*this->linkIn_);
+        }
+    }
+
+    void setup(hypha::Node& node) override
+    {
+        print("start topic");
+        const bool secondReads = this->senderIsMain_;
+        if (!secondReads || this->reader_.empty() || this->reader_ == "rate") {
+            const std::string rate = environment("SERVICE_PEER_PAIR_RATE");
+            this->second_.setRate(hypha::Hz(rate.empty() ? 100.0 : std::stod(rate)));
+        }
+        const auto started = this->second_.start(node, [this](const hypha::CycleTime& time) {
+            this->senderIsMain_ ? this->read(time) : this->send(time);
+        });
+        if (!started) {
+            this->failRun(started.error());
+        }
+    }
+
+    void step(const hypha::CycleTime& time) override
+    {
+        this->senderIsMain_ ? this->send(time) : this->read(time);
+    }
+
+  private:
+    void send(const hypha::CycleTime& time)
+    {
+        const std::string at = " t=" + std::to_string(millis(time));
+        if (this->backIn_) {
+            print("sender" + at + " back " + values(*this->backIn_));
+        }
+        if (this->requests_) {
+            serve(*this->requests_, time, "sender");
+        }
+        this->link_->send(std_msgs::UInt64{static_cast<uint64_t>(millis(time))});
+    }
+
+    void read(const hypha::CycleTime& time)
+    {
+        print("reader t=" + std::to_string(millis(time)) + " read " + values(*this->linkIn_));
+        if (this->back_) {
+            this->back_->send(std_msgs::UInt64{static_cast<uint64_t>(millis(time))});
+        }
+        if (this->calls_) {
+            this->caller_.step(*this->calls_, time, "reader");
+        }
+    }
+
+    bool                                      senderIsMain_;
+    std::string                               reader_;
+    hypha::Cycle                              second_{"second"};
+    std::optional<Output<std_msgs::UInt64>>   link_;
+    std::optional<Arrivals<std_msgs::UInt64>> linkIn_;
+    std::optional<Output<std_msgs::UInt64>>   back_;
+    std::optional<Arrivals<std_msgs::UInt64>> backIn_;
+    std::optional<Arrivals<std_msgs::UInt32>> tick_;
+    std::optional<Requests<Echo>>             requests_;
+    std::optional<Calls<Echo>>                calls_;
+    Caller                                    caller_{"c"};
+};
+
 /// A plain server that takes no part in the replay.
 class PlainServer final : public hypha::ApplicationNode
 {
@@ -237,6 +347,9 @@ int main(int argc, char** argv)
 {
     if (environment("SERVICE_PEER_ROLE") == "plain") {
         return hypha::runNode<PlainServer>(argc, argv, "service_lockstep_peer");
+    }
+    if (environment("SERVICE_PEER_ROLE") == "topic") {
+        return hypha::runNode<TopicPair>(argc, argv, "service_lockstep_peer");
     }
     return hypha::runNode<ServicePeer>(argc, argv, "service_lockstep_peer");
 }

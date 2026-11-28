@@ -124,26 +124,25 @@ impl CallbackDispatcher<'_> {
         let detached = self.detached;
         let id = triggered_state(self.registrations, attachment)?.cycle;
         let cycle: &Cycle = self.cycle(id)?;
-        let local = if sim {
-            self.local_service_limit(attachment, cycle)?
-        } else {
-            Limit { at: None, blocking: None }
-        };
+        let local = if sim { Some(self.local_limits(attachment, cycle)?) } else { None };
         // The steps reach the dispatcher's other fields directly, never the dispatcher as a whole.
         let state = triggered_state(self.registrations, attachment)?;
         state.observe(cycle, now)?;
         // A step at `t` reads its topics through `t`, so their upstreams must have reported
         // `t`; requests and responses are cut before `t`, so those upstreams need only
         // `t - 1 ns` (execution-model.md §6.6 item 5). Requests and responses step no cycle,
-        // so they bound the steps that may run, not the progress the cycle reports.
-        let (limit, admit) = if sim {
+        // so they bound the steps that may run, not the progress the cycle reports. A cycle
+        // of this `WaitSet` that sends a topic the cycle reads is a topic upstream: it may
+        // still send a trigger, so it bounds the progress too.
+        let (limit, admit) = if let Some(local) = local {
             let step = cycle.step_ref()?;
             let limits = state.upstream.settle(&step.inputs, &step.services, node)?;
             drop(step);
             cycle.step_mut()?.services.set_reporters(limits.reporters.clone());
-            let strict = limits.service.min(local).through_strict_edge();
-            let admit = limits.topic.clone().min(strict);
-            (limits.topic, admit)
+            let topic = limits.topic.min(local.topic);
+            let strict = limits.service.min(local.service).through_strict_edge();
+            let admit = topic.clone().min(strict);
+            (topic, admit)
         } else {
             (Limit { at: None, blocking: None }, Limit { at: None, blocking: None })
         };
@@ -156,6 +155,9 @@ impl CallbackDispatcher<'_> {
             TriggerClock::Host { wall, steady: now }
         };
         state.admit(cycle, clock)?;
+        if state.limit.at != limit.at {
+            self.limits_moved = self.limits_moved.wrapping_add(1);
+        }
         state.limit = limit;
         let mut decision = Progression::Continue;
         for &event in &state.events {

@@ -29,7 +29,7 @@ pub mod run;
 pub use run::{waitset_request_stop, waitset_run};
 mod claim;
 pub use claim::WaitSetClaim;
-mod service_edges;
+mod local_edges;
 mod services;
 pub(crate) use services::{ServiceTarget, attach_service, detach_service};
 pub mod timer_control;

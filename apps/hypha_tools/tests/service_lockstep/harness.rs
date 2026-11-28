@@ -108,6 +108,21 @@ pub(crate) struct Peer {
     pub(crate) output: Option<String>,
     /// The rate of the second cycle of a pair or a twin.
     pub(crate) pair_rate: Option<&'static str>,
+    /// The topics of a `topic` participant.
+    pub(crate) link: Option<Link>,
+}
+
+/// Two cycles of one node joined by a topic: the role `topic` of the peer.
+#[derive(Clone)]
+pub(crate) struct Link {
+    /// The cycle that sends on the topic: `main` (the node's cycle) or `second`.
+    pub(crate) sender: &'static str,
+    /// How the reader steps: `rate`, on each `tick`, or on each sample of the `link`.
+    pub(crate) reader: &'static str,
+    /// The reader sends back to the sender: a feedback loop.
+    pub(crate) feedback: bool,
+    /// The sender also serves the service the reader calls.
+    pub(crate) calls: bool,
 }
 
 impl Peer {
@@ -122,7 +137,62 @@ impl Peer {
             tick: None,
             output: None,
             pair_rate: None,
+            link: None,
         }
+    }
+
+    /// Two cycles of one node, the `sender` sending on a topic that the other reads,
+    /// stepping as `reader` says.
+    pub(crate) fn linked(label: &str, sender: &'static str, reader: &'static str) -> Self {
+        let mut peer = Self::new(label, "topic");
+        peer.link = Some(Link { sender, reader, feedback: false, calls: false });
+        peer
+    }
+
+    pub(crate) fn feedback(mut self) -> Self {
+        self.link.as_mut().expect("a linked peer").feedback = true;
+        self
+    }
+
+    /// The sender serves `service`, which the reader calls.
+    pub(crate) fn linked_calls(mut self, service: &str) -> Self {
+        self.link.as_mut().expect("a linked peer").calls = true;
+        self.serves = Some(service.to_owned());
+        self.calls = Some(service.to_owned());
+        self
+    }
+
+    /// The parameters of a `topic` participant.
+    fn link_parameters(&self, link: &Link) -> String {
+        let mut text = format!("[node]\nname = \"{}\"\n", self.name);
+        // The node's own cycle has a rate unless it is the reader and steps on triggers.
+        if link.sender == "main" || link.reader == "rate" {
+            text.push_str("[cycle]\nrate_hz = 100.0\n");
+        }
+        let topic =
+            |which: &str| format!("/svc_lockstep_{}_{}_{which}", std::process::id(), self.name);
+        let link_topic = topic("link");
+        let _ = write!(
+            text,
+            "[ports.outputs.link]\ntopic = \"{link_topic}\"\n[ports.inputs.link_in]\ntopic = \"{link_topic}\"\nsilence_ms = 1000\n"
+        );
+        if link.feedback {
+            let back = topic("back");
+            let _ = write!(
+                text,
+                "[ports.outputs.back]\ntopic = \"{back}\"\n[ports.inputs.back_in]\ntopic = \"{back}\"\nsilence_ms = 1000\n"
+            );
+        }
+        if link.reader == "tick" {
+            let _ = write!(text, "[ports.inputs.tick]\ntopic = \"{TICK}\"\nsilence_ms = 1000\n");
+        }
+        if let (Some(serves), Some(calls)) = (&self.serves, &self.calls) {
+            let _ = write!(
+                text,
+                "[ports.servers.serve]\nservice = \"{serves}\"\n[ports.clients.call]\nservice = \"{calls}\"\n"
+            );
+        }
+        text
     }
 
     /// Triggered by `topic` instead of [`TICK`].
@@ -158,6 +228,11 @@ impl Peer {
     }
 
     pub(crate) fn parameters(&self) -> PathBuf {
+        if let Some(link) = &self.link {
+            let path = scratch(&format!("{}.toml", self.name));
+            std::fs::write(&path, self.link_parameters(link)).expect("the peer's parameter file");
+            return path;
+        }
         let mut text = format!("[node]\nname = \"{}\"\n", self.name);
         if self.triggered {
             let tick = self.tick.as_deref().unwrap_or(TICK);
@@ -186,6 +261,10 @@ impl Peer {
             ("SERVICE_PEER_TRIGGERED", if self.triggered { "1" } else { "0" }),
             ("SERVICE_PEER_OUTPUT", if self.output.is_some() { "1" } else { "0" }),
             ("SERVICE_PEER_PAIR_RATE", self.pair_rate.unwrap_or("")),
+            ("SERVICE_PEER_SENDER", self.link.as_ref().map_or("", |link| link.sender)),
+            ("SERVICE_PEER_READER", self.link.as_ref().map_or("", |link| link.reader)),
+            ("SERVICE_PEER_LOOP", flag(self.link.as_ref().is_some_and(|link| link.feedback))),
+            ("SERVICE_PEER_CALLS", flag(self.link.as_ref().is_some_and(|link| link.calls))),
         ]
     }
 
@@ -199,6 +278,10 @@ impl Peer {
             .expect("the peer");
         Killed(child)
     }
+}
+
+fn flag(on: bool) -> &'static str {
+    if on { "1" } else { "0" }
 }
 
 /// A service name unique to this process.

@@ -643,13 +643,15 @@ names the cycle and the reason.
    upstream that also feeds the cycle a topic still has to report T. Without this a
    triggered client that calls a triggered server would hold for good: each would wait
    for the other to report T before its own step at T. A client and its server that are
-   cycles of one `WaitSet` hold each other in the same way, and the turn repeats their
-   timers while that lets a held step run, within the turn's step budget. Cycles of two
-   `WaitSet`s of one node report as one node and are not held: the cycle logs it, and their
-   replay is not deterministic. A peer that reports no progress (a tool, a plain node) is
+   cycles of one `WaitSet` hold each other in the same way, and so do two cycles of one
+   `WaitSet` joined by a topic (section 11.1): a triggered step at T waits for the cycle that
+   sends a topic it reads to have run its step at T. Cycles of two `WaitSet`s of one node
+   report as one node and are not held: for services the cycle logs it, and their replay is
+   not deterministic. A peer that reports no progress (a tool, a plain node) is
    no upstream: its requests and answers are read at the first step after they came.
 6. **Progress and loops.** A triggered cycle cannot know when its next trigger
-   comes. It reports at most the lowest clock its topic upstreams reported, and stays
+   comes. It reports at most the lowest clock its topic upstreams reported (a cycle of its
+   `WaitSet` that sends a topic it reads counts as one, section 11.1), and stays
    below its earliest pending trigger or fallback. A request or a response steps no
    cycle, so a service peer bounds which steps run, not the clock the cycle reports. A feedback loop made only of
    triggered cycles has no delay element: it holds for good, until the player's
@@ -987,6 +989,23 @@ host:
   the cycle still reports its clock up to that deadline (`replay-flow-control.md`,
   section 6.4). A held deadline has no time limit in the node: the player's
   `--timeout` names an upstream that stops reporting.
+- **Cycles of one `WaitSet` hold each other as two nodes do.** A turn runs all the due
+  deadlines of one cycle before the next cycle's, and the cycles of a node report one
+  progress, so the node-wide hold cannot order them. A cycle that reads a topic sent by
+  another cycle of its `WaitSet` (the same topic and stream, as the bindings fixed at
+  start give them) treats that cycle as an upstream: its deadline `D` waits until the
+  other cycle has run every deadline before `D`, its triggered step at T until the other
+  has run its step at T. A client and its server in one `WaitSet` hold each other in the
+  same way (section 6.6 item 5). The turn repeats the timers of these cycles while a held
+  step can run, within its step budget, and stops at a repeat that runs no step; the steps
+  still held run on the next turn. What a step reads therefore depends neither on
+  `--chunk` nor on the order of the cycles in the turn. A cycle that reads its own topic
+  is no upstream of itself: a step reads what its own earlier steps sent. The reader drains
+  its inputs at its own turn, so its queue must hold what the sender sends in the steps of
+  one turn, a chunk of `hypha play` (an `Arrivals` port's `perStep()`, 20 for a 100 Hz
+  sender at `--chunk 200`); a smaller queue fails the run with `SequenceGap`. A feedback loop
+  inside one node advances as one across nodes does, and a loop of triggered cycles alone
+  holds as in section 6.6 item 6. Cycles in two `WaitSet`s of one node are not held.
 - **A time base mismatch is reported.** A sample stamped more than 250 periods
   past a step's deadline can never be admitted. This is the usual sign of a
   publisher on wall time feeding a replay. The node logs

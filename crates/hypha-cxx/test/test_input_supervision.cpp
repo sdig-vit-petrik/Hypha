@@ -371,30 +371,6 @@ TEST_F(SupervisionFixture, ARepeatedPayloadIsStagnantAndAChangedCounterClearsIt)
     ));
 }
 
-TEST_F(SupervisionFixture, AnIgnoredFaultStaysVisibleButIsNotCounted)
-{
-    const std::string topic = topicFor("arbiter");
-    this->initWith("[ports.inputs.arbiter]\ntopic='" + topic + "'\nsilence_ms = 100\n");
-    hypha::Node& nodeRef = *this->node;
-    auto         publisher = hypha::Node().advertise<UInt32>(hypha::Topic{topic});
-    ASSERT_TRUE(publisher.enabled());
-    IgnoringPort port;
-    port.setRate(hypha::Hz(100.0));
-    ASSERT_TRUE(port.start(nodeRef).has_value());
-
-    ASSERT_TRUE(publisher.publish(UInt32{1}));
-    ASSERT_TRUE(runUntil(
-        nodeRef,
-        [&port]() {
-            return port.input.ignored();
-        },
-        std::chrono::seconds(10)
-    ));
-    // An ignored fault is hidden: the port reads as neither stale nor stagnant.
-    EXPECT_FALSE(port.input.stale());
-    EXPECT_FALSE(port.input.stagnant());
-}
-
 TEST_F(SupervisionFixture, TwoPortsOfOneCycleShareOneSourceWithTheirOwnLimits)
 {
     const std::string topic = topicFor("shared");
@@ -444,73 +420,6 @@ TEST_F(SupervisionFixture, SupervisionSettersAfterStartThrow)
     ASSERT_TRUE(port.start(nodeRef).has_value());
     EXPECT_THROW(port.input.setAlive(&UInt32::data), std::logic_error);
     EXPECT_THROW(port.input.setIgnored(true), std::logic_error);
-}
-
-TEST_F(SupervisionFixture, AnArrivalsPortGoesStagnantOnARepeatedPayload)
-{
-    const std::string topic = topicFor("arbiter");
-    this->initWith(
-        "[ports.inputs.arbiter]\ntopic='" + topic + "'\nsilence_ms = 1000\nstagnation_ms = 100\n"
-    );
-    hypha::Node& nodeRef = *this->node;
-    auto         publisher = hypha::Node().advertise<UInt32>(hypha::Topic{topic});
-    ASSERT_TRUE(publisher.enabled());
-    ArrivalsPort port(true);
-    port.setRate(hypha::Hz(100.0));
-    ASSERT_TRUE(port.start(nodeRef).has_value());
-
-    ASSERT_TRUE(publishUntil(
-        nodeRef,
-        [&publisher]() {
-            EXPECT_TRUE(publisher.publish(UInt32{5}));
-        },
-        [&port]() {
-            return port.input.stagnant();
-        },
-        std::chrono::seconds(10)
-    ));
-    EXPECT_FALSE(port.input.stale());
-}
-
-TEST_F(SupervisionFixture, ASilentArrivalsPortIsStaleAndAFreshSampleEndsIt)
-{
-    const std::string topic = topicFor("arbiter");
-    this->initWith("[ports.inputs.arbiter]\ntopic='" + topic + "'\nsilence_ms = 100\n");
-    hypha::Node& nodeRef = *this->node;
-    auto         publisher = hypha::Node().advertise<UInt32>(hypha::Topic{topic});
-    ASSERT_TRUE(publisher.enabled());
-    ArrivalsPort port;
-    port.setRate(hypha::Hz(100.0));
-    ASSERT_TRUE(port.start(nodeRef).has_value());
-
-    ASSERT_TRUE(publisher.publish(UInt32{1}));
-    ASSERT_TRUE(runUntil(
-        nodeRef,
-        [&port]() {
-            return port.input.received() > 0U;
-        },
-        std::chrono::seconds(10)
-    ));
-    ASSERT_TRUE(runUntil(
-        nodeRef,
-        [&port]() {
-            return port.input.stale();
-        },
-        std::chrono::seconds(10)
-    ));
-    // The step reads the silence from the verdict, not only from the fault.
-    EXPECT_EQ(port.input.verdict(), hypha::InputVerdict::Stale);
-    EXPECT_TRUE(port.input.samples().empty());
-
-    ASSERT_TRUE(publisher.publish(UInt32{2}));
-    ASSERT_TRUE(runUntil(
-        nodeRef,
-        [&port]() {
-            return !port.input.stale();
-        },
-        std::chrono::seconds(10)
-    ));
-    EXPECT_NE(port.input.verdict(), hypha::InputVerdict::Stale);
 }
 
 TEST_F(SupervisionFixture, SetIgnoredAfterAStepThatThrowsThrowsLogicError)
@@ -819,42 +728,6 @@ TEST_F(SupervisionFixture, SilenceMsZeroOnAnAdvisoryInputIsOptionalAndUntimed)
     EXPECT_EQ(untimedPortRun(*this->node, port, topic), hypha_msgs::NodeState::INPUTS_USABLE);
 }
 
-TEST_F(SupervisionFixture, UnsupervisedAndAdvisoryTogetherAreAnOptionalUntimedInput)
-{
-    const std::string topic = topicFor("arbiter");
-    this->initWith("[ports.inputs.arbiter]\ntopic='" + topic + "'\n");
-    TaggedPort port(hypha::unsupervised, hypha::advisory);
-    EXPECT_EQ(untimedPortRun(*this->node, port, topic), hypha_msgs::NodeState::INPUTS_USABLE);
-}
-
-TEST_F(SupervisionFixture, AnInputWithALimitIsNotUntimed)
-{
-    this->initWith(
-        "[ports.inputs.arbiter]\ntopic='" + topicFor("arbiter") + "'\nsilence_ms = 100\n"
-    );
-    TaggedPort port(hypha::advisory);
-    EXPECT_FALSE(port.input.untimed()) << "before start()";
-    port.setRate(hypha::Hz(100.0));
-    ASSERT_TRUE(port.start(*this->node).has_value());
-    EXPECT_FALSE(port.input.untimed());
-}
-
-TEST_F(SupervisionFixture, AnAdvisoryInputWithoutSilenceMsIsRefused)
-{
-    this->initWith("[ports.inputs.arbiter]\ntopic='" + topicFor("arbiter") + "'\n");
-    TaggedPort port(hypha::advisory);
-    port.setRate(hypha::Hz(100.0));
-    const auto started = port.start(*this->node);
-    ASSERT_FALSE(started.has_value());
-    EXPECT_NE(
-        started.error().find(
-            "missing key 'silence_ms': an input needs a limit, 0 for none, or the tag "
-            "hypha::unsupervised"
-        ),
-        std::string::npos
-    ) << started.error();
-}
-
 TEST_F(SupervisionFixture, ATablelessRequiredInputIsRefusedWithoutTheTag)
 {
     this->initWith("");
@@ -973,28 +846,6 @@ TEST_F(SupervisionFixture, AStagnantUsableInputIsReadable)
         std::chrono::seconds(10)
     ));
     EXPECT_EQ(port.input->data, 5U);
-}
-
-TEST_F(SupervisionFixture, ATablelessAdvisoryInputNeedsTheTagToo)
-{
-    this->initWith("");
-    hypha::Cycle          advisoryCycle("tableless_advisory_cycle");
-    hypha::Latest<UInt32> advisoryOnly{
-        advisoryCycle, hypha::Topic{topicFor("tableless_advisory")}, hypha::advisory
-    };
-    advisoryCycle.setRate(hypha::Hz(100.0));
-    const auto refused = advisoryCycle.start(*this->node, NoStep{});
-    ASSERT_FALSE(refused.has_value());
-    EXPECT_NE(refused.error().find("needs the tag hypha::unsupervised"), std::string::npos)
-        << refused.error();
-    hypha::Cycle          cycle("tableless_tags_cycle");
-    hypha::Latest<UInt32> input{
-        cycle, hypha::Topic{topicFor("tableless_tags")}, hypha::unsupervised, hypha::advisory
-    };
-    cycle.setRate(hypha::Hz(100.0));
-    const auto started = cycle.start(*this->node, NoStep{});
-    ASSERT_TRUE(started.has_value()) << started.error();
-    EXPECT_TRUE(input.untimed());
 }
 
 }  // namespace

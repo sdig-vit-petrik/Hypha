@@ -164,6 +164,20 @@ impl Cycle {
     }
 }
 
+impl CycleStep {
+    /// True when an input of this cycle reads a stream that an output of `other` sends on:
+    /// `other` is then an upstream of this cycle in its `WaitSet`. Bindings fixed at
+    /// commit: no lock, no allocation.
+    pub(crate) fn reads_topic_of(&self, other: &Self) -> bool {
+        self.inputs.iter().filter_map(|source| source.subscriber.as_deref()).any(|subscriber| {
+            other
+                .outputs
+                .iter()
+                .any(|output| subscriber.port.reads_stream_of(&output.publisher.port))
+        })
+    }
+}
+
 /// A publisher exclusively owned by one cycle output binding.
 pub(crate) struct CycleOutput {
     pub(crate) publisher: Box<HyphaPublisher>,
