@@ -1,3 +1,4 @@
+// test-layer: unit (no node, no bus, no C function; #336)
 #include "hypha_base/clock.h"
 
 #include <gtest/gtest.h>

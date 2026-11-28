@@ -179,8 +179,33 @@ MAX_PROD_ALLOWS = 72
 
 import re
 sleep_re = re.compile(r"\b(sleep|sleep_for|usleep|sleep_ms)\s*\(")
+# A C++ test of header-only code that starts no node, touches no bus and calls no C function
+# is that code's lowest layer (#336): it says so with UNIT_MARKER and then counts at the pure
+# layer. The script holds it to that: a marked file that uses any of UNIT_FORBIDDEN fails.
+UNIT_MARKER = "// test-layer: unit"
+UNIT_FORBIDDEN = re.compile(
+    r"\b(Node|runNode|CycleNode|ApplicationNode|StepHarness|ConfigContext|ConfigFile)\b"
+    r"|hypha::config\(|\bhypha_[a-z0-9_]+\("
+)
+
+
+def unit_cpp_test(path, text):
+    """True for a marked C++ unit test; a marked file that uses the bus is an error."""
+    if not path.endswith(".cpp") or UNIT_MARKER not in text:
+        return False
+    code = "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+    found = UNIT_FORBIDDEN.search(code)
+    if found:
+        ratchet_errors.append(
+            f"  {path}: marked '{UNIT_MARKER}' but uses '{found.group(0)}'; a unit test "
+            "starts no node and calls no C function"
+        )
+        return False
+    return True
+
 allow_re = re.compile(r"#!?\[allow\(")
 
+ratchet_errors = []
 total_test_lines = 0
 top_test_lines = 0
 test_sleeps = 0
@@ -192,7 +217,9 @@ for path in files:
         raw = open(path, "rb").read()
         n = raw.count(b"\n")
         total_test_lines += n
-        if path.startswith(("crates/hypha_ffi/", "crates/hypha-cxx/", "apps/hypha_tools/")):
+        top_layer = path.startswith(("crates/hypha_ffi/", "crates/hypha-cxx/", "apps/hypha_tools/"))
+        text = raw.decode("utf-8", errors="ignore")
+        if top_layer and not unit_cpp_test(path, text):
             top_test_lines += n
         if path not in SLEEP_ALLOWLIST:
             test_sleeps += len(sleep_re.findall(raw.decode("utf-8", errors="ignore")))
@@ -200,7 +227,6 @@ for path in files:
         text = open(path, "r", encoding="utf-8", errors="ignore").read()
         prod_allows += len(allow_re.findall(text))
 
-ratchet_errors = []
 if total_test_lines > 0:
     top_share = 100.0 * top_test_lines / total_test_lines
     if top_share > MAX_TOP_TEST_SHARE_PCT:
