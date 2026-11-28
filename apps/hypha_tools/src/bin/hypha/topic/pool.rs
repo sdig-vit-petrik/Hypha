@@ -34,7 +34,7 @@ fn report(args: &PoolArgs, pool: &PoolSize) -> String {
     format!(
         "policy: publishers {}, subscribers {} (+{UNDECLARED_SUBSCRIBER_SLOTS} observer slots), depth {}; \
          loans {}; messages of {} bytes\n\
-         pool of one publisher: {} samples of {} bytes (the message and 104 bytes of headers) = {}\n\
+         pool of one publisher: {} samples of {} bytes (the message, headers and alignment {}) = {}\n\
          the topic when all {} publishers run: {}\n",
         args.publishers,
         args.subscribers,
@@ -43,6 +43,7 @@ fn report(args: &PoolArgs, pool: &PoolSize) -> String {
         args.payload,
         pool.samples,
         pool.sample_bytes,
+        pool.sample_bytes.saturating_sub(args.payload),
         size_text(pool.bytes),
         args.publishers,
         size_text(total)
