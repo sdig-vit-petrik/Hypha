@@ -317,6 +317,90 @@ wrapper for `integrity.*`, `loan.*`). On host time a `node.last_sweep_end_nanos`
 stops moving shows that no thread runs the node's `WaitSet`; under simulated time it
 follows the replay clock, so on its own it shows nothing.
 
+### 2.5 Application status: `DiagnosticUpdater`
+
+`~/state` judges the inputs of a node. The conditions that only the application knows
+(the device is absent, the fix is lost, a rate is low) are named status tasks, as in ROS's
+`diagnostic_updater`, and go out as one `diagnostic_msgs/DiagnosticArray`: what a ROS
+`diagnostic_aggregator` reads on `/diagnostics`. `hypha/diagnostic_updater.h` (the updater
+and its tasks), `hypha/diagnostic_status.h` (the status a task fills) and
+`hypha/diagnostic_functions.h` (rate and stamp checks) are not in `hypha/hypha.h`; include
+what the node uses. Why this and not `~/state`: [features.md](features.md) section 4,
+"Application status".
+
+```cpp
+#include <hypha/hypha.h>
+#include <hypha/diagnostic_functions.h>
+#include <hypha/diagnostic_updater.h>
+
+class Driver final : public hypha::CycleNode
+{
+  public:
+    // [ports.outputs.diagnostics] topic = "/diagnostics"
+    Output<diagnostic_msgs::DiagnosticArray> diagnostics{*this, "diagnostics"};
+    hypha::DiagnosticUpdater                 updater{diagnostics};
+
+    Driver()
+    {
+        updater.setHardwareID("lidar");
+        updater.setPeriod(hypha::config().optional<double>("diagnostic_period", 1.0));
+        updater.add("Connection", this, &Driver::diagnoseConnection);
+    }
+
+    void step(const hypha::CycleTime&) override
+    {
+        updater.update();
+    }
+
+    void diagnoseConnection(hypha::DiagnosticStatusWrapper& status)
+    {
+        if (connected) {
+            status.summary(diagnostic_msgs::DiagnosticStatus::OK, "connected");
+        } else {
+            status.summary(diagnostic_msgs::DiagnosticStatus::ERROR, "device absent");
+        }
+        status.add("peer", peer);
+    }
+    // ...
+};
+```
+
+- **The sink.** The updater sends on an `Output<DiagnosticArray>` (in the step that calls
+  `update()`) or a `Publisher<DiagnosticArray>`; its topic is a line of the parameter file,
+  as for every port. A refused `Publisher::publish` throws `std::runtime_error` with the
+  status. An `ApplicationNode` calls `forceUpdate()` from `node.timer(...)`.
+- **Names.** Each status is named `<node name>: <task name>` and carries the
+  `hardware_id` ("unspecified" until `setHardwareID`), as ROS writes them: a `GenericAnalyzer`
+  matches on that. The array's `header.stamp` is the framework time of the update.
+- **Time.** `update()` runs the tasks when a period has passed (default 1 s). The first
+  call only starts the period, as ROS's timer does; `forceUpdate()` runs at once.
+  `update(Time)` takes the time (`CycleTime::now`); `update()` reads `hypha::now()`, which in
+  a step is the step's time, so a replay and a simulated clock decide it. Time that goes
+  back starts the period again.
+- **Failures are statuses.** A task that sets nothing reports ERROR "No message was set"; a
+  task that throws, ERROR "Exception in diagnostic task: <what>" with the values it had
+  added dropped; a level outside OK, WARN, ERROR, STALE, ERROR "invalid level n: ...". The
+  other tasks still run. A task that reports STALE reports it as itself.
+- **Tasks.** `add(name, function)`, `add(name, object, &Class::method)`, `add(task)` (a
+  `DiagnosticTask`, `FunctionDiagnosticTask` or `CompositeDiagnosticTask`; it must outlive the
+  updater), `removeByName`, `broadcast(level, message)`. `DiagnosticStatusWrapper` has
+  `summary`, `summaryf`, `mergeSummary`, `clearSummary`, `add` (a bool reads `True` or
+  `False`), `addf`, `clear`, and `now()`, the time of the update.
+- **Rate and stamp.** `FrequencyStatus` (`tick()` per event; ERROR with no event in the window,
+  WARN outside `[min * (1 - tolerance), max * (1 + tolerance)]`), `TimeStampStatus`
+  (`tick(stamp)`: the age of each stamp since the last update), `TopicDiagnostic` and
+  `HeaderlessTopicDiagnostic` (both, added to the updater): `scan.tick(msg.header.stamp)`
+  before `send`. `FrequencyStatusParam` takes pointers to the limits, as ROS does, so a
+  parameter may change them; they must outlive it. `DiagnosedPublisher` has no counterpart.
+- **One thread** calls the updater. `tick()` of a task may come from another.
+- **Policy.** `/diagnostics` has many publishers, so the type maps to `hypha::diagnosticsQos`
+  (64 publishers, 8 subscribers, depth 128, messages bounded to 64 KiB), as `/tf` does:
+  an aggregator's input needs a `perStep` for the burst of all publishers (section 5.4).
+
+Test a node with `testing::StepHarness`: `harness.sent(node.diagnostics)` holds the array
+of the step, and `update(Time)` or a `CycleTime` drives the clock
+(`crates/hypha-cxx/test/test_diagnostic_updater.cpp`).
+
 ## 3. Time and clock
 
 Pace periodic work with a cycle (section 5.4) or `Node::timer()`; there is no blocking
@@ -939,7 +1023,8 @@ struct hypha::QosOf<my_msgs::Image>
 ```
 
 - Every typed endpoint declares a policy: the `hypha::Qos` option of the port, else
-  `QosOf<M>::value`. hypha maps three types itself: `tf2_msgs/TFMessage` to `tfQos`,
+  `QosOf<M>::value`. hypha maps four types itself: `tf2_msgs/TFMessage` to `tfQos`,
+  `diagnostic_msgs/DiagnosticArray` to `diagnosticsQos`,
   and the node's own report types `NodeState` (`~/state`) and `NodeIntrospection`
   (`~/introspection`) to `reportQos` (2 publishers, 2 subscribers, depth 1, 1 KiB
   first slot: only tools read them, from the observer slots). An application cannot
@@ -1309,7 +1394,7 @@ The reference is the doc comments of the public headers; no build runs Doxygen
 (`docs/Doxyfile` renders them for a reader who has it). Every result type prints as a
 name: `Status::name()`, and `hypha::name()` of a `TransformError`, an `InputVerdict` or
 a `StopReason`; a value outside the enum reads `"Unknown"`. `<hypha/hypha.h>` includes
-all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hypha/testing.h`.
+all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h`, `hypha/testing.h` and the three `hypha/diagnostic_*.h`.
 
 | Header                                                                   | Holds                                                                                                                                                                                                |
 | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1322,6 +1407,7 @@ all of them but `hypha/cycle_transforms.h`, `hypha/transform_buffer.h` and `hyph
 | `hypha/cycle_node.h`                                                   | `CycleNode`; it includes `cycle_runtime.h` (`Cycle`), `cycle_latest.h`, `cycle_arrivals.h` (with `cycle_arrivals_merge.h`: `visitArrivalsInOrder`), `cycle_output.h`, `cycle_input.h` (with `cycle_sharing.h`: `sharing`), `cycle_supervision.h`, `cycle_port.h` |
 | `hypha/cycle_transforms.h`, `hypha/transform_buffer.h`, `hypha/transform_types.h`, `hypha/testing.h` | `Transforms`; `TransformBuffer`, `StaticTransformBroadcaster`; `TransformError`, `TransformTopics`; `testing::StepHarness` |
 | `hypha/raw_api.h`, `hypha/raw.h`                                     | Raw endpoints, `lookupDefinition`, `listNodes`; `RawSample`, `NodeInfo`, `Metric`, `SubscriberMetrics`                                                                                                          |
+| `hypha/diagnostic_updater.h`, `hypha/diagnostic_status.h`, `hypha/diagnostic_functions.h` | `DiagnosticUpdater`, `DiagnosticTask` and its two kinds; `DiagnosticStatusWrapper`; `FrequencyStatus`, `TimeStampStatus`, `TopicDiagnostic`, `HeaderlessTopicDiagnostic` |
 | `hypha/status.h`                                                       | `Status`, `ConfigError`, `require`                                                                                                                                                             |
 | `hypha/config.h`                                                       | `config()`, `ConfigView`, `ConfigList`, `ConfigContext`, `ParameterError`; it includes `constraints.h` (`constraints`)                                                                                                 |
 | `hypha/introspection.h`, `hypha/metrics.h`                           | `introspect`, `nodeState`, `recordConfig`; `metrics`, `metric`                                                                                                                             |
