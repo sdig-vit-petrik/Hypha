@@ -414,6 +414,8 @@ if(HYPHA_BUILD_TESTS)
     SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/srv/hypha_test_srvs"
     OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_generated/include")
   target_link_libraries(test_hypha PRIVATE camera_control_msgs hypha_test_srvs)
+  # The companions' tests share the fixtures of test/ (test_types.h).
+  target_include_directories(test_hypha PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/test")
   # The camera proof from the shell calls the setters with `hypha service call`.
   if(HYPHA_BUILD_APPS)
     target_compile_definitions(test_hypha PRIVATE
