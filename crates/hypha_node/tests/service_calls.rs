@@ -235,3 +235,73 @@ fn each_finished_call_is_logged_on_the_services_calls_topic() {
     assert_eq!(hypha_node::safe::client_status(&client).log_dropped, 0);
     hypha_node::safe::service_server_destroy(server);
 }
+
+#[test]
+fn a_large_call_is_logged_truncated_with_its_lengths_and_the_log_stays_small() {
+    use hypha_core::message::DecodeOwned as _;
+    use hypha_core::port::ServicePolicy;
+    use hypha_node::safe::{MAX_LOGGED_BYTES, log_pool_bytes};
+    use hypha_node::sdk::msgs::hypha_msgs::ServiceCall;
+    use hypha_node::sdk::{BusNode, SubscriberOptions};
+
+    const MIB: usize = 1 << 20;
+    let policy = ServicePolicy {
+        name: "bigService".to_owned(),
+        max_request_bytes: 4 * MIB,
+        max_response_bytes: 4 * MIB,
+        timeout: Duration::from_secs(2),
+        ..ServicePolicy::default_service()
+    };
+    // The log costs no payload bound: a client's pool holds samples of 34 KiB, not 4 MiB.
+    let name = format!("/{}", unique_name("big"));
+    assert!(log_pool_bytes(&name, &policy) < MIB, "{} B", log_pool_bytes(&name, &policy));
+
+    let large = |bytes: usize| vec![9_u8; bytes];
+    let handler = Handler(move |request: &mut HyphaRequest, payload: &[u8]| {
+        request_reply(request, &large(payload.len().saturating_mul(2)));
+    });
+    let server_node = node("big_srv");
+    let big = ServiceDecl { policy: Some(policy), ..decl(&name) };
+    let server = service_serve(&server_node, &big, Box::new(handler)).expect("server");
+    let client_node = node("big_cli");
+    let client = service_client_create(&client_node, &big, true).expect("client");
+    let reader = BusNode::new(&unique_name("big_reader")).expect("reader");
+    let mut log = reader
+        .subscribe_raw_with_schema(
+            &hypha_node::safe::call_log_topic(&name),
+            ServiceCall::TYPE_NAME,
+            ServiceCall::SCHEMA_HASH,
+            SubscriberOptions::default().keeping(4),
+        )
+        .expect("the log topic exists once the client does");
+    let sizes = [100, 20_000, 100_000];
+    let results = while_running(&server_node, Duration::from_secs(4), || {
+        sizes.map(|size| call_and_wait(&client, &large(size)))
+    });
+    for (result, size) in results.iter().zip(sizes) {
+        assert_eq!(
+            result.outcome.response().map(<[u8]>::len),
+            Some(size * 2),
+            "{:?}",
+            result.outcome
+        );
+    }
+    let mut records = Vec::new();
+    while let Some(sample) = log.try_receive().expect("receive") {
+        records.push(ServiceCall::decode_from(sample.bytes().expect("a payload")).expect("record"));
+    }
+    assert_eq!(records.len(), 3, "{records:?}");
+    for (record, size) in records.iter().zip(sizes) {
+        let cut = size > MAX_LOGGED_BYTES;
+        assert_eq!(record.truncated, cut || size * 2 > MAX_LOGGED_BYTES, "{size}");
+        assert_eq!(record.request_len, u64::try_from(size).expect("fits"));
+        assert_eq!(record.response_len, u64::try_from(size * 2).expect("fits"));
+        assert_eq!(record.request.len(), size.min(MAX_LOGGED_BYTES));
+        assert_eq!(record.response.len(), (size * 2).min(MAX_LOGGED_BYTES));
+    }
+    let small = records.first().expect("the small call");
+    assert!(!small.truncated);
+    assert_eq!(small.response, large(200));
+    assert_eq!(hypha_node::safe::client_status(&client).log_dropped, 0);
+    hypha_node::safe::service_server_destroy(server);
+}

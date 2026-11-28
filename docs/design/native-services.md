@@ -11,7 +11,8 @@ schema store and `hypha service list|info|call` (`apps/hypha_tools/src/bin/hypha
 complete 1b; the stages above are not built. Decisions of the second part where this
 document is silent: the log's topic is `<service>/calls` under a policy `serviceCalls`
 (the service's clients and tools as publishers, depth 4); a record carries at most 2 KiB
-besides the policy's request and response bounds, its reason cut at 1 KiB; `call` with no
+besides the first 16 KiB of the request and of the response (the policy's bound when it is
+lower; the original lengths and a `truncated` flag say what was cut), its reason cut at 1 KiB; `call` with no
 body calls a request of no fields and prints the template of any other; the exit codes
 are 0 answered, 1 a tool failure, then 2 to 6 for refused, no server, not sent, server
 lost and timeout; `list` shows no per-outcome counts before the `~/state` rows of stage
@@ -287,7 +288,9 @@ What is recorded is the **call log** of stage 1b. Each client publishes
 - the service, the client node, the port and the sequence;
 - the outcome;
 - the sent and done stamps;
-- the request bytes and the response bytes, bounded by the policy.
+- the request bytes and the response bytes, each the first 16 KiB at most (the policy's
+  bounds may be megabytes, and the log must not cost them), with their original lengths
+  and a `truncated` flag.
 
 It publishes only while someone subscribes, which costs one atomic read per call.
 `hypha record` records the log by default, `hypha play` never republishes it, and

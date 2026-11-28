@@ -13,7 +13,10 @@ mod outcome;
 mod server;
 mod spec;
 
-pub use call_log::{CALL_LOG_POLICY, SERVICE_CALL_DEFINITION, call_log_topic};
+pub use call_log::{
+    CALL_LOG_POLICY, MAX_LOGGED_BYTES, SERVICE_CALL_DEFINITION, call_log_topic, log_pool_bytes,
+    record_bound,
+};
 pub use client::{
     CallDone, ClientStatus, HyphaClient, client_call, client_status, client_wait_for_server,
     service_client_create, service_client_destroy,

@@ -288,7 +288,8 @@ target_exposure: 0.0
 The tool encodes the request with the definition that the service's server registered
 when it started (a C++ server registers both halves of its `.srv`), so it calls a type
 it was never built with. A request of no fields (`std_srvs/Trigger`, `std_srvs/Empty`)
-is called without a body. The response is printed as `hypha topic echo` prints a
+is called without a body, and a response of no fields prints `{}`; a half of no fields is
+registered as an empty definition, so it is not a server that registered none. The response is printed as `hypha topic echo` prints a
 message; anything else is printed to standard error with its reason, and the exit code
 says which outcome it was:
 
@@ -320,10 +321,14 @@ request's sequence, the outcome and its reason, the sent and done stamps, and th
 and response bytes. A record is encoded only while the topic has a subscriber, which
 costs one read of a subscriber count per call. It never holds a call up: a record that
 finds no free sample is dropped and counted, logged as it happens, and the readers see
-the gap in the frame sequence. A record is bounded by the policy, 2 KiB plus the request
-and response bounds (10 KiB under `defaultService`); a reader keeps at most 4 records
-queued, and each client's log holds 26 of them in shared memory, 260 KiB under
-`defaultService`. Read it with
+the gap in the frame sequence. A record carries the first 16 KiB of the request and of
+the response, whatever the policy allows, so a log never costs a payload bound:
+`request_len` and `response_len` are the lengths before the cut and `truncated` is set
+when either half was cut (a cut half is not a decodable message). A record is at most
+2 KiB plus the two halves as the policy bounds them or 16 KiB each (10 KiB under
+`defaultService`, 34 KiB under a policy of 4 MiB each way); a reader keeps at most 4
+records queued, and each client's log holds 26 of them in shared memory, 260 KiB under
+`defaultService` and 884 KiB under that 4 MiB policy. Read it with
 `hypha topic echo /camera/set_enabled/calls`. `hypha record` records it as any topic,
 and `hypha play` never publishes it again: a recording never calls a live server, and the
 request-response services themselves are not recorded.
