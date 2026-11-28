@@ -398,6 +398,11 @@ if(HYPHA_BUILD_TESTS)
     SRV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/srv/hypha_test_srvs"
     OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_generated/include")
   target_link_libraries(test_hypha PRIVATE camera_control_msgs hypha_test_srvs)
+  # The camera proof from the shell calls the setters with `hypha service call`.
+  if(HYPHA_BUILD_APPS)
+    target_compile_definitions(test_hypha PRIVATE
+      HYPHA_TEST_HYPHA_TOOL="$<TARGET_FILE:hypha::hypha>")
+  endif()
   # The ROS 2 names of sensor_msgs, for test_sensor_msgs_ros2_names.cpp.
   hypha_generate_ros2_headers(test_hypha_ros2_headers PACKAGES sensor_msgs)
   target_link_libraries(test_hypha PRIVATE test_hypha_ros2_headers)

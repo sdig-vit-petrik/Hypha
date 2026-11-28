@@ -249,6 +249,23 @@ tests = ["hypha_cycle/input_supervision", "cxx:test_input_supervision"]
 id = "FSR-41"
 tests = ["hypha_ffi/introspection_snapshot", "cxx:test_node_introspection"]
 
+[[requirement]]
+id = "FSR-42"
+tests = [
+  "hypha_iceoryx2/service_transport",
+  "hypha_node/service_calls",
+  "hypha_tools/service_cli",
+  "cxx:test_services",
+]
+
+[[requirement]]
+id = "FSR-43"
+tests = ["hypha_node/service_calls", "hypha_tools/service_cli", "cxx:test_services"]
+
+[[requirement]]
+id = "FSR-44"
+gap = "Stage 1c of native-services.md §11: services in a CycleNode and the lockstep tests (two identical runs, `--chunk 50` against `--chunk 200`, with and without an observer, `--loop`) are not built yet."
+
 # Non-functional requirements
 
 [[requirement]]

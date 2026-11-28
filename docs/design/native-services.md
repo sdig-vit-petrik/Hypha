@@ -1,7 +1,7 @@
 # Native services
 
 Design for #132: typed request/response between nodes from ROS 1 `.srv` definitions.
-Status: accepted design. **Stage 1a** (transport, `crates/hypha_iceoryx2/src/service/`) and the runtime, C ABI and C++ endpoints of **Stage 1b** (`crates/hypha_node/src/service/`, `crates/hypha_ffi/src/service/`, `crates/hypha-cxx/include/hypha/service*.h`) are implemented; the call log, `hypha service` and the stages above are pending.
+Status: accepted design. **Stage 1a** (transport, `crates/hypha_iceoryx2/src/service/`) and the runtime, C ABI and C++ endpoints of **Stage 1b** (`crates/hypha_node/src/service/`, `crates/hypha_ffi/src/service/`, `crates/hypha-cxx/include/hypha/service*.h`) are implemented, and so are the rest of Stage 1b: the call log (`crates/hypha_node/src/service/call_log.rs`), the servers' definitions in the schema store and `hypha service list|info|call` (`apps/hypha_tools/src/bin/hypha/service.rs`). The stages above are pending.
 
 ## 1. Identity and discovery
 
@@ -95,7 +95,8 @@ HyphaStatus hypha_deferred_refuse(HyphaDeferred*, const char* reason, size_t len
 void        hypha_deferred_destroy(HyphaDeferred*);
 ```
 
-- **CLI (`hypha service`, Stage 1b):** `list`, `info <s>`, `call <s> [yaml/json]` (prints template if no body; warns if server is on paused sim time; uses CLI observer slot; server logs CLI calls at INFO with pid).
+- **CLI (`hypha service`, Stage 1b):** `list`, `info <s>`, `call <s> [toml]` (TOML only: no body calls a request of no fields and prints the template of any other; uses the CLI observer slot; the server logs CLI calls at INFO with pid). Exit codes: 0 answered, 1 a tool failure, 2–6 refused, no server, not sent, server lost, timeout. Not built: per-outcome counts in `list` (Stage 2) and the paused-clock notice.
+- **Call log (Stage 1b, as built):** topic `<service>/calls` under policy `serviceCalls` (the service's clients and tools publish, depth 4); a record holds at most 2 KiB besides the first 16 KiB of the request and of the response (lower when the policy's bound is), with the original lengths and a `truncated` flag, its reason cut at 1 KiB.
 - **Rust SDK:** blocking `hypha_node::sdk::ServiceClient::call_and_wait` only (for tools).
 - **`StepHarness` (Stage 1c):** `request(port, req)`, `calls(port)`, `answer(port, resp)`, `outcome(port, ...)`.
 
@@ -104,7 +105,7 @@ void        hypha_deferred_destroy(HyphaDeferred*);
 | Stage | Scope | Status |
 |---|---|---|
 | **1a Transport** | `hypha_iceoryx2::service`: ports, name lock, dead reclaim, role CRC sealing, slot table, liveness probe, listing | Done (`#270`) |
-| **1b Runtime, C ABI, C++, CLI** | `hypha_node` runtime, blocking clients, C ABI, `advertiseService`/`serviceClient`, `std_srvs`, call log, `hypha service` | Runtime, C ABI, C++, `std_srvs` done (#286); call log and CLI next |
+| **1b Runtime, C ABI, C++, CLI** | `hypha_node` runtime, blocking clients, C ABI, `advertiseService`/`serviceClient`, `std_srvs`, call log, `hypha service` | Done (#286, #297) |
 | **1c Cycles & lockstep** | `Requests<Srv>`, `Calls<Srv>`, strict-cut lockstep + §6.6 amendment, `StepHarness`, `hypha::Sequence` | Pending |
 | **1d Migration** | Port MRS host & Autoware shim; delete `mrs_bridge/Call` and `ServiceCall` | Pending |
 | **2–6 Follow-ups** | Introspection/`hypha top` (2), `Requests` trigger (3), `hypha play --serve/--call` (4), ROS 1 bridge (5), typed loans (6) | Pending |

@@ -277,6 +277,8 @@ backend::ServiceDeclaration declarationOf(std::string name, bool literal)
     declaration.typeName = Srv::TYPE_NAME;
     declaration.md5 = Srv::MD5;
     declaration.policy = ServicePolicyOf<Srv>::value;
+    declaration.requestDefinition = codec::definition<typename Srv::Request>();
+    declaration.responseDefinition = codec::definition<typename Srv::Response>();
     return declaration;
 }
 

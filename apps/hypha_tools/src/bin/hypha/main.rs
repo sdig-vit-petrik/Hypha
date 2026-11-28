@@ -17,6 +17,7 @@ mod node;
 mod param;
 mod play;
 mod record;
+mod service;
 mod top;
 mod topic;
 
@@ -36,11 +37,11 @@ struct Tool {
 }
 
 /// Every tool, in the order `hypha --help` lists them.
-const TOOLS: [Tool; 12] = [
+const TOOLS: [Tool; 13] = [
     Tool {
         subcommand: "topic",
         main: topic::main,
-        summary: "list, echo, hz and bw of topics; the pool of a policy",
+        summary: "list, echo, hz, delay and bw of topics; the pool of a policy",
     },
     Tool {
         subcommand: "top",
@@ -48,6 +49,11 @@ const TOOLS: [Tool; 12] = [
         summary: "interactive bus monitor and node inspector",
     },
     Tool { subcommand: "node", main: node::main, summary: "list the nodes and show one" },
+    Tool {
+        subcommand: "service",
+        main: service::main,
+        summary: "list the services, show one, and call one",
+    },
     Tool {
         subcommand: "record",
         main: record::main,

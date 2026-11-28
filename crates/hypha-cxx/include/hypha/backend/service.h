@@ -88,6 +88,9 @@ struct ServiceDeclaration
     ServicePolicy policy;
     Duration      timeout{};
     bool          blocking{false};
+    /// A server's request and response definitions, which it registers for the tools.
+    std::string_view requestDefinition;
+    std::string_view responseDefinition;
 
     /// What a failure names: `ports.servers.<port>` or the service.
     std::string describe(const char* table) const
@@ -118,6 +121,10 @@ inline HyphaServiceDesc descriptionOf(const ServiceDeclaration& declaration)
     desc.policy.timeout_nanos = static_cast<uint64_t>(std::max<int64_t>(policy.timeout.nanos(), 0));
     desc.timeout_nanos = static_cast<uint64_t>(std::max<int64_t>(declaration.timeout.nanos(), 0));
     desc.blocking = declaration.blocking ? 1 : 0;
+    desc.request_definition = declaration.requestDefinition.data();
+    desc.request_definition_len = declaration.requestDefinition.size();
+    desc.response_definition = declaration.responseDefinition.data();
+    desc.response_definition_len = declaration.responseDefinition.size();
     return desc;
 }
 

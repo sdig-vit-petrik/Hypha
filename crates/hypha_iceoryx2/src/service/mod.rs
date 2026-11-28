@@ -154,7 +154,7 @@ impl Iox2Transport {
             log::warn!(target: "hypha/transport",
                 "hypha_iceoryx2: service '{}': server created but the graph event failed: {cause:?}", key.public());
         }
-        Ok(Iox2Server::new(
+        let mut endpoint = Iox2Server::new(
             key,
             spec.policy.clone(),
             std::sync::Arc::clone(&self.node),
@@ -163,7 +163,16 @@ impl Iox2Transport {
             service,
             lock,
             sender_id(),
-        ))
+        );
+        // A server without its records still serves; the tools say no definition is known.
+        match crate::schema::write_service_schema(spec) {
+            Ok(Some(release)) => endpoint.hold_schema(release),
+            Ok(None) => {}
+            Err(cause) => log::error!(target: "hypha/schema",
+                "hypha_iceoryx2: service '{}': its definitions are not registered, so tools cannot encode its requests: {cause}",
+                spec.name),
+        }
+        Ok(endpoint)
     }
 
     /// Create a client of `spec`'s stream with at most `outstanding` calls in flight
@@ -263,6 +272,22 @@ impl Iox2Transport {
     /// [`PortError::Backend`] when the registry cannot be read.
     pub fn list_services(&self) -> Result<Vec<DiscoveredServiceStream>, PortError> {
         listing::list(&self.node)
+    }
+
+    /// The request and response definitions the server of `name`'s stream of `md5`
+    /// registered, waiting up to `timeout` for a server that is writing them; `Ok(None)`
+    /// when none is registered.
+    ///
+    /// # Errors
+    /// [`PortError::InvalidTopic`] for a malformed MD5; another [`PortError`] when the
+    /// domain configuration fails.
+    pub fn service_schema(
+        &self,
+        name: &str,
+        md5: &str,
+        timeout: Duration,
+    ) -> Result<Option<crate::schema::ServiceSchema>, PortError> {
+        crate::schema::lookup_service_schema(name, md5, timeout)
     }
 }
 

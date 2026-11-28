@@ -90,8 +90,36 @@ pub fn schema_record_frame_len(
 /// Writes a schema record into `buffer`.
 ///
 /// # Errors
-/// Returns [`SchemaRecordError`] when any field is invalid or buffer is too small.
+/// Returns [`SchemaRecordError`] when any field is invalid, the definition is empty, or
+/// the buffer is too small.
 pub fn write_schema_record(
+    buffer: &mut [u8],
+    data_type: &str,
+    md5: &str,
+    definition: &str,
+) -> Result<usize, SchemaRecordError> {
+    if definition.is_empty() {
+        return Err(SchemaRecordError::EmptyDefinition);
+    }
+    write_record(buffer, data_type, md5, definition)
+}
+
+/// Writes the record of one half of a service into `buffer`: as [`write_schema_record`],
+/// except that the definition may be empty, for a half of no fields (the request of
+/// `std_srvs/Trigger`).
+///
+/// # Errors
+/// Returns [`SchemaRecordError`] when any field is invalid or the buffer is too small.
+pub fn write_half_record(
+    buffer: &mut [u8],
+    data_type: &str,
+    md5: &str,
+    definition: &str,
+) -> Result<usize, SchemaRecordError> {
+    write_record(buffer, data_type, md5, definition)
+}
+
+fn write_record(
     buffer: &mut [u8],
     data_type: &str,
     md5: &str,
@@ -105,9 +133,6 @@ pub fn write_schema_record(
     };
     if !crate::is_valid_md5(md5) {
         return Err(SchemaRecordError::WrongMd5);
-    }
-    if definition.is_empty() {
-        return Err(SchemaRecordError::EmptyDefinition);
     }
 
     let total_len = schema_record_frame_len(data_type.len(), md5.len(), definition.len())
@@ -159,14 +184,32 @@ fn put_front<'b>(dest: &'b mut [u8], src: &[u8]) -> Result<&'b mut [u8], SchemaR
 /// Parses and verifies a schema record from `bytes`.
 ///
 /// # Errors
-/// Returns [`SchemaRecordError`] when the frame is malformed or invalid.
+/// Returns [`SchemaRecordError`] when the frame is malformed or invalid, or its
+/// definition is empty.
 pub fn parse_schema_record(bytes: &[u8]) -> Result<ParsedSchemaRecord<'_>, SchemaRecordError> {
+    let record = parse_record(bytes)?;
+    if record.definition.is_empty() {
+        return Err(SchemaRecordError::EmptyDefinition);
+    }
+    Ok(record)
+}
+
+/// Parses and verifies the record of one half of a service: as [`parse_schema_record`],
+/// except that the definition may be empty.
+///
+/// # Errors
+/// Returns [`SchemaRecordError`] when the frame is malformed or invalid.
+pub fn parse_half_record(bytes: &[u8]) -> Result<ParsedSchemaRecord<'_>, SchemaRecordError> {
+    parse_record(bytes)
+}
+
+fn parse_record(bytes: &[u8]) -> Result<ParsedSchemaRecord<'_>, SchemaRecordError> {
     if bytes.len() > MAX_SCHEMA_RECORD_LEN {
         return Err(SchemaRecordError::OversizedRecord);
     }
     let payload = parse_record_payload(bytes)?;
 
-    if payload.len() < 2 + 32 + 1 {
+    if payload.len() < 2 + 1 + 32 {
         return Err(SchemaRecordError::InvalidFrame);
     }
 
@@ -194,9 +237,6 @@ pub fn parse_schema_record(bytes: &[u8]) -> Result<ParsedSchemaRecord<'_>, Schem
     let Ok(definition) = core::str::from_utf8(def_bytes) else {
         return Err(SchemaRecordError::InvalidUtf8);
     };
-    if definition.is_empty() {
-        return Err(SchemaRecordError::EmptyDefinition);
-    }
 
     Ok(ParsedSchemaRecord { data_type, md5, definition })
 }

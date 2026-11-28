@@ -3,7 +3,7 @@
 #ifndef HYPHA_FFI_H
 #define HYPHA_FFI_H
 
-#define HYPHA_ABI_REVISION 16
+#define HYPHA_ABI_REVISION 17
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -871,6 +871,16 @@ typedef struct HyphaServiceDesc {
   // A client: 1 for a blocking client, attached to nothing, whose call waits on the
   // calling thread. 0 for a client of the node's `WaitSet`. A server: 0.
   uint8_t blocking;
+  // A server: the definition of the request half (`<type>Request`) with its
+  // dependencies, registered in the schema store so tools can encode a request. Null
+  // with length 0 for none. A client: unused.
+  const char *request_definition;
+  // Bytes of `request_definition`.
+  size_t request_definition_len;
+  // A server: the definition of the response half; null with length 0 for none.
+  const char *response_definition;
+  // Bytes of `response_definition`.
+  size_t response_definition_len;
 } HyphaServiceDesc;
 
 // The one outcome of a call, borrowed for the outcome callback.
