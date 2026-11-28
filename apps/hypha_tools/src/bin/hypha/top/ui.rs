@@ -950,8 +950,11 @@ fn format_input_policy(input: &hypha_node::sdk::msgs::hypha_msgs::IntrospectedIn
     } else {
         policy_parts.push(format!("queue max {}", input.max_samples_per_iteration));
     }
+    // A wired input without a silence limit is shown as such, never as a healthy default.
     if input.silence_nanos > 0 {
         policy_parts.push(format!("silence {}ms", input.silence_nanos / 1_000_000));
+    } else if !input.topic.is_empty() {
+        policy_parts.push("no time limit".to_string());
     }
     if input.stagnation_nanos > 0 {
         policy_parts.push(format!("stagnation {}ms", input.stagnation_nanos / 1_000_000));
@@ -1351,6 +1354,22 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn an_input_without_a_silence_limit_shows_no_time_limit() {
+        let untimed = hypha_node::sdk::msgs::hypha_msgs::IntrospectedInput {
+            topic: "/lock".to_owned(),
+            ..hypha_node::sdk::msgs::hypha_msgs::IntrospectedInput::default()
+        };
+        assert_eq!(format_input_policy(&untimed), "latest, no time limit");
+        let timed = hypha_node::sdk::msgs::hypha_msgs::IntrospectedInput {
+            silence_nanos: 500_000_000,
+            ..untimed.clone()
+        };
+        assert_eq!(format_input_policy(&timed), "latest, silence 500ms");
+        let unwired = hypha_node::sdk::msgs::hypha_msgs::IntrospectedInput::default();
+        assert_eq!(format_input_policy(&unwired), "latest");
+    }
 
     #[test]
     fn hypha_top_shows_cycle_rows_and_input_counters() {
