@@ -14,13 +14,14 @@ pub use crate::config::{
 };
 pub use crate::cycle::{
     CycleId, CycleSnapshots, CycleStepHandler, EmissionView, HyphaInputSource, ImageView,
-    cycle_bind_input, cycle_bind_input_supervision, cycle_bind_output, cycle_bind_transforms,
-    cycle_binding, cycle_commit, cycle_create, cycle_destroy, cycle_expect_participant,
-    cycle_health, cycle_set_class_based, cycle_set_clock_driver, cycle_set_host_clock,
-    cycle_set_trigger, cycle_tick, emission_commit, emission_lend, emission_reserve,
-    emission_return, emission_send, image_alive, image_binding, image_clear, image_held,
-    image_lookup_transform, image_reject_sample, image_sample, image_set_ignored,
-    input_source_create, input_source_destroy, input_source_in_place,
+    cycle_bind_client, cycle_bind_input, cycle_bind_input_supervision, cycle_bind_output,
+    cycle_bind_server, cycle_bind_transforms, cycle_binding, cycle_commit, cycle_create,
+    cycle_destroy, cycle_expect_participant, cycle_health, cycle_set_class_based,
+    cycle_set_clock_driver, cycle_set_host_clock, cycle_set_trigger, cycle_tick, emission_call,
+    emission_commit, emission_lend, emission_next_result, emission_requests, emission_reserve,
+    emission_return, emission_send, emission_unread_results, image_alive, image_binding,
+    image_clear, image_held, image_lookup_transform, image_reject_sample, image_sample,
+    image_set_ignored, input_source_create, input_source_destroy, input_source_in_place,
 };
 pub use crate::domain::domain;
 pub use crate::introspection_abi::{config_record_config, node_introspect, node_record_config};
@@ -48,7 +49,7 @@ pub use crate::schema::{schema_lookup, schema_resolve_hash, schema_resolve_hash_
 pub use crate::service::{
     Answer, CallDone, CallOutcome, CallResult, CallStatus, ClientStatus, HyphaClient, HyphaRequest,
     HyphaServer, ListedService, RequestView, ServeHandler, ServiceDecl, ServiceDefinitions,
-    call_log_topic, client_call, client_status, client_wait_for_server, list_services,
+    StepRequest, call_log_topic, client_call, client_status, client_wait_for_server, list_services,
     request_answer, request_defer, service_client_create, service_client_destroy,
     service_definitions, service_serve, service_server_destroy,
 };

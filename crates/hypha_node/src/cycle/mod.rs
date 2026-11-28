@@ -16,17 +16,18 @@ pub mod types;
 pub(crate) use driver::DriverSetup;
 pub use driver::{cycle_expect_participant, cycle_set_clock_driver};
 pub use image::{
-    EmissionView, HyphaCycleEmission, HyphaCycleImage, ImageView, emission_commit, emission_lend,
-    emission_reserve, emission_return, emission_send, image_alive, image_binding, image_clear,
-    image_held, image_reject_sample, image_sample, image_set_ignored,
+    EmissionView, HyphaCycleEmission, HyphaCycleImage, ImageView, emission_call, emission_commit,
+    emission_lend, emission_next_result, emission_requests, emission_reserve, emission_return,
+    emission_send, emission_unread_results, image_alive, image_binding, image_clear, image_held,
+    image_reject_sample, image_sample, image_set_ignored,
 };
 pub use input_supervision::{
     HyphaInputSupervisionRequest, HyphaInputSupervisionResult, cycle_bind_input_supervision,
 };
 pub use inspect::{cycle_binding, cycle_health};
 pub use registration::{
-    cycle_bind_input, cycle_bind_output, cycle_commit, cycle_create, cycle_destroy,
-    cycle_set_class_based, cycle_set_host_clock, cycle_set_trigger,
+    cycle_bind_client, cycle_bind_input, cycle_bind_output, cycle_bind_server, cycle_commit,
+    cycle_create, cycle_destroy, cycle_set_class_based, cycle_set_host_clock, cycle_set_trigger,
 };
 pub use source::{
     HyphaInputSource, input_source_create, input_source_destroy, input_source_in_place,

@@ -240,7 +240,8 @@ semantics and its `HYPHA_TF_*` results are those of a cycle's TF input
 
 A service is a request and its answer between nodes, typed by a `.srv`
 ([design/native-services.md](design/native-services.md)). The C ABI is coarse on
-purpose: ten functions, and every rule of a call decided below them, once.
+purpose: sixteen functions, ten for plain nodes and six for the ports of a cycle, and
+every rule of a call decided below them, once.
 
 | Function | What it does |
 |---|---|
@@ -254,6 +255,12 @@ purpose: ten functions, and every rule of a call decided below them, once.
 | `hypha_client_call(client, request, len, done, context, release, status)` | Calls; `done` gets the one outcome, later on the run's thread or, for a blocking client, before the call returns |
 | `hypha_client_status(client, out)` | Whether a live server exists now, and the calls pending |
 | `hypha_client_wait_for_server(client, timeout_nanos, ready)` | Waits for a server; a blocking client only |
+| `hypha_cycle_bind_server(cycle, desc, out_index)` | Gives an uncommitted cycle a server, a `Requests` port; the cycle owns it |
+| `hypha_cycle_bind_client(cycle, desc, out_index)` | Gives an uncommitted cycle a client, a `Calls` port; the cycle owns it |
+| `hypha_cycle_requests(emission, server, each, context)` | In a step: calls `each` with each request the step reads |
+| `hypha_cycle_next_result(emission, client, done, context, found)` | In a step: calls `done` with the next outcome the step holds |
+| `hypha_cycle_call(emission, client, request, len, status)` | In a step: stages a call, sent after the step |
+| `hypha_cycle_unread_results(emission, client, out)` | In a step: the outcomes successful steps did not read and dropped |
 
 - **Declaration.** `HyphaServiceDesc` names a port (`literal` 0: the `service` key of
   `[ports.servers.<port>]` or `[ports.clients.<port>]`) or the service (`literal` 1:
@@ -300,6 +307,32 @@ purpose: ten functions, and every rule of a call decided below them, once.
   `InvalidState` on a thread that runs a `WaitSet` dispatch, with a reason that names
   what to use instead, and `hypha_client_wait_for_server` is `InvalidState` for a client
   of a `WaitSet`. A blocking client makes one call at a time; concurrent calls queue.
+- **Ports of a cycle.** A cycle's server and clients are created at bind, with the
+  declaration rules above (`desc.blocking` 0), and attached to nothing: the cycle's steps
+  drive them. A server's table may set `per_step` (default 8, at most its slots); a
+  client's `outstanding` defaults to 1. In a step, `hypha_cycle_requests` gives the step
+  its requests on its first call (on simulated time those stamped before the step's time,
+  ordered by stamp, client node name, client port name and sequence; at most `per_step`)
+  and the same ones on a later call; a step that never calls it reads none, and they stay
+  queued. Each `view->request` is valid for the step and answered or deferred as a
+  handler's; the answer leaves after the step, stamped with its time, and so does the
+  answer to a deferred request given during a cycle step on the run's thread. After the
+  step a request it read and left open is refused (`the server's step read the request
+  and did not answer it`). A step that sends nothing (it failed, stopped, or continued
+  with a status) answers every request it read, and every deferred request it answered,
+  as failed (`server step failed`: the client reads `ServerLost`). `hypha_cycle_call`
+  writes `SENT`, `BUSY` (the calls in flight with those staged in this step at the limit)
+  or `TOO_LARGE`; a staged call leaves after the step, stamped with its time, and a step
+  that sends nothing ends it `NOT_SENT`, held for the next step. `hypha_cycle_next_result`
+  gives the outcomes a step holds, in call order, writing `found` 0 after the last: those
+  that came before the step (on simulated time, stamped before its time) and the calls
+  whose deadline is at or before the step's time; an outcome a successful step does not
+  take is dropped after it and counted (`hypha_cycle_unread_results`), and one a step that
+  sends nothing did not take goes to the next step. The cut binds the requests and answers
+  of peers that report progress only; those of a tool or a plain node are read at the first
+  step after they came. Deadlines are counted from the step that staged the call, on its
+  scheduling clock. The three take the step's emission handle; a null one is
+  `InvalidArgument`.
 
 ## Clocks and send times
 

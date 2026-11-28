@@ -15,7 +15,61 @@ besides the policy's request and response bounds, its reason cut at 1 KiB; `call
 body calls a request of no fields and prints the template of any other; the exit codes
 are 0 answered, 1 a tool failure, then 2 to 6 for refused, no server, not sent, server
 lost and timeout; `list` shows no per-outcome counts before the `~/state` rows of stage
-2, and the paused-clock notice is not built. Each decision gives its reason. Where the author checked a change
+2, and the paused-clock notice is not built.
+
+Stage 1c is in two parts. The first is built: the cycle ports `Requests<Srv>` and
+`Calls<Srv>` (`crates/hypha_node/src/service/cycle.rs`, `crates/hypha-cxx/include/hypha/cycle_service.h`),
+the strict cut, the two upstream edges, the §6.6 amendment, and the lockstep tests of
+section 11 (`apps/hypha_tools/tests/service_lockstep.rs`, with the C++ participant
+`crates/hypha-cxx/test/service_lockstep_peer.cpp`). `StepHarness` support and
+`hypha::Sequence` are the second part; until then a `StepHarness` step that touches a
+service port throws `std::logic_error`. Decisions of the first part where this document
+is silent:
+
+- **A service edge bounds which steps run, not the progress a triggered cycle reports.**
+  A request or a response steps no cycle (stage 3 is not built), so a triggered cycle
+  reports from its topic upstreams, its pending triggers and its fallback alone; a step
+  held by a service peer stays pending and keeps the report below it. Counting service
+  edges in the report would make a client and its server lift each other's report one
+  nanosecond per turn.
+- **A client and its server in one `WaitSet` hold each other.** The strict cut alone does
+  not make their order irrelevant (section 4 said it does): a turn runs all the due
+  deadlines of one cycle before the next cycle, so with several deadlines per turn a server
+  registered first ran a deadline before its client ran the step that called it, and what
+  a step read depended on `--chunk`. Each cycle with a service peer in its `WaitSet` holds
+  a step until the peer has run every step before it, as for a peer in another node, and
+  the turn repeats the timers of such cycles while that lets a held step run. The lockstep
+  test of a pair in one node fails without it.
+- **A step that sends no output sends no answer and no call.** A step that stops the run,
+  or continues with a status, publishes nothing (execution-model.md §6.1), so it is treated
+  as a failed step here too: its requests end `ServerLost` (`server step failed`), its
+  calls `NotSent`.
+- **The answer to a deferred request given during any cycle step on the run's thread
+  leaves after that step**, with its outputs, and a failed step answers it as failed, as
+  section 2 asks of a deferred request answered in a later step.
+- **`reply()` in a step reports `TooLarge` at once** for a response above the bound; the
+  client is refused with the sizes after the step, as for a plain server.
+- **Outcomes reach a step in call order**; an outcome no step read is dropped after it,
+  counted, and logged once per port at info level.
+- **The peers outside the replay** (review of part 1): a request or an answer of a peer
+  that reports no progress is read at the first step after it came, not by its stamp, so a
+  tool can call a cycle server during a replay and a cycle client gets the answer of a plain
+  server instead of a `Timeout` with the answer in hand. A cycle client names itself
+  `<index>/<cycle>` to its server (at most 64 bytes), so two cycles of one node on one port name do not tie;
+  the client's per-run id breaks a tie left only by a node whose name cannot be read.
+- **Outcomes a failed step did not read go to the next step**, as its `NotSent` calls do;
+  a successful step that does not read one drops it, logs at warn once per port and counts
+  it (`Calls::unreadResults()`, C `hypha_cycle_unread_results`; the `~/state` row is stage 2).
+- **A step that fails on replay fidelity** (a lost input) has already sent its answers and
+  calls, as it has sent its outputs: the fidelity check follows the sends.
+- **`per_step`** is at most the server's slots (`clients × outstanding`); a `Calls` port's
+  `outstanding` defaults to 1, as section 8.6 says, and counts the calls staged in the step.
+- **ABI**: six functions (`hypha_cycle_bind_server`, `hypha_cycle_bind_client`,
+  `hypha_cycle_requests`, `hypha_cycle_next_result`, `hypha_cycle_call`,
+  `hypha_cycle_unread_results`), coarse as those of 1b (#276); revision 17, the unreleased
+  revision of 1b.
+
+Each decision gives its reason. Where the author checked a change
 against the code and kept a different mechanism, an **author's note** says so, with the
 evidence.
 
@@ -266,13 +320,21 @@ order uses names, which are the same on every run, not ids.
 with D ≥ S + timeout. That is deterministic, with a resolution of the client's period.
 
 **Order inside one `WaitSet`.** A client and its server may be cycles of one node. The
-strict cut makes their order irrelevant: a request stamped D is never served by a server
-step at D. Stage 1c tests this.
+strict cut keeps a request stamped D from a server step at D; and each of the two holds a
+step until the other has run every step before it, as a peer in another node is held, so
+a turn that runs several deadlines serves the request at the same step (status note).
+Stage 1c tests this.
 
 **Remaining non-determinism, to document:**
 
 - a client or a server that is a plain callback, which takes no part in lockstep
-  (execution-model.md §11.2);
+  (execution-model.md §11.2). The cut binds only the peers that report progress: a cycle
+  server serves the request of a tool (`hypha service call`, stamped with the host's time)
+  or of a plain node at its first step after the request came, and a cycle client reads the
+  answer of a server that does not report at its first step after it came, whatever their
+  stamps; each port logs this once;
+- a client and a server that are cycles of two `WaitSet`s of one node: they report as one
+  node, and no hold orders them; the cycle logs it once;
 - a `Deferred` answered from a worker thread;
 - a call made before a non-participant server started;
 - the first chunk of a replay without `--nodes`.

@@ -705,6 +705,49 @@ static ROWS: &[Row] = rows! {
     hypha_client_wait_for_server => |_live| {
         assert_eq!(unsafe { hypha_client_wait_for_server(null(), 0, null_mut()) }, INVALID);
     }
+    hypha_cycle_bind_server => |_live| {
+        // SAFETY: every field of a description accepts all-zero bits.
+        let desc: HyphaServiceDesc = unsafe { std::mem::zeroed() };
+        let mut index = 7_u32;
+        // SAFETY: a null cycle is refused before the description is read.
+        assert_eq!(unsafe { hypha_cycle_bind_server(null_mut(), &raw const desc, &raw mut index) }, INVALID);
+        assert_eq!(index, 0, "a refused bind writes the index first");
+        assert_eq!(unsafe { hypha_cycle_bind_server(null_mut(), &raw const desc, null_mut()) }, INVALID);
+    }
+    hypha_cycle_bind_client => |_live| {
+        // SAFETY: every field of a description accepts all-zero bits.
+        let desc: HyphaServiceDesc = unsafe { std::mem::zeroed() };
+        // SAFETY: a null cycle is refused before the description is read.
+        assert_eq!(unsafe { hypha_cycle_bind_client(null_mut(), &raw const desc, &mut 0) }, INVALID);
+        assert_eq!(unsafe { hypha_cycle_bind_client(null_mut(), &raw const desc, null_mut()) }, INVALID);
+    }
+    hypha_cycle_requests => |_live| {
+        // SAFETY: a null emission is refused before anything is read.
+        assert_eq!(unsafe { hypha_cycle_requests(null_mut(), 0, Some(serve), null_mut()) }, INVALID);
+        assert_eq!(unsafe { hypha_cycle_requests(null_mut(), 0, None, null_mut()) }, INVALID);
+    }
+    hypha_cycle_next_result => |_live| {
+        let mut found = 1_u8;
+        // SAFETY: a null emission is refused before anything is read.
+        let refused = unsafe { hypha_cycle_next_result(null_mut(), 0, Some(done), null_mut(), &raw mut found) };
+        assert_eq!(refused, INVALID);
+        assert_eq!(found, 0, "a refused read writes found first");
+        assert_eq!(unsafe { hypha_cycle_next_result(null_mut(), 0, Some(done), null_mut(), null_mut()) }, INVALID);
+    }
+    hypha_cycle_unread_results => |_live| {
+        let mut unread = 9_u64;
+        // SAFETY: a null emission is refused before anything is read.
+        assert_eq!(unsafe { hypha_cycle_unread_results(null_mut(), 0, &raw mut unread) }, INVALID);
+        assert_eq!(unread, 0, "a refused read writes 0 first");
+        assert_eq!(unsafe { hypha_cycle_unread_results(null_mut(), 0, null_mut()) }, INVALID);
+    }
+    hypha_cycle_call => |_live| {
+        let mut status = 0_u32;
+        // SAFETY: a null emission is refused before the request is read.
+        assert_eq!(unsafe { hypha_cycle_call(null_mut(), 0, null(), 0, &raw mut status) }, INVALID);
+        assert_eq!(status, HYPHA_CALL_BUSY, "a refused call writes Busy first");
+        assert_eq!(unsafe { hypha_cycle_call(null_mut(), 0, null(), 0, null_mut()) }, INVALID);
+    }
     hypha_node_default_waitset => |live| {
         assert_eq!(unsafe { hypha_node_default_waitset(null_mut(), &mut null_mut()) }, INVALID);
         assert_eq!(unsafe { hypha_node_default_waitset(live.node, null_mut()) }, INVALID);

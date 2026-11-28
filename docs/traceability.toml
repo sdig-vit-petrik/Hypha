@@ -256,6 +256,7 @@ tests = [
   "hypha_node/service_calls",
   "hypha_tools/service_cli",
   "cxx:test_services",
+  "cxx:test_cycle_services",
 ]
 
 [[requirement]]
@@ -264,7 +265,10 @@ tests = ["hypha_node/service_calls", "hypha_tools/service_cli", "cxx:test_servic
 
 [[requirement]]
 id = "FSR-44"
-gap = "Stage 1c of native-services.md §11: services in a CycleNode and the lockstep tests (two identical runs, `--chunk 50` against `--chunk 200`, with and without an observer, `--loop`) are not built yet."
+tests = [
+  "hypha_tools/service_lockstep",
+  "cxx:test_cycle_services",
+]
 
 # Non-functional requirements
 

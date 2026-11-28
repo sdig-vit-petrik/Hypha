@@ -77,6 +77,13 @@ pub struct Iox2Transport {
 }
 
 impl Iox2Transport {
+    /// The id of this session's node, as the node ids of ports list it; `None` once the
+    /// session is closed.
+    #[must_use]
+    pub fn node_id(&self) -> Option<u128> {
+        crate::locked(&self.node).as_ref().map(|node| node.id().value())
+    }
+
     /// Open a session under a generated node name.
     ///
     /// # Errors

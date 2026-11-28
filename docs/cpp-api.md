@@ -1431,10 +1431,9 @@ Reference: `<hypha/qos.h>`, and `<hypha/status.h>` for `Status`, `require()` and
 
 A service is a request and its answer between nodes, typed by a ROS 1 `.srv`
 (design: [native-services.md](design/native-services.md)). A name has at most one
-server, across every version of its type; a call ends in exactly one outcome. This
-section covers plain nodes and `ApplicationNode`s; the cycle ports (`Requests<Srv>`,
-`Calls<Srv>`) are stage 1c and not built yet, so a `CycleNode` keeps the request and
-reply topics of section 8.4 until then.
+server, across every version of its type; a call ends in exactly one outcome. Sections
+8.1 to 8.3 cover plain nodes and `ApplicationNode`s; section 8.5 the ports of a cycle,
+`Requests<Srv>` and `Calls<Srv>`.
 
 The SDK ships `std_srvs` (`Empty`, `Trigger`, `SetBool`); `hypha_generate_messages()`
 with `SRV_DIR` generates an application's own (`<pkg>/<Name>.h`, with `Request`,
@@ -1577,9 +1576,73 @@ response above it gives the server `TooLarge` from `reply()` and the client `Ref
 with the sizes. Data of map size goes on a latched topic, and a service carries a small
 request and its acknowledgement.
 
-Until the cycle ports exist, a `CycleNode` carries a call as two topics: the client
-publishes the request with an identifier, the server publishes the reply with the same
-identifier, and the step keeps its own deadline (`examples/mrs/host/include/mrs_host/service.h`).
+### 8.5 A server and a client in a cycle
+
+In a cycle a service is a port (`hypha/cycle_service.h`, `CycleNode::Requests`,
+`CycleNode::Calls`). Requests are an input of the server's steps, and calls an output of
+the client's, so a service changes nothing between two steps and a replay repeats it
+exactly (FSR-44).
+
+```cpp
+class ControlManager final : public hypha::CycleNode {
+    Requests<mrs_msgs::String>  switchTracker{*this, "switch_tracker"};  // [ports.servers.switch_tracker]
+    Calls<std_srvs::SetBool>    arming{*this, "arming"};                  // [ports.clients.arming]
+    Arrivals<nav_msgs::Odometry> odometry{*this, "odometry"};
+
+    void step(const hypha::CycleTime&) override {
+        for (hypha::Request<mrs_msgs::String>& request : this->switchTracker.requests()) {
+            request.reply({.success = this->select(request->value), .message = "switched"});
+        }
+        if (auto result = this->arming.result()) {          // the call of an earlier step
+            if (!result->ok()) HYPHA_LOG_WARN("arming: %s", hypha::describe(*result).c_str());
+        }
+        if (this->mustDisarm() && this->arming.call({.data = false}) != hypha::CallStatus::Sent) {
+            HYPHA_LOG_WARN("arming: %s", hypha::toString(this->arming.lastStatus()));
+        }
+    }
+};
+```
+
+- `requests()` gives the step its requests, at most `per_step` of the server's table
+  (default 8); a later call in the same step gives the same ones. Each is answered by
+  `reply()`, `refuse()` or `defer()`, and the answer leaves after the step, with its
+  outputs. A request the step read and left alone is refused after it. A step that never
+  calls `requests()` reads none: they wait for a later step, bounded by the client's
+  timeout. A step that fails sends no output and no answer: the requests it read end
+  `ServerLost` (`server step failed`), because the step may have changed state.
+- A `Deferred<Srv>`, from `defer()` in a step or from a plain server's handler, answered
+  during a step of any cycle of the node leaves after that step, and `reply()` returns `Ok`
+  at once. A step that then fails answers it as failed: the client reads `ServerLost`
+  (`server step failed`), and the `Deferred` is used up. An answer that cannot leave after
+  the step is logged. Answered on another thread, or in a plain callback, it leaves at once.
+  A chain of calls keeps the `Deferred` and one state per call over steps
+  (`docs/design/native-services.md` §8.2).
+- `call()` stages a call: `Sent`, `Busy` (the port has `outstanding` calls in flight,
+  default 1, those of this step included) or `TooLarge`. A sent call leaves after the step,
+  stamped with its time. A step that fails sends none: each call it staged ends `NotSent`,
+  which the next step reads.
+- `result()` gives the next outcome a step holds, `results()` all of them: the outcomes of
+  calls of earlier steps. An outcome a successful step does not read is dropped after it,
+  logged once and counted (`unreadResults()`), so a port used to fire and forget does not
+  wedge; a step that fails passes the outcomes it did not read to the next step. Timeouts count in framework time: a
+  call of a step at S times out at the first step at or after S + timeout.
+- Under simulated time a step at T holds the requests and outcomes stamped before T, the
+  requests in the order of stamp, client node, client port and sequence. A request is
+  therefore served at the server's first step after the client's, and its answer read at
+  the client's first step after that, whatever `--chunk` or turn order, also when client
+  and server are two cycles of one `WaitSet` (`execution-model.md` §6.6 item 5). Two cycles
+  of two `WaitSet`s of one node are not held against each other: that is logged, and not
+  deterministic. A triggered server reads a request at its next trigger after the request:
+  a server triggered only by its client's topic serves the call of the client's step at `t`
+  at the trigger the client sends next, since the trigger at `t` and the request carry one
+  stamp and requests are cut before it.
+- A request from outside the replay (`hypha service call`, a plain node) is served at the
+  first step after it came, and the answer of a server that reports no progress is read at
+  the first step after it came, whatever their stamps: not deterministic, logged once.
+- A step that fails on replay fidelity (a lost input) has already sent its answers and
+  calls, as it has sent its outputs.
+- A `testing::StepHarness` does not drive these ports yet: a step under it that calls one
+  throws `std::logic_error`.
 
 ## 9. Parameters
 

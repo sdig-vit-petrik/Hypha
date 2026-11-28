@@ -41,8 +41,9 @@ where
     }
 }
 
-/// An outcome ready for its callback.
-pub(crate) type Finished = (Box<dyn CallDone>, CallResult);
+/// An outcome ready for its callback, with the order of its call among the client's
+/// calls. A call of a cycle's `Calls` port has no callback: its step reads the outcome.
+pub(crate) type Finished = (Option<Box<dyn CallDone>>, CallResult, u64);
 
 /// One call in flight, or held until a server appears.
 struct Call {
@@ -54,7 +55,12 @@ struct Call {
     sent_nanos: i64,
     /// Scheduling time (simulated, else host monotonic) at which it ends.
     deadline_nanos: i64,
-    done: Box<dyn CallDone>,
+    /// The order of the call among the client's calls.
+    order: u64,
+    done: Option<Box<dyn CallDone>>,
+    /// An outcome that arrived stamped at or after the cut of the step that collected it,
+    /// with that stamp: a later step reads it (`docs/design/native-services.md` §4).
+    arrived: Option<(CallOutcome, i64)>,
 }
 
 /// The state a client's owner and its `WaitSet` share.
@@ -69,7 +75,7 @@ struct Identity {
     md5: String,
 }
 
-struct ClientState {
+pub(crate) struct ClientState {
     identity: Identity,
     /// `None` once the client was destroyed.
     port: Option<Iox2Client>,
@@ -78,6 +84,8 @@ struct ClientState {
     timeout_text: String,
     outstanding: usize,
     calls: Vec<Call>,
+    /// The order the next call takes.
+    next_order: u64,
     /// Outcomes found outside a turn, delivered at the next one.
     ready: Vec<Finished>,
     /// The call log on `<service>/calls`; `None` when it could not be opened.
@@ -128,28 +136,10 @@ pub fn service_client_create(
     blocking: bool,
 ) -> Result<HyphaClient, Error> {
     crate::last_error::clear();
-    let resolved = super::spec::resolve(node, decl, Role::Client)?;
-    let spec = &resolved.spec;
-    let port = node
-        .transport
-        .service_client(spec, resolved.outstanding, None)
-        .map_err(|cause| super::spec::refuse_spec(&spec.name, &cause))?;
-    let listener = port.open_listener().map_err(Error::from)?;
-    let client_port = if decl.literal { spec.name.as_str() } else { decl.name };
-    let log = CallLog::open(node, spec, client_port);
-    let state = ClientState {
-        identity: Identity {
-            name: spec.name.clone(),
-            type_name: spec.type_name.clone(),
-            md5: spec.md5.clone(),
-        },
-        outstanding: resolved.outstanding.unwrap_or(spec.policy.max_outstanding),
-        port: Some(port),
-        timeout_nanos: i64::try_from(resolved.timeout.as_nanos()).unwrap_or(i64::MAX),
-        timeout_text: format!("{} ({})", seconds(resolved.timeout), resolved.timeout_source),
-        calls: Vec::new(),
-        ready: Vec::new(),
-        log,
+    let state = open_state(node, decl, None, None)?;
+    let listener = match state.port.as_ref() {
+        Some(port) => port.open_listener().map_err(Error::from)?,
+        None => return Err(Error::InvalidState),
     };
     let core = Arc::new(ClientCore { state: Mutex::new(state) });
     let mut client =
@@ -161,6 +151,42 @@ pub fn service_client_create(
         client.attachment = Some(crate::waitset::attach_service(node, listener, target)?);
     }
     Ok(client)
+}
+
+/// The state of a new client of `decl` on `node`: its port, its limit of calls in flight
+/// (the table's `outstanding`, else `outstanding`, else the policy's) and its call log.
+/// `label` names the client to its server (by default the node's name): a cycle's client
+/// gives its cycle and port, so the order of requests from one node has no tie.
+pub(crate) fn open_state(
+    node: &HyphaNode,
+    decl: &ServiceDecl<'_>,
+    outstanding: Option<usize>,
+    label: Option<&str>,
+) -> Result<ClientState, Error> {
+    let resolved = super::spec::resolve(node, decl, Role::Client)?;
+    let spec = &resolved.spec;
+    let limit = resolved.outstanding.or(outstanding);
+    let port = node
+        .transport
+        .service_client(spec, limit, label)
+        .map_err(|cause| super::spec::refuse_spec(&spec.name, &cause))?;
+    let client_port = if decl.literal { spec.name.as_str() } else { decl.name };
+    let log = CallLog::open(node, spec, client_port);
+    Ok(ClientState {
+        identity: Identity {
+            name: spec.name.clone(),
+            type_name: spec.type_name.clone(),
+            md5: spec.md5.clone(),
+        },
+        outstanding: limit.unwrap_or(spec.policy.max_outstanding),
+        port: Some(port),
+        timeout_nanos: i64::try_from(resolved.timeout.as_nanos()).unwrap_or(i64::MAX),
+        timeout_text: format!("{} ({})", seconds(resolved.timeout), resolved.timeout_source),
+        calls: Vec::new(),
+        next_order: 0,
+        ready: Vec::new(),
+        log,
+    })
 }
 
 /// Destroy `client`: it is detached from its `WaitSet`, and the outcomes of its calls in
@@ -198,14 +224,15 @@ pub fn client_call(
     request: &[u8],
     done: Box<dyn CallDone>,
 ) -> Result<CallStatus, Error> {
+    let stamp = hypha_time::now().nanos();
     let Some(blocking) = client.blocking.as_ref() else {
         let now = hypha_time::scheduling_now().nanos();
-        return Ok(crate::locked(&client.core.state).call(request, done, now));
+        return Ok(crate::locked(&client.core.state).call(request, Some(done), now, stamp));
     };
     refuse_in_dispatch("callAndWait")?;
     let _one_at_a_time = crate::locked(&blocking.turn);
     let now = hypha_time::scheduling_now().nanos();
-    let status = crate::locked(&client.core.state).call(request, done, now);
+    let status = crate::locked(&client.core.state).call(request, Some(done), now, stamp);
     if status != CallStatus::Sent {
         return Ok(status);
     }
@@ -214,12 +241,14 @@ pub fn client_call(
     loop {
         let (finished, next) = {
             let mut state = crate::locked(&client.core.state);
-            let finished = state.drive(hypha_time::scheduling_now().nanos(), transport);
+            let finished = state.drive(hypha_time::scheduling_now().nanos(), transport, None);
             (finished, state.next_deadline())
         };
         if !finished.is_empty() {
-            for (done, result) in finished {
-                let _ = done.done(&result);
+            for (done, result, _) in finished {
+                if let Some(done) = done {
+                    let _ = done.done(&result);
+                }
             }
             return Ok(CallStatus::Sent);
         }
@@ -292,12 +321,12 @@ fn seconds(duration: Duration) -> String {
 impl ClientCore {
     /// The resolved service name, copied: for a slow-callback line.
     pub(crate) fn name(&self) -> String {
-        crate::locked(&self.state).identity.name.clone()
+        crate::locked(&self.state).name().to_owned()
     }
 
     /// The outcomes found at `now`; see [`ClientState::drive`].
     pub(crate) fn drive(&self, now: i64, transport: &Iox2Transport) -> Vec<Finished> {
-        crate::locked(&self.state).drive(now, Some(transport))
+        crate::locked(&self.state).drive(now, Some(transport), None)
     }
 
     /// The earliest deadline of a pending call, or `now` for an outcome already found.
@@ -307,25 +336,62 @@ impl ClientCore {
 }
 
 impl ClientState {
-    fn call(&mut self, request: &[u8], done: Box<dyn CallDone>, now: i64) -> CallStatus {
+    /// The calls this client may still make now: its limit, less the calls held for a
+    /// server, those in flight (expired ones a server still holds included) and those
+    /// whose outcome arrived for a later step. `None` once the client is gone.
+    pub(crate) fn free(&self) -> Option<usize> {
+        let port = self.port.as_ref()?;
+        let held = self.calls.iter().filter(|call| call.sent.is_none() || call.arrived.is_some());
+        Some(self.outstanding.saturating_sub(held.count().saturating_add(port.in_flight())))
+    }
+
+    /// The largest request the service takes, in bytes; 0 once the client is gone.
+    pub(crate) fn max_request_bytes(&self) -> usize {
+        self.port.as_ref().map_or(0, |port| port.policy().max_request_bytes)
+    }
+
+    /// The service the client calls.
+    pub(crate) fn name(&self) -> &str {
+        &self.identity.name
+    }
+
+    /// Push the node id of the stream's server now onto `ids`.
+    pub(crate) fn server_node_ids(&self, ids: &mut Vec<u128>) {
+        if let Some(port) = self.port.as_ref() {
+            port.server_node_ids(ids);
+        }
+    }
+
+    /// Call with `request` at scheduling time `now`, stamped with the framework time
+    /// `stamp`: a step's time for a call a step staged.
+    pub(crate) fn call(
+        &mut self,
+        request: &[u8],
+        done: Option<Box<dyn CallDone>>,
+        now: i64,
+        stamp: i64,
+    ) -> CallStatus {
+        if request.len() > self.max_request_bytes() {
+            return CallStatus::TooLarge;
+        }
+        if self.free().is_none_or(|free| free == 0) {
+            return CallStatus::Busy;
+        }
         let Some(port) = self.port.as_mut() else {
             return CallStatus::Busy;
         };
-        if request.len() > port.policy().max_request_bytes {
-            return CallStatus::TooLarge;
-        }
-        let held = self.calls.iter().filter(|call| call.sent.is_none()).count();
-        if held.saturating_add(port.in_flight()) >= self.outstanding {
-            return CallStatus::Busy;
-        }
+        let order = self.next_order;
+        self.next_order = order.wrapping_add(1);
         let mut call = Call {
             sent: None,
             request: request.to_vec(),
-            sent_nanos: hypha_time::now().nanos(),
+            sent_nanos: stamp,
             deadline_nanos: now.saturating_add(self.timeout_nanos),
+            order,
             done,
+            arrived: None,
         };
-        match send(port, &mut call) {
+        match send(port, &mut call, stamp) {
             Ok(()) => self.calls.push(call),
             Err(CallSendError::Busy { .. }) => return CallStatus::Busy,
             Err(CallSendError::TooLarge { .. }) => return CallStatus::TooLarge,
@@ -336,7 +402,16 @@ impl ClientState {
 
     /// Collect what became of the calls at `now`: answers, losses, calls a new server took,
     /// and deadlines that passed.
-    fn drive(&mut self, now: i64, transport: Option<&Iox2Transport>) -> Vec<Finished> {
+    ///
+    /// With a `cut` (a step on simulated time) an answer stamped at or after it waits in its
+    /// call for a later step, and a deadline at or before `now` ends a call whose answer is
+    /// only stamped later as `Timeout`: what a step reads then depends on stamps alone.
+    pub(crate) fn drive(
+        &mut self,
+        now: i64,
+        transport: Option<&Iox2Transport>,
+        cut: Option<i64>,
+    ) -> Vec<Finished> {
         let mut finished = std::mem::take(&mut self.ready);
         let Some(port) = self.port.as_mut() else {
             return finished;
@@ -345,6 +420,16 @@ impl ClientState {
         if self.calls.is_empty() && port.in_flight() == 0 {
             return finished;
         }
+        let before_cut = |stamp: i64| cut.is_none_or(|cut| stamp < cut);
+        let (due, kept): (Vec<Call>, Vec<Call>) = std::mem::take(&mut self.calls)
+            .into_iter()
+            .partition(|call| call.arrived.as_ref().is_some_and(|(_, stamp)| before_cut(*stamp)));
+        self.calls = kept;
+        for mut call in due {
+            if let Some((outcome, _)) = call.arrived.take() {
+                finished.push(finish(call, outcome, &mut self.log));
+            }
+        }
         let mut reports = Vec::new();
         port.poll(&mut reports);
         for report in reports.into_iter().filter(|report| !report.late) {
@@ -352,14 +437,25 @@ impl ClientState {
             else {
                 continue;
             };
-            let call = self.calls.remove(index);
-            finished.push(finish(call, outcome_of(report.event), &mut self.log));
+            let outcome = outcome_of(report.event);
+            let stamp = report.framework_sent_nanos.and_then(|stamp| i64::try_from(stamp).ok());
+            match (stamp, self.calls.get_mut(index)) {
+                (Some(stamp), Some(call)) if !before_cut(stamp) => {
+                    call.arrived = Some((outcome, stamp));
+                }
+                _ => {
+                    let call = self.calls.remove(index);
+                    finished.push(finish(call, outcome, &mut self.log));
+                }
+            }
         }
         let waiting = self.calls.iter().any(|call| call.sent.is_none());
         if waiting && port.server_available() {
             let mut kept = Vec::with_capacity(self.calls.len());
             for mut call in std::mem::take(&mut self.calls) {
-                match send(port, &mut call) {
+                // Stamped with the time of its call, a step's for a call a step staged.
+                let stamp = call.sent_nanos;
+                match send(port, &mut call, stamp) {
                     // Held until the server takes it, or its deadline.
                     Ok(()) | Err(CallSendError::Busy { .. }) => kept.push(call),
                     Err(cause) => finished.push(finish(call, not_sent(&cause), &mut self.log)),
@@ -372,17 +468,35 @@ impl ClientState {
             .partition(|call| call.deadline_nanos <= now);
         self.calls = kept;
         for call in due {
-            let outcome = match call.sent {
-                None => CallOutcome::NoServer(no_server_text(
+            let outcome = match (call.sent, call.arrived.is_some()) {
+                // Its answer is stamped at or after this step, which a later step would read.
+                (Some(_), true) => CallOutcome::Timeout(format!("after {}", self.timeout_text)),
+                (None, _) => CallOutcome::NoServer(no_server_text(
                     &self.identity,
                     &self.timeout_text,
                     transport,
                 )),
-                Some(id) => expire(port, id, &self.timeout_text),
+                (Some(id), false) => expire(port, id, &self.timeout_text),
             };
             finished.push(finish(call, outcome, &mut self.log));
         }
         finished
+    }
+
+    /// End a call that a failed step staged as `NotSent`, recorded in the call log.
+    pub(crate) fn not_sent(&mut self, request: Vec<u8>, reason: &str, stamp: i64) -> Finished {
+        let order = self.next_order;
+        self.next_order = order.wrapping_add(1);
+        let call = Call {
+            sent: None,
+            request,
+            sent_nanos: stamp,
+            deadline_nanos: 0,
+            order,
+            done: None,
+            arrived: None,
+        };
+        finish(call, CallOutcome::NotSent(reason.to_owned()), &mut self.log)
     }
 
     fn next_deadline(&self) -> Option<i64> {
@@ -423,12 +537,12 @@ fn short(md5: &str) -> &str {
     md5.get(..8).unwrap_or(md5)
 }
 
-/// Send a held `call` now; one that finds no server stays held.
-fn send(port: &mut Iox2Client, call: &mut Call) -> Result<(), CallSendError> {
+/// Send a held `call` now, stamped `stamp`; one that finds no server stays held.
+fn send(port: &mut Iox2Client, call: &mut Call, stamp: i64) -> Result<(), CallSendError> {
     if call.sent.is_some() {
         return Ok(());
     }
-    let stamp = u64::try_from(hypha_time::now().nanos()).unwrap_or(0);
+    let stamp = u64::try_from(stamp).unwrap_or(0);
     match port.send(&call.request, stamp) {
         Ok(id) => {
             call.sent = Some(id);
@@ -480,5 +594,5 @@ fn finish(call: Call, outcome: CallOutcome, log: &mut Option<CallLog>) -> Finish
         let sequence = call.sent.map_or(0, |id| id.0);
         log.record(&Entry { sequence, request: &call.request, result: &result });
     }
-    (call.done, result)
+    (call.done, result, call.order)
 }

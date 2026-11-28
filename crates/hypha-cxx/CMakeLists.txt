@@ -236,6 +236,11 @@ if(HYPHA_BUILD_TESTS)
   add_executable(replay_loop_peer test/replay_loop_peer.cpp)
   target_link_libraries(replay_loop_peer PRIVATE hypha)
 
+  # A participant with a Requests or a Calls port. The Rust test
+  # apps/hypha_tools/tests/service_lockstep.rs runs several under hypha play (FSR-44).
+  add_executable(service_lockstep_peer test/service_lockstep_peer.cpp)
+  target_link_libraries(service_lockstep_peer PRIVATE hypha hypha_test_srvs)
+
   # The exit code of a real runNode process: 0 clean, 78 configuration, 70 runtime.
   add_executable(run_node_exit_code_node test/run_node_exit_code_node.cpp)
   target_link_libraries(run_node_exit_code_node PRIVATE hypha)
@@ -338,6 +343,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_cycle_view.cpp
     test/test_subscriber.cpp
     test/test_services.cpp
+    test/test_cycle_services.cpp
     test/subscriber_latest_pair_is_consistent.cpp
     test/test_parameters.cpp
     test/test_parameter_lists.cpp

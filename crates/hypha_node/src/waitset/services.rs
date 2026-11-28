@@ -158,7 +158,10 @@ fn deliver(
 ) -> (Option<HyphaCallbackResult>, u64) {
     let mut answer = None;
     let mut slow = 0_u64;
-    for (done, result) in finished {
+    for (done, result, _) in finished {
+        let Some(done) = done else {
+            continue;
+        };
         let (outcome, was_slow) =
             timed(warnings, Subject::Client(client), budget, warn_interval, || done.done(&result));
         slow = slow.saturating_add(u64::from(was_slow));
