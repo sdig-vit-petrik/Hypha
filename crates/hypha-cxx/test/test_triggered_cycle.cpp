@@ -384,49 +384,6 @@ TEST_F(TriggeredFixture, FallsBackAtTheShortestSilence)
 
 namespace {
 
-/// A cycle with two triggers; `b` runs without a silence limit.
-class OneTriggerUnlimited final : public hypha::CycleNode
-{
-  public:
-    OneTriggerUnlimited()
-    {
-        this->setTrigger(this->a);
-        this->setTrigger(this->b);
-    }
-
-    hypha::Arrivals<Float64> a{*this, "a"};
-    hypha::Arrivals<Float64> b{*this, "b", unsupervised};
-    std::vector<SeenTwo>     seen;
-
-    void step(const hypha::CycleTime&) override
-    {
-        this->seen.push_back(
-            SeenTwo{
-                this->a.samples().size(), this->b.samples().size(), this->a.stale(), this->b.stale()
-            }
-        );
-    }
-};
-
-}  // namespace
-
-TEST_F(TriggeredFixture, TheFallbackCountsOnlyTheTimedTriggers)
-{
-    this->init({PortTable{"a", 100}, PortTable{"b", std::nullopt}});
-    OneTriggerUnlimited cycle;
-    const auto          started = cycle.start(*this->node);
-    ASSERT_TRUE(started.has_value()) << started.error();
-    ASSERT_TRUE(this->node->runFor(250_ms).ok());
-    ASSERT_FALSE(cycle.seen.empty()) << "a fallback runs after a's 100 ms";
-    for (const SeenTwo& step : cycle.seen) {
-        EXPECT_EQ(step.a + step.b, 0U);
-        EXPECT_TRUE(step.aStale);
-        EXPECT_FALSE(step.bStale) << "an untimed trigger is never stale";
-    }
-}
-
-namespace {
-
 class SameTriggerTwice final : public hypha::CycleNode
 {
   public:

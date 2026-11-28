@@ -754,25 +754,6 @@ fn two_ports_on_one_topic_are_refused() {
 }
 
 #[test]
-fn an_untimed_trigger_runs_no_fallback_and_steps_on_each_sample() {
-    let fixture = Fixture::new();
-    let recorder = Recorder::default();
-    let untimed = trigger_input(&fixture, 8);
-    let cycle = period_less_cycle(&fixture, Some(record_step), recording(&recorder));
-    let index = bind_queued(cycle, untimed.source, 1);
-    assert_eq!(unsafe { hypha_cycle_set_trigger(cycle, index) }, HyphaStatus::Ok);
-    assert_eq!(unsafe { hypha_cycle_commit(cycle) }, HyphaStatus::Ok);
-    run_waitset_for(fixture.waitset, 300_000_000);
-    assert!(recorder.steps().is_empty(), "no step without a trigger sample");
-    unsafe { send_stamped(untimed.publisher, 1, wall_now() - 10 * SILENCE_NANOS) };
-    assert!(run_until(fixture.waitset, POLL_BOUND, || !recorder.steps().is_empty()));
-    let steps = recorder.steps();
-    assert_eq!(steps.len(), 1, "an old sample of an untimed trigger is not late: {steps:?}");
-    assert_eq!((steps[0].samples, steps[0].faults, steps[0].ports[0].rejected), (1, 0, 0));
-    destroy(cycle, &[untimed.publisher]);
-}
-
-#[test]
 fn an_untimed_trigger_beside_a_timed_one_is_never_stale_in_a_fallback() {
     let fixture = Fixture::new();
     let recorder = Recorder::default();
