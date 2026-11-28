@@ -185,7 +185,8 @@ pub unsafe extern "C" fn hypha_cycle_set_class_based(
 
 /// Atomically attach the cycle timer, triggers or clock driver after all bindings; an
 /// uncommitted cycle never runs. `InvalidArgument`: neither a period nor a trigger, both,
-/// any trigger binding without a positive silence limit, or a refused `[cycle]` key.
+/// or a refused `[cycle]` key. A trigger binding without a silence limit is untimed: it
+/// runs no fallback of its own, and a cycle of untimed triggers runs no fallback.
 /// `InvalidState`: a committed cycle, a running `WaitSet`, any cycle on a CLI tool node
 /// or on a node with a clock driver, and a driver in a process already on simulated
 /// time, on a node with another cycle, or while another process publishes `/clock`. A

@@ -2,9 +2,11 @@
 //!
 //! A triggered cycle runs one step per sample of its trigger ports, in merge order: by
 //! send stamp, then by port, each port in its own order. Each time no event ran for the
-//! shortest silence limit of the ports, it runs one fallback step. The node passes the
-//! clocks and the pending stamps of each port here as plain values. A port is named by
-//! its position in the cycle's trigger list, which is in binding order.
+//! shortest silence limit of the ports, it runs one fallback step. A port with no limit
+//! (zero) counts for no fallback and is never late; a schedule whose ports have none runs
+//! only on its triggers. The node passes the clocks and the pending stamps of each port
+//! here as plain values. A port is named by its position in the cycle's trigger list,
+//! which is in binding order.
 
 use hypha_cycle::TriggerPorts;
 
@@ -98,7 +100,7 @@ pub enum TriggerAdmit {
 /// One trigger port of a schedule.
 #[derive(Debug)]
 struct Port {
-    /// The silence limit in nanoseconds; positive.
+    /// The silence limit in nanoseconds; positive, or zero for no limit.
     silence: i64,
     /// The time of the port's last trigger step, before it was raised to keep step
     /// times ascending.
@@ -107,15 +109,16 @@ struct Port {
 
 impl Port {
     /// The time at which the port has been silent for its limit: its last step, or `first`
-    /// before one, plus the limit. `None` when no clock reaches it.
+    /// before one, plus the limit. `None` without a limit, or when no clock reaches it.
     fn silent_at(&self, first: i64) -> Option<i64> {
-        self.last_step.unwrap_or(first).checked_add(self.silence)
+        let timed = self.silence > 0;
+        timed.then(|| self.last_step.unwrap_or(first).checked_add(self.silence)).flatten()
     }
 
     /// Host time: whether its sample of wall age `age`, at schedule time `time`, runs no
     /// step: it is older than the limit, or sent before the sample of the port's last step.
     fn is_late(&self, age: i64, time: i64) -> bool {
-        let too_old = age > self.silence;
+        let too_old = self.silence > 0 && age > self.silence;
         let before_its_step = self.last_step.is_some_and(|step| time < step);
         too_old || before_its_step
     }
@@ -125,8 +128,9 @@ impl Port {
 #[derive(Debug)]
 pub struct TriggerSchedule {
     ports: Vec<Port>,
-    /// The shortest silence limit of the ports: the fallback interval.
-    shortest: i64,
+    /// The shortest silence limit of the ports: the fallback interval. `None` when no port
+    /// has a limit: no fallback runs.
+    shortest: Option<i64>,
     /// The clock of the first evaluation.
     first: Option<i64>,
     /// The time of the last event run, which no later event precedes.
@@ -140,13 +144,17 @@ pub struct TriggerSchedule {
 pub const MAX_EVENTS_PER_ADMIT: usize = 1024;
 
 impl TriggerSchedule {
-    /// A schedule for one port per silence limit of `silences`, in nanoseconds. `None`
-    /// unless there are between one and [`TriggerPorts::CAPACITY`] limits, each positive.
+    /// A schedule for one port per silence limit of `silences`, in nanoseconds; zero is a
+    /// port with no limit. `None` unless there are between one and
+    /// [`TriggerPorts::CAPACITY`] limits, none negative.
     #[must_use]
     pub fn new(silences: &[i64]) -> Option<Self> {
         let counted = (1..=TriggerPorts::CAPACITY).contains(&silences.len());
-        let positive = silences.iter().all(|silence| *silence > 0);
-        let shortest = silences.iter().copied().min().filter(|_| counted && positive)?;
+        let negative = silences.iter().any(|silence| *silence < 0);
+        if !counted || negative {
+            return None;
+        }
+        let shortest = silences.iter().copied().filter(|silence| *silence > 0).min();
         Some(Self {
             ports: silences.iter().map(|&silence| Port { silence, last_step: None }).collect(),
             shortest,
@@ -157,8 +165,9 @@ impl TriggerSchedule {
     }
 
     /// The shortest silence limit of the ports, in nanoseconds: the fallback interval.
+    /// `None` when no port has a limit.
     #[must_use]
-    pub fn shortest(&self) -> i64 {
+    pub fn shortest(&self) -> Option<i64> {
         self.shortest
     }
 
@@ -203,26 +212,30 @@ impl TriggerSchedule {
                 self.take_late(&mut merge, wall, steady, out)?;
             }
             let anchor = self.anchor(first);
-            let fallback = anchor.checked_add(self.shortest).ok_or(HoldError::Overflow)?;
+            let fallback = self
+                .shortest
+                .map(|shortest| anchor.checked_add(shortest).ok_or(HoldError::Overflow))
+                .transpose()?;
             let head = merge
                 .peek()
                 .map(|(stamp, port)| trigger_time(stamp, clock).map(|time| (time, port)))
                 .transpose()?;
-            match head {
-                Some((time, port)) if time <= fallback => {
+            match (head, fallback) {
+                (Some((time, port)), _) if fallback.is_none_or(|fallback| time <= fallback) => {
                     if !clock.admits(time) {
                         break;
                     }
                     merge.advance(port);
                     out.push(self.run_trigger(time, port)?);
                 }
-                _ => {
+                (_, Some(fallback)) => {
                     let head = head.map(|(time, _)| time);
                     let Some(time) = self.fallback_time(fallback, anchor, head, clock)? else {
                         break;
                     };
                     out.push(self.run_fallback(time, first)?);
                 }
+                (_, None) => break,
             }
         }
         Ok(TriggerAdmit::Run)
@@ -296,10 +309,10 @@ impl TriggerSchedule {
         };
         let before_head = head.map_or(Some(steady), |head| head.checked_sub(1));
         let bound = steady.min(before_head.ok_or(HoldError::Overflow)?);
-        if fallback > bound {
+        let Some(shortest) = self.shortest.filter(|_| fallback <= bound) else {
             return Ok(None);
-        }
-        latest_multiple(anchor, self.shortest, bound).map(Some)
+        };
+        latest_multiple(anchor, shortest, bound).map(Some)
     }
 
     /// What the next fallback counts from: the last event run, or the first evaluation
@@ -314,10 +327,12 @@ impl TriggerSchedule {
         self.capped
     }
 
-    /// The next fallback deadline on the schedule's clock, `None` before the first evaluation.
+    /// The next fallback deadline on the schedule's clock, `None` before the first
+    /// evaluation and for a schedule with no limit.
     #[must_use]
     pub fn next_fallback(&self) -> Option<i64> {
-        self.first.and_then(|first| self.anchor(first).checked_add(self.shortest))
+        let first = self.first?;
+        self.anchor(first).checked_add(self.shortest?)
     }
 
     /// The clock up to which this cycle may report, exclusive: the lowest of its first

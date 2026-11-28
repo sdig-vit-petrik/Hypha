@@ -38,12 +38,12 @@ fn an_unnamed_port_with_a_declared_check_is_refused_with_its_reason() {
     assert_eq!(refused.status, HyphaStatus::InvalidArgument);
     assert_eq!(refused.detail, "supervision needs a named port");
     assert_eq!(refused.attached, 0);
-    // A required, wired port without a table cannot read a limit: it needs the tag.
+    // A wired port without a table, advisory or not, reads no limit: it needs the tag.
     let untagged = unsafe { bind(cycle, sim.node, 0, "", (true, false, true)) };
     assert_eq!(untagged.status, HyphaStatus::InvalidArgument);
     assert_eq!(
         untagged.detail,
-        "a required input without a table needs the tag hypha::unsupervised"
+        "an input without a table has no time limit and needs the tag hypha::unsupervised"
     );
     let tagged = unsafe { bind(cycle, sim.node, 0, "", (false, false, true)) };
     assert_eq!((tagged.status, tagged.attached), (HyphaStatus::Ok, 0));

@@ -773,25 +773,86 @@ TEST_F(SupervisionFixture, SilenceMsOnAnUnsupervisedPortIsRefused)
     ) << started.error();
 }
 
-TEST_F(SupervisionFixture, UnsupervisedAndAdvisoryTogetherAreRefused)
+/// Starts @p port, checks its state before a sample, publishes one, and lets 300 ms pass:
+/// the untimed input stays usable. Returns the `~/state` before the sample.
+template <typename Port>
+uint8_t untimedPortRun(hypha::Node& node, Port& port, const std::string& topic)
 {
-    this->initWith("[ports.inputs.arbiter]\ntopic='" + topicFor("arbiter") + "'\n");
-    TaggedPort port(hypha::unsupervised, hypha::advisory);
+    auto publisher = hypha::Node().advertise<UInt32>(hypha::Topic{topic});
     port.setRate(hypha::Hz(100.0));
-    const auto started = port.start(*this->node);
-    ASSERT_FALSE(started.has_value());
-    EXPECT_NE(
-        started.error().find("the tags unsupervised and advisory exclude each other"),
-        std::string::npos
-    ) << started.error();
+    const auto started = port.start(node);
+    EXPECT_TRUE(started.has_value()) << (started ? "" : started.error());
+    EXPECT_TRUE(port.input.untimed());
+    EXPECT_TRUE(advanceSimulated(node, 300));
+    EXPECT_EQ(port.input.verdict(), hypha::InputVerdict::NeverArrived);
+    EXPECT_FALSE(port.input.stale()) << "an untimed input is never stale";
+    const uint8_t before = currentNodeState();
+    EXPECT_TRUE(publisher.publish(UInt32{3}));
+    EXPECT_TRUE(runUntil(
+        node,
+        [&port]() {
+            return port.input.usable();
+        },
+        std::chrono::seconds(10)
+    ));
+    EXPECT_TRUE(advanceSimulated(node, 300));
+    EXPECT_TRUE(port.input.usable()) << "valid until replaced";
+    EXPECT_EQ(port.input->data, 3U);
+    EXPECT_EQ(currentNodeState(), hypha_msgs::NodeState::INPUTS_USABLE);
+    return before;
 }
 
-TEST_F(SupervisionFixture, AnAdvisoryInputStartsWithoutSilenceMs)
+TEST_F(SupervisionFixture, SilenceMsZeroIsARequiredInputWithNoTimeLimit)
+{
+    const std::string topic = topicFor("arbiter");
+    this->initWith("[ports.inputs.arbiter]\ntopic='" + topic + "'\nsilence_ms = 0\n");
+    TaggedPort port;
+    EXPECT_EQ(untimedPortRun(*this->node, port, topic), hypha_msgs::NodeState::WAITING)
+        << "a required untimed input waits for its first sample";
+}
+
+TEST_F(SupervisionFixture, SilenceMsZeroOnAnAdvisoryInputIsOptionalAndUntimed)
+{
+    const std::string topic = topicFor("arbiter");
+    this->initWith("[ports.inputs.arbiter]\ntopic='" + topic + "'\nsilence_ms = 0\n");
+    TaggedPort port(hypha::advisory);
+    EXPECT_EQ(untimedPortRun(*this->node, port, topic), hypha_msgs::NodeState::INPUTS_USABLE);
+}
+
+TEST_F(SupervisionFixture, UnsupervisedAndAdvisoryTogetherAreAnOptionalUntimedInput)
+{
+    const std::string topic = topicFor("arbiter");
+    this->initWith("[ports.inputs.arbiter]\ntopic='" + topic + "'\n");
+    TaggedPort port(hypha::unsupervised, hypha::advisory);
+    EXPECT_EQ(untimedPortRun(*this->node, port, topic), hypha_msgs::NodeState::INPUTS_USABLE);
+}
+
+TEST_F(SupervisionFixture, AnInputWithALimitIsNotUntimed)
+{
+    this->initWith(
+        "[ports.inputs.arbiter]\ntopic='" + topicFor("arbiter") + "'\nsilence_ms = 100\n"
+    );
+    TaggedPort port(hypha::advisory);
+    EXPECT_FALSE(port.input.untimed()) << "before start()";
+    port.setRate(hypha::Hz(100.0));
+    ASSERT_TRUE(port.start(*this->node).has_value());
+    EXPECT_FALSE(port.input.untimed());
+}
+
+TEST_F(SupervisionFixture, AnAdvisoryInputWithoutSilenceMsIsRefused)
 {
     this->initWith("[ports.inputs.arbiter]\ntopic='" + topicFor("arbiter") + "'\n");
     TaggedPort port(hypha::advisory);
     port.setRate(hypha::Hz(100.0));
-    EXPECT_TRUE(port.start(*this->node).has_value());
+    const auto started = port.start(*this->node);
+    ASSERT_FALSE(started.has_value());
+    EXPECT_NE(
+        started.error().find(
+            "missing key 'silence_ms': an input needs a limit, 0 for none, or the tag "
+            "hypha::unsupervised"
+        ),
+        std::string::npos
+    ) << started.error();
 }
 
 TEST_F(SupervisionFixture, ATablelessRequiredInputIsRefusedWithoutTheTag)
@@ -803,7 +864,9 @@ TEST_F(SupervisionFixture, ATablelessRequiredInputIsRefusedWithoutTheTag)
     const auto started = cycle.start(*this->node, NoStep{});
     ASSERT_FALSE(started.has_value());
     EXPECT_NE(
-        started.error().find("a required input without a table needs the tag hypha::unsupervised"),
+        started.error().find(
+            "an input without a table has no time limit and needs the tag hypha::unsupervised"
+        ),
         std::string::npos
     ) << started.error();
 }
@@ -912,20 +975,26 @@ TEST_F(SupervisionFixture, AStagnantUsableInputIsReadable)
     EXPECT_EQ(port.input->data, 5U);
 }
 
-TEST_F(SupervisionFixture, UnsupervisedAndAdvisoryTogetherAreRefusedOnATablelessPort)
+TEST_F(SupervisionFixture, ATablelessAdvisoryInputNeedsTheTagToo)
 {
     this->initWith("");
+    hypha::Cycle          advisoryCycle("tableless_advisory_cycle");
+    hypha::Latest<UInt32> advisoryOnly{
+        advisoryCycle, hypha::Topic{topicFor("tableless_advisory")}, hypha::advisory
+    };
+    advisoryCycle.setRate(hypha::Hz(100.0));
+    const auto refused = advisoryCycle.start(*this->node, NoStep{});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_NE(refused.error().find("needs the tag hypha::unsupervised"), std::string::npos)
+        << refused.error();
     hypha::Cycle          cycle("tableless_tags_cycle");
     hypha::Latest<UInt32> input{
         cycle, hypha::Topic{topicFor("tableless_tags")}, hypha::unsupervised, hypha::advisory
     };
     cycle.setRate(hypha::Hz(100.0));
     const auto started = cycle.start(*this->node, NoStep{});
-    ASSERT_FALSE(started.has_value());
-    EXPECT_NE(
-        started.error().find("the tags unsupervised and advisory exclude each other"),
-        std::string::npos
-    ) << started.error();
+    ASSERT_TRUE(started.has_value()) << started.error();
+    EXPECT_TRUE(input.untimed());
 }
 
 }  // namespace

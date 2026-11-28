@@ -26,7 +26,8 @@ void StepHarness::requireEnabled(const Input<M>& port, const char* call)
     );
 }
 
-/// @brief The silence limit of @p port in nanoseconds; zero when it has none.
+/// @brief The silence limit of @p port in nanoseconds; zero when it has none: tagged
+///        unsupervised, without a table, or `silence_ms = 0`.
 template <typename M>
 int64_t StepHarness::silenceOf(const Input<M>& port)
 {
@@ -35,29 +36,7 @@ int64_t StepHarness::silenceOf(const Input<M>& port)
     if (noTable) {
         return 0;
     }
-    const bool noConfiguration = backend::configHandle() == nullptr;
-    if (noConfiguration) {
-        throw std::logic_error(
-            "hypha: deliver() on input '" + table
-            + "' reads its silence_ms and needs a loaded configuration: a Node or a "
-              "ConfigContext"
-        );
-    }
-    const ConfigView             ports("ports.inputs." + table);
-    const std::optional<int64_t> millis = ports.optional<int64_t>("silence_ms");
-    if (!millis.has_value()) {
-        return 0;
-    }
-    constexpr int64_t nanosPerMilli = 1'000'000;
-    const int64_t     millisMax = port.settings_.limitMax.nanos() / nanosPerMilli;
-    const bool        outOfRange = *millis < 1 || *millis > millisMax;
-    if (outOfRange) {
-        throw ParameterError(
-            "hypha: parameter '" + ports.name("silence_ms") + "' is outside its range [1, "
-            + std::to_string(millisMax) + "] ms"
-        );
-    }
-    return *millis * nanosPerMilli;
+    return detail::tableSilenceNanos(table, port.settings_.limitMax);
 }
 
 /// The rule of `value_usable_within` in crates/hypha_cycle/src/capture/clock.rs. Keep it

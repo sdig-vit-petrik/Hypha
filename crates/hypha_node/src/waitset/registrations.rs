@@ -341,8 +341,9 @@ fn timer_wake(period: Duration, node_clock: bool, sim_time: bool) -> Trigger {
 }
 
 /// The wake of a triggered cycle whose shortest silence limit is `shortest_nanos`. A
-/// cycle with a trigger that has no listener polls its triggers at a tenth of that limit.
-fn triggered_wake(set: &HyphaWaitSet, shortest_nanos: i64, notified: bool) -> Trigger {
+/// cycle with a trigger that has no listener polls its triggers at a tenth of that limit,
+/// or every [`WILDCARD_POLL_PERIOD`] when no trigger has a limit.
+fn triggered_wake(set: &HyphaWaitSet, shortest_nanos: Option<i64>, notified: bool) -> Trigger {
     // A node on its own simulated clock is woken by its `/clock` listener.
     if set.node().uses_sim_time {
         return Trigger::Timed;
@@ -353,7 +354,7 @@ fn triggered_wake(set: &HyphaWaitSet, shortest_nanos: i64, notified: bool) -> Tr
     if notified {
         return Trigger::Timed;
     }
-    let tenth = u64::try_from(shortest_nanos / 10).unwrap_or(0);
+    let tenth = shortest_nanos.and_then(|shortest| u64::try_from(shortest / 10).ok()).unwrap_or(0);
     Trigger::Periodic(Duration::from_nanos(tenth).max(WILDCARD_POLL_PERIOD))
 }
 

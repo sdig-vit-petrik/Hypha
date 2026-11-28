@@ -4,6 +4,7 @@
 #include "hypha/cycle_node.h"
 #include "hypha/hypha.h"
 #include "hypha/testing.h"
+#include <hypha_msgs/NodeState.h>
 
 #include "test_types.h"
 
@@ -207,13 +208,55 @@ TEST_F(TriggeredFixture, ALatestPortCannotBeTheTrigger)
     EXPECT_NE(started.error().find("Arrivals"), std::string::npos) << started.error();
 }
 
-TEST_F(TriggeredFixture, ATriggerWithoutSilenceIsRefused)
+namespace {
+
+/// The `~/state` of the node now.
+hypha_msgs::NodeState stateNow()
+{
+    const auto state = hypha::nodeState();
+    EXPECT_TRUE(state.has_value());
+    return state.value_or(hypha_msgs::NodeState{});
+}
+
+/// An untimed trigger runs no fallback: no step before its first sample, one per sample.
+/// While it never arrived the node waits for it.
+void expectNoFallbackAndOneStepPerSample(hypha::Node& node, OnSample& cycle)
+{
+    const auto started = cycle.start(node);
+    ASSERT_TRUE(started.has_value()) << started.error();
+    EXPECT_TRUE(cycle.trigger.untimed());
+    ASSERT_TRUE(node.runFor(300_ms).ok());
+    EXPECT_TRUE(cycle.seen.empty()) << "no fallback without a limit";
+    const hypha_msgs::NodeState waiting = stateNow();
+    EXPECT_EQ(waiting.state, hypha_msgs::NodeState::WAITING) << "it waits for its trigger";
+    ASSERT_EQ(waiting.inputs.size(), 1U);
+    EXPECT_EQ(waiting.inputs[0].verdict, hypha_msgs::RequiredInput::NEVER_ARRIVED);
+    auto publisher = hypha::Node().advertise<Float64>(hypha::Topic{topicFor("trig")});
+    ASSERT_TRUE(publisher.publish(Float64{1.0}));
+    ASSERT_TRUE(runUntil(node, [&] {
+        return !cycle.seen.empty();
+    }));
+    ASSERT_TRUE(node.runFor(300_ms).ok());
+    ASSERT_EQ(cycle.seen.size(), 1U);
+    EXPECT_EQ(cycle.seen[0].samples, 1U);
+    EXPECT_FALSE(cycle.seen[0].stale);
+    EXPECT_EQ(stateNow().state, hypha_msgs::NodeState::INPUTS_USABLE);
+}
+
+}  // namespace
+
+TEST_F(TriggeredFixture, ATriggerWithSilenceMsZeroRunsNoFallback)
+{
+    this->init("trig", 0);
+    OnSample cycle(true);
+    expectNoFallbackAndOneStepPerSample(*this->node, cycle);
+}
+
+TEST_F(TriggeredFixture, AnUnsupervisedTriggerRunsNoFallback)
 {
     this->init("trig", std::nullopt);
-    OnSample   cycle(false);
-    const auto started = cycle.start(*this->node);
-    ASSERT_FALSE(started.has_value());
-    EXPECT_NE(started.error().find("InvalidArgument"), std::string::npos) << started.error();
+    OnSample cycle(false);
+    expectNoFallbackAndOneStepPerSample(*this->node, cycle);
 }
 
 TEST_F(TriggeredFixture, SetTriggerAfterStartThrows)
@@ -353,24 +396,33 @@ class OneTriggerUnlimited final : public hypha::CycleNode
 
     hypha::Arrivals<Float64> a{*this, "a"};
     hypha::Arrivals<Float64> b{*this, "b", unsupervised};
+    std::vector<SeenTwo>     seen;
 
     void step(const hypha::CycleTime&) override
     {
+        this->seen.push_back(
+            SeenTwo{
+                this->a.samples().size(), this->b.samples().size(), this->a.stale(), this->b.stale()
+            }
+        );
     }
 };
 
 }  // namespace
 
-TEST_F(TriggeredFixture, AnyTriggerWithoutSilenceIsRefusedAndNamed)
+TEST_F(TriggeredFixture, TheFallbackCountsOnlyTheTimedTriggers)
 {
     this->init({PortTable{"a", 100}, PortTable{"b", std::nullopt}});
     OneTriggerUnlimited cycle;
     const auto          started = cycle.start(*this->node);
-    ASSERT_FALSE(started.has_value());
-    EXPECT_NE(
-        started.error().find("its trigger input 'b' needs a positive silence limit"),
-        std::string::npos
-    ) << started.error();
+    ASSERT_TRUE(started.has_value()) << started.error();
+    ASSERT_TRUE(this->node->runFor(250_ms).ok());
+    ASSERT_FALSE(cycle.seen.empty()) << "a fallback runs after a's 100 ms";
+    for (const SeenTwo& step : cycle.seen) {
+        EXPECT_EQ(step.a + step.b, 0U);
+        EXPECT_TRUE(step.aStale);
+        EXPECT_FALSE(step.bStale) << "an untimed trigger is never stale";
+    }
 }
 
 namespace {

@@ -43,7 +43,8 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).expect("read an example file")
 }
 
-/// The input tables of `config` without `silence_ms`, by port name.
+/// The input tables of `config` without `silence_ms`, by port name. A table with
+/// `topic = ""` disables its port, which then reads no limit.
 fn inputs_without_limit(config: &str) -> Vec<String> {
     let table: toml::Table = config.parse().expect("an example config parses");
     let mut bare = Vec::new();
@@ -51,20 +52,22 @@ fn inputs_without_limit(config: &str) -> Vec<String> {
         table.get("ports").and_then(|ports| ports.get("inputs")).and_then(toml::Value::as_table);
     for (name, port) in inputs.into_iter().flatten() {
         let has_limit = port.as_table().is_some_and(|port| port.contains_key("silence_ms"));
-        if !has_limit {
+        let disabled = port.get("topic").and_then(toml::Value::as_str) == Some("");
+        if !has_limit && !disabled {
             bare.push(name.clone());
         }
     }
     bare
 }
 
-/// True when a source line declares port `name` with a tag that needs no limit.
+/// True when a source line declares port `name` with the tag that needs no limit,
+/// `unsupervised`; an `advisory` port states its limit too (#238).
 fn tagged_without_limit(sources: &[String], name: &str) -> bool {
     let quoted = format!("\"{name}\"");
     sources.iter().any(|source| {
         source.lines().any(|line| {
             let declares = line.contains(&quoted);
-            let tagged = line.contains("unsupervised") || line.contains("advisory");
+            let tagged = line.contains("unsupervised");
             declares && tagged
         })
     })
@@ -158,7 +161,7 @@ fn example_inputs_declare_silence_or_a_tag() {
                 || subscribed_on_a_plain_node(&sources, &name);
             assert!(
                 needs_no_limit,
-                "{}: input '{name}' has no silence_ms and no unsupervised/advisory tag",
+                "{}: input '{name}' has no silence_ms (0 for no limit) and no unsupervised tag",
                 path.display()
             );
         }
@@ -170,6 +173,10 @@ fn a_bare_input_is_reported() {
     let bare = inputs_without_limit("[ports.inputs.speed]\ntopic = \"/speed\"\n");
     assert_eq!(bare, ["speed"]);
     assert!(!tagged_without_limit(&[String::from("Latest<F> speed{*this, \"speed\"};")], "speed"));
+    let advisory = String::from("Latest<F> speed{*this, \"speed\", advisory};");
+    assert!(!tagged_without_limit(&[advisory], "speed"), "an advisory port states its limit");
+    let disabled = inputs_without_limit("[ports.inputs.speed]\ntopic = \"\"\n");
+    assert!(disabled.is_empty(), "a disabled port reads no limit");
     assert!(!subscribed_on_a_plain_node(
         &[String::from("Latest<F> speed{*this, \"speed\"};")],
         "speed"
