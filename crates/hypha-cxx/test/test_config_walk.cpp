@@ -32,6 +32,7 @@ class ConfigWalkFixture : public ::testing::Test
                   "gains = [1.0, 2.5]\n"
                   "bad_gains = [1.0, 'x']\n"
                   "mixer = [1, 0, 0, 1, 0.5, 0.5]\n"
+                  "no_mixer = []\n"
                   "[[sensors]]\n"
                   "name = 'imu'\n"
                   "weights = [0.5, 1.5, 2.5]\n"
@@ -259,6 +260,12 @@ TEST_F(ConfigWalkFixture, AMatrixThatDoesNotFitIsRefusedWithItsShape)
             settings.requiredMatrix<double>("absent", 2, 2);
         }),
         "hypha: required parameter not set: absent"
+    );
+    EXPECT_EQ(
+        refusal([&settings]() {
+            settings.requiredMatrix<double>("no_mixer", 0, 4);
+        }),
+        "hypha: parameter 'no_mixer': 0 elements do not make rows of 4 columns"
     );
     EXPECT_THROW(settings.requiredMatrix<double>("mixer", 0, 0), std::invalid_argument);
 }

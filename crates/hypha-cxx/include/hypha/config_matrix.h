@@ -50,8 +50,8 @@ Matrix<T> ConfigView::requiredMatrix(const std::string& key, size_t rows, size_t
     Matrix<T> matrix;
     matrix.values = this->requiredArray<T>(key);
     const size_t length = matrix.values.size();
-    const bool   fits =
-        rows != 0 && cols != 0 ? length == rows * cols : length % std::max(rows, cols) == 0;
+    const bool   fits = rows != 0 && cols != 0 ? length == rows * cols
+                                               : length != 0 && length % std::max(rows, cols) == 0;
     if (!fits) {
         const std::string reason =
             rows != 0 && cols != 0
