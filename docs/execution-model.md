@@ -586,9 +586,20 @@ the trigger that has no limit.
    one topic whose samples arrive out of order, fails the run with `SequenceGap`, and
    the log names both times. A publisher that reports no progress, such as a plain
    callback, is not waited for, so a tie with its samples runs in arrival order.
+
+   A service edge needs one nanosecond less. Requests (`hypha::Requests`) and responses
+   (`hypha::Calls`) are cut strictly before a step's time T on both kinds of cycle
+   (`docs/design/native-services.md` §4), so a triggered step at T needs a client of its
+   servers, or the server of its clients, to have reported T − 1 ns only, not T. An
+   upstream that also feeds the cycle a topic still has to report T. Without this a
+   triggered client that calls a triggered server would hold for good: each would wait
+   for the other to report T before its own step at T. A client and its server that are
+   cycles of one `WaitSet` hold each other in the same way, and the turn repeats its
+   timers while that lets a held step run.
 6. **Progress and loops.** A triggered cycle cannot know when its next trigger
-   comes. It reports at most the lowest clock its upstreams reported, and stays
-   below its earliest pending trigger or fallback. A feedback loop made only of
+   comes. It reports at most the lowest clock its topic upstreams reported, and stays
+   below its earliest pending trigger or fallback. A request or a response steps no
+   cycle, so a service peer bounds which steps run, not the clock the cycle reports. A feedback loop made only of
    triggered cycles has no delay element: it holds for good, until the player's
    `--timeout` ends it with an error that names the loop's nodes, or a stop does. A loop needs a delay element, a rate cycle or a clock driver, as an
    algebraic loop does in any block-diagram tool.
@@ -1006,8 +1017,9 @@ no cut and no hold, so a replay with services between plain nodes is not determi
 A client's timeout counts on the scheduling clock, simulated time in a replay: a call
 times out when the clock reaches its deadline, and while `/clock` is paused it does
 not. A `Deferred` answered from a worker thread is outside any replay. The cycle ports
-that make a call part of the lockstep (`Requests`, `Calls`) are stage 1c of
-[design/native-services.md](design/native-services.md).
+(`Requests`, `Calls`, cpp-api.md §8.5) make a call part of the lockstep: requests and
+responses are inputs cut strictly before a step's time, and the service peers are
+upstreams of each other (section 6.6 item 5, [design/native-services.md](design/native-services.md) §4).
 
 ### 11.3 Design note: one execution model for cycles and plain callbacks (#136)
 

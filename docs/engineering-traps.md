@@ -389,6 +389,19 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   path; unordered histories keep the per-sample replay admission rules. A sample
   stamped exactly at a replay cut belongs to the next step, except on a trigger port of
   a triggered cycle, which admits it at its own step ("replay through T").
+- **One turn runs all the due deadlines of a cycle before the next cycle.** Two cycles of
+  one `WaitSet` that feed each other within a turn are therefore not ordered by time: with
+  several deadlines per turn, the one registered first runs them all before the other runs
+  its first, and what it reads depends on `--chunk`. The node-wide upstream hold cannot
+  help, since both report as one node. For a client and its server in one `WaitSet` the
+  hold is local (`hypha_node::waitset::service_edges`): a step waits for the peer's earlier
+  steps, and the turn repeats their timers while a held step can run. Topic edges inside
+  one node have no such hold.
+- **A service edge must not lift a triggered cycle's progress.** Requests and responses
+  are cut strictly, so a triggered step at T needs its service peers at T − 1 ns; but they
+  step no cycle, so they stay out of the clock the cycle reports. Counting them would make
+  a triggered client and server raise each other's report one nanosecond per turn, and
+  requiring T of them deadlocks the pair (`service_lockstep`).
 - **A wall clock that steps back inside one host turn makes a fresh trigger late.** The
   trigger schedule maps each pending stamp onto the monotonic clock by the turn's one
   wall reading, and a stamp from the future counts as sent now. When a port holds a

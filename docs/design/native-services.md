@@ -15,7 +15,49 @@ besides the policy's request and response bounds, its reason cut at 1 KiB; `call
 body calls a request of no fields and prints the template of any other; the exit codes
 are 0 answered, 1 a tool failure, then 2 to 6 for refused, no server, not sent, server
 lost and timeout; `list` shows no per-outcome counts before the `~/state` rows of stage
-2, and the paused-clock notice is not built. Each decision gives its reason. Where the author checked a change
+2, and the paused-clock notice is not built.
+
+Stage 1c is in two parts. The first is built: the cycle ports `Requests<Srv>` and
+`Calls<Srv>` (`crates/hypha_node/src/service/cycle.rs`, `crates/hypha-cxx/include/hypha/cycle_service.h`),
+the strict cut, the two upstream edges, the §6.6 amendment, and the lockstep tests of
+section 11 (`apps/hypha_tools/tests/service_lockstep.rs`, with the C++ participant
+`crates/hypha-cxx/test/service_lockstep_peer.cpp`). `StepHarness` support and
+`hypha::Sequence` are the second part; until then a `StepHarness` step that touches a
+service port throws `std::logic_error`. Decisions of the first part where this document
+is silent:
+
+- **A service edge bounds which steps run, not the progress a triggered cycle reports.**
+  A request or a response steps no cycle (stage 3 is not built), so a triggered cycle
+  reports from its topic upstreams, its pending triggers and its fallback alone; a step
+  held by a service peer stays pending and keeps the report below it. Counting service
+  edges in the report would make a client and its server lift each other's report one
+  nanosecond per turn.
+- **A client and its server in one `WaitSet` hold each other.** The strict cut alone does
+  not make their order irrelevant (section 4 said it does): a turn runs all the due
+  deadlines of one cycle before the next cycle, so with several deadlines per turn a server
+  registered first ran a deadline before its client ran the step that called it, and what
+  a step read depended on `--chunk`. Each cycle with a service peer in its `WaitSet` holds
+  a step until the peer has run every step before it, as for a peer in another node, and
+  the turn repeats the timers of such cycles while that lets a held step run. The lockstep
+  test of a pair in one node fails without it.
+- **A step that sends no output sends no answer and no call.** A step that stops the run,
+  or continues with a status, publishes nothing (execution-model.md §6.1), so it is treated
+  as a failed step here too: its requests end `ServerLost` (`server step failed`), its
+  calls `NotSent`.
+- **The answer to a deferred request given during any cycle step on the run's thread
+  leaves after that step**, with its outputs, and a failed step answers it as failed, as
+  section 2 asks of a deferred request answered in a later step.
+- **`reply()` in a step reports `TooLarge` at once** for a response above the bound; the
+  client is refused with the sizes after the step, as for a plain server.
+- **Outcomes reach a step in call order**; an outcome no step read is dropped after it,
+  counted, and logged once per port at info level.
+- **`per_step`** is at most the server's slots (`clients × outstanding`); a `Calls` port's
+  `outstanding` defaults to 1, as section 8.6 says, and counts the calls staged in the step.
+- **ABI**: five functions (`hypha_cycle_bind_server`, `hypha_cycle_bind_client`,
+  `hypha_cycle_requests`, `hypha_cycle_next_result`, `hypha_cycle_call`), coarse as those of
+  1b (#276); revision 12, the unreleased revision of 1b.
+
+Each decision gives its reason. Where the author checked a change
 against the code and kept a different mechanism, an **author's note** says so, with the
 evidence.
 
@@ -265,8 +307,10 @@ order uses names, which are the same on every run, not ids.
 with D ≥ S + timeout. That is deterministic, with a resolution of the client's period.
 
 **Order inside one `WaitSet`.** A client and its server may be cycles of one node. The
-strict cut makes their order irrelevant: a request stamped D is never served by a server
-step at D. Stage 1c tests this.
+strict cut keeps a request stamped D from a server step at D; and each of the two holds a
+step until the other has run every step before it, as a peer in another node is held, so
+a turn that runs several deadlines serves the request at the same step (status note).
+Stage 1c tests this.
 
 **Remaining non-determinism, to document:**
 

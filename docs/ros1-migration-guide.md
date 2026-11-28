@@ -650,7 +650,8 @@ included, uses the same `HYPHA_DOMAIN`.
 | `serviceClient(name, true)` (persistent) | The default: every client stays connected |
 | a service whose response is a map, a path or a cloud | The data on a latched topic; the service carries a small request and its acknowledgement (cpp-api.md §8.4) |
 | `std_srvs/*` | Shipped by the SDK: `Empty`, `Trigger`, `SetBool` |
-| `ros::ServiceServer` or `ros::ServiceClient::call` in a `CycleNode` | Not yet (stage 1c): an `Arrivals<Srv::Request>` port on a request topic and an `Output<Srv::Response>` on a reply topic, matched by an identifier, the step tracking its own deadline (cpp-api.md §8.4) |
+| `nh.advertiseService(name, &C::cb, this)` in a `CycleNode` | A `Requests<Srv>` port: `for (auto& r : port.requests()) r.reply({...});` in the step, named by `[ports.servers.<port>] service` (cpp-api.md §8.5) |
+| `client.call(srv)` in a `CycleNode` | A `Calls<Srv>` port: `port.call(srv.request)` in one step, `port.result()` in a later one; a chain of calls keeps a `Deferred` and a state over steps (cpp-api.md §8.5) |
 | `ROS_INFO("%f", x)` | `HYPHA_LOG_INFO("{}", x)`: a `std::format` string |
 | `ROS_WARN_THROTTLE(1, ...)` | `HYPHA_LOG_WARN_THROTTLE(1.0, ...)` |
 | `ROS_WARN_ONCE`, `ROS_WARN_COND` | `HYPHA_LOG_WARN_WHEN(condition, false, ...)`: writes when the condition becomes true |
@@ -805,10 +806,9 @@ hypha has no equivalent for these. Stop and ask the user before you continue:
 - `actionlib`.
 - `nodelet` and in-process zero-copy between nodes. hypha nodes are processes;
   shared memory gives zero-copy between them.
-- A service called from inside a cycle step, or one whose caller blocks on the reply
-  inside a callback. A plain node calls with `call(request, onResult)`; a cycle has no
-  service port yet (stage 1c), so the call becomes a request topic and a reply topic,
-  and the caller a state over steps.
+- A service whose caller blocks on the reply inside a callback. A plain node calls with
+  `call(request, onResult)`; a cycle with a `Calls` port, and the caller becomes a state
+  over steps.
 - Missing or stale input with no rule in the ROS node. Ask which output is
   safe.
 - A per-message latency requirement that a triggered step does not meet on the
