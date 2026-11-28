@@ -19,7 +19,23 @@ beside the headers generated from `crates/hypha_msgs/msg/sensor_msgs`, and
 Licence: BSD 3-Clause, in the header of each file (Willow Garage, Inc.; Open Source
 Robotics Foundation, Inc.; listed in `NOTICE`). Upstream has no separate licence file.
 
-The files are unchanged; `vendor.toml` holds their SHA-256, and `python3 -I
+The files are unchanged but for edits marked `hypha port:`, all in `point_cloud2_iterator.h`
+and its `impl/`:
+
+- They take a `hypha::View<sensor_msgs::PointCloud2>` too, a received cloud read in place
+  (`hypha/view.h`, #255), in a constructor of `PointCloud2ConstIterator` and its base, and
+  `set_field` reads the fields of either.
+- A field is read and written with `std::memcpy`, not through a `T&` on a cast pointer (#291).
+  The array of a view starts at any byte (the ROS 1 encoding has no padding) and a field may
+  sit at an odd offset of a point, where a cast pointer is undefined behaviour, which UBSan
+  reports. The base keeps no `T*`, only the byte pointers; `operator*` and `operator[]` of a
+  `PointCloud2ConstIterator` return the value `T`, of a `PointCloud2Iterator` a
+  `hypha::UnalignedRef<T>` (`hypha/unaligned.h`, ours) that converts to `T` and assigns from
+  it. Not source compatible: `float& r = *it`, `&*it` (and `printf("%f", *it)` or
+  `std::max(*it, 1.0F)` on a mutable iterator).
+
+A fresh `port.py vendor` drops the edits: apply them again.
+`vendor.toml` holds their SHA-256 (of the files as edited), and `python3 -I
 examples/autoware/tools/port.py verify` (run by `./check.sh`) checks them. To fetch them
 again: `python3 -I examples/autoware/tools/port.py vendor common_msgs`.
 

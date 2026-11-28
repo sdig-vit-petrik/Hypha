@@ -171,9 +171,17 @@ the messages, in the same directory, so a port includes them as it did:
 `typeAsPointFieldType`), `<sensor_msgs/image_encodings.h>` (the encoding names and
 `bitDepth`, `numChannels`, `isColor`, `isMono`, `isBayer`, `hasAlpha`) and
 `<sensor_msgs/distortion_models.h>`. They are the files of ROS 1 `ros/common_msgs` tag
-1.13.2 (BSD 3-Clause), unchanged, in `crates/hypha-cxx/upstream/common_msgs` with their
-licence headers and the SHA-256 of each in `vendor.toml`; `python3 -I
+1.13.2 (BSD 3-Clause), in `crates/hypha-cxx/upstream/common_msgs`, unchanged but for edits
+marked `hypha port:` (the iterators take a view, and read and write a field with
+`std::memcpy`, section 1.1), with their licence headers and the SHA-256 of each in `vendor.toml`; `python3 -I
 examples/autoware/tools/port.py verify` (run by `./check.sh`) checks them.
+`*it` and `it[i]` of a `PointCloud2ConstIterator<T>` give the value `T`; of a
+`PointCloud2Iterator<T>` a `hypha::UnalignedRef<T>` (`hypha/unaligned.h`), which converts to
+`T` and takes `=`, `+=`, `++` and the like, so `*it = 1.0F`, `float x = *it`, `it[1]`,
+`++it`, `it != it.end()` read as in ROS, at any alignment. What ROS allows and this does
+not: a `T&` or a `T*` of an element (`float& r = *it`, `&*it`), `std::max(*it, 1.0F)` on a
+mutable iterator (name the type: `std::max<float>`), and `printf("%f", *it)`, which does not compile (read it into a
+`float` first). `auto v = *it` on a mutable iterator is the reference, not a copy.
 `point_field_conversion.h` needs `<sensor_msgs/PointField.h>` (or `PointCloud2.h`) before
 it, as upstream does. Left out: `fill_image.h` and `point_cloud_conversion.h` (the second
 needs the deprecated `sensor_msgs/PointCloud`, which hypha does not ship). The SDK has no
@@ -805,10 +813,12 @@ The lifetime is the ViewPtr's, and it is bounded:
   A cycle input whose step takes fewer samples than arrive copies the oldest out of its
   slot to receive the next, logged with its count.
 - `hypha::toMessage(*msg)` copies a view into an `M`, for code that takes `const M&`.
-- The bytes are where the ROS 1 encoding puts them, not aligned: read a number of more
-  than a byte with `std::memcpy`. `PointCloud2ConstIterator` reads a field through a
-  reference to its type, as it does for any cloud; aarch64 and x86-64 load such a field, and
-  UBSan reports it as a misaligned access.
+- The bytes are where the ROS 1 encoding puts them, not aligned. `PointCloud2ConstIterator`
+  and `PointCloud2Iterator` read and write a field with `std::memcpy`, so they are safe on a
+  view and on any cloud (section 1.1); code that takes a pointer into `data` itself
+  (`reinterpret_cast<const float*>(msg->data.data())`) must read a number of more than a
+  byte with `std::memcpy` instead: the cast is undefined behaviour, which UBSan reports as a
+  misaligned access.
 - Do not read a ViewPtr on another thread before its callback or step returns: that
   return may move the bytes into a copy. A subscriber of views keeps no
   `latestSample()` (it would hold the budget's slot).

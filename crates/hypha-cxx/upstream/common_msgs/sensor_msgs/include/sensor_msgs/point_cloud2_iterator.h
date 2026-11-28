@@ -38,7 +38,10 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <cstdarg>
 #include <string>
+#include <type_traits>
 #include <vector>
+// hypha port: UnalignedRef, what the iterator dereferences to (#291).
+#include <hypha/unaligned.h>
 
 /**
  * \brief Tools for manipulating sensor_msgs
@@ -189,23 +192,31 @@ public:
    */
   PointCloud2IteratorBase(C &cloud_msg, const std::string &field_name);
 
+  // hypha port: a received cloud read in place (hypha/view.h), its data a span of the slot.
+  PointCloud2IteratorBase(const hypha::View<sensor_msgs::PointCloud2> &cloud_msg, const std::string &field_name);
+
   /** Assignment operator
    * @param iter the iterator to copy data from
    * @return a reference to *this
    */
   V<T>& operator =(const V<T>& iter);
 
+  // hypha port: the bytes of a field may sit at any address (a received cloud's array starts at any
+  // byte), so the iterator reads and writes them with memcpy and does not hand out a T&: a mutable
+  // iterator gives a hypha::UnalignedRef<T> (assign to it, convert it to T), a const one the value.
+  using reference = std::conditional_t<std::is_const<TT>::value, T, hypha::UnalignedRef<T> >;
+
   /** Access the i th element starting at the current pointer (useful when a field has several elements of the same
    * type)
    * @param i
-   * @return a reference to the i^th value from the current position
+   * @return the i^th value from the current position (a hypha::UnalignedRef<T> of it for a mutable iterator)
    */
-  TT& operator [](size_t i) const;
+  reference operator [](size_t i) const;
 
   /** Dereference the iterator. Equivalent to accessing it through [0]
-   * @return the value to which the iterator is pointing
+   * @return the value to which the iterator is pointing (a hypha::UnalignedRef<T> of it for a mutable iterator)
    */
-  TT& operator *() const;
+  reference operator *() const;
 
   /** Increase the iterator to the next element
    * @return a reference to the updated iterator
@@ -239,16 +250,17 @@ private:
    * @param field_name the name of the field to iterate upon
    * @return the offset at which the field is found
    */
-  int set_field(const sensor_msgs::PointCloud2 &cloud_msg, const std::string &field_name);
+  // hypha port: of a message or of its view, which have the same fields.
+  template<typename Cloud>
+  int set_field(const Cloud &cloud_msg, const std::string &field_name);
 
   /** The "point_step" of the original cloud */
   int point_step_;
   /** The raw data  in uchar* where the iterator is */
   U* data_char_;
-  /** The cast data where the iterator is */
-  TT* data_;
+  // hypha port: no TT* member: a cast pointer to a field that is not aligned for T is not a valid pointer.
   /** The end() pointer of the iterator */
-  TT* data_end_;
+  U* data_end_;
   /** Whether the fields are stored as bigendian */
   bool is_bigendian_;
 };
@@ -293,6 +305,9 @@ class PointCloud2ConstIterator : public impl::PointCloud2IteratorBase<T, const T
 {
 public:
   PointCloud2ConstIterator(const sensor_msgs::PointCloud2 &cloud_msg, const std::string &field_name) :
+    impl::PointCloud2IteratorBase<T, const T, const unsigned char, const sensor_msgs::PointCloud2, sensor_msgs::PointCloud2ConstIterator>::PointCloud2IteratorBase(cloud_msg, field_name) {}
+  // hypha port: a received cloud read in place (hypha/view.h).
+  PointCloud2ConstIterator(const hypha::View<sensor_msgs::PointCloud2> &cloud_msg, const std::string &field_name) :
     impl::PointCloud2IteratorBase<T, const T, const unsigned char, const sensor_msgs::PointCloud2, sensor_msgs::PointCloud2ConstIterator>::PointCloud2IteratorBase(cloud_msg, field_name) {}
 };
 }

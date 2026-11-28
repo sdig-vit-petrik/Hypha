@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/PointCloud2.h>
+#include <sensor_msgs/point_cloud2_iterator.h>
 
 #include <cstdint>
 #include <cstring>
@@ -174,6 +175,27 @@ TEST_F(TypedViewFixture, ReplacingTheKeptViewInTheCallbackKeepsEveryFrameInPlace
     EXPECT_EQ(views.metrics().loanRefused, 0U) << "the ROS pattern `latest_ = msg` copies nothing";
     EXPECT_EQ(unsequenced(*latest), image(16, 4, 5));
     EXPECT_EQ(seen.size(), 5U);
+}
+
+TEST_F(TypedViewFixture, APointCloudIteratorReadsAViewAsItReadsTheMessage)
+{
+    std::mt19937 random(7);
+    auto         message = std::make_shared<const PointCloud2>(cloud(50, random));
+    const hypha::ViewPtr<PointCloud2> view = message;
+    EXPECT_EQ(view->data.data(), message->data.data()) << "a view of a message reads its array";
+    sensor_msgs::PointCloud2ConstIterator<float>    fromMessage(*message, "y");
+    sensor_msgs::PointCloud2ConstIterator<float>    fromView(*view, "y");
+    sensor_msgs::PointCloud2ConstIterator<uint16_t> ringOfView(*view, "ring");
+    size_t                                          count = 0;
+    for (; fromMessage != fromMessage.end(); ++fromMessage, ++fromView, ++ringOfView) {
+        ASSERT_TRUE(fromView != fromView.end());
+        const float expected = *fromMessage;
+        const float actual = *fromView;
+        EXPECT_EQ(std::memcmp(&expected, &actual, sizeof(float)), 0);
+        ++count;
+    }
+    EXPECT_EQ(count, 50U);
+    EXPECT_FALSE(fromView != fromView.end());
 }
 
 TEST(TypedView, AnEmptyViewPtrIsFalseAndAViewOfAMessageOutlivesTheCaller)

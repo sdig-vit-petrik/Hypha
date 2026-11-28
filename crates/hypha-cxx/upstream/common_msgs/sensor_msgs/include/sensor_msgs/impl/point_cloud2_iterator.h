@@ -37,6 +37,7 @@
 
 #include <sensor_msgs/PointCloud2.h>
 #include <cstdarg>
+#include <cstring>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -236,7 +237,7 @@ namespace impl
 /**
  */
 template<typename T, typename TT, typename U, typename C, template <typename> class V>
-PointCloud2IteratorBase<T, TT, U, C, V>::PointCloud2IteratorBase() : data_char_(0), data_(0), data_end_(0)
+PointCloud2IteratorBase<T, TT, U, C, V>::PointCloud2IteratorBase() : data_char_(0), data_end_(0)
 {
 }
 
@@ -250,8 +251,17 @@ PointCloud2IteratorBase<T, TT, U, C, V>::PointCloud2IteratorBase(C &cloud_msg, c
   int offset = set_field(cloud_msg, field_name);
 
   data_char_ = cloud_msg.data.data() + offset;
-  data_ = reinterpret_cast<TT*>(data_char_);
-  data_end_ = reinterpret_cast<TT*>(data_char_ + cloud_msg.data.size());
+  data_end_ = data_char_ + cloud_msg.data.size();
+}
+
+// hypha port: a received cloud read in place (hypha/view.h), its data a span of the slot.
+template<typename T, typename TT, typename U, typename C, template <typename> class V>
+PointCloud2IteratorBase<T, TT, U, C, V>::PointCloud2IteratorBase(const hypha::View<sensor_msgs::PointCloud2> &cloud_msg, const std::string &field_name)
+{
+  int offset = set_field(cloud_msg, field_name);
+
+  data_char_ = cloud_msg.data.data() + offset;
+  data_end_ = data_char_ + cloud_msg.data.size();
 }
 
 /** Assignment operator
@@ -265,7 +275,6 @@ V<T>& PointCloud2IteratorBase<T, TT, U, C, V>::operator =(const V<T> &iter)
   {
     point_step_ = iter.point_step_;
     data_char_ = iter.data_char_;
-    data_ = iter.data_;
     data_end_ = iter.data_end_;
     is_bigendian_ = iter.is_bigendian_;
   }
@@ -276,21 +285,30 @@ V<T>& PointCloud2IteratorBase<T, TT, U, C, V>::operator =(const V<T> &iter)
 /** Access the i th element starting at the current pointer (useful when a field has several elements of the same
  * type)
  * @param i
- * @return a reference to the i^th value from the current position
+ * @return the i^th value from the current position (a hypha::UnalignedRef<T> of it for a mutable iterator)
  */
+// hypha port: read and written with memcpy, at any alignment (#291).
 template<typename T, typename TT, typename U, typename C, template <typename> class V>
-TT& PointCloud2IteratorBase<T, TT, U, C, V>::operator [](size_t i) const
+typename PointCloud2IteratorBase<T, TT, U, C, V>::reference PointCloud2IteratorBase<T, TT, U, C, V>::operator [](size_t i) const
 {
-  return *(data_ + i);
+  U* where = data_char_ + i * sizeof(T);
+  if constexpr (std::is_const<TT>::value)
+  {
+    T value;
+    std::memcpy(&value, where, sizeof(T));
+    return value;
+  }
+  else
+    return hypha::UnalignedRef<T>(where);
 }
 
 /** Dereference the iterator. Equivalent to accessing it through [0]
- * @return the value to which the iterator is pointing
+ * @return the value to which the iterator is pointing (a hypha::UnalignedRef<T> of it for a mutable iterator)
  */
 template<typename T, typename TT, typename U, typename C, template <typename> class V>
-TT& PointCloud2IteratorBase<T, TT, U, C, V>::operator *() const
+typename PointCloud2IteratorBase<T, TT, U, C, V>::reference PointCloud2IteratorBase<T, TT, U, C, V>::operator *() const
 {
-  return *data_;
+  return (*this)[0];
 }
 
 /** Increase the iterator to the next element
@@ -300,7 +318,6 @@ template<typename T, typename TT, typename U, typename C, template <typename> cl
 V<T>& PointCloud2IteratorBase<T, TT, U, C, V>::operator ++()
 {
   data_char_ += point_step_;
-  data_ = reinterpret_cast<TT*>(data_char_);
   return *static_cast<V<T>*>(this);
 }
 
@@ -314,7 +331,6 @@ V<T> PointCloud2IteratorBase<T, TT, U, C, V>::operator +(int i)
   V<T> res = *static_cast<V<T>*>(this);
 
   res.data_char_ += i*point_step_;
-  res.data_ = reinterpret_cast<TT*>(res.data_char_);
 
   return res;
 }
@@ -326,7 +342,6 @@ template<typename T, typename TT, typename U, typename C, template <typename> cl
 V<T>& PointCloud2IteratorBase<T, TT, U, C, V>::operator +=(int i)
 {
   data_char_ += i*point_step_;
-  data_ = reinterpret_cast<TT*>(data_char_);
   return *static_cast<V<T>*>(this);
 }
 
@@ -336,7 +351,7 @@ V<T>& PointCloud2IteratorBase<T, TT, U, C, V>::operator +=(int i)
 template<typename T, typename TT, typename U, typename C, template <typename> class V>
 bool PointCloud2IteratorBase<T, TT, U, C, V>::operator !=(const V<T>& iter) const
 {
-  return iter.data_ != data_;
+  return iter.data_char_ != data_char_;
 }
 
 /** Return the end iterator
@@ -346,7 +361,7 @@ template<typename T, typename TT, typename U, typename C, template <typename> cl
 V<T> PointCloud2IteratorBase<T, TT, U, C, V>::end() const
 {
   V<T> res = *static_cast<const V<T>*>(this);
-  res.data_ = data_end_;
+  res.data_char_ = data_end_;
   return res;
 }
 
@@ -355,8 +370,10 @@ V<T> PointCloud2IteratorBase<T, TT, U, C, V>::end() const
   * @param field_name the name of the field to iterate upon
   * @return the offset at which the field is found
   */
+// hypha port: of a message or of its view, which have the same fields.
 template<typename T, typename TT, typename U, typename C, template <typename> class V>
-int PointCloud2IteratorBase<T, TT, U, C, V>::set_field(const sensor_msgs::PointCloud2 &cloud_msg, const std::string &field_name)
+template<typename Cloud>
+int PointCloud2IteratorBase<T, TT, U, C, V>::set_field(const Cloud &cloud_msg, const std::string &field_name)
 {
   is_bigendian_ = cloud_msg.is_bigendian;
   point_step_ = cloud_msg.point_step;

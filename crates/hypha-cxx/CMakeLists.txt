@@ -329,6 +329,14 @@ if(HYPHA_BUILD_TESTS)
   set_tests_properties(typed_loan_of_a_message_without_an_array_is_refused PROPERTIES
     PASS_REGULAR_EXPRESSION "this message has no single top-level array of numbers to write in place")
 
+  # A mutable iterator's field passed to printf must stop the build, not print garbage.
+  add_library(unaligned_ref_not_varargs OBJECT EXCLUDE_FROM_ALL companions/test/unaligned_ref_not_varargs.cpp)
+  target_link_libraries(unaligned_ref_not_varargs PRIVATE hypha)
+  add_test(NAME unaligned_ref_through_printf_is_refused
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target unaligned_ref_not_varargs)
+  set_tests_properties(unaligned_ref_through_printf_is_refused PROPERTIES
+    PASS_REGULAR_EXPRESSION "non-trivial|non-trivially")
+
   add_executable(test_hypha
     test/test_main.cpp
     test/wall_clock_listener.cpp
@@ -406,6 +414,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_topic_overloading.cpp
     test/test_sensor_msgs_companions.cpp
     test/test_camera_info.cpp
+    companions/test/test_point_cloud2_unaligned.cpp
     test/test_sensor_msgs_ros2_names.cpp
   )
   # The services of test_services.cpp: the camera's typed setter, and a bounded echo; and
@@ -561,12 +570,13 @@ endif()
 
 # The typed loan's and the views' tests under AddressSanitizer and UBSan, on request: a
 # moved-from loan, a loan that outlives its publisher, its node or its step, a span past
-# the publish, a view kept past its callback or its step.
+# the publish, a view kept past its callback or its step, a cloud iterator over a field at an
+# odd offset.
 option(HYPHA_TYPED_LOAN_SANITIZE "Build test_typed_loan_sanitized with ASan and UBSan" OFF)
 if(HYPHA_BUILD_TESTS AND HYPHA_TYPED_LOAN_SANITIZE)
   add_executable(test_typed_loan_sanitized
     test/test_main.cpp test/test_typed_loan.cpp test/test_typed_loan_contract.cpp
-    test/test_typed_view.cpp test/test_cycle_view.cpp)
+    test/test_typed_view.cpp test/test_cycle_view.cpp companions/test/test_point_cloud2_unaligned.cpp)
   target_link_libraries(test_typed_loan_sanitized PRIVATE hypha GTest::gtest)
   target_compile_definitions(test_typed_loan_sanitized PRIVATE HYPHA_NO_LOGGING)
   target_compile_options(test_typed_loan_sanitized PRIVATE
