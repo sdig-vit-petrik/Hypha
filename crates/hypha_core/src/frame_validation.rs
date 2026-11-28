@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use hypha_wire::frame::{FrameHeader, ParseError, ParsedFrame, TopicCode, verify};
-use hypha_wire::integrity::SequenceValidator;
+use hypha_wire::integrity::{FirstFrame, SequenceValidator};
 
 /// Why a subscriber refused one frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +81,8 @@ impl FrameValidator {
     }
 
     /// Validate one sample that arrived on `topic`, its header and payload, at
-    /// `now_nanos`. `Ok` carries the transport send time of the accepted frame.
+    /// `now_nanos`, from a publisher that may have existed before the subscription. `Ok`
+    /// carries the transport send time of the accepted frame.
     ///
     /// # Errors
     /// Returns the first rule that refuses the frame.
@@ -93,13 +94,17 @@ impl FrameValidator {
         now_nanos: u64,
     ) -> Result<u64, FrameRejection> {
         let mut cached_now = now_nanos;
-        self.validate_with_clock(topic, header, payload, &mut cached_now, || now_nanos)
+        self.validate_with_clock(topic, header, payload, false, &mut cached_now, || now_nanos)
             .map(|frame| frame.transport_sent_nanos())
     }
 
     /// Validate once and return the borrowed frame, reusing a batch's host time.
     /// Refresh the clock only if a valid, schema-matching frame is newer than the cached
     /// time. A real future stamp is still refused and counted.
+    ///
+    /// `came_after` says that the frame's publisher came after the subscription, so that
+    /// every frame it sent was owed to it: the frames before its first accepted one are
+    /// counted as missing ([`FirstFrame::Owed`]).
     ///
     /// # Errors
     /// Returns the first rule that refuses the frame, without updating sequence
@@ -109,6 +114,7 @@ impl FrameValidator {
         topic: TopicCode,
         header: &FrameHeader,
         payload: &'a [u8],
+        came_after: bool,
         now_nanos: &mut u64,
         refresh: impl FnOnce() -> u64,
     ) -> Result<ParsedFrame<'a>, FrameRejection> {
@@ -140,8 +146,13 @@ impl FrameValidator {
             return Err(FrameRejection::Future);
         }
 
+        let first = match (came_after, frame.latched()) {
+            (true, _) => FirstFrame::Owed,
+            (false, true) => FirstFrame::Latched,
+            (false, false) => FirstFrame::Unknown,
+        };
         let mut sequences = crate::locked(&self.sequences);
-        if sequences.accept_as(frame.publisher_id(), frame.sequence(), !frame.latched()) {
+        if sequences.accept_as(frame.publisher_id(), frame.sequence(), first) {
             self.missing_sequences.store(sequences.missing_sequences(), Ordering::Release);
             self.sent_before_first.store(sequences.sent_before_first(), Ordering::Release);
             return Ok(frame);

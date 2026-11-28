@@ -96,9 +96,21 @@ Notes:
 - A payload that does not change is not a fault. A periodic sender may publish the
   same value for ever; its sequence advances and its frames are current.
 - The sequence is tracked for each publisher. The first frame of a publisher is
-  accepted as it is, and a loss before it is not counted. A publisher that restarts
-  is a new publisher. A sequence half the range or more ahead is refused as not
-  newer.
+  accepted as it is. A publisher that restarts is a new publisher. A sequence half the
+  range or more ahead is refused as not newer.
+- A publisher's first frame has sequence 1. A publisher whose port did not exist yet
+  when the subscriber was created owed it every frame it sent: a first frame of `n`
+  counts `n - 1` lost frames, on host time and on simulated time. The subscriber lists
+  the publisher ports of its topic once it exists, and a port that is not on that list
+  registered after it (iceoryx2 registers a port after it reads the other side, and a
+  publisher updates its connections before each send), so none of its frames is from
+  before the subscriber. A publisher that was listed may have sent before the
+  subscriber existed: for it, a loss before its first frame is not counted, and the
+  frames before it are what a late joiner missed (`sent_before_first`), not a loss.
+  The two cases look alike in the queue, so a late joiner is told apart only by that
+  list. A subscriber that tracks more publishers than its table holds
+  (`MAX_TRACKED_PUBLISHERS`, 4096) forgets one, and from then on counts no first frame
+  as lost: the publisher of one may be the forgotten one.
 - Under simulated time (development only) a cycle input that loses a sample fails the
   run: a transport gap, or a history eviction of a sample the input still needed; for a
   `Latest` input, an evicted sample that a newer one supersedes is no loss. A
@@ -110,13 +122,17 @@ Notes:
   a participant the player waits for: the player splits its chunks to fit the queue.
   A topic that only a clock driver publishes holds the outputs of one driver step,
   which nothing bounds: the queue does not overflow when they fit it. On those paths the
-  loss of a publisher's first frames is prevented, not detected. It stays undetectable
-  elsewhere: on a topic with another publisher, for that publisher's frames; at a
-  participant the sender does not wait for (a node with only plain callbacks, a node
-  not yet heard in the first chunk without `--nodes`, a `WaitSet` that has not reported
-  yet, the open loop); at the plain callback subscriptions of any node, which are not
-  drained before its report; for frames sent before the participant's first turn; and
-  on host time.
+  loss of a publisher's first frames is prevented. Elsewhere it is counted when the
+  publisher came after the subscriber (above), and fails the replay as any loss does;
+  for a publisher that existed before the subscriber it stays undetectable: on a topic
+  with another publisher, for that publisher's frames; at a participant the sender does
+  not wait for (a node with only plain callbacks, a node not yet heard in the first
+  chunk without `--nodes`, a `WaitSet` that has not reported yet, the open loop); at the
+  plain callback subscriptions of any node, which are not drained before its report;
+  for frames sent before the participant's first turn; and on host time. The player
+  opens its publishers when it starts, before the start barrier: a participant that
+  subscribed before the player started has the player's first frames counted, one that
+  started after the player has not.
 - A frame is bound to its topic, not to its sender: a trusted process that publishes
   the right message type on a topic is accepted. The deployment's access control is
   the measure against that.
@@ -149,8 +165,11 @@ The library detects; the application decides what a detected fault means.
 - No inhibit after repeated corruption. Every refused frame is independent.
 - No acceptance window: a forward jump of any size below half the sequence range is
   a counted loss, not an error.
-- The first frame of a publisher is trusted, and a loss before it is not counted. The
-  replay lockstep prevents that loss only on the paths of section 3.
+- The first frame of a publisher that existed when the subscriber was created is
+  trusted, and a loss before it is not counted: the subscriber cannot tell it from the
+  frames a late joiner missed (section 3). A publisher that came after the subscriber
+  has its first frames counted. The replay lockstep prevents the loss on the paths of
+  section 3.
 - A 32-bit CRC does not detect every corruption. Random corruption of a frame
   passes with a probability of about 2^-32.
 - A plain subscriber is not supervised: silence and the life sign exist for cycle

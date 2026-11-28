@@ -455,9 +455,12 @@ impl StreamFollower {
     /// and it is made only where the publisher is known to have come after the follower: every
     /// publisher of a stream that a later listing than the first showed, and the publishers
     /// that joined a followed stream since a listing showed one more (a publisher that joins a
-    /// stream already published is told from a quiet one by that count alone). A publisher
-    /// that existed when the follower started is not counted: its history is not the
-    /// recording's. A latched publisher's replayed sample is not counted either.
+    /// stream already published is told from a quiet one by that count alone). A joined
+    /// publisher whose port registered after the stream's subscription owed it every frame, so
+    /// the frames before its first accepted one are lost ([`StreamFollower::lost`]), not
+    /// counted here. A publisher that existed when the follower started is not counted: its
+    /// history is not the recording's. A latched publisher's replayed sample is not counted
+    /// either.
     #[must_use]
     pub fn sent_before_following(&self) -> Vec<(StreamKey, u64)> {
         self.order

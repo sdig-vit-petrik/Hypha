@@ -490,7 +490,8 @@ Read the relevant entry when changing transport, execution, schema, or tools. Th
   queues of all publishers. Drain only at a due step, or only one queue's depth, and
   the player's next chunk pushes unread samples out of a queue: a transport gap that a
   selection supersedes fails the step (#222), and a loss before a publisher's first
-  accepted frame is not counted at all (#247). Host time keeps its drain at the step.
+  accepted frame is not counted when the publisher existed before the subscriber
+  (#247). Host time keeps its drain at the step.
 - **Benchmarks: a green test run misses a slowdown.** A hot-path change (dispatch,
   publish, receive, cycle tick, wire codec) reports its benchmark numbers before and
   after, in the commit message. `cargo bench -p hypha_wire --bench codec` measures the

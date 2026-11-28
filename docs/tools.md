@@ -299,7 +299,10 @@ the publishers that joined a followed stream since a listing showed one more pub
 They do not count a publisher that ran when the tool started (its history is not the tool's
 to record), nor a latched publisher's replayed sample (a latched stream is not judged), and a
 second publisher that joins a stream that had one is told from a quiet one by the listing's
-count alone. `hypha record` prints `hypha record: <stream>: <n> samples were sent before it
+count alone. A publisher whose port registered after the tool's subscription of the stream
+owed it every frame, so what it sent before the first frame the tool accepted is a loss,
+reported as `lost` and failing the recording, not as sent before it was followed
+(`communication-integrity.md` §3). `hypha record` prints `hypha record: <stream>: <n> samples were sent before it
 was followed` as it finds them and `<stream> sent <n> samples before it was followed` under
 `Recorded messages:` (the recording is not failed for it, as a node that starts during a
 recording cannot be avoided); `echo` and `hz` print one such line on standard error; `--sync`

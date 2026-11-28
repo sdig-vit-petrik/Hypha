@@ -204,6 +204,10 @@ impl Iox2Transport {
                 PortError::Backend(3)
             }
         })?;
+        // Pairs with the fence of a subscriber's listing of its publishers
+        // (`PublishersBefore::list`): a subscriber that did not list this port is seen by its
+        // first send.
+        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
         match max_payload {
             Some(payload) => {
                 let subscribers = qos::subscriber_capacity(&spec.name, &policy);
@@ -601,12 +605,14 @@ impl Iox2Transport {
             &port_name,
             slots,
         )?;
+        let publishers_before = crate::endpoint::PublishersBefore::list([&service]);
         // A typed subscriber lets the domain resolve its schema even for a relayed publisher.
         crate::schema::write_schema_file(spec)?;
 
         let subscriber = Iox2Subscriber::new(
             subscriber,
             created_nanos,
+            publishers_before,
             service,
             stream,
             self.node.clone(),

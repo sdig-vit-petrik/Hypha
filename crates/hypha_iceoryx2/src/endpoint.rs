@@ -13,6 +13,7 @@ use hypha_core::port::{PortError, QosRequest, SchemaScope, topic_matches_pattern
 use hypha_wire::frame::{
     FLAG_LATCHED, FrameHeader, FrameMetadata, MAX_PAYLOAD_LEN, TopicCode, message_bytes, seal,
 };
+use iceoryx2::identifiers::UniquePublisherId;
 use iceoryx2::port::ReceiveError;
 use iceoryx2::port::listener::Listener;
 use iceoryx2::port::notifier::Notifier;
@@ -147,6 +148,7 @@ impl Iox2Loan {
 pub struct Iox2Sample {
     topic: Arc<str>,
     sample: Sample<Ipc, [u8], Iox2FrameHeader>,
+    came_after: bool,
 }
 
 impl Iox2Sample {
@@ -175,6 +177,14 @@ impl Iox2Sample {
     #[must_use]
     pub fn payload(&self) -> &[u8] {
         message_bytes(&self.header(), self.sample.payload())
+    }
+
+    /// True when the port that sent this sample did not exist yet when the subscriber was
+    /// created: every frame that publisher sent was then owed to the subscriber, from its
+    /// first. A port listed at creation may have sent before the subscriber existed.
+    #[must_use]
+    pub const fn publisher_came_after(&self) -> bool {
+        self.came_after
     }
 }
 
@@ -292,6 +302,8 @@ struct SingleSubscriber {
     subscriber: Subscriber<Ipc, [u8], Iox2FrameHeader>,
     /// Steady-clock time before the subscriber was created; a sample sent earlier is history.
     created_nanos: u64,
+    /// The publisher ports that existed once the subscriber did.
+    publishers_before: PublishersBefore,
     service: DataPortFactory,
     topic: Arc<str>,
     event_source: EventSource,
@@ -316,9 +328,45 @@ enum SubscriberKind {
         subscribers: Vec<NamedSubscriber>,
         current_idx: std::sync::atomic::AtomicUsize,
         created_nanos: u64,
+        /// The publisher ports of every stream that existed once its subscriber did.
+        publishers_before: PublishersBefore,
         /// Last, so they drop after the subscribers.
         _schema_releases: Vec<crate::schema::SchemaRelease>,
     },
+}
+
+/// The publisher ports of the services of a subscriber that existed once the subscriber did,
+/// listed after it was created.
+///
+/// A port that is not among them was registered after the listing, so after the subscriber:
+/// a publisher updates its connections before every send. Every sample such a port sends
+/// therefore reaches the subscriber's queue, or is pushed out of it, and none is history from
+/// before it. iceoryx2 orders its registry with acquire and release only, so a subscriber
+/// and a publisher created at once could each miss the other; a sequentially consistent
+/// fence after each registration (here, and after a publisher's creation in
+/// `Iox2Transport::publish`) makes at least one see the other. A port that registers while
+/// the subscriber is created may be listed, and counts as one that may have sent before.
+pub(crate) struct PublishersBefore(Box<[UniquePublisherId]>);
+
+impl PublishersBefore {
+    /// List the publisher ports of `services` now.
+    pub(crate) fn list<'a>(services: impl IntoIterator<Item = &'a DataPortFactory>) -> Self {
+        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+        let mut ports = Vec::new();
+        for service in services {
+            service.dynamic_config().list_publishers(|publisher| {
+                ports.push(publisher.publisher_id);
+                CallbackProgression::Continue
+            });
+        }
+        Self(ports.into_boxed_slice())
+    }
+
+    /// The sample `sample` with what this list says of its publisher.
+    fn sample(&self, sample: Sample<Ipc, [u8], Iox2FrameHeader>, topic: Arc<str>) -> Iox2Sample {
+        let came_after = !self.0.contains(&sample.header().publisher_id());
+        Iox2Sample { topic, sample, came_after }
+    }
 }
 
 /// The next sample of `subscriber` that is not history of an unlatched publisher.
@@ -361,9 +409,17 @@ impl Iox2Subscriber {
                 let received =
                     receive_current(&single.subscriber, &single.topic, single.created_nanos)
                         .map_err(receive_port_error)?;
-                Ok(received.map(|sample| Iox2Sample { sample, topic: Arc::clone(&single.topic) }))
+                Ok(received.map(|sample| {
+                    single.publishers_before.sample(sample, Arc::clone(&single.topic))
+                }))
             }
-            SubscriberKind::Set { subscribers, current_idx, created_nanos, .. } => {
+            SubscriberKind::Set {
+                subscribers,
+                current_idx,
+                created_nanos,
+                publishers_before,
+                ..
+            } => {
                 if subscribers.is_empty() {
                     return Ok(None);
                 }
@@ -394,7 +450,7 @@ impl Iox2Subscriber {
                     index = advance(index);
                     current_idx.store(index, Relaxed);
                     if let Some((sample, topic)) = found {
-                        return Ok(Some(Iox2Sample { topic, sample }));
+                        return Ok(Some(publishers_before.sample(sample, topic)));
                     }
                     if index == start_idx {
                         break;
@@ -497,6 +553,7 @@ impl Iox2Subscriber {
     pub(crate) fn new(
         subscriber: Subscriber<Ipc, [u8], Iox2FrameHeader>,
         created_nanos: u64,
+        publishers_before: PublishersBefore,
         service: DataPortFactory,
         stream: Stream,
         node: crate::transport::SharedNode,
@@ -507,6 +564,7 @@ impl Iox2Subscriber {
             inner: SubscriberKind::Single(Box::new(SingleSubscriber {
                 subscriber,
                 created_nanos,
+                publishers_before,
                 service,
                 topic: Arc::from(stream.topic),
                 event_source,
@@ -554,6 +612,8 @@ impl Iox2Subscriber {
     ) -> Result<Self, PortError> {
         let created_nanos = steady_nanos()?;
         let (subscribers, streams) = open_matching_streams(node, spec)?;
+        let publishers_before =
+            PublishersBefore::list(subscribers.iter().map(|(_, _, service)| service));
         let is_topic = !spec.name.contains('*');
         if is_topic && subscribers.is_empty() {
             return Err(PortError::NotAvailable);
@@ -567,6 +627,7 @@ impl Iox2Subscriber {
                 subscribers,
                 current_idx: std::sync::atomic::AtomicUsize::new(0),
                 created_nanos,
+                publishers_before,
                 _schema_releases: schema_releases,
             },
         })
