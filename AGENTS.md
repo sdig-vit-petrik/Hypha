@@ -57,7 +57,7 @@ Put new code in the one layer that owns its concern; never bolt parallel policy 
 ## Quality checks
 
 - For a bug, reproduce the wrong behavior before changing it. Keep a focused regression test when it can catch the failure again. Test the relevant error path as well as success when behavior changes.
-- **Testing pyramid:** test logic matrices and state machines once at the lowest pure layer (`hypha_wire`, `hypha_time`, `hypha_core`, `hypha_cycle`, `hypha_runtime`), using table-driven tests or `proptest` over copy-pasted scenarios. Keep `hypha_ffi` and `hypha-cxx` tests to boundary contracts (null/invalid args, status mapping, ownership/drop) and thin wiring smoke tests; do not repeat the same permutation matrix across layers. Reuse shared fixtures in `hypha_testkit` and lean on fuzzing, Miri, and sanitizers for malformed-input and memory-safety coverage.
+- **Testing pyramid (onion layers, `docs/architecture.md` §7):** each ring tests only what it adds — test logic matrices and state machines once at the lowest pure layer (`hypha_wire`, `hypha_time`, `hypha_core`, `hypha_cycle`, `hypha_runtime`), using table-driven tests or `proptest` over copy-pasted scenarios. Keep `hypha_ffi` and `hypha-cxx` tests to boundary contracts (null/invalid args, status mapping, ownership/drop) and thin wiring smoke tests; do not repeat the same permutation matrix across layers. Reuse shared fixtures in `hypha_testkit` and lean on fuzzing, Miri, and sanitizers for malformed-input and memory-safety coverage.
 - For a C ABI change, specify buffer sizes, ownership, null behavior, and destruction beside the affected declarations and wrappers. Exercise the affected C++ and existing Rust bindings; use the installed SDK flow when installation or headers change.
 - For transport and concurrency changes, check service creation races, loan lifetimes, and shared-memory state. Use the relevant entries in `docs/engineering-traps.md` before changing these paths.
 - Inspect the final diff for unintended API, dependency, and documentation changes. Do not weaken lint rules to make a change pass.
@@ -77,6 +77,7 @@ Put new code in the one layer that owns its concern; never bolt parallel policy 
 
 ## Verification
 
+- **Fast local loops:** `./check.sh` (seconds, no build), `cargo test -p <crate>` (pure core crates run in <2 s), `ctest --test-dir build -R <regex>` (single C++ suite), `./scripts/mutants.sh --diff` (PR mutation check), `./scripts/repo-health.sh` (health dashboard).
 - During edits, run the smallest relevant test or build. Use `./scripts/format.sh` to format and `./check.sh` for style and generated-file checks.
 - For a local code change, run its affected build and test. Run `./test.sh rust` for Rust workspace or FFI changes. For integration, transport, ABI, build-system, or release changes, run the full gate: `./test.sh --clean` and `./check.sh`. Report skipped checks; reserve “all green” for the full gate.
 - Transport tests need writable iceoryx2 shared-memory paths. On Linux these include `/dev/shm` and `/tmp/iceoryx2`; on macOS, `/tmp/iceoryx2`. After a capacity change, clear stale segments with `./clean-shm.sh`.
