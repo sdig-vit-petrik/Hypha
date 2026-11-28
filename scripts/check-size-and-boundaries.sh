@@ -60,11 +60,8 @@ PROD_RATCHET = {
     "apps/hypha_ros_bridge/src/automatic_runtime.rs": 844,
     "apps/hypha_tools/src/bin/hypha/top/state.rs": 840,
     "crates/hypha_node/src/subscriber.rs": 826,
-    "crates/hypha_iceoryx2/src/endpoint.rs": 743,
-    "crates/hypha_node/src/waitset/dispatch.rs": 725,
     "crates/hypha_cycle/src/runtime.rs": 717,
     "apps/hypha_tools/src/bin/hypha/top/graph_ui.rs": 670,
-    "crates/hypha_iceoryx2/src/transport.rs": 657,
     "crates/hypha_node/src/cycle/tick.rs": 651,
     "crates/hypha_node/src/waitset.rs": 610,
 }

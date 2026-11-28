@@ -106,7 +106,7 @@ pub fn list_nodes() -> Result<Vec<DiscoveredNode>, PortError> {
         out.push(node);
         CallbackProgression::Continue
     })
-    .map_err(crate::transport::node_list_failed)?;
+    .map_err(crate::data_service::node_list_failed)?;
     if pid_unreadable {
         log::error!(target: "hypha/transport", "hypha_iceoryx2: cannot read the process id of a listed node");
         return Err(PortError::Backend(5));
@@ -159,7 +159,7 @@ fn count_service_ports(
         let locked_node = crate::locked(node);
         let node_ref = locked_node.as_ref().ok_or(PortError::Backend(1))?;
         let node_id = *node_ref.id();
-        let service = crate::transport::data_service_builder(node_ref, &service_name).open();
+        let service = crate::data_service::data_service_builder(node_ref, &service_name).open();
         service.ok().map(|service| (service, node_id))
     };
     let Some((service, node_id)) = opened else {
