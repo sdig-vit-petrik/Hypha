@@ -3,7 +3,7 @@
 use crate::status::status_of;
 use hypha_node::safe::{
     clock_advance_sim_time, clock_disable_sim_time, clock_enable_sim_time, clock_is_sim_time,
-    clock_now_nanos, clock_set_sim_time, clock_steady_now_nanos,
+    clock_is_valid, clock_now_nanos, clock_set_sim_time, clock_steady_now_nanos,
 };
 use hypha_node::status::HyphaStatus;
 
@@ -24,6 +24,15 @@ pub extern "C" fn hypha_clock_steady_now_nanos() -> i64 {
 /// Return 1 while the active clock is simulated, else 0.
 pub extern "C" fn hypha_clock_is_sim_time() -> i32 {
     i32::from(clock_is_sim_time())
+}
+
+#[unsafe(no_mangle)]
+/// Return 1 when framework time holds a time, else 0. Host time always does; simulated
+/// time does once it has a value (a `/clock` sample, a set, an advance, or an enable at a
+/// value). The zero that a simulated-time node starts with is a placeholder: until the
+/// first value `hypha_clock_now_nanos` returns it, and this returns 0.
+pub extern "C" fn hypha_clock_is_valid() -> i32 {
+    i32::from(clock_is_valid())
 }
 
 #[unsafe(no_mangle)]

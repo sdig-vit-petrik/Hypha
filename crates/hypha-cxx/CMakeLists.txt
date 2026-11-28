@@ -292,6 +292,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_log_module_name.cpp
     test/test_log_module_default.cpp
     test/test_log_module_without_calls.cpp
+    test/test_publish_or_warn_log.cpp
   )
   target_link_libraries(test_hypha_log PRIVATE hypha GTest::gtest)
   add_test(NAME test_hypha_log COMMAND test_hypha_log)
@@ -350,6 +351,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_cycle_shutdown.cpp
     test/test_cycle_node.cpp
     test/test_triggered_cycle.cpp
+    test/test_cycle_timer.cpp
     test/test_twist_mux_shape.cpp
     test/test_transforms_port.cpp
     test/test_transform_buffer.cpp
@@ -375,6 +377,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_unique_handle.cpp
     test/test_stop_signal.cpp
     test/test_fail_run.cpp
+    test/test_application_skeleton.cpp
     test/test_worker_stop.cpp
     test/test_handover.cpp
     test/test_step_harness.cpp

@@ -37,6 +37,23 @@ inline hypha_msgs::RosTime toRosTime(Time value)
     return stamp;
 }
 
+/// @brief toRosTime() of a time in seconds since the epoch, as a driver computes one:
+///        `header.stamp = hypha::rosTimeFromSeconds(packetSeconds)`. A named function, not
+///        an overload, so that seconds and nanoseconds are never mistaken for each other.
+/// @throws std::invalid_argument for NaN or infinite seconds; std::out_of_range as
+///         toRosTime() does.
+inline hypha_msgs::RosTime rosTimeFromSeconds(double seconds)
+{
+    return toRosTime(Time::fromSeconds(seconds));
+}
+
+/// @brief toRosTime() of a time in nanoseconds since the epoch.
+/// @throws std::out_of_range as toRosTime() does.
+inline hypha_msgs::RosTime rosTimeFromNanos(int64_t nanos)
+{
+    return toRosTime(Time::fromNanos(nanos));
+}
+
 /// @brief Convert a RosTime wire stamp, such as a received header.stamp, to framework time.
 /// @return No value when the nanosecond remainder is one second or more.
 constexpr std::optional<Time> fromRosTime(const hypha_msgs::RosTime& stamp) noexcept

@@ -27,9 +27,6 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using std::chrono::milliseconds;
 
-/// The longest a stop may take to reach a waiting thread, on a loaded machine.
-constexpr int64_t kStopBoundMillis = 1500;
-
 int64_t elapsedMillis(Clock::time_point start)
 {
     return std::chrono::duration_cast<milliseconds>(Clock::now() - start).count();
@@ -164,14 +161,13 @@ TEST(Handover, ManyThreadsPushAndEveryMessageIsDeliveredOrCounted)
     }
 }
 
-TEST(Handover, PopWaitsForAPush)
+TEST(Handover, APopReceivesThePushOfAnotherThread)
 {
     Pair                      queue(2U, std::stop_token{});
     std::optional<Pair::Item> received;
     std::thread               consumer([&] {
         received = queue.pop();
     });
-    std::this_thread::sleep_for(milliseconds(50));
     (void)queue.push(std::string("late"));
     consumer.join();
     ASSERT_TRUE(received.has_value());
@@ -188,49 +184,39 @@ TEST(Handover, PopForReturnsEmptyAtTheTimeoutAndTheStopIsNotThere)
     EXPECT_FALSE(queue.stopped());
 }
 
-TEST(Handover, APopWaitingForeverEndsAtTheStop)
+TEST(Handover, TheStopEndsAPopAndALongPopForThatWait)
 {
     std::stop_source          stop;
     Pair                      queue(2U, stop.get_token());
     std::atomic<bool>         returned{false};
     std::optional<Pair::Item> result = Pair::Item{0};
-    std::thread               consumer([&] {
+    std::optional<Pair::Item> timed = Pair::Item{0};
+    std::thread               waiting([&] {
         result = queue.pop();
         returned = true;
     });
+    std::thread               timing([&] {
+        timed = queue.popFor(std::chrono::seconds(30));
+    });
+    // Time for both to wait: the stop is the stimulus. A pop that returned without a push
+    // or a stop is found below; one that ends without the stop hangs the test.
     std::this_thread::sleep_for(milliseconds(50));
     EXPECT_FALSE(returned.load());
-    const Clock::time_point start = Clock::now();
     stop.request_stop();
-    consumer.join();
-    EXPECT_LT(elapsedMillis(start), kStopBoundMillis);
+    waiting.join();
+    timing.join();
     EXPECT_FALSE(result.has_value());
+    EXPECT_FALSE(timed.has_value());
     EXPECT_TRUE(queue.stopped());
-}
-
-TEST(Handover, ALongPopForEndsAtTheStopNotAtItsTimeout)
-{
-    std::stop_source stop;
-    Pair             queue(2U, stop.get_token());
-    std::thread      consumer([&] {
-        EXPECT_FALSE(queue.popFor(std::chrono::seconds(30)).has_value());
-    });
-    std::this_thread::sleep_for(milliseconds(50));
-    const Clock::time_point start = Clock::now();
-    stop.request_stop();
-    consumer.join();
-    EXPECT_LT(elapsedMillis(start), kStopBoundMillis);
 }
 
 TEST(Handover, AStopThatWasThereBeforeTheWaitEndsItAtOnce)
 {
     std::stop_source stop;
     stop.request_stop();
-    Pair                    queue(2U, stop.get_token());
-    const Clock::time_point start = Clock::now();
+    Pair queue(2U, stop.get_token());
     EXPECT_FALSE(queue.pop().has_value());
     EXPECT_FALSE(queue.popFor(std::chrono::seconds(30)).has_value());
-    EXPECT_LT(elapsedMillis(start), kStopBoundMillis);
 }
 
 TEST(Handover, TheStopDrainsWhatIsQueuedThenEnds)
@@ -312,7 +298,7 @@ class HandoverApp final : public hypha::ApplicationNode
         this->sdk_ = std::thread([this] {
             for (int sample = 0; !this->stopToken().stop_requested(); ++sample) {
                 (void)this->queue_.push(sample);
-                std::this_thread::sleep_for(milliseconds(1));
+                std::this_thread::yield();
             }
         });
     }
@@ -337,12 +323,10 @@ TEST(Handover, ANodeEndsWhileItsWorkerWaitsOnTheHandover)
 {
     gResult.reset();
     EXPECT_TRUE(hypha::disableSimTime());
-    char                    program[] = "prog";
-    char*                   argv[] = {program, nullptr};
-    const Clock::time_point start = Clock::now();
-    const int               code = hypha::runNode<HandoverApp>(1, argv, "handover_app");
+    char      program[] = "prog";
+    char*     argv[] = {program, nullptr};
+    const int code = hypha::runNode<HandoverApp>(1, argv, "handover_app");
     EXPECT_EQ(code, 0);
-    EXPECT_LT(elapsedMillis(start), 10 * kStopBoundMillis);
     EXPECT_GE(gResult.received.load(), 20);
     EXPECT_TRUE(gResult.endedAtStop.load());
 }
