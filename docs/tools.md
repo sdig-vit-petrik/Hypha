@@ -342,7 +342,8 @@ recorder without `--sync` is an observer. When a followed topic overruns that qu
 its oldest samples are lost. The subscriber counts the sequence numbers it missed, so
 a loss is not a sample the recorder dropped. Without `--sync` the recorder reads each
 topic's cumulative count on standard error once every 10 seconds and again at the end,
-prints `hypha record: <topic>: <n> samples lost` when the count grew, lists each topic
+prints `hypha record: <topic>: <n> samples lost: ...` when the count grew (the line names
+the remedy: a larger `maxDepth` in the topic's QoS policy, or `--sync`), lists each topic
 that lost samples under `Recorded messages:` as `  <topic> lost <n> samples`, and exits
 1, because the recording is incomplete. A sample that cannot be recorded is dropped
 with one warning per topic; that is not a loss and does not change the exit code.

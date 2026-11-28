@@ -214,7 +214,11 @@ impl LossWatch {
             let grew: bool = count > previous;
             if grew {
                 let title = follower_title(follower, bus, &stream);
-                eprintln!("hypha record: {title}: {count} samples lost");
+                eprintln!(
+                    "hypha record: {title}: {count} samples lost: they overran the recorder's \
+                     queue, which is the topic policy's maxDepth; raise maxDepth in the topic's \
+                     QoS policy, or record with --sync beside hypha play --clock"
+                );
                 self.lost.insert(stream, (title, count));
             }
         }
