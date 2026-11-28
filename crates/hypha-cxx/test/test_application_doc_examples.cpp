@@ -10,9 +10,9 @@
 #include <gtest/gtest.h>
 #include <sensor_msgs/PointCloud2.h>
 
-#include <atomic>
 #include <exception>
 #include <optional>
+#include <stop_token>
 #include <thread>
 #include <type_traits>
 
@@ -72,9 +72,8 @@ class LidarNode final : public hypha::ApplicationNode
   public:
     ~LidarNode() override
     {
-        this->stopping_ = true;
         if (this->worker_.joinable()) {
-            this->worker_.join();
+            this->worker_.join();  // the stop is already requested
         }
     }
 
@@ -85,14 +84,16 @@ class LidarNode final : public hypha::ApplicationNode
 
     void started(hypha::Node& /*node*/) override
     {
-        this->worker_ = std::thread(&LidarNode::readLoop, this);  // after the checks
+        this->worker_ =
+            std::thread(&LidarNode::readLoop, this, this->stopToken());  // after the checks
     }
 
   private:
     // The only user of points_ once the thread runs.
-    void readLoop()
+    void readLoop(std::stop_token stop)
     {
-        while (!this->stopping_) {
+        hypha::Rate rate(10.0, stop);  // ros::Rate rate(10)
+        do {
             try {
                 const bool sent = this->points_.publish(readFromDevice());
                 if (!sent) {
@@ -104,10 +105,9 @@ class LidarNode final : public hypha::ApplicationNode
                 this->failRun(error.what());
                 return;
             }
-        }
+        } while (rate.sleep());  // false: the node stopped
     }
 
-    std::atomic<bool>                          stopping_{false};
     hypha::Publisher<sensor_msgs::PointCloud2> points_;
     std::thread                                worker_;
 };

@@ -375,6 +375,7 @@ if(HYPHA_BUILD_TESTS)
     test/test_unique_handle.cpp
     test/test_stop_signal.cpp
     test/test_fail_run.cpp
+    test/test_worker_stop.cpp
     test/test_step_harness.cpp
     test/test_raw_endpoints.cpp
     test/test_qos.cpp

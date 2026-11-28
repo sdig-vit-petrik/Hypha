@@ -634,7 +634,9 @@ included, uses the same `HYPHA_DOMAIN`.
 | `nh.advertise` + `publish` | `hypha::Output<T>` port: call `send(message)`. A step sends one message per Output. A step that sends two declares the Output with `hypha::perStep(2)`: `hypha::Output<T> name{*this, "name", hypha::perStep(2)};` |
 | `nh.createTimer` | The cycle rate, `rate_hz` under `[cycle]` |
 | `ros::TimerEvent` | `const hypha::CycleTime&`: `dt` (no value in the first step), `missed` |
-| `ros::ok()` in the loop of a worker thread | The stop flag of the application: a `std::atomic<bool>` that its destructor sets before it joins the thread ([section 10.6](#106-threads)). Every blocking read in that loop takes a timeout that returns to this check: a read with no timeout never returns to it, so the stop is never seen |
+| `ros::ok()` in the loop of a worker thread | `stop.stop_requested()`, `stop` being `this->stopToken()`, the `std::stop_token` that `runNode` stops when the run ends ([section 10.6](#106-threads)). The loop ends there, or at the `false` of a sleep or a rate below. Every other blocking read in the loop takes a timeout that returns to this check, or a `std::stop_callback` that wakes it: a read with no way back never sees the stop, and the join then waits forever |
+| `ros::Rate rate(hz)` and `rate.sleep()` in a worker thread | `hypha::Rate rate(hz, stop)` from `<hypha/worker.h>`; `do { work(); } while (rate.sleep());`. `sleep()` returns `false` when the node stopped, not, as in ROS, when the pass overran: overruns count in `rate.missedCount()`. The grid and the skip of missed periods: [cpp-api.md](cpp-api.md#25-a-worker-thread-ends-at-the-nodes-stop). Host time, also under simulated time |
+| `ros::Duration(s).sleep()`, `ros::WallDuration::sleep()`, `ros::Duration::sleep()` in a worker thread | `if (!hypha::sleepFor(stop, hypha::Duration::fromSeconds(s))) { return; }` (or a `std::chrono` span), which returns `false` at the stop. `sleepUntil(stop, steadyDeadline)` waits for a time point. A call whose result is dropped is a compile warning: a stopped sleep returns at once, so such a loop would spin |
 | `tf_prefix` (added to every frame id) | None. Read it with `hypha::config().required<std::string>("tf_prefix")` and write each frame id in full, prefix included |
 | Hand-written message age check (decides whether an input may be used) | The port's `silence_ms`, verdict `Stale`. A use of the source time as data stays logic |
 | `ros::Time::now()` for a stamp | In a cycle step `time.stamp`; elsewhere `hypha::toRosTime(hypha::now())`. See cpp-api.md §3 |
@@ -1135,17 +1137,22 @@ by the application. Only `hypha::requestStop()` and `failRun()` may be called fr
 thread while the node runs.
 
 The application starts a worker in `started()` and joins it in its destructor. The
-worker's loop checks a stop flag that the destructor sets, and every blocking read in it
-takes a timeout that returns to that check: a read with no timeout never sees the stop,
-and the join then waits forever. A thread that fails calls `failRun()`:
+node's stop is `this->stopToken()`, a `std::stop_token` that `runNode` stops when the run
+ends, before the destructor runs, whatever ended it (`requestStop()`, a signal,
+`failRun()`, a refused start-up). The worker takes it by copy and ends its waits on it:
+`hypha::sleepFor()` and `hypha::Rate` of `<hypha/worker.h>`
+([cpp-api.md](cpp-api.md#25-a-worker-thread-ends-at-the-nodes-stop)) return `false` at the
+stop, so a ten-second wait ends with the node. A blocking read in the loop takes a
+timeout that returns to the loop check: a read with no timeout never sees the stop, and
+the join then waits forever. A thread that fails calls `failRun()`:
 
 ```cpp
 #include <hypha/hypha.h>
 
 #include <sensor_msgs/PointCloud2.h>
 
-#include <atomic>
 #include <exception>
+#include <stop_token>
 #include <thread>
 
 sensor_msgs::PointCloud2 readFromDevice();  // the driver's blocking read, with a timeout
@@ -1155,9 +1162,8 @@ class LidarNode final : public hypha::ApplicationNode
   public:
     ~LidarNode() override
     {
-        this->stopping_ = true;
         if (this->worker_.joinable()) {
-            this->worker_.join();
+            this->worker_.join();  // the stop is already requested
         }
     }
 
@@ -1168,14 +1174,15 @@ class LidarNode final : public hypha::ApplicationNode
 
     void started(hypha::Node& /*node*/) override
     {
-        this->worker_ = std::thread(&LidarNode::readLoop, this);  // after the checks
+        this->worker_ = std::thread(&LidarNode::readLoop, this, this->stopToken());  // after the checks
     }
 
   private:
     // The only user of points_ once the thread runs.
-    void readLoop()
+    void readLoop(std::stop_token stop)
     {
-        while (!this->stopping_) {
+        hypha::Rate rate(10.0, stop);  // ros::Rate rate(10)
+        do {
             try {
                 const bool sent = this->points_.publish(readFromDevice());
                 if (!sent) {
@@ -1187,10 +1194,9 @@ class LidarNode final : public hypha::ApplicationNode
                 this->failRun(error.what());
                 return;
             }
-        }
+        } while (rate.sleep());  // false: the node stopped
     }
 
-    std::atomic<bool>                          stopping_{false};
     hypha::Publisher<sensor_msgs::PointCloud2> points_;
     std::thread                                worker_;
 };
