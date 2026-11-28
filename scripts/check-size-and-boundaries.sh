@@ -165,32 +165,70 @@ if errors:
 #    from growing beyond their current share of total test LOC. Lower this ceiling
 #    as pure-core tests grow and top-layer integration monoliths shrink.
 MAX_TOP_TEST_SHARE_PCT = 66.5
+# 5. Sleep-based test synchronization ratchet (excludes tests of sleep/clock APIs).
+MAX_TEST_SLEEPS = 168
+SLEEP_ALLOWLIST = frozenset({
+    "crates/hypha-cxx/test/test_worker_stop.cpp",
+    "crates/hypha-cxx/base/test/test_clock.cpp",
+})
+# 6. #[allow(...)] ratchet in shipped Rust (use #[expect(lint, reason = "...")] per docs/rust-style.md).
+MAX_PROD_ALLOWS = 72
+
+import re
+sleep_re = re.compile(r"\b(sleep|sleep_for|usleep|sleep_ms)\s*\(")
+allow_re = re.compile(r"#!?\[allow\(")
+
 total_test_lines = 0
 top_test_lines = 0
-for path in files:
-    if category(path) != "tests":
-        continue
-    with open(path, "rb") as f:
-        n = f.read().count(b"\n")
-    total_test_lines += n
-    if path.startswith(("crates/hypha_ffi/", "crates/hypha-cxx/", "apps/hypha_tools/")):
-        top_test_lines += n
+test_sleeps = 0
+prod_allows = 0
 
+for path in files:
+    cat = category(path)
+    if cat == "tests":
+        raw = open(path, "rb").read()
+        n = raw.count(b"\n")
+        total_test_lines += n
+        if path.startswith(("crates/hypha_ffi/", "crates/hypha-cxx/", "apps/hypha_tools/")):
+            top_test_lines += n
+        if path not in SLEEP_ALLOWLIST:
+            test_sleeps += len(sleep_re.findall(raw.decode("utf-8", errors="ignore")))
+    elif cat in ("rust_prod", "ffi_src"):
+        text = open(path, "r", encoding="utf-8", errors="ignore").read()
+        prod_allows += len(allow_re.findall(text))
+
+ratchet_errors = []
 if total_test_lines > 0:
     top_share = 100.0 * top_test_lines / total_test_lines
     if top_share > MAX_TOP_TEST_SHARE_PCT:
-        print(
-            f"FAIL: test ice-cream cone grew: top-layer tests (hypha_ffi/hypha-cxx/hypha_tools) "
-            f"are {top_share:.1f}% of test LOC (ratchet max {MAX_TOP_TEST_SHARE_PCT:.1f}%). "
-            f"Move logic matrices down to pure core crates (AGENTS.md testing pyramid).",
-            file=sys.stderr,
+        ratchet_errors.append(
+            f"  test ice-cream cone grew: top-layer tests are {top_share:.1f}% of test LOC "
+            f"(max {MAX_TOP_TEST_SHARE_PCT:.1f}%); test logic matrices in pure core crates"
         )
-        sys.exit(1)
+else:
+    top_share = 0.0
+
+if test_sleeps > MAX_TEST_SLEEPS:
+    ratchet_errors.append(
+        f"  sleep calls in tests grew to {test_sleeps} (max {MAX_TEST_SLEEPS}); "
+        f"use bounded condition polling instead of raw sleep"
+    )
+if prod_allows > MAX_PROD_ALLOWS:
+    ratchet_errors.append(
+        f"  #[allow(...)] in prod Rust grew to {prod_allows} (max {MAX_PROD_ALLOWS}); "
+        f'use #[expect(lint, reason = "...")] per docs/rust-style.md'
+    )
+
+if ratchet_errors:
+    print("FAIL: antipattern ratchet violations:", file=sys.stderr)
+    print("\n".join(ratchet_errors), file=sys.stderr)
+    sys.exit(1)
 
 print(
-    f"OK: file sizes, boundaries, and test pyramid pass "
+    f"OK: sizes, boundaries, and antipattern ratchets pass "
     f"({len(PROD_RATCHET)} prod ratcheted, {len(SOFT_RATCHET)} test/doc grandfathered, "
-    f"top-layer test share {top_share:.1f}% <= {MAX_TOP_TEST_SHARE_PCT:.1f}%)."
+    f"top-test {top_share:.1f}%<={MAX_TOP_TEST_SHARE_PCT:.1f}%, "
+    f"test-sleeps {test_sleeps}<={MAX_TEST_SLEEPS}, prod-allows {prod_allows}<={MAX_PROD_ALLOWS})."
 )
 PY
 
